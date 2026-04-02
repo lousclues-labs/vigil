@@ -1,6 +1,6 @@
 [package]
 name = "vigil"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 description = "Lightweight file integrity monitor for Linux desktops"
 license = "GPL-3.0-only"
@@ -35,6 +35,7 @@ nix = { version = "0.28", features = [
     "fs",
     "inotify",
     "mount",
+    "poll",
     "process",
     "signal",
     "user",
@@ -42,6 +43,7 @@ nix = { version = "0.28", features = [
 
 # Threading / channels
 crossbeam-channel = "0.5"
+parking_lot = "0.12"
 
 # Logging
 log = "0.4"

@@ -71,6 +71,9 @@ impl DbusNotifier {
             pkg_info,
         );
 
+        // Use .status() instead of .spawn() to wait for the child process
+        // and avoid accumulating zombie processes. The long-term fix is to use
+        // zbus for native D-Bus integration.
         let result = std::process::Command::new("notify-send")
             .args([
                 "--urgency",
@@ -84,7 +87,7 @@ impl DbusNotifier {
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .spawn();
+            .status();
 
         if let Err(e) = result {
             log::warn!("Failed to send D-Bus notification: {}", e);

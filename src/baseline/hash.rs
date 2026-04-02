@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek};
 
 use crate::error::{Result, VigilError};
 
@@ -13,6 +13,12 @@ pub fn blake3_hash_file(file: &File) -> Result<String> {
     let mut reader = file
         .try_clone()
         .map_err(|e| VigilError::Hash(format!("cannot clone file handle: {}", e)))?;
+
+    // Seek to the start to ensure we hash the entire file, even if the
+    // file descriptor's cursor was moved by prior reads (e.g., metadata).
+    reader
+        .seek(std::io::SeekFrom::Start(0))
+        .map_err(|e| VigilError::Hash(format!("seek error during hashing: {}", e)))?;
 
     loop {
         let n = reader

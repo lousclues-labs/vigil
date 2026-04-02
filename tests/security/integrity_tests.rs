@@ -124,6 +124,8 @@ fn audit_log_records_suppressed_entries() {
         new_owner_gid: None,
         old_inode: None,
         new_inode: None,
+        old_mtime: None,
+        new_mtime: None,
         package: None,
         package_update: false,
         monitored_group: "system_critical".into(),

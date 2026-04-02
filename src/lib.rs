@@ -50,13 +50,34 @@ pub fn daemon_run(config: &Config) -> Result<()> {
     // Write PID file
     write_pid_file(&config.daemon.pid_file)?;
 
+    // Block SIGINT/SIGTERM on the main thread before spawning any child threads,
+    // so all threads inherit the signal mask and only the dedicated signal thread
+    // receives the signals.
+    use nix::sys::signal::{SigSet, Signal};
+    let mut sigset = SigSet::empty();
+    sigset.add(Signal::SIGINT);
+    sigset.add(Signal::SIGTERM);
+    sigset.thread_block().expect("failed to block signals on main thread");
+
     // Set up shutdown signal handler
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
-    ctrlc_handler(shutdown_clone);
+    ctrlc_handler(shutdown_clone, sigset);
 
     // Create alert engine
     let alert_engine = AlertEngine::new(config)?;
+
+    // Pre-compute expanded watch group paths to avoid re-reading /etc/passwd on every event
+    let expanded_watch_groups: Vec<(std::path::PathBuf, String, types::Severity)> = config
+        .watch
+        .iter()
+        .flat_map(|(group_name, group)| {
+            let expanded = config::expand_user_paths(&group.paths);
+            expanded
+                .into_iter()
+                .map(move |p| (p, group_name.clone(), group.severity))
+        })
+        .collect();
 
     // Event channel: monitor → hasher workers
     let (event_tx, event_rx) = bounded(1024);
@@ -103,7 +124,7 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                 };
 
                 // Determine watch group and severity for this path
-                let (group_name, severity) = find_watch_group(&event.path, config)
+                let (group_name, severity) = find_watch_group(&event.path, &expanded_watch_groups)
                     .unwrap_or(("unknown".into(), types::Severity::Medium));
 
                 // Compare against baseline
@@ -156,15 +177,13 @@ pub fn daemon_run(config: &Config) -> Result<()> {
 }
 
 /// Find which watch group a path belongs to, returning (group_name, severity).
-fn find_watch_group(path: &std::path::Path, config: &Config) -> Option<(String, types::Severity)> {
-    let _path_str = path.to_string_lossy();
-
-    for (group_name, group) in &config.watch {
-        let expanded = config::expand_user_paths(&group.paths);
-        for watch_path in &expanded {
-            if path.starts_with(watch_path) || path == watch_path {
-                return Some((group_name.clone(), group.severity));
-            }
+fn find_watch_group(
+    path: &std::path::Path,
+    expanded_groups: &[(std::path::PathBuf, String, types::Severity)],
+) -> Option<(String, types::Severity)> {
+    for (watch_path, group_name, severity) in expanded_groups {
+        if path.starts_with(watch_path) || path == watch_path {
+            return Some((group_name.clone(), *severity));
         }
     }
 
@@ -175,6 +194,24 @@ fn write_pid_file(path: &std::path::Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+
+    // Check for stale PID file / running instance
+    if path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            if let Ok(pid) = contents.trim().parse::<i32>() {
+                // Check if process is still alive (signal 0 = existence check)
+                if unsafe { libc::kill(pid, 0) } == 0 {
+                    return Err(crate::error::VigilError::Config(format!(
+                        "Another vigil instance is running (PID {})",
+                        pid
+                    )));
+                }
+            }
+        }
+        // Stale PID file — remove it
+        let _ = std::fs::remove_file(path);
+    }
+
     std::fs::write(path, format!("{}", std::process::id()))?;
     Ok(())
 }
@@ -183,18 +220,11 @@ fn cleanup_pid_file(path: &std::path::Path) {
     let _ = std::fs::remove_file(path);
 }
 
-fn ctrlc_handler(shutdown: Arc<AtomicBool>) {
+fn ctrlc_handler(shutdown: Arc<AtomicBool>, sigset: nix::sys::signal::SigSet) {
     let _ = std::thread::Builder::new()
         .name("vigil-signal".into())
         .spawn(move || {
-            // Block on SIGINT/SIGTERM using nix
-            use nix::sys::signal::{SigSet, Signal};
-            let mut sigset = SigSet::empty();
-            sigset.add(Signal::SIGINT);
-            sigset.add(Signal::SIGTERM);
-            sigset.thread_block().ok();
-
-            // Wait for signal
+            // Wait for signal (SIGINT/SIGTERM already blocked on all threads)
             match sigset.wait() {
                 Ok(sig) => {
                     log::info!("Received signal {:?}, shutting down...", sig);

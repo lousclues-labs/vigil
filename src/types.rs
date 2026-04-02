@@ -42,7 +42,7 @@ impl std::str::FromStr for Severity {
 // ── Change Type ────────────────────────────────────────────
 
 /// Types of changes detected on monitored files.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeType {
     Modified,
@@ -160,6 +160,8 @@ pub struct ChangeResult {
     pub new_owner_gid: Option<u32>,
     pub old_inode: Option<u64>,
     pub new_inode: Option<u64>,
+    pub old_mtime: Option<i64>,
+    pub new_mtime: Option<i64>,
     pub package: Option<String>,
     pub package_update: bool,
     pub monitored_group: String,

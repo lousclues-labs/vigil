@@ -178,6 +178,8 @@ pub fn diff_baseline(
                                 new_owner_gid: None,
                                 old_inode: None,
                                 new_inode: None,
+                                old_mtime: None,
+                                new_mtime: None,
                                 package: None,
                                 package_update: false,
                                 monitored_group: group_name.clone(),

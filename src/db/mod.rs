@@ -16,6 +16,13 @@ pub fn open_db(config: &Config) -> Result<Connection> {
     }
 
     let conn = Connection::open(db_path)?;
+
+    // Restrict database file permissions to owner-only (0600)
+    if db_path.exists() {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(db_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
     configure_connection(&conn, config)?;
     schema::create_tables(&conn)?;
     Ok(conn)
@@ -52,7 +59,10 @@ fn configure_connection(conn: &Connection, config: &Config) -> Result<()> {
 pub fn integrity_check(conn: &Connection) -> Result<()> {
     let result: String = conn.pragma_query_value(None, "integrity_check", |row| row.get(0))?;
     if result != "ok" {
-        return Err(VigilError::Database(rusqlite::Error::QueryReturnedNoRows));
+        return Err(VigilError::Config(format!(
+            "database integrity check failed: {}",
+            result
+        )));
     }
     Ok(())
 }

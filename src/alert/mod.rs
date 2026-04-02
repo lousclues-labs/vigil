@@ -4,10 +4,10 @@ pub mod json_log;
 pub mod socket;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use parking_lot::Mutex;
 
 use crate::config::Config;
 use crate::error::Result;
@@ -27,6 +27,8 @@ pub struct AlertEngine {
     json_logger: Option<json_log::JsonLogger>,
     /// Signal socket writer (optional).
     signal_socket: Option<socket::SignalSocket>,
+    /// Cached hostname (read once at startup).
+    hostname: String,
 }
 
 struct RateCounter {
@@ -82,6 +84,7 @@ impl AlertEngine {
             dbus_notifier,
             json_logger,
             signal_socket,
+            hostname: hostname(),
         })
     }
 
@@ -146,14 +149,10 @@ impl AlertEngine {
 
         // Update cooldown
         let path_str = change.path.to_string_lossy().into_owned();
-        if let Ok(mut cooldowns) = self.cooldowns.lock() {
-            cooldowns.insert(path_str, Instant::now());
-        }
+        self.cooldowns.lock().insert(path_str, Instant::now());
 
         // Update rate counter
-        if let Ok(mut rate) = self.rate_counter.lock() {
-            rate.count += 1;
-        }
+        self.rate_counter.lock().count += 1;
 
         Ok(())
     }
@@ -167,7 +166,8 @@ impl AlertEngine {
 
         // Per-path cooldown
         let path_str = change.path.to_string_lossy();
-        if let Ok(cooldowns) = self.cooldowns.lock() {
+        {
+            let cooldowns = self.cooldowns.lock();
             if let Some(last) = cooldowns.get(path_str.as_ref()) {
                 if last.elapsed() < Duration::from_secs(self.config.alerts.cooldown_seconds) {
                     return true;
@@ -176,7 +176,8 @@ impl AlertEngine {
         }
 
         // Rate limiting
-        if let Ok(mut rate) = self.rate_counter.lock() {
+        {
+            let mut rate = self.rate_counter.lock();
             // Reset window if it's been more than a minute
             if rate.window_start.elapsed() > Duration::from_secs(60) {
                 rate.count = 0;
@@ -196,8 +197,6 @@ impl AlertEngine {
         primary_change: ChangeType,
         maintenance_window: bool,
     ) -> Alert {
-        let hostname = hostname();
-
         Alert {
             version: 1,
             timestamp: Utc::now(),
@@ -222,12 +221,12 @@ impl AlertEngine {
                 baseline_owner: change.old_owner_uid.map(|u| format!("{}", u)),
                 current_owner: change.new_owner_uid.map(|u| format!("{}", u)),
                 inode_changed: change.change_types.contains(&ChangeType::InodeChanged),
-                mtime_changed: true,
+                mtime_changed: change.old_mtime != change.new_mtime,
                 package: change.package.clone(),
                 package_update: change.package_update,
             },
             context: AlertContext {
-                hostname,
+                hostname: self.hostname.clone(),
                 monitored_group: change.monitored_group.clone(),
                 maintenance_window,
             },

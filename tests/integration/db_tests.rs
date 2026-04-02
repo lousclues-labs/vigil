@@ -78,6 +78,8 @@ fn audit_trail_never_suppressed() {
         new_owner_gid: None,
         old_inode: None,
         new_inode: None,
+        old_mtime: None,
+        new_mtime: None,
         package: None,
         package_update: false,
         monitored_group: "system_critical".into(),

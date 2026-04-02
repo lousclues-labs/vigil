@@ -151,11 +151,21 @@ pub fn start(
 
                             if is_watched {
                                 if let Some(event_type) = mask_to_event_type(event.mask) {
-                                    let _ = event_tx.try_send(FsEvent {
-                                        path,
+                                    let fs_event = FsEvent {
+                                        path: path.clone(),
                                         event_type,
                                         timestamp: Utc::now(),
-                                    });
+                                    };
+                                    match event_tx.try_send(fs_event) {
+                                        Ok(()) => {}
+                                        Err(crossbeam_channel::TrySendError::Full(_)) => {
+                                            log::warn!("Event channel full — dropping filesystem event for {}", path.display());
+                                        }
+                                        Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                                            log::error!("Event channel disconnected");
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                         }

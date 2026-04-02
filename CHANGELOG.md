@@ -2,6 +2,120 @@
 
 All notable changes to Vigil will be documented in this file.
 
+## [0.3.0] - 2026-04-02
+
+### Fixed
+
+#### P0 — Critical Bugs
+
+##### Signal handler doesn't work — graceful shutdown broken (`src/lib.rs`)
+- The `ctrlc_handler` function previously spawned a thread that called `sigset.thread_block()` internally — this only blocked signals on the spawned thread while the main thread still received SIGINT/SIGTERM and was hard-killed by the OS before `sigset.wait()` could fire
+- PID file was never cleaned up and WAL checkpoint never ran on shutdown
+- Fixed by blocking SIGINT and SIGTERM on the main thread **before** spawning any child threads (so all threads inherit the signal mask), then passing the pre-blocked `SigSet` to the dedicated signal thread which calls `sigset.wait()`
+- `ctrlc_handler` now accepts `SigSet` as a parameter instead of constructing its own
+
+##### `try_send` silently drops security events (`src/monitor/fanotify.rs`, `src/monitor/inotify.rs`)
+- Both fanotify and inotify monitors used `let _ = event_tx.try_send(...)`, silently discarding filesystem events when the channel buffer (1024) was full — unacceptable for a security monitor
+- Replaced with explicit `match` on `TrySendError`: logs `warn!` on `Full` (with the affected path) and logs `error!` + breaks the event loop on `Disconnected`
+
+##### TOCTOU race in `path.exists()` before `File::open()` (`src/compare.rs`)
+- Both `compare_entry` and `compare_event` checked `if !path.exists()` to detect deletions, then later called `File::open()` — an attacker could exploit the gap between these two calls
+- Removed the `path.exists()` pre-check entirely; now attempts `File::open()` directly and matches on `ErrorKind::NotFound` to detect deletions
+
+##### Hash file doesn't seek to position 0 (`src/baseline/hash.rs`)
+- `blake3_hash_file` called `file.try_clone()` and read from the current file offset; if the file descriptor's cursor was moved by prior reads (e.g., metadata collection), the hash would be computed from the wrong position
+- Added `reader.seek(std::io::SeekFrom::Start(0))` immediately after `try_clone()` and before the read loop
+- Added `std::io::Seek` to imports
+
+#### P1 — Important Fixes
+
+##### `compare_event` skips xattr checking (`src/compare.rs`)
+- `compare_entry` checked xattrs but `compare_event` did not — real-time monitoring missed xattr/SELinux context changes
+- Extracted shared comparison logic into a private `compare_file_against_baseline()` helper that handles: open file → fstat → hash → compare all fields including xattrs → return change types
+- Both `compare_entry` and `compare_event` are now thin wrappers over this shared helper (see Code Quality section)
+
+##### Database file permissions not restricted (`src/db/mod.rs`)
+- `open_db` created the SQLite database with default umask permissions, potentially leaving baseline data world-readable
+- After creating the database file, permissions are now explicitly set to `0o600` (owner read/write only)
+
+##### No stale PID file detection (`src/lib.rs`)
+- `write_pid_file` blindly overwrote any existing PID file, allowing two daemon instances to run simultaneously
+- Now checks if a process with the existing PID is still alive via `libc::kill(pid, 0)` before writing
+- Returns `VigilError::Config` if another instance is running; removes stale PID files from dead processes
+
+##### Inotify busy-wait polling loop (`src/monitor/inotify.rs`)
+- Used `IN_NONBLOCK` + `sleep(100ms)` in a tight loop, wasting CPU cycles and adding event latency
+- Replaced with `nix::poll::poll()` on the inotify fd with a 500ms timeout (matching the fanotify pattern)
+- Removed the `IN_NONBLOCK` flag from inotify fd initialization since blocking is now handled by poll
+- Added `poll` feature to the `nix` dependency in `Cargo.toml`
+
+##### Mutex poisoning silently disables rate limiting (`src/alert/mod.rs`)
+- All `Mutex::lock()` calls used `if let Ok(...)`, silently ignoring poisoned mutexes — if any code panicked while holding a lock, rate limiting and cooldowns would permanently stop working
+- Switched from `std::sync::Mutex` to `parking_lot::Mutex`, which does not poison and returns the guard directly
+- All `if let Ok(mut x) = self.mutex.lock()` patterns replaced with direct `self.mutex.lock()` calls
+- Added `parking_lot = "0.12"` to `Cargo.toml`
+
+#### P2 — Performance
+
+##### `find_watch_group` re-expands paths every event (`src/lib.rs`)
+- Every filesystem event triggered `expand_user_paths()` for every watch group, re-reading `/etc/passwd` and doing filesystem I/O on each event
+- Pre-compute expanded paths at daemon startup into a `Vec<(PathBuf, String, Severity)>` of `(expanded_path, group_name, severity)` tuples
+- `find_watch_group` now takes the precomputed list instead of the raw config
+- Removed unused `let _path_str = path.to_string_lossy()` binding
+
+##### `hostname()` reads from disk on every alert (`src/alert/mod.rs`)
+- `/etc/hostname` was read on every call to `build_alert`
+- Hostname is now read once in `AlertEngine::new()` and stored as a `String` field on the struct
+- `build_alert` references `self.hostname` instead of calling the function
+
+##### Change type dedup uses `format!("{:?}")` (`src/compare.rs`, `src/types.rs`)
+- `change_types.sort_by_key(|c| format!("{:?}", c))` allocated a `String` per element per comparison during sorting
+- Derived `PartialOrd` and `Ord` on `ChangeType` in `src/types.rs`
+- Replaced with `change_types.sort()` / `change_types.dedup()` (zero-allocation)
+
+##### `mtime_changed` is hardcoded to `true` (`src/alert/mod.rs`, `src/types.rs`, `src/compare.rs`)
+- `AlertFileInfo.mtime_changed` was unconditionally set to `true` regardless of actual mtime state
+- Added `old_mtime: Option<i64>` and `new_mtime: Option<i64>` fields to `ChangeResult`
+- Both fields are populated from baseline and fstat metadata in `compare_file_against_baseline`
+- `build_alert` now computes `mtime_changed: change.old_mtime != change.new_mtime`
+
+##### Duplicate `OwnerChanged` when both UID and GID change (`src/compare.rs`)
+- Separate `if` checks for UID and GID each pushed `ChangeType::OwnerChanged`, producing duplicates
+- Combined into a single `if meta.uid() != baseline.owner_uid || meta.gid() != baseline.owner_gid` check
+
+##### `integrity_check` returns misleading error (`src/db/mod.rs`)
+- Returned `VigilError::Database(rusqlite::Error::QueryReturnedNoRows)` — a misleading error type that hid the actual integrity failure reason
+- Now returns `VigilError::Config(format!("database integrity check failed: {}", result))` with the actual SQLite integrity check output
+
+### Changed
+
+#### Code Quality
+
+##### Extracted shared comparison logic (`src/compare.rs`)
+- `compare_entry` and `compare_event` were ~90% identical code
+- Created private `compare_file_against_baseline()` helper: open file → fstat → hash → compare all fields (inode, permissions, owner, content hash, xattrs) → return change types with file metadata
+- Created `deletion_result()` and `change_result()` helper functions to eliminate duplicated `ChangeResult` construction
+- `compare_entry` and `compare_event` are now thin wrappers that call the shared helper and add severity/group context
+
+##### `notify-send` zombie process accumulation (`src/alert/dbus.rs`)
+- Used `.spawn()` without reaping children, accumulating zombie processes over daemon lifetime
+- Changed `.spawn()` to `.status()` which waits for the child process to complete
+- Added comment noting that the long-term fix is to use `zbus` for native D-Bus integration
+
+##### `which` command may not exist (`src/package.rs`)
+- `command_exists` shelled out to `which` — not available on all systems (e.g., minimal containers, some Debian installations)
+- Replaced with direct `PATH` directory scan: splits `$PATH`, checks each directory for the target binary via `is_file()`
+
+### Dependencies
+- Added `parking_lot = "0.12"` (non-poisoning mutex)
+- Added `poll` feature to `nix = "0.28"`
+
+### Notes
+- All 52 existing tests pass (37 unit/integration + 15 security)
+- Zero clippy warnings
+- No public API signature changes except the addition of `old_mtime`/`new_mtime` fields to `ChangeResult` (struct field addition)
+- Version bumped from `0.2.1` → `0.3.0` (minor bump: new struct fields are a compatible but meaningful change)
+
 ## [0.2.1] - 2026-04-02
 
 ### Added

@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+use std::os::unix::io::AsFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use chrono::Utc;
 use crossbeam_channel::Sender;
+use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify, WatchDescriptor};
 
 use crate::config::Config;
@@ -18,7 +20,7 @@ pub fn start(
     event_tx: Sender<FsEvent>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
-    let inotify = Inotify::init(InitFlags::IN_NONBLOCK | InitFlags::IN_CLOEXEC)
+    let inotify = Inotify::init(InitFlags::IN_CLOEXEC)
         .map_err(|e| VigilError::Inotify(format!("inotify_init failed: {}", e)))?;
 
     let flags = AddWatchFlags::IN_MODIFY
@@ -75,38 +77,58 @@ pub fn start(
     std::thread::Builder::new()
         .name("vigil-inotify".into())
         .spawn(move || {
+            let inotify_fd = inotify.as_fd();
+            let poll_fd = PollFd::new(inotify_fd, PollFlags::POLLIN);
+
             while !shutdown.load(Ordering::Relaxed) {
-                match inotify.read_events() {
-                    Ok(events) => {
-                        for event in events {
-                            let dir_path = match wd_to_path.get(&event.wd) {
-                                Some(p) => p,
-                                None => continue,
-                            };
+                // Poll with 500ms timeout so we can check shutdown flag
+                match poll(&mut [poll_fd], PollTimeout::from(500u16)) {
+                    Ok(n) if n > 0 => {
+                        match inotify.read_events() {
+                            Ok(events) => {
+                                for event in events {
+                                    let dir_path = match wd_to_path.get(&event.wd) {
+                                        Some(p) => p,
+                                        None => continue,
+                                    };
 
-                            let file_path = if let Some(name) = &event.name {
-                                dir_path.join(name)
-                            } else {
-                                dir_path.clone()
-                            };
+                                    let file_path = if let Some(name) = &event.name {
+                                        dir_path.join(name)
+                                    } else {
+                                        dir_path.clone()
+                                    };
 
-                            let event_type = inotify_mask_to_event_type(event.mask);
-                            if let Some(et) = event_type {
-                                let _ = event_tx.try_send(FsEvent {
-                                    path: file_path,
-                                    event_type: et,
-                                    timestamp: Utc::now(),
-                                });
+                                    let event_type = inotify_mask_to_event_type(event.mask);
+                                    if let Some(et) = event_type {
+                                        let fs_event = FsEvent {
+                                            path: file_path.clone(),
+                                            event_type: et,
+                                            timestamp: Utc::now(),
+                                        };
+                                        match event_tx.try_send(fs_event) {
+                                            Ok(()) => {}
+                                            Err(crossbeam_channel::TrySendError::Full(_)) => {
+                                                log::warn!("Event channel full — dropping filesystem event for {}", file_path.display());
+                                            }
+                                            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                                                log::error!("Event channel disconnected");
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("inotify read error: {}", e);
+                                std::thread::sleep(std::time::Duration::from_secs(1));
                             }
                         }
                     }
-                    Err(nix::errno::Errno::EAGAIN) => {
-                        // No events available, sleep briefly
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
+                    Ok(_) => continue, // timeout, loop back to check shutdown
+                    Err(nix::errno::Errno::EINTR) => continue,
                     Err(e) => {
-                        log::error!("inotify read error: {}", e);
-                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        log::error!("poll error: {}", e);
+                        break;
                     }
                 }
             }
