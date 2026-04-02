@@ -1,82 +1,220 @@
 # Licensing Guide
 
-Last updated: April 2026
+*Last updated: April 2026*
 
-Canonical license coverage map for Vigil.
+This document provides a comprehensive overview of how licensing applies to every file and file type in the Vigil project. It serves as the canonical reference for contributors, users, and anyone evaluating Vigil's licensing for compatibility or compliance.
 
 ## Copyright Holder
 
-Original project work is copyright Louis Nelson Jr., unless stated otherwise.
+All original work in this repository is copyright **Louis Nelson Jr.** unless otherwise noted.
+
+See the [NOTICE](../NOTICE) file for the full identity mapping (Louis Nelson Jr. ↔ loujr ↔ lousclues).
 
 ## License Summary
 
-| License | SPDX | Applies To |
-|---------|------|------------|
-| GNU GPL v3.0 only | `GPL-3.0-only` | source code, scripts, tests, configuration, build files |
-| Creative Commons Attribution 4.0 | `CC-BY-4.0` | documentation files in scope of [LICENSE-DOCS.md](LICENSE-DOCS.md) |
+| License | SPDX Identifier | Applies To | Full Text |
+|---------|-----------------|------------|-----------|
+| GNU GPL v3.0 only | `GPL-3.0-only` | Source code, scripts, build files, tests, configs | [LICENSE](../LICENSE) |
+| CC BY 4.0 | `CC-BY-4.0` | Documentation | [LICENSE-DOCS.md](LICENSE-DOCS.md) |
 
-Root license text:
-- [../LICENSE](../LICENSE)
+Vigil is licensed exclusively under GPL-3.0-only. There is no dual-licensing or commercial license alternative at this time. For commercial licensing inquiries, see [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md).
 
-## Coverage Map
+## Commercial Licensing Note
 
-### Source and Code-Adjacent Files
+Vigil is currently single-licensed under GPL-3.0-only. The licensing framework is structured to support potential future dual-licensing, but no commercial license is currently available. See [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) for the inquiry pathway if your use case requires alternative licensing terms.
 
-| Pattern | License |
-|---------|---------|
-| `src/**/*.rs` | GPL-3.0-only |
-| `tests/**/*.rs` | GPL-3.0-only |
-| `fuzz/**/*.rs` | GPL-3.0-only |
-| `scripts/*.sh` | GPL-3.0-only |
-| `hooks/**` | GPL-3.0-only |
-| `systemd/**` | GPL-3.0-only |
-| `Cargo.toml`, `Cargo.lock`, `deny.toml` | GPL-3.0-only |
-| `.github/workflows/**` | GPL-3.0-only |
+---
 
-### Documentation Files
+## File-Type License Coverage Map
 
-| Pattern | License |
-|---------|---------|
-| `docs/*.md` | CC-BY-4.0 (except legal docs if added under docs/) |
-| `README.md` | CC-BY-4.0 |
-| `CONTRIBUTING.md` | CC-BY-4.0 |
-| `CHANGELOG.md` | CC-BY-4.0 |
-| `tests/README.md` | CC-BY-4.0 |
+### Source Code
 
-### Legal and Administrative Files
+| File Pattern | License | SPDX Header Required | Notes |
+|-------------|---------|---------------------|-------|
+| `src/**/*.rs` | GPL-3.0-only | Yes | All Rust source files |
+| `tests/**/*.rs` | GPL-3.0-only | Yes | All test files |
+| `fuzz/**/*.rs` | GPL-3.0-only | Yes | All fuzz target files |
 
-| File | Role |
-|------|------|
-| `LICENSE` | GPL-3.0-only full text |
-| `licenses/LICENSING.md` | this coverage guide |
-| `licenses/LICENSE-DOCS.md` | docs license terms |
-| `licenses/CONTRIBUTOR-LICENSE.md` | contribution terms |
-| `licenses/DEPENDENCY-AUDIT.md` | dependency license policy |
-| `licenses/THIRD-PARTY-LICENSES` | dependency attributions |
+### Scripts
 
-## SPDX Header Guidance
+| File Pattern | License | SPDX Header Required | Notes |
+|-------------|---------|---------------------|-------|
+| `scripts/*.sh` | GPL-3.0-only | Yes | Development/CI scripts |
+| `hooks/**` | GPL-3.0-only | Recommended | Git/package-manager hooks |
 
-Use this SPDX header for source files:
+### Build & Configuration Files
 
-```text
-SPDX-License-Identifier: GPL-3.0-only
+| File Pattern | License | SPDX Header Required | Notes |
+|-------------|---------|---------------------|-------|
+| `Cargo.toml` | GPL-3.0-only | No (metadata file) | `license` field covers this |
+| `Cargo.lock` | GPL-3.0-only | No (generated) | Auto-generated |
+| `deny.toml` | GPL-3.0-only | No | cargo-deny policy |
+| `.github/workflows/*.yml` | GPL-3.0-only | Recommended | CI/CD pipelines |
+
+### Systemd Service Files
+
+| File Pattern | License | SPDX Header Required | Notes |
+|-------------|---------|---------------------|-------|
+| `systemd/**` | GPL-3.0-only | Recommended | systemd service/timer units |
+
+### Configuration Templates
+
+| File Pattern | License | SPDX Header Required | Notes |
+|-------------|---------|---------------------|-------|
+| `config/**` | GPL-3.0-only | No | Configuration templates/examples |
+
+### Documentation
+
+| File Pattern | License | SPDX Header Required | Notes |
+|-------------|---------|---------------------|-------|
+| `docs/*.md` | CC-BY-4.0 | No | User and developer documentation |
+| `README.md` | CC-BY-4.0 | No | Project README |
+| `CONTRIBUTING.md` | CC-BY-4.0 | No | Contribution guide |
+| `CHANGELOG.md` | CC-BY-4.0 | No | Release history |
+| `VERSIONING.md` | CC-BY-4.0 | No | Version policy |
+| `tests/README.md` | CC-BY-4.0 | No | Test documentation |
+
+### Legal & Administrative Documents
+
+| File Pattern | License | Notes |
+|-------------|---------|-------|
+| `LICENSE` | N/A (is the license) | GPL-3.0 full text |
+| `licenses/LICENSE-COMMERCIAL.md` | N/A (is the inquiry document) | Commercial licensing inquiry |
+| `licenses/LICENSE-DOCS.md` | N/A (is the license) | Documentation license terms |
+| `licenses/LICENSING.md` | N/A (this file) | License coverage guide |
+| `licenses/CONTRIBUTOR-LICENSE.md` | N/A (is the CLA) | Contributor license agreement |
+| `licenses/DEPENDENCY-AUDIT.md` | N/A (is the framework) | Dependency audit framework |
+| `licenses/THIRD-PARTY-LICENSES` | N/A (is attribution) | Third-party license list |
+| `licenses/README.md` | N/A (is an index) | License directory index |
+| `TRADEMARKS.md` | N/A (is the policy) | Trademark usage policy |
+| `GOVERNANCE.md` | N/A (is the policy) | Succession and governance |
+| `NOTICE` | N/A (is the notice) | Attribution and identity |
+| `THIRD_PARTY_NOTICES.md` | N/A (is the policy) | Third-party notice policy |
+
+### Generated & Temporary Files
+
+| File Pattern | License | Notes |
+|-------------|---------|-------|
+| `target/` | N/A | Build artifacts (not distributed) |
+| `coverage/` | N/A | Generated reports (not distributed) |
+
+---
+
+## Canonical SPDX Header Formats
+
+### Rust Source Files (`.rs`)
+
+```rust
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Louis Nelson Jr. <https://lousclues.com>
 ```
 
-Use this SPDX header for documentation files (optional when repo-level policy is already explicit):
+### Shell Scripts (`.sh`)
 
-```text
-SPDX-License-Identifier: CC-BY-4.0
+```bash
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Louis Nelson Jr. <https://lousclues.com>
 ```
 
-## Dependency Compliance
+Place the SPDX header immediately after the shebang line.
 
-Dependency license policy and audit process:
-- [DEPENDENCY-AUDIT.md](DEPENDENCY-AUDIT.md)
-- [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES)
+### TOML Configuration Files
 
-## Contribution Terms
+```toml
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Louis Nelson Jr. <https://lousclues.com>
+```
 
-By submitting contributions, contributors agree to terms in:
-- [CONTRIBUTOR-LICENSE.md](CONTRIBUTOR-LICENSE.md)
+> **Note:** For `Cargo.toml`, the `license` field in `[package]` serves as the SPDX declaration. An additional comment header is optional but not required.
 
-*Licensing should be explicit enough that nobody has to guess.*
+### YAML Configuration Files (`.yml`, `.yaml`)
+
+```yaml
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Louis Nelson Jr. <https://lousclues.com>
+```
+
+### Markdown Documentation (`.md` in `docs/`)
+
+Markdown documentation files are covered by CC-BY-4.0 as declared in [LICENSE-DOCS.md](LICENSE-DOCS.md). No per-file header is required — the repository-level license declaration covers all documentation files.
+
+If a per-file header is desired (e.g., for standalone distribution), use an HTML comment:
+
+```markdown
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+<!-- Copyright (C) 2026 Louis Nelson Jr. <https://lousclues.com> -->
+```
+
+---
+
+## Header Verification
+
+To verify that all source files have correct SPDX headers, use the following approach:
+
+### Quick Check (grep)
+
+```bash
+# Find .rs files missing SPDX headers
+find src/ tests/ fuzz/ -name '*.rs' -exec grep -L 'SPDX-License-Identifier' {} \;
+
+# Find .sh files missing SPDX headers
+find . -name '*.sh' -not -path './target/*' -exec grep -L 'SPDX-License-Identifier' {} \;
+
+# Verify copyright line format
+grep -rn 'Copyright (C)' src/ tests/ fuzz/ scripts/ | grep -v 'Louis Nelson Jr.'
+```
+
+### Automated Check (CI)
+
+A CI step can enforce header compliance:
+
+```bash
+#!/bin/bash
+# check-headers.sh — Verify SPDX headers in source files
+set -euo pipefail
+
+ERRORS=0
+
+# Check Rust files
+while IFS= read -r file; do
+    if ! head -1 "$file" | grep -q 'SPDX-License-Identifier: GPL-3.0-only'; then
+        echo "MISSING SPDX header: $file"
+        ERRORS=$((ERRORS + 1))
+    fi
+    if ! head -2 "$file" | grep -q 'Copyright (C) .* Louis Nelson Jr.'; then
+        echo "MISSING/INCORRECT copyright: $file"
+        ERRORS=$((ERRORS + 1))
+    fi
+done < <(find src/ tests/ fuzz/ -name '*.rs')
+
+# Check shell scripts
+while IFS= read -r file; do
+    if ! head -3 "$file" | grep -q 'SPDX-License-Identifier'; then
+        echo "MISSING SPDX header: $file"
+        ERRORS=$((ERRORS + 1))
+    fi
+done < <(find . -name '*.sh' -not -path './target/*')
+
+if [ "$ERRORS" -gt 0 ]; then
+    echo "Found $ERRORS header issues."
+    exit 1
+fi
+
+echo "All headers OK."
+```
+
+---
+
+## Dependency License Compatibility
+
+All third-party dependencies must be compatible with the GPL-3.0-only license. See [DEPENDENCY-AUDIT.md](DEPENDENCY-AUDIT.md) for the full compatibility framework and audit process.
+
+---
+
+## Questions
+
+For licensing questions, see the [README](../README.md) or contact Louis Nelson Jr.:
+
+- **GitHub:** [@loujr](https://github.com/loujr)
+- **Website:** [lousclues.com](https://lousclues.com)

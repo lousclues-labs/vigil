@@ -1,104 +1,194 @@
 # Dependency License Audit Framework
 
-Last updated: April 2026
-
-How Vigil evaluates dependency license compatibility.
+*Last updated: April 2026*
 
 ## Purpose
 
-Every dependency is a legal and supply-chain risk surface.
-This framework keeps dependency decisions auditable and repeatable.
+Vigil is licensed under GPL-3.0-only. Every dependency must be compatible with this license. This document provides a framework for evaluating dependencies and maintaining license compliance.
 
-## Repository Policy
+> **Note on commercial license compatibility:** Vigil is currently single-licensed under GPL-3.0-only. The "Commercial License Compatible?" column in the tables below is maintained for forward compatibility — should Vigil adopt a dual-licensing model in the future, this audit framework will already track the necessary information. See [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) for more information.
 
-Vigil source is GPL-3.0-only.
-Dependency allow-list policy is enforced by `deny.toml`.
+## License Compatibility Reference
 
-Allowed SPDX identifiers in current policy:
-- MIT
-- Apache-2.0
-- BSD-2-Clause
-- BSD-3-Clause
-- ISC
-- Unicode-3.0
-- Unicode-DFS-2016
-- GPL-3.0-only
+| License Type | GPL-3.0 Compatible? | Commercial License Compatible? | Can We Use It? |
+|-------------|---------------------|-------------------------------|----------------|
+| **MIT** | Yes | Yes | **Yes** |
+| **Apache-2.0** | Yes (with GPL-3.0+) | Yes | **Yes** |
+| **BSD-2-Clause** | Yes | Yes | **Yes** |
+| **BSD-3-Clause** | Yes | Yes | **Yes** |
+| **ISC** | Yes | Yes | **Yes** |
+| **Unlicense** | Yes | Yes | **Yes** |
+| **Zlib** | Yes | Yes | **Yes** |
+| **CC0-1.0** | Yes | Yes | **Yes** |
+| **MIT OR Apache-2.0** | Yes | Yes | **Yes** (choose Apache-2.0 or MIT) |
+| **LGPL-2.1+** | Yes | Conditional — dynamic linking only | **Caution** |
+| **LGPL-3.0+** | Yes | Conditional — dynamic linking only | **Caution** |
+| **MPL-2.0** | Yes (file-level copyleft) | Conditional — MPL files must remain open | **Caution** |
+| **GPL-2.0-only** | No (incompatible with GPL-3.0+) | No | **No** |
+| **GPL-2.0-or-later** | Yes | No | **Caution** (blocks future commercial) |
+| **GPL-3.0-only** | Yes | No | **Caution** (blocks future commercial) |
+| **GPL-3.0-or-later** | Yes | No | **Caution** (blocks future commercial) |
+| **AGPL-3.0** | Compatible but viral | No | **Caution** |
+| **SSPL** | No | No | **No** |
+| **BSL (Business Source)** | No | Depends on terms | **No** (generally) |
+| **Proprietary** | No | Depends on terms | **Probably No** |
 
-Registry policy:
-- unknown registries: denied
-- unknown git sources: denied
+### Key Rules
 
-## Compatibility Table
+1. **Permissive licenses (MIT, Apache-2.0, BSD, ISC, etc.) are always safe.** They impose minimal obligations and are compatible with GPL-3.0 licensing. They also preserve forward compatibility with potential future commercial licensing.
 
-| License Type | GPL-3.0-only Compatibility | Policy Status |
-|--------------|-----------------------------|---------------|
-| MIT / Apache-2.0 / BSD / ISC | compatible | allowed |
-| Unicode-* data licenses | compatible for relevant crates | allowed |
-| GPL-3.0-only | compatible | allowed |
-| GPL-2.0-only | incompatible | denied |
-| AGPL / SSPL / proprietary | outside policy | denied |
+2. **Copyleft licenses (GPL, LGPL, AGPL) are GPL-compatible but limit future licensing flexibility.** If a dependency is GPL-licensed, it cannot be redistributed under a commercial license in the future. Vigil currently avoids copyleft dependencies to maintain maximum flexibility.
 
-## Direct Dependency Audit
+3. **Weak copyleft (LGPL, MPL) requires care.** These can work with commercial licensing if the dependency is dynamically linked (LGPL) or if the copyleft is file-scoped (MPL). Since Rust links statically by default, LGPL dependencies are generally **not compatible** with future commercial licensing in a Rust project without careful structuring.
 
-Source of truth: `Cargo.toml` + `Cargo.lock` + `cargo metadata`.
+4. **Dual-licensed dependencies** — When a dependency offers a choice (e.g., "MIT OR Apache-2.0"), we choose the most permissive option for each use case.
 
-| Dependency | License Expression |
-|------------|--------------------|
-| blake3 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
-| chrono | MIT OR Apache-2.0 |
-| clap | MIT OR Apache-2.0 |
-| crossbeam-channel | MIT OR Apache-2.0 |
-| env_logger | MIT OR Apache-2.0 |
-| glob | MIT OR Apache-2.0 |
-| hex | MIT OR Apache-2.0 |
-| hmac | MIT OR Apache-2.0 |
-| libc | MIT OR Apache-2.0 |
-| log | MIT OR Apache-2.0 |
-| nix | MIT |
-| rusqlite | MIT |
-| serde | MIT OR Apache-2.0 |
-| serde_json | MIT OR Apache-2.0 |
-| sha2 | MIT OR Apache-2.0 |
-| thiserror | MIT OR Apache-2.0 |
-| toml | MIT OR Apache-2.0 |
-| uuid | Apache-2.0 OR MIT |
-| xattr | MIT OR Apache-2.0 |
+---
 
-Note:
-- Multi-license crates are acceptable when at least one compatible path exists and policy checks pass.
+## Current Dependency Audit
 
-## Audit Process
+All current direct dependencies have been audited and are compliant:
 
-Before adding a dependency:
-1. identify the license expression
-2. verify compatibility against policy
-3. run automated checks
-4. document the decision in PR notes
+| Dependency | License | GPL-3.0 Compatible? | Future Commercial Compatible? |
+|-----------|---------|---------------------|-------------------------------|
+| blake3 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception | Yes | Yes |
+| chrono | MIT OR Apache-2.0 | Yes | Yes |
+| clap | MIT OR Apache-2.0 | Yes | Yes |
+| crossbeam-channel | MIT OR Apache-2.0 | Yes | Yes |
+| env_logger | MIT OR Apache-2.0 | Yes | Yes |
+| glob | MIT OR Apache-2.0 | Yes | Yes |
+| hex | MIT OR Apache-2.0 | Yes | Yes |
+| hmac | MIT OR Apache-2.0 | Yes | Yes |
+| libc | MIT OR Apache-2.0 | Yes | Yes |
+| log | MIT OR Apache-2.0 | Yes | Yes |
+| nix | MIT | Yes | Yes |
+| parking_lot | MIT OR Apache-2.0 | Yes | Yes |
+| rusqlite | MIT | Yes | Yes |
+| serde | MIT OR Apache-2.0 | Yes | Yes |
+| serde_json | MIT OR Apache-2.0 | Yes | Yes |
+| sha2 | MIT OR Apache-2.0 | Yes | Yes |
+| thiserror | MIT OR Apache-2.0 | Yes | Yes |
+| toml | MIT OR Apache-2.0 | Yes | Yes |
+| uuid | Apache-2.0 OR MIT | Yes | Yes |
+| xattr | MIT OR Apache-2.0 | Yes | Yes |
 
-Commands:
+**Status: All clear.** All direct dependencies use permissive licenses compatible with GPL-3.0-only. All dependencies also preserve forward compatibility with potential future commercial licensing.
 
-```bash
-cargo install cargo-deny --locked
-cargo deny check
+---
 
-cargo install cargo-audit --locked
-cargo audit --deny warnings
+## Audit Process for New Dependencies
 
-cargo metadata --format-version 1 > /tmp/vigil-metadata.json
-```
+Before adding a new dependency to `Cargo.toml`, follow this checklist:
 
-Optional visibility helpers:
+### 1. Identify the License
 
 ```bash
-cargo tree
-cargo tree --duplicates
+# Check a specific crate's license
+cargo license -d | grep <crate-name>
+
+# Or check on crates.io
+# https://crates.io/crates/<crate-name>
 ```
 
-## Attribution Maintenance
+### 2. Evaluate Compatibility
 
-When dependencies change:
-- update [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES)
-- re-run policy checks in CI/local
-- call out license-impacting changes in changelog
+Use the compatibility table above. If the license is:
 
-*Dependency approvals are design decisions, not package-manager side effects.*
+- **Green (MIT, Apache-2.0, BSD, etc.):** Proceed without concern.
+- **Yellow (LGPL, MPL):** Stop and evaluate. In most cases, LGPL is incompatible with future commercial licensing due to Rust's static linking. Consult this document's compatibility table and consider alternatives.
+- **Red (GPL, AGPL, SSPL, proprietary):** Evaluate carefully. GPL dependencies are compatible with Vigil's current GPL-3.0-only license but would block future dual-licensing. Find a permissive alternative if possible.
+
+### 3. Check Transitive Dependencies
+
+A dependency may be permissively licensed, but its own dependencies might not be:
+
+```bash
+# Full dependency tree with licenses
+cargo license --all-deps
+
+# Or use cargo-about for detailed reporting
+cargo about generate -o html > license-report.html
+```
+
+### 4. Document the Decision
+
+If the dependency is approved, add it to [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES) using this format:
+
+```
+  <crate-name> (https://crates.io/crates/<crate-name>) — <SPDX-ID>
+```
+
+### 5. Periodic Re-Audit
+
+Run a full dependency audit periodically (recommended: before each minor/major release):
+
+```bash
+# Check all dependency licenses
+cargo license
+
+# Security audit (also good practice)
+cargo audit
+
+# Detailed license report
+cargo about generate
+```
+
+---
+
+## THIRD-PARTY-LICENSES Entry Template
+
+When adding a new dependency, add an entry to [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES) in this format:
+
+```
+  <crate-name> (https://crates.io/crates/<crate-name>) — <SPDX-License-Identifier>
+```
+
+For dependencies with notable license conditions:
+
+```
+  <crate-name> (https://crates.io/crates/<crate-name>) — <SPDX-License-Identifier>
+    Note: <any relevant notes about license conditions>
+```
+
+---
+
+## Tools
+
+The following tools are useful for license auditing in Rust projects:
+
+| Tool | Purpose | Install |
+|------|---------|---------|
+| `cargo-license` | List licenses of all dependencies | `cargo install cargo-license` |
+| `cargo-about` | Generate detailed license reports | `cargo install cargo-about` |
+| `cargo-deny` | Policy-based license checking (CI-ready) | `cargo install cargo-deny` |
+| `cargo-audit` | Security vulnerability audit | `cargo install cargo-audit` |
+
+### cargo-deny Configuration
+
+Vigil uses `deny.toml` for automated CI enforcement of license policy. The current configuration:
+
+```toml
+[licenses]
+unlicensed = "deny"
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unlicense",
+    "Zlib",
+    "CC0-1.0",
+    "Unicode-DFS-2016",
+    "GPL-3.0",
+]
+copyleft = "deny"
+```
+
+See [deny.toml](../deny.toml) for the complete policy configuration.
+
+---
+
+## Questions
+
+For questions about dependency licensing, open an issue in the [Vigil repository](https://github.com/DigiNotar/vigil) or contact Louis Nelson Jr. ([@loujr](https://github.com/loujr)).

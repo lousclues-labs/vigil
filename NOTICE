@@ -1,0 +1,77 @@
+NOTICE — Vigil
+
+================================================================================
+
+1. Identity & Attribution
+================================================================================
+
+The following names refer to the same person — the original author, sole
+copyright holder, and current maintainer of this project:
+
+  Legal Name:     Louis Nelson Jr.
+  Common Name:    Lou
+  GitHub Handle:  loujr
+  Brand Name:     lousclues
+
+All copyright notices, contributor records, commit histories, and legal
+documents referencing any of these names are attributable to the same
+individual.
+
+================================================================================
+
+2. Project Information
+================================================================================
+
+  Project Name:   Vigil
+  Description:    Lightweight file integrity monitor for Linux desktops
+  Repository:     https://github.com/DigiNotar/vigil
+  Brand Website:  https://lousclues.com
+  Maintainer:     Louis Nelson Jr. (GitHub: @loujr)
+
+================================================================================
+
+3. License Summary
+================================================================================
+
+  Source Code:     GNU General Public License v3.0 only (GPL-3.0-only)
+                   Full text: LICENSE
+
+  Documentation:   Creative Commons Attribution 4.0 International (CC BY 4.0)
+                   Terms: licenses/LICENSE-DOCS.md
+                   Full text: https://creativecommons.org/licenses/by/4.0/legalcode
+
+  Commercial:      Vigil is currently licensed exclusively under GPL-3.0-only.
+                   There is no commercial license available at this time.
+                   For commercial licensing inquiries, see:
+                   licenses/LICENSE-COMMERCIAL.md
+
+================================================================================
+
+4. Third-Party Attribution
+================================================================================
+
+Vigil uses third-party open-source dependencies that are compiled and linked
+via Cargo (Rust's package manager). These dependencies are not modified or
+vendored. Each dependency retains its original license.
+
+A complete list of direct dependencies and their licenses is maintained at:
+
+  licenses/THIRD-PARTY-LICENSES
+
+For the full transitive dependency tree, run:
+
+  cargo license
+  cargo about generate
+
+================================================================================
+
+5. Trademark Notice
+================================================================================
+
+"Vigil" and "lousclues" are trademarks of Louis Nelson Jr. The GPL license
+grants rights to the source code but does not grant rights to use these
+trademarks. See TRADEMARKS.md for the full trademark usage policy.
+
+================================================================================
+
+Copyright (C) 2026 Louis Nelson Jr. <https://lousclues.com>

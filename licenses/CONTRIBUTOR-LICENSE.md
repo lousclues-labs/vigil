@@ -1,54 +1,111 @@
-# Contributor Terms
+# Contributor License Agreement (CLA)
 
-Version 1.0 -- April 2026
+*Version 1.0 — April 2026*
 
-These are the contribution license terms for Vigil.
+## Purpose
 
-## Plain Summary
+Vigil is licensed under the [GNU General Public License v3.0 only](../LICENSE) for open-source use. To maintain the project's licensing integrity and to preserve flexibility for potential future license evolution, the project maintainer needs clear legal rights over all contributions.
 
-1. You keep your copyright.
-2. You license contributions for inclusion in Vigil.
-3. Source-code contributions are licensed under GPL-3.0-only.
-4. Documentation contributions are licensed under CC BY 4.0.
-5. You confirm you have rights to submit the contribution.
+This Contributor License Agreement ("CLA") establishes the terms under which you ("Contributor") grant rights to **Louis Nelson Jr.** ("Maintainer"), the sole copyright holder and maintainer of the Vigil project.
 
-## Definitions
+## Plain-Language Summary
 
-- **Contribution**: any patch, commit, issue text, documentation change, test, or other project material intentionally submitted for inclusion.
-- **Project**: the Vigil repository and its maintained branches.
-- **Submit**: providing contribution material by pull request, patch, issue, or direct maintainer communication.
+<!-- This summary is not a substitute for the full terms below. It's provided for clarity. -->
 
-## License Grant
+Here's what you're agreeing to, in plain English:
 
-By submitting a contribution, you grant a perpetual, worldwide, non-exclusive, royalty-free license to use, modify, and distribute your contribution as part of Vigil under the repository licensing policy in [LICENSING.md](LICENSING.md).
+1. **You keep your copyright.** This is a license grant, not a copyright assignment. Your code remains yours.
+2. **You give the project a broad license.** You allow the Maintainer to use your contribution under the GPL and any future license the project may adopt.
+3. **Your code stays open source.** Your contribution will always be available under an OSI-approved open-source license. Any future licensing changes will preserve open-source availability.
+4. **You promise it's your work.** You confirm that you wrote the code (or have permission to contribute it) and that it doesn't infringe anyone else's rights.
+5. **You grant a patent license.** If your contribution is covered by patents you hold, you license them for use within the project.
 
-License mapping:
-- Source and code-adjacent files: GPL-3.0-only
-- Documentation files in scope of [LICENSE-DOCS.md](LICENSE-DOCS.md): CC BY 4.0
+## Terms
 
-## Representations
+### 1. Definitions
 
-You represent that:
-- you authored the contribution or have rights to submit it
-- your contribution does not knowingly violate third-party intellectual property rights
-- employer/client permissions are handled where required
+- **"Contribution"** means any original work of authorship, including modifications to existing work, that you intentionally submit to the Vigil project for inclusion. This includes code, documentation, configuration files, and related materials submitted via pull request, patch, issue, email, or any other method of communication with the project.
+- **"Submit"** means any form of electronic or written communication sent to the project, including pull requests on GitHub, patches, commits, issues, and messages on project forums or mailing lists.
+- **"Project"** means the Vigil software project, maintained at https://github.com/DigiNotar/vigil.
 
-## No Obligation
+### 2. Grant of Copyright License
 
-Maintainers are not required to accept any contribution.
+You hereby grant to Louis Nelson Jr. and to recipients of software distributed by Louis Nelson Jr. a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable copyright license to:
 
-## Warranty
+- Reproduce, prepare derivative works of, publicly display, publicly perform, sublicense, and distribute your Contribution and any derivative works thereof;
+- Under any license, including but not limited to the GPL-3.0-only and any successor or additional licenses the project may adopt.
 
-Contributions are provided "AS IS" without warranty.
+### 3. Grant of Patent License
 
-## How Agreement Works
+You hereby grant to Louis Nelson Jr. and to recipients of software distributed by Louis Nelson Jr. a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable patent license to make, have made, use, offer to sell, sell, import, and otherwise transfer your Contribution, where such license applies only to those patent claims licensable by you that are necessarily infringed by your Contribution alone or by combination of your Contribution with the Project to which it was submitted.
 
-Submitting a contribution means you agree to these terms.
+If any entity institutes patent litigation (including a cross-claim or counterclaim in a lawsuit) against you or any other entity alleging that your Contribution or the Project constitutes patent infringement, then any patent licenses granted to that entity under this CLA for that Contribution or Project shall terminate as of the date such litigation is filed.
 
-Optional sign-off line:
+### 4. Retention of Rights
 
-```text
-Signed-off-by: Your Legal Name <email@example.com>
+You retain all right, title, and interest in your Contribution. This CLA does not transfer ownership of your copyright. You are free to use, license, and distribute your Contribution in any other project or context, without restriction.
+
+### 5. Representations and Warranties
+
+You represent and warrant that:
+
+**(a)** You are the original author of the Contribution, or you have sufficient rights to grant the licenses described in this CLA.
+
+**(b)** If your Contribution includes work that is not your original creation, you have clearly identified and documented the original source and license of that work, and it is compatible with this CLA.
+
+**(c)** If you are employed or engaged as a contractor, and your employer or client has rights to intellectual property that you create, you have received permission to make the Contribution on behalf of that employer/client, or your employer/client has waived such rights for the Contribution.
+
+**(d)** Your Contribution does not, to the best of your knowledge, infringe any third-party patent, copyright, trademark, trade secret, or other intellectual property right.
+
+### 6. No Obligation
+
+You understand that the decision to include your Contribution in the Project is entirely at the discretion of the Maintainer. Submitting a Contribution does not obligate the Maintainer to accept, use, or maintain it.
+
+### 7. Future Licensing
+
+You acknowledge that the Maintainer may, in the future:
+
+- Change the open-source license of the Project (e.g., from GPL-3.0-only to a different open-source license), provided your Contribution remains available under an OSI-approved open-source license.
+- Offer the Project under additional or different licensing terms, including commercial terms.
+- Transfer the project to a business entity (e.g., "lousclues LLC") that assumes the Maintainer's rights and obligations under this CLA.
+
+### 8. No Warranty
+
+Your Contribution is provided "AS IS," without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and noninfringement.
+
+## How to Agree
+
+### Method: Submission Implies Agreement
+
+By submitting a Contribution to the Vigil project (via pull request, patch, or any other submission method), you signify your agreement to the terms of this CLA.
+
+We also recommend (but do not require) including a sign-off line in your commit messages:
+
+```
+Signed-off-by: Your Legal Name <your@email.com>
 ```
 
-*Contributions stay yours. Vigil gets the rights required to ship and maintain.*
+This follows the [Developer Certificate of Origin](https://developercertificate.org/) convention and provides an additional record of your agreement.
+
+### For Significant Contributions
+
+For substantial contributions (new modules, architectural changes, or contributions involving third-party code), the Maintainer may request explicit CLA acknowledgment via a GitHub issue comment of the form:
+
+> I have read and agree to the Vigil Contributor License Agreement (CONTRIBUTOR-LICENSE.md).
+
+## Governing Law
+
+This CLA shall be governed by and construed in accordance with the laws of the Commonwealth of Virginia, without regard to its conflict of laws principles. Any disputes arising under this CLA shall be resolved in the state or federal courts located in Virginia.
+
+## Questions
+
+If you have questions about this CLA before submitting a contribution, please:
+
+- Open an issue in the [Vigil repository](https://github.com/DigiNotar/vigil)
+- Contact Louis Nelson Jr. via GitHub ([@loujr](https://github.com/loujr))
+
+We're happy to clarify any terms before you contribute.
+
+---
+
+*This CLA is modeled after common open-source contributor license agreements, including the Apache Individual CLA and the Harmony CLA templates. It is not a substitute for legal advice.*
