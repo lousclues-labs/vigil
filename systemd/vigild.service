@@ -1,0 +1,41 @@
+[Unit]
+Description=Vigil — Lightweight File Integrity Monitor
+Documentation=man:vigild(8)
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/vigild
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/vigil /var/log/vigil /run/vigil
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+# Resource limits
+MemoryMax=50M
+MemoryHigh=30M
+
+# Required capabilities
+AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+
+# Watchdog
+WatchdogSec=30
+
+# PID file
+PIDFile=/run/vigil/vigild.pid
+RuntimeDirectory=vigil
+StateDirectory=vigil
+LogsDirectory=vigil
+
+[Install]
+WantedBy=multi-user.target

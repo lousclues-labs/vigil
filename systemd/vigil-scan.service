@@ -1,0 +1,18 @@
+[Unit]
+Description=Vigil scheduled integrity scan
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/vigil check --full
+Nice=19
+IOSchedulingClass=idle
+
+# Security hardening (same as daemon)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/vigil /var/log/vigil
+PrivateTmp=yes
+
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH

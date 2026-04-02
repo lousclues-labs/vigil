@@ -1,0 +1,2 @@
+DPkg::Pre-Invoke { "/usr/bin/vigil maintenance enter --quiet"; };
+DPkg::Post-Invoke { "/usr/bin/vigil baseline refresh --quiet && /usr/bin/vigil maintenance exit --quiet"; };

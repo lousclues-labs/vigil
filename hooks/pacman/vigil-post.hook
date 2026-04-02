@@ -1,0 +1,15 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Path
+Target = usr/bin/*
+Target = usr/sbin/*
+Target = usr/lib/*
+Target = etc/*
+Target = boot/*
+
+[Action]
+Description = Vigil: refreshing baseline...
+When = PostTransaction
+Exec = /bin/sh -c '/usr/bin/vigil baseline refresh --quiet && /usr/bin/vigil maintenance exit --quiet'

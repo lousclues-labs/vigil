@@ -1,0 +1,128 @@
+# /etc/vigil/vigil.toml
+# Vigil — Lightweight File Integrity Monitor
+
+[daemon]
+pid_file = "/run/vigil/vigild.pid"
+db_path = "/var/lib/vigil/baseline.db"
+log_level = "info"
+monitor_backend = "fanotify"
+
+[scanner]
+schedule = "0 3 * * *"
+mode = "incremental"
+hash_algorithm = "blake3"
+max_file_size = 2147483648
+
+[alerts]
+desktop_notifications = true
+syslog = true
+log_file = "/var/log/vigil/alerts.json"
+webhook_url = ""
+rate_limit = 10
+cooldown_seconds = 300
+
+[alerts.severity_filter]
+dbus_min_severity = "medium"
+log_min_severity = "low"
+
+[exclusions]
+patterns = [
+    "*.swp",
+    "*.swx",
+    "*~",
+    "*.tmp",
+    "*.log",
+    "*.cache",
+    ".git/*",
+    "__pycache__/*",
+]
+
+system_exclusions = [
+    "/proc/*",
+    "/sys/*",
+    "/dev/*",
+    "/run/*",
+    "/tmp/*",
+]
+
+[package_manager]
+auto_rebaseline = true
+backend = "auto"
+
+[hooks]
+signal_socket = ""
+
+[security]
+hmac_signing = false
+hmac_key_path = "/etc/vigil/hmac.key"
+verify_config_integrity = true
+
+[database]
+wal_mode = true
+audit_rotation_size = 104857600
+audit_retention_days = 90
+
+# ─── Monitored Path Groups ─────────────────────────────────
+
+[watch.system_critical]
+severity = "critical"
+paths = [
+    "/etc/passwd",
+    "/etc/shadow",
+    "/etc/group",
+    "/etc/gshadow",
+    "/etc/sudoers",
+    "/etc/sudoers.d/",
+    "/etc/pam.d/",
+    "/etc/ssh/sshd_config",
+    "/etc/ld.so.preload",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d/",
+    "/boot/",
+    "/usr/bin/",
+    "/usr/sbin/",
+    "/usr/lib/systemd/system/",
+    "/lib/modules/",
+]
+
+[watch.persistence]
+severity = "high"
+paths = [
+    "/etc/crontab",
+    "/etc/cron.d/",
+    "/etc/cron.daily/",
+    "/etc/cron.hourly/",
+    "/var/spool/cron/",
+    "/etc/systemd/system/",
+    "/etc/xdg/autostart/",
+    "/etc/init.d/",
+    "/etc/rc.local",
+    "/etc/profile",
+    "/etc/profile.d/",
+    "/etc/bash.bashrc",
+    "/etc/environment",
+]
+
+[watch.user_space]
+severity = "high"
+paths = [
+    "~/.bashrc",
+    "~/.bash_profile",
+    "~/.profile",
+    "~/.zshrc",
+    "~/.ssh/",
+    "~/.gnupg/",
+    "~/.config/autostart/",
+    "~/.local/share/applications/",
+]
+
+[watch.network]
+severity = "medium"
+paths = [
+    "/etc/hosts",
+    "/etc/resolv.conf",
+    "/etc/nsswitch.conf",
+    "/etc/NetworkManager/",
+    "/etc/iptables/",
+    "/etc/nftables.conf",
+]
