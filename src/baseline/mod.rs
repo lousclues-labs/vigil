@@ -140,8 +140,27 @@ pub fn diff_baseline(
     let entries = ops::get_all_baselines(conn)?;
     let mut changes = Vec::new();
 
+    // Build a lookup from path to (group_name, severity)
+    let watch_lookup: Vec<(std::path::PathBuf, String, crate::types::Severity)> = config
+        .watch
+        .iter()
+        .flat_map(|(group_name, group)| {
+            let expanded = expand_user_paths(&group.paths);
+            expanded
+                .into_iter()
+                .map(move |p| (p, group_name.clone(), group.severity))
+        })
+        .collect();
+
     for entry in &entries {
-        match crate::compare::compare_entry(entry, config) {
+        // Find watch group for this entry's path
+        let (severity, group_name) = watch_lookup
+            .iter()
+            .find(|(wp, _, _)| entry.path.starts_with(wp) || entry.path == *wp)
+            .map(|(_, gn, sev)| (*sev, gn.as_str()))
+            .unwrap_or((crate::types::Severity::Medium, "unknown"));
+
+        match crate::compare::compare_entry(entry, config, severity, group_name) {
             Ok(Some(change)) => changes.push(change),
             Ok(None) => {} // no change
             Err(e) => {

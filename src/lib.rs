@@ -57,14 +57,17 @@ pub fn daemon_run(config: &Config) -> Result<()> {
     let mut sigset = SigSet::empty();
     sigset.add(Signal::SIGINT);
     sigset.add(Signal::SIGTERM);
+    sigset.add(Signal::SIGHUP);
     sigset
         .thread_block()
         .expect("failed to block signals on main thread");
 
-    // Set up shutdown signal handler
+    // Set up shutdown signal handler and reload flag
     let shutdown = Arc::new(AtomicBool::new(false));
+    let reload_flag = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
-    ctrlc_handler(shutdown_clone, sigset);
+    let reload_clone = reload_flag.clone();
+    ctrlc_handler(shutdown_clone, reload_clone, sigset);
 
     // Create alert engine
     let alert_engine = AlertEngine::new(config)?;
@@ -98,7 +101,7 @@ pub fn daemon_run(config: &Config) -> Result<()> {
 
     log::info!("Vigil daemon ready. Monitoring filesystem changes...");
 
-    while !shutdown.load(Ordering::Relaxed) {
+    while !shutdown.load(Ordering::Acquire) {
         // Receive events with a timeout so we can check shutdown flag
         match event_rx.recv_timeout(std::time::Duration::from_millis(500)) {
             Ok(event) => {
@@ -130,7 +133,13 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                     .unwrap_or(("unknown".into(), types::Severity::Medium));
 
                 // Compare against baseline
-                match compare::compare_event(&event.path, &baseline_entry, &group_name, severity) {
+                match compare::compare_event(
+                    &event.path,
+                    &baseline_entry,
+                    &group_name,
+                    severity,
+                    config.scanner.max_file_size,
+                ) {
                     Ok(Some(change)) => {
                         let maintenance = ops::get_config_state(&conn, "maintenance_window_active")
                             .ok()
@@ -141,25 +150,53 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                         if let Err(e) = alert_engine.dispatch(&change, maintenance, &conn) {
                             log::error!("Alert dispatch error: {}", e);
                         }
+
+                        // WAL checkpoint every 1000 DB writes
+                        wal_writes += 1;
+                        if wal_writes >= 1000 {
+                            let _ = db::wal_checkpoint(&conn);
+                            wal_writes = 0;
+                        }
                     }
                     Ok(None) => {} // no change (hash matched despite event)
                     Err(e) => {
                         log::debug!("Comparison error for {}: {}", event.path.display(), e);
                     }
                 }
-
-                // WAL checkpoint every 1000 writes
-                wal_writes += 1;
-                if wal_writes >= 1000 {
-                    let _ = db::wal_checkpoint(&conn);
-                    wal_writes = 0;
-                }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                 // Periodic housekeeping
                 if last_prune.elapsed() > std::time::Duration::from_secs(60) {
                     event_filter.prune_debounce();
+                    // Rotate audit log
+                    match ops::rotate_audit_log(&conn, config.database.audit_retention_days) {
+                        Ok(0) => {}
+                        Ok(n) => log::info!("Rotated {} old audit log entries", n),
+                        Err(e) => log::warn!("Audit log rotation error: {}", e),
+                    }
+                    // Rotate JSON log file if configured
+                    if let Some(logger) = alert_engine.json_logger() {
+                        logger.rotate_if_needed(config.database.audit_rotation_size);
+                    }
                     last_prune = std::time::Instant::now();
+                }
+                // Check for config reload (SIGHUP)
+                if reload_flag.load(Ordering::Acquire) {
+                    reload_flag.store(false, Ordering::Release);
+                    log::info!("Reloading configuration...");
+                    match config::load_config(None) {
+                        Ok(new_config) => {
+                            // Rebuild event filter with new config
+                            event_filter = EventFilter::new(&new_config);
+                            // Rebuild expanded watch groups
+                            // Note: fanotify marks require a full restart to update
+                            log::info!("Configuration reloaded successfully");
+                            log::warn!("Fanotify/inotify watch marks require a daemon restart to apply watch path changes");
+                        }
+                        Err(e) => {
+                            log::error!("Failed to reload config: {}", e);
+                        }
+                    }
                 }
             }
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
@@ -197,44 +234,86 @@ fn write_pid_file(path: &std::path::Path) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    // Check for stale PID file / running instance
-    if path.exists() {
-        if let Ok(contents) = std::fs::read_to_string(path) {
-            if let Ok(pid) = contents.trim().parse::<i32>() {
-                // Check if process is still alive (signal 0 = existence check)
-                if unsafe { libc::kill(pid, 0) } == 0 {
-                    return Err(crate::error::VigilError::Config(format!(
-                        "Another vigil instance is running (PID {})",
-                        pid
-                    )));
+    // Atomic PID file creation using O_CREAT | O_EXCL to prevent races
+    use std::io::Write;
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            // Advisory lock for defense-in-depth
+            let fd = {
+                use std::os::unix::io::AsRawFd;
+                file.as_raw_fd()
+            };
+            unsafe {
+                libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB);
+            }
+            write!(file, "{}", std::process::id())?;
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // PID file exists — check if the process is still alive
+            if let Ok(contents) = std::fs::read_to_string(path) {
+                if let Ok(pid) = contents.trim().parse::<i32>() {
+                    if unsafe { libc::kill(pid, 0) } == 0 {
+                        return Err(crate::error::VigilError::Config(format!(
+                            "Another vigil instance is running (PID {})",
+                            pid
+                        )));
+                    }
                 }
             }
+            // Stale PID file — remove and retry
+            let _ = std::fs::remove_file(path);
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)?;
+            let fd = {
+                use std::os::unix::io::AsRawFd;
+                file.as_raw_fd()
+            };
+            unsafe {
+                libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB);
+            }
+            write!(file, "{}", std::process::id())?;
+            Ok(())
         }
-        // Stale PID file — remove it
-        let _ = std::fs::remove_file(path);
+        Err(e) => Err(e.into()),
     }
-
-    std::fs::write(path, format!("{}", std::process::id()))?;
-    Ok(())
 }
 
 fn cleanup_pid_file(path: &std::path::Path) {
     let _ = std::fs::remove_file(path);
 }
 
-fn ctrlc_handler(shutdown: Arc<AtomicBool>, sigset: nix::sys::signal::SigSet) {
+fn ctrlc_handler(
+    shutdown: Arc<AtomicBool>,
+    reload_flag: Arc<AtomicBool>,
+    sigset: nix::sys::signal::SigSet,
+) {
     let _ = std::thread::Builder::new()
         .name("vigil-signal".into())
         .spawn(move || {
-            // Wait for signal (SIGINT/SIGTERM already blocked on all threads)
-            match sigset.wait() {
-                Ok(sig) => {
-                    log::info!("Received signal {:?}, shutting down...", sig);
-                    shutdown.store(true, Ordering::Relaxed);
-                }
-                Err(e) => {
-                    log::error!("Signal wait error: {}", e);
-                    shutdown.store(true, Ordering::Relaxed);
+            use nix::sys::signal::Signal;
+            loop {
+                match sigset.wait() {
+                    Ok(Signal::SIGHUP) => {
+                        log::info!("Received SIGHUP, scheduling config reload...");
+                        reload_flag.store(true, Ordering::Release);
+                    }
+                    Ok(sig) => {
+                        log::info!("Received signal {:?}, shutting down...", sig);
+                        shutdown.store(true, Ordering::Release);
+                        break;
+                    }
+                    Err(e) => {
+                        log::error!("Signal wait error: {}", e);
+                        shutdown.store(true, Ordering::Release);
+                        break;
+                    }
                 }
             }
         });

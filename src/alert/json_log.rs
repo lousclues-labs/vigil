@@ -1,7 +1,8 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+
+use parking_lot::Mutex;
 
 use crate::error::{Result, VigilError};
 use crate::types::Alert;
@@ -49,10 +50,38 @@ impl JsonLogger {
             }
         };
 
-        if let Ok(mut writer) = self.writer.lock() {
-            if let Err(e) = writeln!(writer, "{}", json) {
-                log::error!("Cannot write to log file {}: {}", self.path.display(), e);
-            }
+        let mut writer = self.writer.lock();
+        if let Err(e) = writeln!(writer, "{}", json) {
+            log::error!("Cannot write to log file {}: {}", self.path.display(), e);
+        }
+    }
+
+    /// Rotate the log file if it exceeds `max_size` bytes.
+    /// Renames the current file with a timestamp suffix and opens a new file.
+    pub fn rotate_if_needed(&self, max_size: u64) {
+        // Check current file size
+        let size = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
+        if size < max_size {
+            return;
+        }
+
+        let ts = chrono::Utc::now().format("%Y%m%d%H%M%S");
+        let rotated = self.path.with_extension(format!("json.{}", ts));
+
+        let mut writer = self.writer.lock();
+        if let Err(e) = std::fs::rename(&self.path, &rotated) {
+            log::warn!("Failed to rotate log file: {}", e);
+            return;
+        }
+        log::info!("Rotated log file to {}", rotated.display());
+
+        match OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
+            Ok(new_file) => *writer = new_file,
+            Err(e) => log::error!("Failed to open new log file: {}", e),
         }
     }
 }

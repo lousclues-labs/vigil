@@ -320,6 +320,19 @@ pub fn get_config_state(conn: &Connection, key: &str) -> Result<Option<String>> 
     Ok(value)
 }
 
+// ── Audit log rotation ────────────────────────────────────
+
+/// Rotate the audit log by deleting entries older than `retention_days`.
+/// Returns the number of rows deleted.
+pub fn rotate_audit_log(conn: &Connection, retention_days: u32) -> Result<usize> {
+    let cutoff = Utc::now().timestamp() - (retention_days as i64 * 86400);
+    let deleted = conn.execute(
+        "DELETE FROM audit_log WHERE timestamp < ?1",
+        params![cutoff],
+    )?;
+    Ok(deleted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,5 +548,62 @@ mod tests {
         let conn = test_conn();
         let val = get_config_state(&conn, "nonexistent").unwrap();
         assert!(val.is_none());
+    }
+
+    #[test]
+    fn audit_log_rotation_deletes_old_entries() {
+        let conn = test_conn();
+
+        // Insert an audit entry with an old timestamp (100 days ago)
+        let old_ts = Utc::now().timestamp() - (100 * 86400);
+        conn.execute(
+            "INSERT INTO audit_log (timestamp, event_type, path, change_type, severity, monitored_group)
+             VALUES (?1, 'change', '/etc/test', 'modified', 'medium', 'test')",
+            params![old_ts],
+        )
+        .unwrap();
+
+        // Rotating with 90 day retention should delete the 100-day-old entry
+        let deleted = rotate_audit_log(&conn, 90).unwrap();
+        assert_eq!(deleted, 1);
+
+        // Verify it's gone
+        let entries = get_recent_audit(&conn, 10).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn audit_log_rotation_preserves_recent_entries() {
+        let conn = test_conn();
+
+        let change = ChangeResult {
+            path: PathBuf::from("/etc/test"),
+            change_types: vec![ChangeType::Modified],
+            severity: Severity::Medium,
+            old_hash: None,
+            new_hash: None,
+            old_permissions: None,
+            new_permissions: None,
+            old_owner_uid: None,
+            new_owner_uid: None,
+            old_owner_gid: None,
+            new_owner_gid: None,
+            old_inode: None,
+            new_inode: None,
+            old_mtime: None,
+            new_mtime: None,
+            package: None,
+            package_update: false,
+            monitored_group: "test".into(),
+        };
+
+        insert_audit_entry(&conn, &change, ChangeType::Modified, false, false, None).unwrap();
+
+        // Rotating with 90 days retention should preserve the entry
+        let deleted = rotate_audit_log(&conn, 90).unwrap();
+        assert_eq!(deleted, 0);
+
+        let entries = get_recent_audit(&conn, 10).unwrap();
+        assert_eq!(entries.len(), 1);
     }
 }

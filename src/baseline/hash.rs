@@ -1,14 +1,11 @@
 use std::fs::File;
-use std::io::{Read, Seek};
+use std::io::Seek;
 
 use crate::error::{Result, VigilError};
 
 /// Compute BLAKE3 hash of an already-opened file descriptor.
 /// This avoids TOCTOU by never re-opening the path.
 pub fn blake3_hash_file(file: &File) -> Result<String> {
-    let mut hasher = blake3::Hasher::new();
-    let mut buf = [0u8; 65536]; // 64 KB buffer
-
     // Clone the file handle so we can read without consuming the caller's fd
     let mut reader = file
         .try_clone()
@@ -20,15 +17,10 @@ pub fn blake3_hash_file(file: &File) -> Result<String> {
         .seek(std::io::SeekFrom::Start(0))
         .map_err(|e| VigilError::Hash(format!("seek error during hashing: {}", e)))?;
 
-    loop {
-        let n = reader
-            .read(&mut buf)
-            .map_err(|e| VigilError::Hash(format!("read error during hashing: {}", e)))?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
+    let mut hasher = blake3::Hasher::new();
+    hasher
+        .update_reader(&mut reader)
+        .map_err(|e| VigilError::Hash(format!("read error during hashing: {}", e)))?;
 
     Ok(hasher.finalize().to_hex().to_string())
 }

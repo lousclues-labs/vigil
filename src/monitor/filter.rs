@@ -4,6 +4,9 @@ use std::time::{Duration, Instant};
 use crate::config::Config;
 use crate::types::FsEvent;
 
+/// Maximum debounce entries before emergency pruning.
+const MAX_DEBOUNCE_ENTRIES: usize = 50_000;
+
 /// Event filter that applies exclusion patterns, path membership checks,
 /// and per-path debounce logic.
 pub struct EventFilter {
@@ -77,6 +80,16 @@ impl EventFilter {
         // Per-path debounce
         let key = path_str.into_owned();
         let now = Instant::now();
+
+        // Bound debounce map to prevent unbounded memory growth
+        if self.debounce_timers.len() >= MAX_DEBOUNCE_ENTRIES {
+            log::warn!(
+                "Debounce map exceeded {} entries, running emergency prune",
+                MAX_DEBOUNCE_ENTRIES
+            );
+            self.prune_debounce();
+        }
+
         if let Some(last) = self.debounce_timers.get(&key) {
             if now.duration_since(*last) < self.debounce_window {
                 // Update timer to latest event (we want the final state after debounce)

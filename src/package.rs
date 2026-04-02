@@ -1,8 +1,12 @@
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use crate::config::PackageManagerConfig;
 use crate::types::PackageBackend;
+
+/// Timeout for package manager subprocess calls.
+const PKG_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Query the system's package manager to determine which package owns a file.
 /// Returns None if the file is not owned by any package.
@@ -38,10 +42,10 @@ pub fn detect_backend() -> PackageBackend {
 }
 
 fn query_pacman(path: &str) -> Option<String> {
-    let output = Command::new("pacman")
-        .args(["-Qo", "--quiet", path])
-        .output()
-        .ok()?;
+    let output = run_with_timeout(
+        Command::new("pacman").args(["-Qo", "--quiet", path]),
+        PKG_QUERY_TIMEOUT,
+    )?;
 
     if output.status.success() {
         let pkg = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -56,11 +60,10 @@ fn query_pacman(path: &str) -> Option<String> {
 }
 
 fn query_dpkg(path: &str) -> Option<String> {
-    let output = Command::new("dpkg").args(["-S", path]).output().ok()?;
+    let output = run_with_timeout(Command::new("dpkg").args(["-S", path]), PKG_QUERY_TIMEOUT)?;
 
     if output.status.success() {
         let line = String::from_utf8_lossy(&output.stdout);
-        // Format: "package: /path/to/file"
         line.split(':').next().map(|s| s.trim().to_string())
     } else {
         None
@@ -68,7 +71,7 @@ fn query_dpkg(path: &str) -> Option<String> {
 }
 
 fn query_rpm(path: &str) -> Option<String> {
-    let output = Command::new("rpm").args(["-qf", path]).output().ok()?;
+    let output = run_with_timeout(Command::new("rpm").args(["-qf", path]), PKG_QUERY_TIMEOUT)?;
 
     if output.status.success() {
         let pkg = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -79,6 +82,34 @@ fn query_rpm(path: &str) -> Option<String> {
         }
     } else {
         None
+    }
+}
+
+/// Run a command with a timeout. Returns None if the command times out or fails to spawn.
+fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process::Output> {
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
+
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                return child.wait_with_output().ok();
+            }
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    log::warn!("Package manager query timed out after {:?}", timeout);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return None,
+        }
     }
 }
 

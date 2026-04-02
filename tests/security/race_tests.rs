@@ -47,7 +47,8 @@ fn rapid_file_changes_during_comparison() {
 
         // Each comparison should either succeed or return a transient error
         // — never panic.
-        let _ = vigil::compare::compare_entry(&entry, &config);
+        let _ =
+            vigil::compare::compare_entry(&entry, &config, vigil::types::Severity::Medium, "test");
     }
 }
 
@@ -67,7 +68,9 @@ fn file_deleted_between_event_and_hash() {
     fs::remove_file(&file_path).unwrap();
 
     // Comparison should report deletion, not panic
-    let result = vigil::compare::compare_entry(&entry, &config).unwrap();
+    let result =
+        vigil::compare::compare_entry(&entry, &config, vigil::types::Severity::Medium, "test")
+            .unwrap();
     assert!(result.is_some());
     assert!(
         result.unwrap().change_types.contains(&ChangeType::Deleted),

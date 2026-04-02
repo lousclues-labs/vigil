@@ -88,6 +88,11 @@ impl AlertEngine {
         })
     }
 
+    /// Access the JSON logger for rotation.
+    pub fn json_logger(&self) -> Option<&json_log::JsonLogger> {
+        self.json_logger.as_ref()
+    }
+
     /// Dispatch a change result to all configured output channels.
     /// Always writes to audit log regardless of suppression.
     pub fn dispatch(

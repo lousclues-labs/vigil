@@ -17,7 +17,8 @@ fn compare_unchanged_file_returns_none() {
     let config = test_config(&tmp);
     let entry = baseline_entry_for(&file_path);
 
-    let result = compare::compare_entry(&entry, &config).unwrap();
+    let result =
+        compare::compare_entry(&entry, &config, vigil::types::Severity::Medium, "test").unwrap();
     assert!(result.is_none(), "Unchanged file should return None");
 }
 
@@ -32,7 +33,8 @@ fn compare_detects_content_modification() {
     // Modify the file
     fs::write(&file_path, b"tampered").unwrap();
 
-    let result = compare::compare_entry(&entry, &config).unwrap();
+    let result =
+        compare::compare_entry(&entry, &config, vigil::types::Severity::Medium, "test").unwrap();
     assert!(result.is_some());
     let change = result.unwrap();
     assert_has_change_type(&change, ChangeType::Modified);
@@ -51,7 +53,8 @@ fn compare_detects_deletion() {
 
     fs::remove_file(&file_path).unwrap();
 
-    let result = compare::compare_entry(&entry, &config).unwrap();
+    let result =
+        compare::compare_entry(&entry, &config, vigil::types::Severity::Medium, "test").unwrap();
     assert!(result.is_some());
     assert_has_change_type(&result.unwrap(), ChangeType::Deleted);
 }
@@ -67,7 +70,8 @@ fn compare_detects_permission_change() {
     // Change permissions
     fs::set_permissions(&file_path, fs::Permissions::from_mode(0o600)).unwrap();
 
-    let result = compare::compare_entry(&entry, &config).unwrap();
+    let result =
+        compare::compare_entry(&entry, &config, vigil::types::Severity::Medium, "test").unwrap();
     assert!(result.is_some());
     assert_has_change_type(&result.unwrap(), ChangeType::PermissionsChanged);
 }
@@ -84,7 +88,8 @@ fn compare_detects_file_replacement_via_inode() {
     fs::remove_file(&file_path).unwrap();
     fs::write(&file_path, b"replacement").unwrap();
 
-    let result = compare::compare_entry(&entry, &config).unwrap();
+    let result =
+        compare::compare_entry(&entry, &config, vigil::types::Severity::Medium, "test").unwrap();
     assert!(result.is_some());
     let change = result.unwrap();
     // Should detect inode change and/or content modification
@@ -103,8 +108,14 @@ fn compare_event_with_group_severity() {
     // Modify
     fs::write(&file_path, b"changed").unwrap();
 
-    let result =
-        compare::compare_event(&file_path, &entry, "system_critical", Severity::Critical).unwrap();
+    let result = compare::compare_event(
+        &file_path,
+        &entry,
+        "system_critical",
+        Severity::Critical,
+        2_147_483_648,
+    )
+    .unwrap();
 
     assert!(result.is_some());
     let change = result.unwrap();
@@ -123,7 +134,9 @@ fn compare_provides_old_and_new_hashes() {
 
     fs::write(&file_path, b"after").unwrap();
 
-    let result = compare::compare_entry(&entry, &config).unwrap().unwrap();
+    let result = compare::compare_entry(&entry, &config, vigil::types::Severity::Medium, "test")
+        .unwrap()
+        .unwrap();
     assert_eq!(result.old_hash, Some(original_hash));
     assert!(result.new_hash.is_some());
     assert_ne!(result.old_hash, result.new_hash);

@@ -388,6 +388,36 @@ fn validate_config(config: &Config) -> Result<()> {
         return Err(VigilError::Config("rate_limit must be > 0".into()));
     }
 
+    // Validate log_level is a recognized value
+    match config.daemon.log_level.to_lowercase().as_str() {
+        "error" | "warn" | "info" | "debug" | "trace" => {}
+        other => {
+            return Err(VigilError::Config(format!(
+                "invalid log_level '{}', must be one of: error, warn, info, debug, trace",
+                other
+            )));
+        }
+    }
+
+    // Validate hash_algorithm is supported
+    if config.scanner.hash_algorithm.to_lowercase() != "blake3" {
+        return Err(VigilError::Config(format!(
+            "unsupported hash algorithm '{}', only 'blake3' is supported",
+            config.scanner.hash_algorithm
+        )));
+    }
+
+    // Validate cron schedule expression (basic format check)
+    {
+        let parts: Vec<&str> = config.scanner.schedule.split_whitespace().collect();
+        if parts.len() != 5 {
+            return Err(VigilError::Config(format!(
+                "invalid cron schedule '{}': expected 5 fields (minute hour day month weekday)",
+                config.scanner.schedule
+            )));
+        }
+    }
+
     // HMAC key must exist if signing is enabled
     if config.security.hmac_signing && !config.security.hmac_key_path.exists() {
         return Err(VigilError::Config(format!(
@@ -767,5 +797,53 @@ mod tests {
         assert_eq!(config.watch["test"].severity, Severity::Low);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_rejects_invalid_log_level() {
+        let mut config = default_config();
+        config.daemon.log_level = "verbose".to_string();
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_accepts_valid_log_levels() {
+        for level in &["error", "warn", "info", "debug", "trace", "INFO", "Debug"] {
+            let mut config = default_config();
+            config.daemon.log_level = level.to_string();
+            assert!(
+                validate_config(&config).is_ok(),
+                "Should accept log_level '{}'",
+                level
+            );
+        }
+    }
+
+    #[test]
+    fn validate_rejects_unsupported_hash_algorithm() {
+        let mut config = default_config();
+        config.scanner.hash_algorithm = "sha256".to_string();
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_accepts_blake3_hash_algorithm() {
+        let mut config = default_config();
+        config.scanner.hash_algorithm = "blake3".to_string();
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_cron_schedule() {
+        let mut config = default_config();
+        config.scanner.schedule = "invalid cron".to_string();
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_accepts_valid_cron_schedule() {
+        let mut config = default_config();
+        config.scanner.schedule = "0 3 * * *".to_string();
+        assert!(validate_config(&config).is_ok());
     }
 }

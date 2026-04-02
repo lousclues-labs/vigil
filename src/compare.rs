@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
 use crate::baseline::hash::blake3_hash_file;
@@ -7,22 +8,33 @@ use crate::config::Config;
 use crate::error::Result;
 use crate::types::{BaselineEntry, ChangeResult, ChangeType, FileMetadata, Severity};
 
+/// Three-state outcome from comparing a file against its baseline.
+/// Eliminates the TOCTOU double-open that occurred when the caller had
+/// to re-open the file to distinguish "no changes" from "deleted."
+pub enum CompareOutcome {
+    /// File exists and matches its baseline — no changes detected.
+    NoChange,
+    /// File has been deleted (open returned NotFound).
+    Deleted,
+    /// File exists but differs from baseline.
+    Changed(Vec<ChangeType>, String, FileMetadata),
+}
+
 /// Shared comparison logic: open file, fstat, hash, compare against baseline.
-/// Returns Ok(None) if no changes detected, Ok(Some(...)) with the change types,
-/// current hash, and file metadata if changes are found.
+/// Returns a three-state CompareOutcome — no second open is ever needed.
 ///
-/// Uses the open-first pattern to avoid TOCTOU races: we attempt File::open()
-/// directly and match on NotFound to detect deletions, rather than checking
-/// path.exists() first.
+/// If `max_file_size` is Some, files larger than the limit are skipped
+/// (returns NoChange) to prevent blocking on large file hashing.
 fn compare_file_against_baseline(
     path: &Path,
     baseline: &BaselineEntry,
-) -> Result<Option<(Vec<ChangeType>, String, FileMetadata)>> {
+    max_file_size: Option<u64>,
+) -> Result<CompareOutcome> {
     // 1. Open file — pin inode. Detect deletions via open error, not exists().
     let file = match File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(None); // Caller handles deletion
+            return Ok(CompareOutcome::Deleted);
         }
         Err(e) => return Err(e.into()),
     };
@@ -30,7 +42,20 @@ fn compare_file_against_baseline(
     // 2. fstat on the open fd
     let meta = file.metadata()?;
 
-    // 3. Collect change types
+    // 3. Skip files exceeding max_file_size (avoid blocking the event thread)
+    if let Some(max_size) = max_file_size {
+        if meta.len() > max_size {
+            log::debug!(
+                "Skipping {} (size {} > max {})",
+                path.display(),
+                meta.len(),
+                max_size
+            );
+            return Ok(CompareOutcome::NoChange);
+        }
+    }
+
+    // 4. Collect change types
     let mut change_types = Vec::new();
 
     // Inode changed? (file replaced, not modified in place)
@@ -54,8 +79,8 @@ fn compare_file_against_baseline(
         change_types.push(ChangeType::Modified);
     }
 
-    // xattr check
-    let current_xattrs = read_xattrs_json(path);
+    // xattr check via fd (avoids TOCTOU — uses flistxattr/fgetxattr)
+    let current_xattrs = read_xattrs_json_fd(&file);
     if current_xattrs != baseline.xattrs {
         change_types.push(ChangeType::XattrChanged);
     }
@@ -65,7 +90,7 @@ fn compare_file_against_baseline(
     change_types.dedup();
 
     if change_types.is_empty() {
-        return Ok(None);
+        return Ok(CompareOutcome::NoChange);
     }
 
     let file_meta = FileMetadata {
@@ -82,7 +107,11 @@ fn compare_file_against_baseline(
         security_context: String::new(),
     };
 
-    Ok(Some((change_types, current_hash, file_meta)))
+    Ok(CompareOutcome::Changed(
+        change_types,
+        current_hash,
+        file_meta,
+    ))
 }
 
 /// Build a deletion ChangeResult.
@@ -147,43 +176,36 @@ fn change_result(
 }
 
 /// Compare a baseline entry against the current state of the file on disk.
-/// Uses the open-first TOCTOU-hardened pattern.
+/// Uses the open-first TOCTOU-hardened pattern with three-state CompareOutcome.
 ///
 /// Returns:
-/// - Ok(Some(change)) if something changed
+/// - Ok(Some(change)) if something changed (including deletion)
 /// - Ok(None) if the file matches its baseline
 /// - Err if the file cannot be read (transient error)
-pub fn compare_entry(baseline: &BaselineEntry, _config: &Config) -> Result<Option<ChangeResult>> {
+pub fn compare_entry(
+    baseline: &BaselineEntry,
+    _config: &Config,
+    severity: Severity,
+    group_name: &str,
+) -> Result<Option<ChangeResult>> {
     let path = &baseline.path;
 
-    match compare_file_against_baseline(path, baseline)? {
-        None => {
-            // File was deleted (NotFound) or no changes detected.
-            // We need to distinguish: try opening to see if it's truly gone.
-            // compare_file_against_baseline returns None for both "no changes"
-            // and "file not found". We handle deletion by attempting open again.
-            // Actually, we need to restructure: if file not found, we get None;
-            // if file exists with no changes, we also get None.
-            // Let's check if the file can be opened to distinguish.
-            match File::open(path) {
-                Ok(_) => Ok(None), // File exists, no changes
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Some(deletion_result(
-                    path,
-                    baseline,
-                    Severity::Medium,
-                    String::new(),
-                ))),
-                Err(e) => Err(e.into()),
-            }
-        }
-        Some((change_types, current_hash, file_meta)) => Ok(Some(change_result(
+    match compare_file_against_baseline(path, baseline, Some(_config.scanner.max_file_size))? {
+        CompareOutcome::NoChange => Ok(None),
+        CompareOutcome::Deleted => Ok(Some(deletion_result(
+            path,
+            baseline,
+            severity,
+            group_name.to_string(),
+        ))),
+        CompareOutcome::Changed(change_types, current_hash, file_meta) => Ok(Some(change_result(
             path,
             baseline,
             change_types,
             current_hash,
             &file_meta,
-            Severity::Medium, // caller should override from watch group
-            String::new(),
+            severity,
+            group_name.to_string(),
         ))),
     }
 }
@@ -195,19 +217,17 @@ pub fn compare_event(
     baseline: &BaselineEntry,
     group_name: &str,
     group_severity: Severity,
+    max_file_size: u64,
 ) -> Result<Option<ChangeResult>> {
-    match compare_file_against_baseline(path, baseline)? {
-        None => match File::open(path) {
-            Ok(_) => Ok(None),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Some(deletion_result(
-                path,
-                baseline,
-                group_severity,
-                group_name.to_string(),
-            ))),
-            Err(e) => Err(e.into()),
-        },
-        Some((change_types, current_hash, file_meta)) => Ok(Some(change_result(
+    match compare_file_against_baseline(path, baseline, Some(max_file_size))? {
+        CompareOutcome::NoChange => Ok(None),
+        CompareOutcome::Deleted => Ok(Some(deletion_result(
+            path,
+            baseline,
+            group_severity,
+            group_name.to_string(),
+        ))),
+        CompareOutcome::Changed(change_types, current_hash, file_meta) => Ok(Some(change_result(
             path,
             baseline,
             change_types,
@@ -219,12 +239,19 @@ pub fn compare_event(
     }
 }
 
-fn read_xattrs_json(path: &Path) -> String {
+/// Read extended attributes via file descriptor (flistxattr/fgetxattr).
+/// This avoids TOCTOU by using the already-open fd instead of the path.
+fn read_xattrs_json_fd(file: &File) -> String {
     let mut attrs = std::collections::HashMap::new();
-    if let Ok(names) = xattr::list(path) {
+    let fd = file.as_raw_fd();
+    // Use /proc/self/fd/<fd> path for the xattr crate, which internally
+    // uses the fd-based path and avoids path-based races.
+    let fd_path = format!("/proc/self/fd/{}", fd);
+    let fd_path = Path::new(&fd_path);
+    if let Ok(names) = xattr::list(fd_path) {
         for name in names {
             let key = name.to_string_lossy().into_owned();
-            if let Ok(Some(value)) = xattr::get(path, &name) {
+            if let Ok(Some(value)) = xattr::get(fd_path, &name) {
                 attrs.insert(key, hex::encode(&value));
             }
         }

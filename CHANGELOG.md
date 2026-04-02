@@ -2,6 +2,112 @@
 
 All notable changes to Vigil will be documented in this file.
 
+## [0.4.0] - 2026-04-02
+
+### Fixed
+
+#### P0 — Critical Security & Correctness
+
+##### Fix TOCTOU double-open in comparison engine (`src/compare.rs`)
+- Introduced `CompareOutcome` three-state enum (`NoChange`, `Deleted`, `Changed`) so `compare_file_against_baseline` can distinguish all three cases without the caller re-opening the file by path
+- Eliminated the nested `match File::open(path)` fallback in both `compare_entry` and `compare_event`
+- Deletion is now detected on the first open attempt and returned as `CompareOutcome::Deleted` directly
+
+##### Fix xattr reads using path instead of fd (`src/compare.rs`, `src/baseline/metadata.rs`)
+- `read_xattrs_json` and `read_xattrs` now operate via `/proc/self/fd/<fd>` on the already-open file descriptor instead of the filesystem path, closing the TOCTOU window between fstat and xattr reads
+- Same fix applied to `read_security_context` in `metadata.rs`
+
+##### Add max_file_size check in real-time monitoring path (`src/compare.rs`)
+- `compare_file_against_baseline` now accepts an optional `max_file_size` parameter and skips files exceeding the limit after fstat, preventing the daemon from blocking on large files
+- `compare_event` passes `config.scanner.max_file_size` through to the comparison function
+
+#### P1 — Stability & Reliability
+
+##### Use proper atomic ordering for shutdown flag
+- Changed all `shutdown.store(true, Ordering::Relaxed)` to `Ordering::Release`
+- Changed all `shutdown.load(Ordering::Relaxed)` to `Ordering::Acquire`
+- Applied in `src/lib.rs`, `src/monitor/fanotify.rs`, and `src/monitor/inotify.rs`
+
+##### Fix PID file race condition with atomic creation (`src/lib.rs`)
+- Replaced exists-check-then-write pattern with `OpenOptions::create_new(true)` (O_CREAT|O_EXCL)
+- Added advisory file lock via `libc::flock(fd, LOCK_EX|LOCK_NB)` for defense-in-depth
+- Stale PID files are detected and removed with retry logic
+
+##### Implement audit log rotation (`src/db/ops.rs`, `src/lib.rs`)
+- Added `rotate_audit_log(conn, retention_days)` function that deletes entries older than the configured retention period
+- Added JSON log file rotation in `src/alert/json_log.rs` via `rotate_if_needed(max_size)` — renames with timestamp suffix and opens fresh file
+- Both rotations run periodically in the daemon's 60-second housekeeping cycle
+
+##### Fix fanotify FD leak on error paths (`src/monitor/fanotify.rs`)
+- Created `OwnedFd` RAII wrapper that calls `libc::close` on drop
+- Both `fan_fd` and `epoll_fd` are now wrapped in `OwnedFd`, ensuring cleanup on early return or thread exit
+
+##### Check epoll_ctl return value (`src/monitor/fanotify.rs`)
+- `epoll_ctl` return value is now checked; logs error and returns from thread if it fails
+
+#### P2 — Performance
+
+##### Use blake3::Hasher::update_reader() (`src/baseline/hash.rs`)
+- Replaced manual 64KB read loop with `hasher.update_reader(&mut reader)` for optimized internal buffering
+
+##### Fix WAL checkpoint counter (`src/lib.rs`)
+- Moved `wal_writes` increment inside the `Ok(Some(change))` arm so it only counts actual DB writes, not all events
+
+##### Make notify-send non-blocking (`src/alert/dbus.rs`)
+- Changed `.status()` (blocking) to `.spawn()` with a detached reaper thread that calls `child.wait()` to avoid zombies without blocking the alert path
+
+##### Pass severity into compare_entry (`src/compare.rs`, `src/scanner.rs`, `src/baseline/mod.rs`)
+- `compare_entry` now accepts `severity: Severity` and `group_name: &str` parameters instead of hardcoding `Severity::Medium`
+- Both `diff_baseline` and `run_scan` build a watch-group lookup table and pass the correct severity/group for each entry
+
+#### P3 — Robustness
+
+##### Standardize on parking_lot::Mutex everywhere
+- Replaced `std::sync::Mutex` with `parking_lot::Mutex` in `src/alert/json_log.rs` and `src/alert/socket.rs`
+- Removed `if let Ok(...)` patterns — `parking_lot::Mutex::lock()` returns the guard directly
+
+##### Add timeout to package manager subprocess calls (`src/package.rs`)
+- Added `run_with_timeout` helper that spawns the child process and polls with `try_wait` in a loop
+- 5-second timeout; kills child process on timeout and returns None
+- Applied to `query_pacman`, `query_dpkg`, and `query_rpm`
+
+##### Bound the debounce map (`src/monitor/filter.rs`)
+- Added `MAX_DEBOUNCE_ENTRIES` (50,000) capacity check before inserting
+- Triggers emergency `prune_debounce()` when exceeded, with a warning log
+
+##### Add SIGHUP handler for config reload (`src/lib.rs`)
+- Added `SIGHUP` to the blocked signal set
+- Signal handler thread now loops: SIGHUP sets a reload flag, SIGINT/SIGTERM triggers shutdown
+- Housekeeping section checks reload flag — reloads config and rebuilds EventFilter
+- Logs warning that fanotify/inotify marks require a daemon restart to update
+
+##### Validate log_level config value (`src/config.rs`)
+- `validate_config` now rejects log_level values other than error/warn/info/debug/trace (case-insensitive)
+
+##### Validate hash_algorithm config value (`src/config.rs`)
+- Rejects any value other than "blake3" with a clear error message
+
+##### Validate cron schedule expression (`src/config.rs`)
+- Validates that `scanner.schedule` has exactly 5 whitespace-separated fields (standard cron format)
+
+### Added
+
+#### New Tests
+- `validate_rejects_invalid_log_level` — invalid log level rejected
+- `validate_accepts_valid_log_levels` — all valid levels accepted (case-insensitive)
+- `validate_rejects_unsupported_hash_algorithm` — non-blake3 algorithm rejected
+- `validate_accepts_blake3_hash_algorithm` — blake3 accepted
+- `validate_rejects_invalid_cron_schedule` — malformed cron rejected
+- `validate_accepts_valid_cron_schedule` — standard cron accepted
+- `audit_log_rotation_deletes_old_entries` — rotation removes entries older than retention
+- `audit_log_rotation_preserves_recent_entries` — rotation preserves recent entries
+
+### Notes
+- All 103 tests pass (up from 95 in v0.3.1)
+- Zero clippy warnings
+- `compare_entry` signature changed: now requires `severity: Severity` and `group_name: &str` parameters
+- `compare_event` signature changed: now requires `max_file_size: u64` parameter
+
 ## [0.3.1] - 2026-04-02
 
 ### Fixed

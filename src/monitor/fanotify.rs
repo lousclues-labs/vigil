@@ -30,6 +30,19 @@ const FAN_MOVED_TO: u64 = 0x0000_0080;
 
 const FAN_EVENT_METADATA_LEN: usize = std::mem::size_of::<FanotifyEventMetadata>();
 
+/// RAII wrapper for a raw file descriptor. Calls close() on drop.
+struct OwnedFd(RawFd);
+
+impl Drop for OwnedFd {
+    fn drop(&mut self) {
+        if self.0 >= 0 {
+            unsafe {
+                libc::close(self.0);
+            }
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct FanotifyEventMetadata {
@@ -67,6 +80,9 @@ pub fn start(
 
     let fan_fd = fan_fd as RawFd;
 
+    // Wrap in OwnedFd so it's cleaned up on early return
+    let fan_fd_owned = OwnedFd(fan_fd);
+
     // Determine unique mount points to mark
     let mount_points = resolve_mount_points(watch_paths);
 
@@ -98,32 +114,38 @@ pub fn start(
     // Collect watch paths as a set for fast membership checking
     let watch_set: HashSet<PathBuf> = watch_paths.iter().cloned().collect();
 
-    // Spawn event reader thread
+    // Spawn event reader thread — transfer ownership of fan_fd_owned into the closure
     std::thread::Builder::new()
         .name("vigil-fanotify".into())
         .spawn(move || {
+            let _fan_fd_guard = fan_fd_owned; // dropped (closed) when thread exits
+            let fan_fd = _fan_fd_guard.0;
             let mut buf = vec![0u8; 4096];
 
             // Set up epoll
-            let epoll_fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
-            if epoll_fd < 0 {
+            let epoll_fd_raw = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+            if epoll_fd_raw < 0 {
                 log::error!("epoll_create1 failed: {}", std::io::Error::last_os_error());
                 return;
             }
+            let _epoll_guard = OwnedFd(epoll_fd_raw);
 
             let mut ev = libc::epoll_event {
                 events: libc::EPOLLIN as u32,
                 u64: fan_fd as u64,
             };
-            unsafe {
-                libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, fan_fd, &mut ev);
+            let ret =
+                unsafe { libc::epoll_ctl(epoll_fd_raw, libc::EPOLL_CTL_ADD, fan_fd, &mut ev) };
+            if ret < 0 {
+                log::error!("epoll_ctl failed: {}", std::io::Error::last_os_error());
+                return;
             }
 
             let mut events = [libc::epoll_event { events: 0, u64: 0 }; 1];
 
-            while !shutdown.load(Ordering::Relaxed) {
+            while !shutdown.load(Ordering::Acquire) {
                 let nfds = unsafe {
-                    libc::epoll_wait(epoll_fd, events.as_mut_ptr(), 1, 500) // 500ms timeout
+                    libc::epoll_wait(epoll_fd_raw, events.as_mut_ptr(), 1, 500) // 500ms timeout
                 };
 
                 if nfds <= 0 {
@@ -178,10 +200,7 @@ pub fn start(
                 }
             }
 
-            unsafe {
-                libc::close(epoll_fd);
-                libc::close(fan_fd);
-            }
+            // OwnedFd guards handle cleanup
             log::info!("fanotify monitor stopped");
         })
         .map_err(|e| VigilError::Fanotify(format!("cannot spawn thread: {}", e)))?;

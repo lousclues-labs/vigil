@@ -80,7 +80,7 @@ pub fn start(
             let inotify_fd = inotify.as_fd();
             let poll_fd = PollFd::new(inotify_fd, PollFlags::POLLIN);
 
-            while !shutdown.load(Ordering::Relaxed) {
+            while !shutdown.load(Ordering::Acquire) {
                 // Poll with 500ms timeout so we can check shutdown flag
                 match poll(&mut [poll_fd], PollTimeout::from(500u16)) {
                     Ok(n) if n > 0 => {

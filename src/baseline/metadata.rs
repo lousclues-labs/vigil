@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
 use crate::config::Config;
@@ -11,7 +12,7 @@ use crate::types::FileMetadata;
 /// 1. Open file (pin inode)
 /// 2. fstat on the open fd
 /// 3. Hash via the open fd
-/// 4. Read xattrs
+/// 4. Read xattrs via the open fd
 pub fn collect_file_metadata(path: &Path, _config: &Config) -> Result<FileMetadata> {
     // 1. Open file — pins the inode
     let file = File::open(path)
@@ -33,11 +34,11 @@ pub fn collect_file_metadata(path: &Path, _config: &Config) -> Result<FileMetada
     // 3. BLAKE3 hash via the open fd
     let hash = super::hash::blake3_hash_file(&file)?;
 
-    // 4. Extended attributes
-    let xattrs = read_xattrs(path);
+    // 4. Extended attributes via fd (avoids TOCTOU)
+    let xattrs = read_xattrs_fd(&file);
 
-    // 5. Security context (SELinux/AppArmor)
-    let security_context = read_security_context(path);
+    // 5. Security context via fd (SELinux/AppArmor)
+    let security_context = read_security_context_fd(&file);
 
     Ok(FileMetadata {
         path: path.to_path_buf(),
@@ -54,47 +55,42 @@ pub fn collect_file_metadata(path: &Path, _config: &Config) -> Result<FileMetada
     })
 }
 
-/// Read extended attributes and return as JSON string.
-fn read_xattrs(path: &Path) -> String {
+/// Read extended attributes via /proc/self/fd/<fd> to avoid TOCTOU.
+fn read_xattrs_fd(file: &File) -> String {
     let mut attrs = HashMap::new();
+    let fd_path = format!("/proc/self/fd/{}", file.as_raw_fd());
+    let fd_path = Path::new(&fd_path);
 
-    match xattr::list(path) {
-        Ok(names) => {
-            for name in names {
-                let key = name.to_string_lossy().into_owned();
-                match xattr::get(path, &name) {
-                    Ok(Some(value)) => {
-                        // Store as hex for binary-safe representation
-                        attrs.insert(key, hex::encode(&value));
-                    }
-                    Ok(None) => {
-                        attrs.insert(key, String::new());
-                    }
-                    Err(_) => {
-                        // Skip unreadable attributes
-                    }
+    if let Ok(names) = xattr::list(fd_path) {
+        for name in names {
+            let key = name.to_string_lossy().into_owned();
+            match xattr::get(fd_path, &name) {
+                Ok(Some(value)) => {
+                    attrs.insert(key, hex::encode(&value));
                 }
+                Ok(None) => {
+                    attrs.insert(key, String::new());
+                }
+                Err(_) => {}
             }
-        }
-        Err(_) => {
-            // xattrs not supported or not readable — return empty
         }
     }
 
     serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string())
 }
 
-/// Read SELinux or AppArmor security context.
-fn read_security_context(path: &Path) -> String {
-    // Try SELinux context first
-    if let Ok(Some(val)) = xattr::get(path, "security.selinux") {
+/// Read SELinux or AppArmor security context via /proc/self/fd/<fd>.
+fn read_security_context_fd(file: &File) -> String {
+    let fd_path = format!("/proc/self/fd/{}", file.as_raw_fd());
+    let fd_path = Path::new(&fd_path);
+
+    if let Ok(Some(val)) = xattr::get(fd_path, "security.selinux") {
         return String::from_utf8_lossy(&val)
             .trim_end_matches('\0')
             .to_string();
     }
 
-    // Try AppArmor
-    if let Ok(Some(val)) = xattr::get(path, "security.apparmor") {
+    if let Ok(Some(val)) = xattr::get(fd_path, "security.apparmor") {
         return String::from_utf8_lossy(&val)
             .trim_end_matches('\0')
             .to_string();

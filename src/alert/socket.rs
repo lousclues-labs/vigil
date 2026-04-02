@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::os::unix::net::UnixStream;
-use std::sync::Mutex;
+
+use parking_lot::Mutex;
 
 use crate::error::Result;
 use crate::types::ChangeResult;
@@ -35,26 +36,25 @@ impl SignalSocket {
             Err(_) => return,
         };
 
-        if let Ok(mut stream_guard) = self.stream.lock() {
-            // Try to write to existing stream, or connect
-            let write_result = if let Some(ref mut stream) = *stream_guard {
-                writeln!(stream, "{}", json)
-            } else {
-                // Try to connect
-                match UnixStream::connect(&self.path) {
-                    Ok(mut s) => {
-                        let result = writeln!(s, "{}", json);
-                        *stream_guard = Some(s);
-                        result
-                    }
-                    Err(_) => return, // No listener — silently drop
+        let mut stream_guard = self.stream.lock();
+        // Try to write to existing stream, or connect
+        let write_result = if let Some(ref mut stream) = *stream_guard {
+            writeln!(stream, "{}", json)
+        } else {
+            // Try to connect
+            match UnixStream::connect(&self.path) {
+                Ok(mut s) => {
+                    let result = writeln!(s, "{}", json);
+                    *stream_guard = Some(s);
+                    result
                 }
-            };
-
-            // If write failed, clear the stream so we reconnect next time
-            if write_result.is_err() {
-                *stream_guard = None;
+                Err(_) => return, // No listener — silently drop
             }
+        };
+
+        // If write failed, clear the stream so we reconnect next time
+        if write_result.is_err() {
+            *stream_guard = None;
         }
     }
 }

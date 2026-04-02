@@ -71,9 +71,10 @@ impl DbusNotifier {
             pkg_info,
         );
 
-        // Use .status() instead of .spawn() to wait for the child process
-        // and avoid accumulating zombie processes. The long-term fix is to use
-        // zbus for native D-Bus integration.
+        // Use .spawn() for non-blocking notification delivery —
+        // the child process runs independently. We drop the Child handle
+        // which allows the OS to reap the process when it completes.
+        // The long-term fix is to use zbus for native D-Bus integration.
         let result = std::process::Command::new("notify-send")
             .args([
                 "--urgency",
@@ -87,10 +88,18 @@ impl DbusNotifier {
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status();
+            .spawn();
 
-        if let Err(e) = result {
-            log::warn!("Failed to send D-Bus notification: {}", e);
+        match result {
+            Ok(mut child) => {
+                // Fire-and-forget: spawn a reaper thread to avoid zombies
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            Err(e) => {
+                log::warn!("Failed to send D-Bus notification: {}", e);
+            }
         }
     }
 }
