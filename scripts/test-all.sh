@@ -2,36 +2,36 @@
 # Run the complete Vigil test suite.
 set -euo pipefail
 
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Vigil Test Suite"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo
+printf '%s\n' "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+printf '%s\n' "  Vigil Test Suite"
+printf '%s\n' "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+printf '\n'
 
-echo "▶ Stage 1: Format check"
-cargo fmt -- --check || { echo "✗ Format check failed"; exit 1; }
-echo "✓ Format OK"
-echo
+printf '%s\n' "▶ Stage 1: Format check"
+cargo fmt -- --check || { printf '%s\n' "✗ Format check failed"; exit 1; }
+printf '%s\n' "✓ Format OK"
+printf '\n'
 
-echo "▶ Stage 2: Clippy"
-cargo clippy --all-targets -- -D warnings 2>/dev/null || { echo "✗ Clippy failed"; exit 1; }
-echo "✓ Clippy OK"
-echo
+printf '%s\n' "▶ Stage 2: Clippy"
+cargo clippy --all-targets -- -D warnings 2>/dev/null || { printf '%s\n' "✗ Clippy failed"; exit 1; }
+printf '%s\n' "✓ Clippy OK"
+printf '\n'
 
-echo "▶ Stage 3: Unit tests"
+printf '%s\n' "▶ Stage 3: Unit tests"
 cargo test --bins 2>&1
-echo "✓ Unit tests OK"
-echo
+printf '%s\n' "✓ Unit tests OK"
+printf '\n'
 
-echo "▶ Stage 4: Integration tests"
+printf '%s\n' "▶ Stage 4: Integration tests"
 cargo test --test integration 2>&1
-echo "✓ Integration tests OK"
-echo
+printf '%s\n' "✓ Integration tests OK"
+printf '\n'
 
-echo "▶ Stage 5: Security tests (non-privileged)"
+printf '%s\n' "▶ Stage 5: Security tests (non-privileged)"
 cargo test --test security 2>&1
-echo "✓ Security tests OK"
-echo
+printf '%s\n' "✓ Security tests OK"
+printf '\n'
 
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  All tests passed."
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+printf '%s\n' "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+printf '%s\n' "  All tests passed."
+printf '%s\n' "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

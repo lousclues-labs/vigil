@@ -1,0 +1,224 @@
+# Contributing to Vigil
+
+You want to help. Good.
+Read the principles first, then ship clean changes.
+
+---
+
+## Short Version
+
+1. Read [docs/PRINCIPLES.md](docs/PRINCIPLES.md)
+2. Fork the repo
+3. Create a branch from `main`
+4. Make focused changes
+5. Run checks
+6. Open a PR
+
+## Contributor Terms
+
+By submitting a contribution, you agree to:
+- [licenses/CONTRIBUTOR-LICENSE.md](licenses/CONTRIBUTOR-LICENSE.md)
+- [licenses/LICENSING.md](licenses/LICENSING.md)
+
+This keeps source licensing and documentation licensing explicit.
+
+---
+
+## Principles, Summarized
+
+These are not decoration. They are contribution filters.
+
+| Principle | What It Means For Contributions |
+|-----------|---------------------------------|
+| I. Watch, Don't Act | no auto-remediation/quarantine/kill behavior |
+| II. Silence Is the Default | reduce false positives, avoid noisy output |
+| III. Determinism Over Heuristics | no ML/heuristic scoring logic |
+| IV. Structure Over Behavior | file-state facts, not behavior interpretation |
+| V. Alerts Must Be Actionable | clear path/severity/change-type in outputs |
+| VIII. Vigil Stands Alone | avoid unnecessary external coupling |
+| X. Fail Open, Fail Loud | explicit fallback and degradation signals |
+| XI. Complexity Is a Vulnerability | justify every dependency and feature |
+| XIII. Audit Trail Never Lies | suppression must not hide audit truth |
+| XIV. No Network I/O | no telemetry, no hidden outbound behavior |
+
+Full context: [docs/PRINCIPLES.md](docs/PRINCIPLES.md).
+
+---
+
+## Development Setup
+
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for full details.
+
+Quick start:
+
+```bash
+git clone https://github.com/<org>/vigil.git
+cd vigil
+cargo build
+cargo test
+```
+
+---
+
+## Before You Submit
+
+All PRs should pass locally:
+
+```bash
+cargo fmt --all --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets
+```
+
+Recommended security gates:
+
+```bash
+cargo install cargo-audit --locked
+cargo audit --deny warnings
+cargo install cargo-deny --locked
+cargo deny check
+```
+
+---
+
+## What Makes A Good Contribution
+
+### Great Contributions
+
+- bug fixes with regression tests
+- test coverage for edge cases and races
+- docs clarity improvements
+- performance improvements with evidence
+- cross-distro install/runtime fixes
+
+### Discuss First
+
+Open an issue before implementing:
+- new top-level CLI commands
+- new config sections/options
+- new direct dependencies
+- architecture changes in daemon/monitor/alert pipeline
+- schema changes in baseline/audit tables
+
+### Out Of Scope
+
+These are intentional non-goals.
+
+| Feature Request | Why Rejected |
+|-----------------|--------------|
+| GUI frontend | Vigil is CLI/systemd-first |
+| cloud integration/telemetry | violates Principle XIV |
+| behavioral analysis/ML scoring | violates Principles III and IV |
+| auto-remediation/quarantine | violates Principle I |
+
+---
+
+## PR Process
+
+1. Fork repository
+2. Branch from `main`
+3. Implement change
+4. Add or update tests
+5. Update docs when behavior changes
+6. Run required checks
+7. Commit with conventional message
+8. Push and open pull request
+
+Suggested branch naming:
+
+```bash
+git checkout -b fix/short-description
+git checkout -b feat/short-description
+git checkout -b docs/short-description
+```
+
+---
+
+## Commit Messages
+
+Use conventional commits:
+
+```text
+type: short summary
+
+optional body with what and why
+```
+
+Types:
+- `feat`
+- `fix`
+- `docs`
+- `refactor`
+- `test`
+- `chore`
+
+Examples:
+
+```text
+fix: keep audit entries when alert channel suppressed
+docs: clarify fanotify fallback blind spots
+test: add race regression for delete-between-open-and-hash
+```
+
+---
+
+## Code Style
+
+### Error Handling
+
+- no silent failures
+- avoid `unwrap()` in production paths
+- return typed errors with context
+
+### Logging
+
+- use level-appropriate logs (`error`, `warn`, `info`, `debug`)
+- log fallback/degradation events explicitly
+- avoid noisy informational spam in healthy steady state
+
+### Scope Discipline
+
+- prefer small diffs
+- do not reformat unrelated files
+- keep behavior deterministic
+
+---
+
+## Testing Requirements
+
+Reference: [tests/README.md](tests/README.md) and [docs/TESTING.md](docs/TESTING.md).
+
+Decision guide:
+
+```
+Single function behavior?
+|- yes -> unit test in src module
+`- no
+   Cross-module behavior?
+   |- yes -> tests/integration/
+   `- no
+      Security property/race?
+      |- yes -> tests/security/
+      `- no -> integration by default
+```
+
+If behavior changes, add tests in same PR.
+
+---
+
+## AI Transparency
+
+Vigil is built with AI.
+Contributions are reviewed with the same standards regardless of tooling: tests, lint, review, and clear reasoning.
+
+---
+
+## Questions
+
+- bug report: open an issue with reproduction details
+- feature idea: open issue first for scope fit
+- docs confusion: open docs issue or PR directly
+
+Be direct. Be respectful. Keep it technical.
+
+*Good contributions make Vigil quieter and more truthful.*

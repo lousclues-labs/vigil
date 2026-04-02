@@ -2,6 +2,65 @@
 
 All notable changes to Vigil will be documented in this file.
 
+## [0.2.1] - 2026-04-02
+
+### Added
+
+#### Complete Project Documentation Suite
+- Replaced one-line project README with full operational guide covering philosophy, architecture summary, quick start, command basics, configuration overview, requirements, and licensing references
+- Added full documentation index (`docs/README.md`) organized by onboarding, operations, architecture, security, and development
+- Added architecture deep dive (`docs/ARCHITECTURE.md`) with full module tree, data-flow diagrams, backend behavior, TOCTOU comparison model, database schema, config precedence, and design decisions
+- Added full CLI reference (`docs/CLI.md`) documenting global flags, all top-level commands, nested subcommands, arguments, output modes, and exit-code behavior
+- Added full configuration reference (`docs/CONFIGURATION.md`) with precedence rules, annotated example config, option tables, watch-group guidance, exclusion behavior, alert tuning, HMAC configuration notes, and validation rules
+- Added installation guide (`docs/INSTALL.md`) for source builds, distro dependencies, binary install, systemd setup, hooks setup, permissions model, first-run, and uninstall flow
+- Added security policy and model (`docs/SECURITY.md`) with reporting process, timeline targets, supported-version policy, trust boundaries, threat scope, privilege model, DB/signal-socket/HMAC notes, and direct dependency justification
+- Added focused threat model (`docs/THREAT_MODEL.md`) covering detection boundaries, non-goals, trust boundaries, attack surface, and evasion considerations
+- Added testing guide (`docs/TESTING.md`) mapping unit/integration/security/fuzz coverage to local commands and CI workflows
+- Added development guide (`docs/DEVELOPMENT.md`) with build/run/test/lint workflows, local daemon workflows, fuzz setup, and commit conventions
+- Added troubleshooting guide (`docs/TROUBLESHOOTING.md`) for fanotify fallback, package-update alert storms, DB integrity issues, socket issues, inotify limits, and service failures
+- Added FAQ (`docs/FAQ.md`) for core operator questions and expected behavior
+- Added resilience guide (`docs/RESILIENCE.md`) for failure-mode handling, fallback behavior, and operator recovery paths
+- Added release process guide (`docs/RELEASING.md`) with API-surface checklist, quality gates, tagging, and rollback policy
+- Added contribution guide (`CONTRIBUTING.md`) with principles mapping, scope boundaries, workflow, testing expectations, and contributor terms reference
+- Added governance document (`GOVERNANCE.md`) describing decision model, succession scenarios, and GPL continuity guarantees
+- Added version policy (`VERSIONING.md`) with SemVer expectations, pre-1.0 rules, public API definitions, and dependency/toolchain policy
+- Added third-party notices (`THIRD_PARTY_NOTICES.md`) for dependency policy and attribution handling
+
+#### Licensing Documentation Framework
+- Added root GPL text file (`LICENSE`) and integrated references across project docs
+- Added dedicated licensing directory (`licenses/`) with:
+	- `licenses/README.md` (legal docs index)
+	- `licenses/LICENSING.md` (file-level license coverage map)
+	- `licenses/LICENSE-DOCS.md` (documentation license scope and terms)
+	- `licenses/CONTRIBUTOR-LICENSE.md` (contributor license terms)
+	- `licenses/DEPENDENCY-AUDIT.md` (dependency license audit framework)
+	- `licenses/THIRD-PARTY-LICENSES` (direct dependency license attribution list)
+
+### Changed
+
+#### Tone and Voice Consistency Pass
+- Performed consistency pass across operational, governance, and licensing docs to align style with concise, direct, operator-first language
+- Tightened intros/outros and policy phrasing to reduce ambiguity while preserving technical/legal meaning
+
+#### Release Metadata
+- Bumped crate version from `0.2.0` to `0.2.1` in `Cargo.toml`
+- Updated version references in README badge and CLI/versioning examples
+
+### Compliance and Hygiene
+
+#### Repository-Term and Tooling Constraint Pass
+- Removed references to disallowed terms/tooling from documentation and helper scripts
+- Updated project links and wording to remain repository-local and tool-agnostic where required
+- Updated `scripts/test-all.sh` output calls to `printf`
+
+#### Documentation Cross-Linking
+- Added explicit legal and licensing links from root README and documentation index
+- Linked contributor workflow to contributor-license and licensing-policy files for clear submission terms
+
+### Notes
+- No source-code runtime behavior changes were introduced in this release
+- This release focuses on documentation completeness, legal clarity, repository policy alignment, and release-readiness
+
 ## [0.2.0] - 2026-04-02
 
 ### Added

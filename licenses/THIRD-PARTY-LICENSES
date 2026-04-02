@@ -1,0 +1,34 @@
+This file lists direct third-party Rust dependencies used by Vigil.
+
+Source of truth:
+- Cargo.toml
+- Cargo.lock
+- cargo metadata
+
+Direct dependencies and license expressions:
+
+  blake3 (https://crates.io/crates/blake3) -- CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception
+  chrono (https://crates.io/crates/chrono) -- MIT OR Apache-2.0
+  clap (https://crates.io/crates/clap) -- MIT OR Apache-2.0
+  crossbeam-channel (https://crates.io/crates/crossbeam-channel) -- MIT OR Apache-2.0
+  env_logger (https://crates.io/crates/env_logger) -- MIT OR Apache-2.0
+  glob (https://crates.io/crates/glob) -- MIT OR Apache-2.0
+  hex (https://crates.io/crates/hex) -- MIT OR Apache-2.0
+  hmac (https://crates.io/crates/hmac) -- MIT OR Apache-2.0
+  libc (https://crates.io/crates/libc) -- MIT OR Apache-2.0
+  log (https://crates.io/crates/log) -- MIT OR Apache-2.0
+  nix (https://crates.io/crates/nix) -- MIT
+  rusqlite (https://crates.io/crates/rusqlite) -- MIT
+  serde (https://crates.io/crates/serde) -- MIT OR Apache-2.0
+  serde_json (https://crates.io/crates/serde_json) -- MIT OR Apache-2.0
+  sha2 (https://crates.io/crates/sha2) -- MIT OR Apache-2.0
+  thiserror (https://crates.io/crates/thiserror) -- MIT OR Apache-2.0
+  toml (https://crates.io/crates/toml) -- MIT OR Apache-2.0
+  uuid (https://crates.io/crates/uuid) -- Apache-2.0 OR MIT
+  xattr (https://crates.io/crates/xattr) -- MIT OR Apache-2.0
+
+For full transitive inventory, run:
+  cargo tree
+  cargo deny check
+
+All dependency use is subject to repository policy in licenses/DEPENDENCY-AUDIT.md.
