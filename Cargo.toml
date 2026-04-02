@@ -3,7 +3,7 @@ name = "vigil"
 version = "0.2.0"
 edition = "2021"
 description = "Lightweight file integrity monitor for Linux desktops"
-license = "GPL-3.0"
+license = "GPL-3.0-only"
 authors = ["loujr"]
 
 [[bin]]
