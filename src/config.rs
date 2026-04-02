@@ -584,3 +584,184 @@ fn enumerate_home_dirs() -> Vec<PathBuf> {
 
     dirs
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_minimal_config() {
+        let toml_str = r#"
+            [watch.test]
+            severity = "high"
+            paths = ["/tmp/test"]
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.watch.contains_key("test"));
+        assert_eq!(config.watch["test"].severity, Severity::High);
+    }
+
+    #[test]
+    fn parse_full_config() {
+        let toml_str = r#"
+            [daemon]
+            log_level = "debug"
+            monitor_backend = "inotify"
+
+            [scanner]
+            mode = "full"
+            max_file_size = 1000000
+
+            [alerts]
+            rate_limit = 5
+            cooldown_seconds = 60
+            desktop_notifications = false
+
+            [alerts.severity_filter]
+            dbus_min_severity = "high"
+            log_min_severity = "low"
+
+            [exclusions]
+            patterns = ["*.swp", "*.tmp"]
+            system_exclusions = ["/proc/*"]
+
+            [watch.critical]
+            severity = "critical"
+            paths = ["/etc/passwd", "/etc/shadow"]
+
+            [watch.low]
+            severity = "low"
+            paths = ["/tmp/"]
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.daemon.log_level, "debug");
+        assert_eq!(config.daemon.monitor_backend, MonitorBackend::Inotify);
+        assert_eq!(config.scanner.mode, ScanMode::Full);
+        assert_eq!(config.alerts.rate_limit, 5);
+        assert_eq!(config.alerts.cooldown_seconds, 60);
+        assert!(!config.alerts.desktop_notifications);
+        assert_eq!(config.exclusions.patterns.len(), 2);
+        assert_eq!(config.watch.len(), 2);
+        assert_eq!(config.watch["critical"].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn defaults_populated_when_missing() {
+        let toml_str = r#"
+            [watch.test]
+            severity = "medium"
+            paths = ["/tmp/test"]
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.daemon.monitor_backend, MonitorBackend::Fanotify);
+        assert_eq!(config.scanner.max_file_size, 2_147_483_648);
+        assert_eq!(config.alerts.rate_limit, 10);
+        assert_eq!(config.alerts.cooldown_seconds, 300);
+        assert!(config.alerts.desktop_notifications);
+        assert!(config.database.wal_mode);
+    }
+
+    #[test]
+    fn validate_rejects_no_watch_groups() {
+        let config = Config {
+            daemon: DaemonConfig::default(),
+            scanner: ScannerConfig::default(),
+            alerts: AlertsConfig::default(),
+            exclusions: ExclusionsConfig::default(),
+            package_manager: PackageManagerConfig::default(),
+            hooks: HooksConfig::default(),
+            security: SecurityConfig::default(),
+            database: DatabaseConfig::default(),
+            watch: HashMap::new(),
+        };
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_rate_limit() {
+        let mut config = default_config();
+        config.alerts.rate_limit = 0;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_max_file_size() {
+        let mut config = default_config();
+        config.scanner.max_file_size = 0;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_glob() {
+        let mut config = default_config();
+        config.exclusions.patterns = vec!["[invalid".into()];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_accepts_default_config() {
+        let config = default_config();
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn default_config_has_four_watch_groups() {
+        let config = default_config();
+        assert_eq!(config.watch.len(), 4);
+        assert!(config.watch.contains_key("system_critical"));
+        assert!(config.watch.contains_key("persistence"));
+        assert!(config.watch.contains_key("user_space"));
+        assert!(config.watch.contains_key("network"));
+    }
+
+    #[test]
+    fn default_config_severity_levels() {
+        let config = default_config();
+        assert_eq!(config.watch["system_critical"].severity, Severity::Critical);
+        assert_eq!(config.watch["persistence"].severity, Severity::High);
+        assert_eq!(config.watch["user_space"].severity, Severity::High);
+        assert_eq!(config.watch["network"].severity, Severity::Medium);
+    }
+
+    #[test]
+    fn expand_user_paths_absolute_passthrough() {
+        let paths = vec!["/etc/passwd".into(), "/usr/bin/".into()];
+        let expanded = expand_user_paths(&paths);
+        assert_eq!(expanded.len(), 2);
+        assert_eq!(expanded[0], PathBuf::from("/etc/passwd"));
+        assert_eq!(expanded[1], PathBuf::from("/usr/bin/"));
+    }
+
+    #[test]
+    fn default_exclusion_patterns_are_valid_globs() {
+        let patterns = default_exclusion_patterns();
+        for p in &patterns {
+            assert!(glob::Pattern::new(p).is_ok(), "Invalid glob: {}", p);
+        }
+    }
+
+    #[test]
+    fn severity_filter_defaults() {
+        let filter = SeverityFilterConfig::default();
+        assert_eq!(filter.dbus_min_severity, Severity::Medium);
+        assert_eq!(filter.log_min_severity, Severity::Low);
+    }
+
+    #[test]
+    fn load_config_from_explicit_path() {
+        let dir = std::env::temp_dir().join(format!("vigil-cfg-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg_path = dir.join("test.toml");
+        std::fs::write(&cfg_path, r#"
+            [watch.test]
+            severity = "low"
+            paths = ["/tmp/"]
+        "#).unwrap();
+
+        let config = load_config(Some(&cfg_path)).unwrap();
+        assert!(config.watch.contains_key("test"));
+        assert_eq!(config.watch["test"].severity, Severity::Low);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

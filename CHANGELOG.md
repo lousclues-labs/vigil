@@ -6,6 +6,39 @@ All notable changes to Vigil will be documented in this file.
 
 ### Added
 
+#### Project Principles (`docs/PRINCIPLES.md`)
+- 15 engineering principles derived from the Quiet System Manifesto
+- Emotional core: "No one tiptoes through your system without leaving footprints behind"
+- Compass question: "Does this make Vigil quieter or noisier?"
+- Key principles: Watch Don't Act, Silence Is Default, Determinism Over Heuristics, The Baseline Is Sacred, The Audit Trail Never Lies
+
+#### Test Suite (95 tests)
+- Shared test infrastructure: `TempDir` helper, config/baseline builders, custom assertions (`tests/common/`)
+- Test decision tree and documentation (`tests/README.md`)
+- Test runner script (`scripts/test-all.sh`): format, clippy, unit, integration, security stages
+
+#### Unit Tests (43 tests, inline in `src/`)
+- Type serialization roundtrips: `Severity`, `ChangeType`, `BaselineSource`, `MonitorBackend`, `PackageBackend`
+- Severity ordering, case-insensitive parsing, serde JSON roundtrip
+- BLAKE3 hashing: determinism, known values, empty files, hex format, file-vs-bytes equivalence
+- Config parsing: minimal/full TOML, defaults, validation rejection (no watch groups, zero rate limit, zero max file size, invalid globs)
+- Default config: four watch groups, correct severity levels, valid exclusion patterns
+- Database CRUD: insert, upsert, query by path, get all (ordered), remove, count
+- Audit log: always-written entries, suppression flags, maintenance window recording
+- Config state: set/get, upsert, missing key
+
+#### Integration Tests (37 tests, `tests/integration/`)
+- **baseline_tests**: init scans files, records correct hashes, diff detects modified/deleted/new files, add/remove single file, refresh updates hashes, stats accuracy, exclusion patterns respected, unchanged file produces no diff
+- **comparison_tests**: unchanged returns None, content modification detected, deletion detected, permission change detected, file replacement via inode, event comparison with group severity, old/new hash pairs provided
+- **config_tests**: TOML file loading, invalid TOML rejected, missing watch groups rejected, invalid glob rejected, zero rate limit rejected, absolute path expansion
+- **db_tests**: schema creation, integrity check, WAL checkpoint, maintenance window state, audit trail never suppressed, unique constraint enforcement
+- **filter_tests**: system path exclusion, glob pattern exclusion, monitored file allowance, self-exclusion (DB/log paths), debounce suppression, per-path debounce independence, debounce pruning
+
+#### Security Tests (15 passed + 1 ignored, `tests/security/`)
+- **integrity_tests**: hash determinism (Principle III), distinct hashes for different content, inode tracking in baseline, file replacement attack detection via inode change, database unique constraint prevents silent overwrite, audit log records suppressed entries (Principle XIII), metadata captures permissions and ownership
+- **permission_tests**: setuid permission escalation detection, world-writable detection, database file not world-writable, ownership change detection (ignored: requires root)
+- **race_tests**: concurrent baseline writes, rapid file changes during comparison, file deleted between event and hash, empty file handling, deeply nested path handling
+
 #### Core Infrastructure
 - Project scaffolding with Cargo.toml and dependency manifest
 - Core domain types (`Severity`, `ChangeType`, `BaselineEntry`, `FileMetadata`, `ChangeResult`, `Alert`, `FsEvent`, etc.) in `src/types.rs`

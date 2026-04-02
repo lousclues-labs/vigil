@@ -319,3 +319,217 @@ pub fn get_config_state(conn: &Connection, key: &str) -> Result<Option<String>> 
         .optional()?;
     Ok(value)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::schema;
+    use crate::types::{BaselineSource, Severity};
+    use std::path::PathBuf;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        schema::create_tables(&conn).unwrap();
+        conn
+    }
+
+    fn sample_entry(path: &str) -> BaselineEntry {
+        BaselineEntry {
+            id: None,
+            path: PathBuf::from(path),
+            hash: "abc123def456".into(),
+            size: 1024,
+            permissions: 0o100644,
+            owner_uid: 1000,
+            owner_gid: 1000,
+            mtime: 1700000000,
+            inode: 99999,
+            device: 1,
+            xattrs: "{}".into(),
+            security_context: String::new(),
+            package: None,
+            source: BaselineSource::AutoScan,
+            added_at: 1700000000,
+            updated_at: 1700000000,
+        }
+    }
+
+    #[test]
+    fn insert_and_retrieve_baseline() {
+        let conn = test_conn();
+        let entry = sample_entry("/etc/passwd");
+
+        let id = insert_baseline(&conn, &entry).unwrap();
+        assert!(id > 0);
+
+        let retrieved = get_baseline_by_path(&conn, "/etc/passwd").unwrap();
+        assert!(retrieved.is_some());
+
+        let r = retrieved.unwrap();
+        assert_eq!(r.hash, "abc123def456");
+        assert_eq!(r.size, 1024);
+        assert_eq!(r.permissions, 0o100644);
+        assert_eq!(r.owner_uid, 1000);
+    }
+
+    #[test]
+    fn get_nonexistent_baseline_returns_none() {
+        let conn = test_conn();
+        let result = get_baseline_by_path(&conn, "/nonexistent").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn upsert_updates_existing() {
+        let conn = test_conn();
+        let mut entry = sample_entry("/etc/passwd");
+
+        upsert_baseline(&conn, &entry).unwrap();
+        assert_eq!(baseline_count(&conn).unwrap(), 1);
+
+        entry.hash = "new_hash_value".into();
+        entry.size = 2048;
+        upsert_baseline(&conn, &entry).unwrap();
+        assert_eq!(baseline_count(&conn).unwrap(), 1);
+
+        let r = get_baseline_by_path(&conn, "/etc/passwd").unwrap().unwrap();
+        assert_eq!(r.hash, "new_hash_value");
+        assert_eq!(r.size, 2048);
+    }
+
+    #[test]
+    fn remove_baseline_by_path() {
+        let conn = test_conn();
+        insert_baseline(&conn, &sample_entry("/etc/hosts")).unwrap();
+        assert_eq!(baseline_count(&conn).unwrap(), 1);
+
+        let removed = remove_baseline(&conn, "/etc/hosts").unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(baseline_count(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn remove_nonexistent_returns_zero() {
+        let conn = test_conn();
+        let removed = remove_baseline(&conn, "/nonexistent").unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn get_all_baselines_ordered() {
+        let conn = test_conn();
+        insert_baseline(&conn, &sample_entry("/etc/shadow")).unwrap();
+        insert_baseline(&conn, &sample_entry("/etc/passwd")).unwrap();
+        insert_baseline(&conn, &sample_entry("/etc/hosts")).unwrap();
+
+        let all = get_all_baselines(&conn).unwrap();
+        assert_eq!(all.len(), 3);
+        // Should be ordered by path
+        assert_eq!(all[0].path, PathBuf::from("/etc/hosts"));
+        assert_eq!(all[1].path, PathBuf::from("/etc/passwd"));
+        assert_eq!(all[2].path, PathBuf::from("/etc/shadow"));
+    }
+
+    #[test]
+    fn baseline_count_accurate() {
+        let conn = test_conn();
+        assert_eq!(baseline_count(&conn).unwrap(), 0);
+
+        insert_baseline(&conn, &sample_entry("/a")).unwrap();
+        assert_eq!(baseline_count(&conn).unwrap(), 1);
+
+        insert_baseline(&conn, &sample_entry("/b")).unwrap();
+        assert_eq!(baseline_count(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn audit_entry_always_written() {
+        let conn = test_conn();
+
+        let change = ChangeResult {
+            path: PathBuf::from("/etc/passwd"),
+            change_types: vec![ChangeType::Modified],
+            severity: Severity::Critical,
+            old_hash: Some("old".into()),
+            new_hash: Some("new".into()),
+            old_permissions: Some(0o644),
+            new_permissions: Some(0o644),
+            old_owner_uid: Some(0),
+            new_owner_uid: Some(0),
+            old_owner_gid: Some(0),
+            new_owner_gid: Some(0),
+            old_inode: Some(100),
+            new_inode: Some(100),
+            package: None,
+            package_update: false,
+            monitored_group: "system_critical".into(),
+        };
+
+        // Write audit entry (suppressed)
+        insert_audit_entry(&conn, &change, ChangeType::Modified, false, true, None).unwrap();
+
+        let entries = get_recent_audit(&conn, 10).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].suppressed);
+        assert_eq!(entries[0].severity, "critical");
+        assert_eq!(entries[0].path, "/etc/passwd");
+    }
+
+    #[test]
+    fn audit_entry_records_maintenance_window() {
+        let conn = test_conn();
+
+        let change = ChangeResult {
+            path: PathBuf::from("/usr/bin/sudo"),
+            change_types: vec![ChangeType::Modified],
+            severity: Severity::Critical,
+            old_hash: Some("old".into()),
+            new_hash: Some("new".into()),
+            old_permissions: None,
+            new_permissions: None,
+            old_owner_uid: None,
+            new_owner_uid: None,
+            old_owner_gid: None,
+            new_owner_gid: None,
+            old_inode: None,
+            new_inode: None,
+            package: Some("sudo".into()),
+            package_update: true,
+            monitored_group: "system_critical".into(),
+        };
+
+        insert_audit_entry(&conn, &change, ChangeType::Modified, true, true, None).unwrap();
+
+        let entries = get_recent_audit(&conn, 10).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].maintenance_window);
+        assert!(entries[0].package_update);
+    }
+
+    #[test]
+    fn config_state_set_and_get() {
+        let conn = test_conn();
+
+        set_config_state(&conn, "test_key", "test_value").unwrap();
+        let val = get_config_state(&conn, "test_key").unwrap();
+        assert_eq!(val, Some("test_value".into()));
+    }
+
+    #[test]
+    fn config_state_upsert() {
+        let conn = test_conn();
+
+        set_config_state(&conn, "key", "value1").unwrap();
+        set_config_state(&conn, "key", "value2").unwrap();
+
+        let val = get_config_state(&conn, "key").unwrap();
+        assert_eq!(val, Some("value2".into()));
+    }
+
+    #[test]
+    fn config_state_missing_key() {
+        let conn = test_conn();
+        let val = get_config_state(&conn, "nonexistent").unwrap();
+        assert!(val.is_none());
+    }
+}

@@ -281,3 +281,94 @@ pub enum ScanMode {
     Incremental,
     Full,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn severity_ordering() {
+        assert!(Severity::Low < Severity::Medium);
+        assert!(Severity::Medium < Severity::High);
+        assert!(Severity::High < Severity::Critical);
+    }
+
+    #[test]
+    fn severity_display_roundtrip() {
+        for sev in &[Severity::Low, Severity::Medium, Severity::High, Severity::Critical] {
+            let s = sev.to_string();
+            let parsed: Severity = s.parse().unwrap();
+            assert_eq!(*sev, parsed);
+        }
+    }
+
+    #[test]
+    fn severity_parse_case_insensitive() {
+        assert_eq!("LOW".parse::<Severity>().unwrap(), Severity::Low);
+        assert_eq!("Critical".parse::<Severity>().unwrap(), Severity::Critical);
+        assert_eq!("MEDIUM".parse::<Severity>().unwrap(), Severity::Medium);
+    }
+
+    #[test]
+    fn severity_parse_invalid() {
+        assert!("unknown".parse::<Severity>().is_err());
+        assert!("".parse::<Severity>().is_err());
+    }
+
+    #[test]
+    fn change_type_display() {
+        assert_eq!(ChangeType::Modified.to_string(), "modified");
+        assert_eq!(ChangeType::Deleted.to_string(), "deleted");
+        assert_eq!(ChangeType::Created.to_string(), "created");
+        assert_eq!(ChangeType::PermissionsChanged.to_string(), "permissions_changed");
+        assert_eq!(ChangeType::OwnerChanged.to_string(), "owner_changed");
+        assert_eq!(ChangeType::InodeChanged.to_string(), "inode_changed");
+        assert_eq!(ChangeType::XattrChanged.to_string(), "xattr_changed");
+    }
+
+    #[test]
+    fn baseline_source_display_roundtrip() {
+        for src in &[BaselineSource::PackageManager, BaselineSource::Manual, BaselineSource::AutoScan] {
+            let s = src.to_string();
+            let parsed: BaselineSource = s.parse().unwrap();
+            assert_eq!(*src, parsed);
+        }
+    }
+
+    #[test]
+    fn baseline_source_parse_invalid() {
+        assert!("unknown".parse::<BaselineSource>().is_err());
+    }
+
+    #[test]
+    fn severity_serde_json_roundtrip() {
+        let sev = Severity::Critical;
+        let json = serde_json::to_string(&sev).unwrap();
+        assert_eq!(json, "\"critical\"");
+        let parsed: Severity = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, Severity::Critical);
+    }
+
+    #[test]
+    fn change_type_serde_json_roundtrip() {
+        let ct = ChangeType::PermissionsChanged;
+        let json = serde_json::to_string(&ct).unwrap();
+        assert_eq!(json, "\"permissions_changed\"");
+        let parsed: ChangeType = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, ChangeType::PermissionsChanged);
+    }
+
+    #[test]
+    fn monitor_backend_display() {
+        assert_eq!(MonitorBackend::Fanotify.to_string(), "fanotify");
+        assert_eq!(MonitorBackend::Inotify.to_string(), "inotify");
+    }
+
+    #[test]
+    fn package_backend_display() {
+        assert_eq!(PackageBackend::Pacman.to_string(), "pacman");
+        assert_eq!(PackageBackend::Dpkg.to_string(), "dpkg");
+        assert_eq!(PackageBackend::Rpm.to_string(), "rpm");
+        assert_eq!(PackageBackend::Auto.to_string(), "auto");
+    }
+}
