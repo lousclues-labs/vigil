@@ -4,9 +4,7 @@ use clap::Parser;
 
 use vigil::alert::AlertEngine;
 use vigil::baseline;
-use vigil::cli::{
-    BaselineAction, Cli, Command, ConfigAction, LogAction, MaintenanceAction,
-};
+use vigil::cli::{BaselineAction, Cli, Command, ConfigAction, LogAction, MaintenanceAction};
 use vigil::config;
 use vigil::db;
 use vigil::error::Result;
@@ -59,7 +57,11 @@ fn cmd_init(config_path: Option<&std::path::Path>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_baseline(config_path: Option<&std::path::Path>, _format: OutputFormat, action: BaselineAction) -> Result<()> {
+fn cmd_baseline(
+    config_path: Option<&std::path::Path>,
+    _format: OutputFormat,
+    action: BaselineAction,
+) -> Result<()> {
     let cfg = config::load_config(config_path)?;
     let conn = db::open_db(&cfg)?;
 
@@ -70,12 +72,7 @@ fn cmd_baseline(config_path: Option<&std::path::Path>, _format: OutputFormat, ac
         }
         BaselineAction::Refresh { paths, quiet } => {
             let filter = paths.map(|p| vec![p]);
-            let count = baseline::refresh_baseline(
-                &conn,
-                &cfg,
-                filter.as_deref(),
-                quiet,
-            )?;
+            let count = baseline::refresh_baseline(&conn, &cfg, filter.as_deref(), quiet)?;
             if !quiet {
                 println!("Baseline refreshed: {} entries", count);
             }
@@ -98,9 +95,15 @@ fn cmd_baseline(config_path: Option<&std::path::Path>, _format: OutputFormat, ac
                     );
 
                     if let (Some(old), Some(new)) = (&change.old_hash, &change.new_hash) {
-                        println!("    Hash: {}… → {}…", &old[..8.min(old.len())], &new[..8.min(new.len())]);
+                        println!(
+                            "    Hash: {}… → {}…",
+                            &old[..8.min(old.len())],
+                            &new[..8.min(new.len())]
+                        );
                     }
-                    if let (Some(old_p), Some(new_p)) = (change.old_permissions, change.new_permissions) {
+                    if let (Some(old_p), Some(new_p)) =
+                        (change.old_permissions, change.new_permissions)
+                    {
                         if old_p != new_p {
                             println!("    Perms: {:04o} → {:04o}", old_p & 0o7777, new_p & 0o7777);
                         }
@@ -321,10 +324,7 @@ fn cmd_status(config_path: Option<&std::path::Path>) -> Result<()> {
         if maint { "ACTIVE" } else { "inactive" }
     );
     println!("  Database:            {}", cfg.daemon.db_path.display());
-    println!(
-        "  Monitor backend:     {}",
-        cfg.daemon.monitor_backend
-    );
+    println!("  Monitor backend:     {}", cfg.daemon.monitor_backend);
 
     // Check if daemon PID file exists
     if cfg.daemon.pid_file.exists() {
@@ -345,15 +345,13 @@ fn cmd_config(config_path: Option<&std::path::Path>, action: ConfigAction) -> Re
             // Print the loaded config as TOML
             println!("{:#?}", cfg);
         }
-        ConfigAction::Validate => {
-            match config::load_config(config_path) {
-                Ok(_) => println!("Configuration is valid."),
-                Err(e) => {
-                    println!("Configuration error: {}", e);
-                    process::exit(1);
-                }
+        ConfigAction::Validate => match config::load_config(config_path) {
+            Ok(_) => println!("Configuration is valid."),
+            Err(e) => {
+                println!("Configuration error: {}", e);
+                process::exit(1);
             }
-        }
+        },
     }
 
     Ok(())
@@ -401,10 +399,7 @@ fn cmd_doctor(config_path: Option<&std::path::Path>) -> Result<()> {
         // Database
         match db::open_db(cfg) {
             Ok(conn) => {
-                println!(
-                    "  ✓ Database writable ({})",
-                    cfg.daemon.db_path.display()
-                );
+                println!("  ✓ Database writable ({})", cfg.daemon.db_path.display());
                 match db::integrity_check(&conn) {
                     Ok(()) => println!("  ✓ Database integrity check passed"),
                     Err(e) => println!("  ✗ Database integrity check failed: {}", e),

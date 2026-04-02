@@ -56,10 +56,7 @@ fn query_pacman(path: &str) -> Option<String> {
 }
 
 fn query_dpkg(path: &str) -> Option<String> {
-    let output = Command::new("dpkg")
-        .args(["-S", path])
-        .output()
-        .ok()?;
+    let output = Command::new("dpkg").args(["-S", path]).output().ok()?;
 
     if output.status.success() {
         let line = String::from_utf8_lossy(&output.stdout);
@@ -71,10 +68,7 @@ fn query_dpkg(path: &str) -> Option<String> {
 }
 
 fn query_rpm(path: &str) -> Option<String> {
-    let output = Command::new("rpm")
-        .args(["-qf", path])
-        .output()
-        .ok()?;
+    let output = Command::new("rpm").args(["-qf", path]).output().ok()?;
 
     if output.status.success() {
         let pkg = String::from_utf8_lossy(&output.stdout).trim().to_string();

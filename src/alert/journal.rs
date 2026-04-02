@@ -10,26 +10,19 @@ pub fn log_alert(alert: &Alert) {
         crate::types::Severity::Critical => {
             log::error!(
                 "[VIGIL] CRITICAL: {} — {} ({})",
-                change, path, alert.event_id
+                change,
+                path,
+                alert.event_id
             );
         }
         crate::types::Severity::High => {
-            log::warn!(
-                "[VIGIL] HIGH: {} — {} ({})",
-                change, path, alert.event_id
-            );
+            log::warn!("[VIGIL] HIGH: {} — {} ({})", change, path, alert.event_id);
         }
         crate::types::Severity::Medium => {
-            log::warn!(
-                "[VIGIL] MEDIUM: {} — {} ({})",
-                change, path, alert.event_id
-            );
+            log::warn!("[VIGIL] MEDIUM: {} — {} ({})", change, path, alert.event_id);
         }
         crate::types::Severity::Low => {
-            log::info!(
-                "[VIGIL] LOW: {} — {} ({})",
-                change, path, alert.event_id
-            );
+            log::info!("[VIGIL] LOW: {} — {} ({})", change, path, alert.event_id);
         }
     }
 

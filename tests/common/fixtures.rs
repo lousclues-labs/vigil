@@ -19,7 +19,8 @@ pub struct TempDir {
 
 impl TempDir {
     pub fn new(prefix: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("vigil-test-{}-{}", prefix, std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("vigil-test-{}-{}", prefix, std::process::id()));
         fs::create_dir_all(&path).expect("create temp dir");
         Self { path }
     }
@@ -37,8 +38,7 @@ impl TempDir {
     /// Create a file with specific permissions.
     pub fn create_file_with_perms(&self, name: &str, content: &[u8], mode: u32) -> PathBuf {
         let file_path = self.create_file(name, content);
-        fs::set_permissions(&file_path, fs::Permissions::from_mode(mode))
-            .expect("set permissions");
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(mode)).expect("set permissions");
         file_path
     }
 
@@ -77,12 +77,19 @@ pub fn test_config(tmp: &TempDir) -> Config {
     // test temp dirs live under /tmp/
     let exclusions = ExclusionsConfig {
         patterns: vec![
-            "*.swp".into(), "*.swx".into(), "*~".into(),
-            "*.tmp".into(), "*.log".into(), "*.cache".into(),
-            ".git/*".into(), "__pycache__/*".into(),
+            "*.swp".into(),
+            "*.swx".into(),
+            "*~".into(),
+            "*.tmp".into(),
+            "*.log".into(),
+            "*.cache".into(),
+            ".git/*".into(),
+            "__pycache__/*".into(),
         ],
         system_exclusions: vec![
-            "/proc/*".into(), "/sys/*".into(), "/dev/*".into(),
+            "/proc/*".into(),
+            "/sys/*".into(),
+            "/dev/*".into(),
             "/run/*".into(),
         ],
     };
@@ -117,13 +124,8 @@ pub fn test_config(tmp: &TempDir) -> Config {
 pub fn test_config_with_paths(tmp: &TempDir, paths: Vec<String>, severity: Severity) -> Config {
     let mut cfg = test_config(tmp);
     cfg.watch.clear();
-    cfg.watch.insert(
-        "custom".into(),
-        WatchGroup {
-            severity,
-            paths,
-        },
-    );
+    cfg.watch
+        .insert("custom".into(), WatchGroup { severity, paths });
     cfg
 }
 

@@ -22,7 +22,9 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let config_path = std::env::var("VIGIL_CONFIG").ok().map(std::path::PathBuf::from);
+    let config_path = std::env::var("VIGIL_CONFIG")
+        .ok()
+        .map(std::path::PathBuf::from);
     let cfg = config::load_config(config_path.as_deref())?;
 
     vigil::daemon_run(&cfg)

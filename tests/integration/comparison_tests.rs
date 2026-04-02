@@ -103,13 +103,8 @@ fn compare_event_with_group_severity() {
     // Modify
     fs::write(&file_path, b"changed").unwrap();
 
-    let result = compare::compare_event(
-        &file_path,
-        &entry,
-        "system_critical",
-        Severity::Critical,
-    )
-    .unwrap();
+    let result =
+        compare::compare_event(&file_path, &entry, "system_critical", Severity::Critical).unwrap();
 
     assert!(result.is_some());
     let change = result.unwrap();

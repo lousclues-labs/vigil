@@ -16,7 +16,10 @@ fn concurrent_baseline_writes_safe() {
     let tmp = TempDir::new("sec-race-db");
 
     for i in 0..10 {
-        tmp.create_file(&format!("file{}.txt", i), format!("content {}", i).as_bytes());
+        tmp.create_file(
+            &format!("file{}.txt", i),
+            format!("content {}", i).as_bytes(),
+        );
     }
 
     let config = test_config(&tmp);

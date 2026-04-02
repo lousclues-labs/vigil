@@ -26,7 +26,9 @@ fn detect_permission_escalation() {
 
     let change = result.unwrap();
     assert!(
-        change.change_types.contains(&ChangeType::PermissionsChanged),
+        change
+            .change_types
+            .contains(&ChangeType::PermissionsChanged),
         "Should specifically detect permission change"
     );
 }
@@ -46,7 +48,10 @@ fn detect_world_writable() {
     let result = vigil::compare::compare_entry(&entry, &config).unwrap();
     assert!(result.is_some());
     assert!(
-        result.unwrap().change_types.contains(&ChangeType::PermissionsChanged),
+        result
+            .unwrap()
+            .change_types
+            .contains(&ChangeType::PermissionsChanged),
         "World-writable change must be detected"
     );
 }

@@ -34,9 +34,7 @@ pub fn start_monitor(
                     );
                     log::warn!("Inotify fallback has reduced coverage:");
                     log::warn!("  - Cannot watch files owned by other users");
-                    log::warn!(
-                        "  - Subject to max_user_watches limit"
-                    );
+                    log::warn!("  - Subject to max_user_watches limit");
                     log::warn!(
                         "  - New subdirectories in monitored paths require manual watch registration"
                     );

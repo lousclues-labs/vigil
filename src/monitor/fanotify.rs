@@ -73,9 +73,8 @@ pub fn start(
     let mask = FAN_MODIFY | FAN_ATTRIB | FAN_CREATE | FAN_DELETE | FAN_MOVED_FROM | FAN_MOVED_TO;
 
     for mount in &mount_points {
-        let c_path = CString::new(mount.as_os_str().as_bytes()).map_err(|_| {
-            VigilError::Fanotify(format!("invalid path: {}", mount.display()))
-        })?;
+        let c_path = CString::new(mount.as_os_str().as_bytes())
+            .map_err(|_| VigilError::Fanotify(format!("invalid path: {}", mount.display())))?;
 
         let ret = unsafe {
             libc::syscall(
@@ -90,11 +89,7 @@ pub fn start(
 
         if ret < 0 {
             let err = std::io::Error::last_os_error();
-            log::warn!(
-                "fanotify_mark failed for {}: {}",
-                mount.display(),
-                err
-            );
+            log::warn!("fanotify_mark failed for {}: {}", mount.display(), err);
         } else {
             log::info!("fanotify watching mount: {}", mount.display());
         }
@@ -142,18 +137,17 @@ pub fn start(
 
                 let mut offset = 0;
                 while offset + FAN_EVENT_METADATA_LEN <= n as usize {
-                    let event = unsafe {
-                        &*(buf.as_ptr().add(offset) as *const FanotifyEventMetadata)
-                    };
+                    let event =
+                        unsafe { &*(buf.as_ptr().add(offset) as *const FanotifyEventMetadata) };
 
                     if event.fd >= 0 {
                         // Read path from /proc/self/fd/<fd>
                         let fd_link = format!("/proc/self/fd/{}", event.fd);
                         if let Ok(path) = std::fs::read_link(&fd_link) {
                             // Check if path is in our watch set (or is a child of a watched dir)
-                            let is_watched = watch_set.iter().any(|wp| {
-                                path.starts_with(wp) || &path == wp
-                            });
+                            let is_watched = watch_set
+                                .iter()
+                                .any(|wp| path.starts_with(wp) || &path == wp);
 
                             if is_watched {
                                 if let Some(event_type) = mask_to_event_type(event.mask) {
@@ -233,7 +227,8 @@ fn resolve_mount_points(watch_paths: &[PathBuf]) -> Vec<PathBuf> {
         // Find the longest mount point that is a prefix of this watch path
         let mut best_mount = PathBuf::from("/");
         for mount in &known_mounts {
-            if watch_path.starts_with(mount) && mount.as_os_str().len() > best_mount.as_os_str().len()
+            if watch_path.starts_with(mount)
+                && mount.as_os_str().len() > best_mount.as_os_str().len()
             {
                 best_mount = mount.clone();
             }

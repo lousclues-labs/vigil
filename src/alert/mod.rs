@@ -11,9 +11,7 @@ use chrono::Utc;
 
 use crate::config::Config;
 use crate::error::Result;
-use crate::types::{
-    Alert, AlertContext, AlertFileInfo, ChangeResult, ChangeType,
-};
+use crate::types::{Alert, AlertContext, AlertFileInfo, ChangeResult, ChangeType};
 
 /// The alert engine: dispatches classified changes to output channels
 /// with rate limiting, cooldown, and deduplication.
@@ -95,11 +93,22 @@ impl AlertEngine {
         maintenance_window: bool,
         conn: &rusqlite::Connection,
     ) -> Result<()> {
-        let primary_change = change.change_types.first().copied().unwrap_or(ChangeType::Modified);
+        let primary_change = change
+            .change_types
+            .first()
+            .copied()
+            .unwrap_or(ChangeType::Modified);
 
         // Always write to audit log (never suppress audit trail)
         let suppressed = self.is_suppressed(change, maintenance_window);
-        crate::db::ops::insert_audit_entry(conn, change, primary_change, maintenance_window, suppressed, None)?;
+        crate::db::ops::insert_audit_entry(
+            conn,
+            change,
+            primary_change,
+            maintenance_window,
+            suppressed,
+            None,
+        )?;
 
         if suppressed {
             log::debug!(
@@ -194,7 +203,10 @@ impl AlertEngine {
         Alert {
             version: 1,
             timestamp: Utc::now(),
-            event_id: format!("vigil_{}", uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string()),
+            event_id: format!(
+                "vigil_{}",
+                uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string()
+            ),
             severity: change.severity,
             change_type: primary_change,
             file: AlertFileInfo {
@@ -203,8 +215,12 @@ impl AlertEngine {
                 current_hash: change.new_hash.clone(),
                 baseline_size: None,
                 current_size: None,
-                baseline_permissions: change.old_permissions.map(|p| format!("{:04o}", p & 0o7777)),
-                current_permissions: change.new_permissions.map(|p| format!("{:04o}", p & 0o7777)),
+                baseline_permissions: change
+                    .old_permissions
+                    .map(|p| format!("{:04o}", p & 0o7777)),
+                current_permissions: change
+                    .new_permissions
+                    .map(|p| format!("{:04o}", p & 0o7777)),
                 baseline_owner: change.old_owner_uid.map(|u| format!("{}", u)),
                 current_owner: change.new_owner_uid.map(|u| format!("{}", u)),
                 inode_changed: change.change_types.contains(&ChangeType::InodeChanged),

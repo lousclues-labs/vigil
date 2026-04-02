@@ -21,7 +21,11 @@ fn init_baseline_scans_files() {
     let conn = db::open_db(&config).unwrap();
 
     let count = baseline::init_baseline(&conn, &config, true).unwrap();
-    assert!(count >= 3, "Should have scanned at least 3 files, got {}", count);
+    assert!(
+        count >= 3,
+        "Should have scanned at least 3 files, got {}",
+        count
+    );
 }
 
 #[test]
@@ -182,18 +186,12 @@ fn exclusion_patterns_respected() {
     baseline::init_baseline(&conn, &config, true).unwrap();
 
     // .swp and .tmp should be excluded by default patterns
-    let swp = ops::get_baseline_by_path(
-        &conn,
-        &tmp.path.join("ignore.swp").to_string_lossy(),
-    )
-    .unwrap();
+    let swp =
+        ops::get_baseline_by_path(&conn, &tmp.path.join("ignore.swp").to_string_lossy()).unwrap();
     assert!(swp.is_none(), ".swp files should be excluded");
 
-    let tmp_file = ops::get_baseline_by_path(
-        &conn,
-        &tmp.path.join("ignore.tmp").to_string_lossy(),
-    )
-    .unwrap();
+    let tmp_file =
+        ops::get_baseline_by_path(&conn, &tmp.path.join("ignore.tmp").to_string_lossy()).unwrap();
     assert!(tmp_file.is_none(), ".tmp files should be excluded");
 }
 
@@ -212,5 +210,8 @@ fn unchanged_file_produces_no_diff() {
         .iter()
         .filter(|c| c.path.ends_with("stable.txt"))
         .collect();
-    assert!(stable_changes.is_empty(), "Unchanged file should produce no diff");
+    assert!(
+        stable_changes.is_empty(),
+        "Unchanged file should produce no diff"
+    );
 }

@@ -27,9 +27,12 @@ pub fn assert_no_change_type(result: &ChangeResult, unexpected: ChangeType) {
 /// Assert a change result's severity matches expected.
 pub fn assert_severity(result: &ChangeResult, expected: Severity) {
     assert_eq!(
-        result.severity, expected,
+        result.severity,
+        expected,
         "Expected severity {:?} but got {:?} for path {}",
-        expected, result.severity, result.path.display()
+        expected,
+        result.severity,
+        result.path.display()
     );
 }
 

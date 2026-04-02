@@ -103,12 +103,11 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                 };
 
                 // Determine watch group and severity for this path
-                let (group_name, severity) =
-                    find_watch_group(&event.path, config).unwrap_or(("unknown".into(), types::Severity::Medium));
+                let (group_name, severity) = find_watch_group(&event.path, config)
+                    .unwrap_or(("unknown".into(), types::Severity::Medium));
 
                 // Compare against baseline
-                match compare::compare_event(&event.path, &baseline_entry, &group_name, severity)
-                {
+                match compare::compare_event(&event.path, &baseline_entry, &group_name, severity) {
                     Ok(Some(change)) => {
                         let maintenance = ops::get_config_state(&conn, "maintenance_window_active")
                             .ok()
@@ -122,11 +121,7 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                     }
                     Ok(None) => {} // no change (hash matched despite event)
                     Err(e) => {
-                        log::debug!(
-                            "Comparison error for {}: {}",
-                            event.path.display(),
-                            e
-                        );
+                        log::debug!("Comparison error for {}: {}", event.path.display(), e);
                     }
                 }
 
@@ -161,10 +156,7 @@ pub fn daemon_run(config: &Config) -> Result<()> {
 }
 
 /// Find which watch group a path belongs to, returning (group_name, severity).
-fn find_watch_group(
-    path: &std::path::Path,
-    config: &Config,
-) -> Option<(String, types::Severity)> {
+fn find_watch_group(path: &std::path::Path, config: &Config) -> Option<(String, types::Severity)> {
     let _path_str = path.to_string_lossy();
 
     for (group_name, group) in &config.watch {

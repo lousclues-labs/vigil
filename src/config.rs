@@ -320,8 +320,9 @@ pub fn load_config(explicit_path: Option<&Path>) -> Result<Config> {
     for path in paths.iter().rev() {
         if path.exists() {
             log::info!("Loading config from: {}", path.display());
-            let content = std::fs::read_to_string(path)
-                .map_err(|e| VigilError::Config(format!("cannot read {}: {}", path.display(), e)))?;
+            let content = std::fs::read_to_string(path).map_err(|e| {
+                VigilError::Config(format!("cannot read {}: {}", path.display(), e))
+            })?;
             let config: Config = toml::from_str(&content)?;
             base = Some(config);
         }
@@ -403,11 +404,7 @@ fn validate_config(config: &Config) -> Result<()> {
             }
             let p = Path::new(path_str);
             if !p.exists() {
-                log::warn!(
-                    "watch.{}: path does not exist: {}",
-                    group_name,
-                    path_str
-                );
+                log::warn!("watch.{}: path does not exist: {}", group_name, path_str);
             }
         }
     }
@@ -563,7 +560,10 @@ fn enumerate_home_dirs() -> Vec<PathBuf> {
     let content = match std::fs::read_to_string("/etc/passwd") {
         Ok(c) => c,
         Err(e) => {
-            log::warn!("Cannot read /etc/passwd for home directory expansion: {}", e);
+            log::warn!(
+                "Cannot read /etc/passwd for home directory expansion: {}",
+                e
+            );
             return dirs;
         }
     };
@@ -752,11 +752,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("vigil-cfg-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cfg_path = dir.join("test.toml");
-        std::fs::write(&cfg_path, r#"
+        std::fs::write(
+            &cfg_path,
+            r#"
             [watch.test]
             severity = "low"
             paths = ["/tmp/"]
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let config = load_config(Some(&cfg_path)).unwrap();
         assert!(config.watch.contains_key("test"));

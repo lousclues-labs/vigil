@@ -18,9 +18,7 @@ impl DbusNotifier {
             .status()
             .is_err()
         {
-            return Err(VigilError::DBus(
-                "notify-send not available".into(),
-            ));
+            return Err(VigilError::DBus("notify-send not available".into()));
         }
         Ok(Self {})
     }
@@ -51,7 +49,15 @@ impl DbusNotifier {
         };
 
         let pkg_info = if let Some(ref pkg) = alert.file.package {
-            format!("\nPackage: {} (update: {})", pkg, if alert.file.package_update { "yes" } else { "no" })
+            format!(
+                "\nPackage: {} (update: {})",
+                pkg,
+                if alert.file.package_update {
+                    "yes"
+                } else {
+                    "no"
+                }
+            )
         } else {
             String::new()
         };
@@ -67,9 +73,12 @@ impl DbusNotifier {
 
         let result = std::process::Command::new("notify-send")
             .args([
-                "--urgency", urgency,
-                "--app-name", "Vigil",
-                "--icon", "dialog-warning",
+                "--urgency",
+                urgency,
+                "--app-name",
+                "Vigil",
+                "--icon",
+                "dialog-warning",
                 &title,
                 &body,
             ])

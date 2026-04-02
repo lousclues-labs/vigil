@@ -33,7 +33,10 @@ fn different_content_different_hash() {
     let entry_a = baseline_entry_for(&file_a);
     let entry_b = baseline_entry_for(&file_b);
 
-    assert_ne!(entry_a.hash, entry_b.hash, "Different content must produce different hashes");
+    assert_ne!(
+        entry_a.hash, entry_b.hash,
+        "Different content must produce different hashes"
+    );
 }
 
 #[test]
@@ -135,8 +138,14 @@ fn audit_log_records_suppressed_entries() {
     let entries = ops::get_recent_audit(&conn, 10).unwrap();
     assert_eq!(entries.len(), 1);
     assert!(entries[0].suppressed, "Suppressed flag must be recorded");
-    assert!(entries[0].maintenance_window, "Maintenance window flag must be recorded");
-    assert_eq!(entries[0].severity, "critical", "Severity must be recorded even when suppressed");
+    assert!(
+        entries[0].maintenance_window,
+        "Maintenance window flag must be recorded"
+    );
+    assert_eq!(
+        entries[0].severity, "critical",
+        "Severity must be recorded even when suppressed"
+    );
 }
 
 #[test]
@@ -147,6 +156,13 @@ fn metadata_captures_permissions_and_ownership() {
     let entry = baseline_entry_for(&file);
 
     // Verify permission bits are captured (at least the permission part)
-    assert_eq!(entry.permissions & 0o777, 0o600, "Permissions must be captured correctly");
-    assert!(entry.owner_uid > 0 || entry.owner_uid == 0, "UID must be captured");
+    assert_eq!(
+        entry.permissions & 0o777,
+        0o600,
+        "Permissions must be captured correctly"
+    );
+    assert!(
+        entry.owner_uid > 0 || entry.owner_uid == 0,
+        "UID must be captured"
+    );
 }

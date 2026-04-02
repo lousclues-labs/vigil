@@ -90,7 +90,11 @@ fn audit_trail_never_suppressed() {
     ops::insert_audit_entry(&conn, &change, ChangeType::Modified, false, false, None).unwrap();
 
     let entries = ops::get_recent_audit(&conn, 100).unwrap();
-    assert_eq!(entries.len(), 2, "Both suppressed and non-suppressed entries must be written");
+    assert_eq!(
+        entries.len(),
+        2,
+        "Both suppressed and non-suppressed entries must be written"
+    );
 }
 
 #[test]

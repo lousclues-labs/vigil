@@ -14,14 +14,13 @@ use crate::types::FileMetadata;
 /// 4. Read xattrs
 pub fn collect_file_metadata(path: &Path, _config: &Config) -> Result<FileMetadata> {
     // 1. Open file — pins the inode
-    let file = File::open(path).map_err(|e| {
-        VigilError::Baseline(format!("cannot open {}: {}", path.display(), e))
-    })?;
+    let file = File::open(path)
+        .map_err(|e| VigilError::Baseline(format!("cannot open {}: {}", path.display(), e)))?;
 
     // 2. Stat the open fd (not the path) to avoid TOCTOU
-    let meta = file.metadata().map_err(|e| {
-        VigilError::Baseline(format!("cannot stat {}: {}", path.display(), e))
-    })?;
+    let meta = file
+        .metadata()
+        .map_err(|e| VigilError::Baseline(format!("cannot stat {}: {}", path.display(), e)))?;
 
     // Skip non-regular files
     if !meta.is_file() {
@@ -89,12 +88,16 @@ fn read_xattrs(path: &Path) -> String {
 fn read_security_context(path: &Path) -> String {
     // Try SELinux context first
     if let Ok(Some(val)) = xattr::get(path, "security.selinux") {
-        return String::from_utf8_lossy(&val).trim_end_matches('\0').to_string();
+        return String::from_utf8_lossy(&val)
+            .trim_end_matches('\0')
+            .to_string();
     }
 
     // Try AppArmor
     if let Ok(Some(val)) = xattr::get(path, "security.apparmor") {
-        return String::from_utf8_lossy(&val).trim_end_matches('\0').to_string();
+        return String::from_utf8_lossy(&val)
+            .trim_end_matches('\0')
+            .to_string();
     }
 
     String::new()

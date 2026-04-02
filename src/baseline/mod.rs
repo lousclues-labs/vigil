@@ -133,7 +133,10 @@ pub fn remove_file(conn: &Connection, path: &Path) -> Result<()> {
 
 /// Diff: compare current filesystem state against baseline without updating.
 /// Returns a list of changes.
-pub fn diff_baseline(conn: &Connection, config: &Config) -> Result<Vec<crate::types::ChangeResult>> {
+pub fn diff_baseline(
+    conn: &Connection,
+    config: &Config,
+) -> Result<Vec<crate::types::ChangeResult>> {
     let entries = ops::get_all_baselines(conn)?;
     let mut changes = Vec::new();
 
@@ -194,8 +197,7 @@ pub fn baseline_stats(conn: &Connection) -> Result<BaselineStats> {
     let total = ops::baseline_count(conn)?;
 
     let by_source: HashMap<String, i64> = {
-        let mut stmt =
-            conn.prepare("SELECT source, COUNT(*) FROM baseline GROUP BY source")?;
+        let mut stmt = conn.prepare("SELECT source, COUNT(*) FROM baseline GROUP BY source")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })?;
