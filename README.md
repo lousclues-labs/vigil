@@ -246,18 +246,23 @@ That's really it. SQLite is bundled. No system libraries required.
 
 Copyright (C) 2026 **Louis Nelson Jr.** -- a [lousclues](https://lousclues.com) project.
 
-| Component | License | Reference |
-|-----------|---------|----------|
-| Source code, scripts, tests, configs | [GPL-3.0-only](LICENSE) | [licenses/LICENSING.md](licenses/LICENSING.md) |
-| Documentation | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | [licenses/LICENSE-DOCS.md](licenses/LICENSE-DOCS.md) |
-| Contributor submissions | CLA (broad grant, copyright retained) | [licenses/CONTRIBUTOR-LICENSE.md](licenses/CONTRIBUTOR-LICENSE.md) |
+Vigil is dual-licensed:
 
-Additional references:
-- [NOTICE](NOTICE) -- project identity and attribution
-- [TRADEMARKS.md](TRADEMARKS.md) -- trademark usage policy
-- [licenses/LICENSE-COMMERCIAL.md](licenses/LICENSE-COMMERCIAL.md) -- commercial licensing inquiry
-- [licenses/DEPENDENCY-AUDIT.md](licenses/DEPENDENCY-AUDIT.md) -- dependency license compatibility
-- [licenses/THIRD-PARTY-LICENSES](licenses/THIRD-PARTY-LICENSES) -- third-party dependency attributions
+| Component | License | File |
+|-----------|---------|------|
+| Source Code | GNU GPL v3.0 only **or** Commercial License | [LICENSE](LICENSE), [LICENSE-COMMERCIAL.md](licenses/LICENSE-COMMERCIAL.md) |
+| Documentation | Creative Commons Attribution 4.0 (CC BY 4.0) | [LICENSE-DOCS.md](licenses/LICENSE-DOCS.md) |
+| Third-Party Dependencies | MIT, Apache-2.0, and other permissive licenses | [THIRD-PARTY-LICENSES](licenses/THIRD-PARTY-LICENSES) |
+
+**For most users:** The GPL covers you fully. Use Vigil, monitor your files, run the daemon. No restrictions beyond the GPL.
+
+**For proprietary/commercial use:** If you need to embed Vigil in closed-source products or redistribute without GPL obligations, a [commercial license](licenses/LICENSE-COMMERCIAL.md) is available for inquiry. No commercial license is currently active — Vigil is single-licensed under GPL-3.0-only at this time.
+
+**For contributors:** By submitting a pull request, you agree to the [Contributor License Agreement](licenses/CONTRIBUTOR-LICENSE.md). You keep your copyright; you grant the project permission to include your contribution under the current and any future licenses.
+
+**Trademarks:** "Vigil" and "lousclues" are trademarks of Louis Nelson Jr. See [TRADEMARKS.md](TRADEMARKS.md) for usage guidelines. The GPL does not grant trademark rights.
+
+For the complete licensing framework, see [LICENSING.md](licenses/LICENSING.md). For project governance and succession planning, see [GOVERNANCE.md](GOVERNANCE.md).
 
 ---
 
