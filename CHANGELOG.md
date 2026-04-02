@@ -2,6 +2,39 @@
 
 All notable changes to Vigil will be documented in this file.
 
+## [0.3.1] - 2026-04-02
+
+### Fixed
+
+#### README License Section
+- License section now shows the complete licensing model in a structured table: GPL-3.0-only for source code, CC BY 4.0 for documentation, and CLA for contributor submissions
+- Previously only stated "Licensed under the GNU General Public License v3.0 only" without mentioning the documentation license or contributor terms
+- Added references to `licenses/DEPENDENCY-AUDIT.md` and `licenses/CONTRIBUTOR-LICENSE.md` in the license section
+
+#### Version Badge
+- Updated version badge from `0.2.1` to `0.3.1` (was stale since v0.2.1 release)
+
+#### Formatting
+- Fixed `rustfmt` issues in `src/compare.rs` (match arm brace removal), `src/lib.rs` (method chain wrapping), and `src/package.rs` (closure simplification)
+
+### Changed
+
+#### License Framework Cross-References
+- Added references to `NOTICE`, `TRADEMARKS.md`, and `licenses/LICENSE-COMMERCIAL.md` in `README.md`, `CONTRIBUTING.md`, `GOVERNANCE.md`, and `docs/README.md`
+- Added trademark usage note in `CONTRIBUTING.md` contributor terms section
+
+#### License Framework Adoption
+- Adopted comprehensive open-source license framework (adapted from Shroud project) with full legal document set
+- Created `NOTICE` file with identity mapping, project info, license summary, and trademark notice
+- Created `TRADEMARKS.md` with trademark ownership, permitted/prohibited uses, fork requirements, and reporting
+- Created `licenses/LICENSE-COMMERCIAL.md` as commercial licensing inquiry pathway (Vigil is GPL-3.0-only; no commercial license currently exists)
+- Replaced `licenses/LICENSING.md` with comprehensive file-type coverage map, SPDX header formats, and verification scripts — all references updated from dual-license to GPL-3.0-only
+- Replaced `licenses/CONTRIBUTOR-LICENSE.md` with full CLA including patent grant, future licensing clause, and governing law
+- Replaced `licenses/DEPENDENCY-AUDIT.md` with compatibility tables covering 20+ license types, Vigil's actual 20 dependencies, and audit process
+- Replaced `licenses/LICENSE-DOCS.md` with detailed CC BY 4.0 scope and exclusions matching Vigil's file structure
+- Replaced `licenses/THIRD-PARTY-LICENSES` with Vigil's actual dependency list (20 direct dependencies)
+- Updated `licenses/README.md` to index all legal documents including root-level files
+
 ## [0.3.0] - 2026-04-02
 
 ### Fixed

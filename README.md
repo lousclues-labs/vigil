@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/badge/CI-GitHub_Actions-success)](.github/workflows/ci.yml)
 [![Security Audit](https://img.shields.io/badge/Security-Audit-success)](.github/workflows/scheduled.yml)
-[![Version](https://img.shields.io/badge/version-0.2.1-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.1-blue)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange.svg)](https://www.rust-lang.org/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
 
@@ -246,15 +246,17 @@ That's really it. SQLite is bundled. No system libraries required.
 
 Copyright (C) 2026 **Louis Nelson Jr.** -- a [lousclues](https://lousclues.com) project.
 
-Licensed under the GNU General Public License v3.0 only.
+| Component | License | Reference |
+|-----------|---------|----------|
+| Source code, scripts, tests, configs | [GPL-3.0-only](LICENSE) | [licenses/LICENSING.md](licenses/LICENSING.md) |
+| Documentation | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | [licenses/LICENSE-DOCS.md](licenses/LICENSE-DOCS.md) |
+| Contributor submissions | CLA (broad grant, copyright retained) | [licenses/CONTRIBUTOR-LICENSE.md](licenses/CONTRIBUTOR-LICENSE.md) |
 
-License references:
-- [LICENSE](LICENSE) -- full GPL-3.0 text
+Additional references:
 - [NOTICE](NOTICE) -- project identity and attribution
 - [TRADEMARKS.md](TRADEMARKS.md) -- trademark usage policy
-- [licenses/LICENSING.md](licenses/LICENSING.md) -- repository license coverage map
-- [licenses/LICENSE-DOCS.md](licenses/LICENSE-DOCS.md) -- documentation license terms
 - [licenses/LICENSE-COMMERCIAL.md](licenses/LICENSE-COMMERCIAL.md) -- commercial licensing inquiry
+- [licenses/DEPENDENCY-AUDIT.md](licenses/DEPENDENCY-AUDIT.md) -- dependency license compatibility
 - [licenses/THIRD-PARTY-LICENSES](licenses/THIRD-PARTY-LICENSES) -- third-party dependency attributions
 
 ---
