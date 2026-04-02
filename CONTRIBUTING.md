@@ -20,7 +20,9 @@ By submitting a contribution, you agree to:
 - [licenses/CONTRIBUTOR-LICENSE.md](licenses/CONTRIBUTOR-LICENSE.md)
 - [licenses/LICENSING.md](licenses/LICENSING.md)
 
-This keeps source licensing and documentation licensing explicit.
+Trademark usage (the "Vigil" and "lousclues" names) is governed separately by [TRADEMARKS.md](TRADEMARKS.md).
+
+This keeps source licensing, documentation licensing, and trademark rights explicit.
 
 ---
 

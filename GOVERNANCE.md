@@ -100,6 +100,9 @@ This file stays consistent with:
 - [VERSIONING.md](VERSIONING.md)
 - [docs/PRINCIPLES.md](docs/PRINCIPLES.md)
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- [NOTICE](NOTICE)
+- [TRADEMARKS.md](TRADEMARKS.md)
+- [licenses/LICENSING.md](licenses/LICENSING.md)
 
 If governance changes, update those documents in the same change set.
 

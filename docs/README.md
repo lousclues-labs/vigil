@@ -52,10 +52,13 @@ Use this index when you need answers fast.
 | Document | What's Inside |
 |----------|---------------|
 | [License Text](../LICENSE) | GPL-3.0-only full text |
+| [NOTICE](../NOTICE) | Project identity, attribution, and license summary |
+| [Trademarks](../TRADEMARKS.md) | Trademark usage policy for Vigil and lousclues marks |
 | [Licensing Guide](../licenses/LICENSING.md) | File-level license coverage map |
 | [Dependency Audit](../licenses/DEPENDENCY-AUDIT.md) | Dependency license compatibility framework |
 | [Third-Party Licenses](../licenses/THIRD-PARTY-LICENSES) | Direct dependency attribution list |
 | [Docs License](../licenses/LICENSE-DOCS.md) | Documentation license scope and terms |
+| [Commercial Licensing](../licenses/LICENSE-COMMERCIAL.md) | Commercial licensing inquiry pathway |
 | [Contributor Terms](../licenses/CONTRIBUTOR-LICENSE.md) | Contribution license grant and submission terms |
 
 ---

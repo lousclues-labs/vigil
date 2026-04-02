@@ -224,6 +224,9 @@ See [Configuration](docs/CONFIGURATION.md) for the full reference.
 | [Dependency Audit](licenses/DEPENDENCY-AUDIT.md) | Dependency license compatibility framework |
 | [Third-Party Licenses](licenses/THIRD-PARTY-LICENSES) | Direct dependency attributions |
 | [Documentation License](licenses/LICENSE-DOCS.md) | License terms for project docs |
+| [Commercial Licensing](licenses/LICENSE-COMMERCIAL.md) | Commercial licensing inquiry pathway |
+| [NOTICE](NOTICE) | Project identity and attribution |
+| [Trademarks](TRADEMARKS.md) | Trademark usage policy |
 | [Contributing](CONTRIBUTING.md) | How to help |
 
 ---
@@ -247,8 +250,11 @@ Licensed under the GNU General Public License v3.0 only.
 
 License references:
 - [LICENSE](LICENSE) -- full GPL-3.0 text
+- [NOTICE](NOTICE) -- project identity and attribution
+- [TRADEMARKS.md](TRADEMARKS.md) -- trademark usage policy
 - [licenses/LICENSING.md](licenses/LICENSING.md) -- repository license coverage map
 - [licenses/LICENSE-DOCS.md](licenses/LICENSE-DOCS.md) -- documentation license terms
+- [licenses/LICENSE-COMMERCIAL.md](licenses/LICENSE-COMMERCIAL.md) -- commercial licensing inquiry
 - [licenses/THIRD-PARTY-LICENSES](licenses/THIRD-PARTY-LICENSES) -- third-party dependency attributions
 
 ---
