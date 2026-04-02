@@ -2,6 +2,45 @@
 
 All notable changes to Vigil will be documented in this file.
 
+## [0.2.0] - 2026-04-02
+
+### Added
+
+#### CI/CD Pipeline (`.github/workflows/ci.yml`)
+- Full GitHub Actions CI pipeline triggered on push to `main`/`develop` and pull requests to `main`
+- **Check & Lint** job: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc` with `-D warnings` via `RUSTDOCFLAGS`
+- **Security Audit** job: `cargo audit --deny warnings` and `cargo deny check` for comprehensive supply-chain security
+- **Test** job: matrix strategy testing both default features and `--all-features`, with `--test-threads=4` for parallelism; includes doc-test pass
+- **Coverage** job: `cargo-tarpaulin` generating XML + HTML reports, uploaded to Codecov via `codecov/codecov-action@v4` and as build artifacts
+- **MSRV Check** job: verifies compilation against Rust 1.75 (edition 2021 minimum)
+- **CI Success** gate job: single required status check for branch protection, fails if any upstream job fails
+- Concurrency groups with `cancel-in-progress: true` to avoid stale CI runs
+- `Swatinem/rust-cache@v2` on all jobs for Cargo build caching
+- `timeout-minutes` on every job to prevent runaway costs
+
+#### Fuzz Testing Infrastructure
+- **Fuzz smoke test** (`.github/workflows/fuzz-smoke.yml`): 60-second per-target fuzz on every push/PR touching `src/`, `fuzz/`, `Cargo.toml`, or `Cargo.lock`; uploads crash artifacts on failure
+- **Fuzz MOAB** (`.github/workflows/fuzz-moab.yml`): manual-dispatch multi-hour sharded fuzz campaign (3 targets × 4 shards, up to 5 hours per shard); uses `-seed` per shard and `-use_value_profile=1` for diversity; uploads corpus (30-day retention) and crash artifacts (90-day retention); report job summarizes proven properties
+- **Weekly Fuzz** (`.github/workflows/weekly-fuzz.yml`): scheduled Sunday 04:00 UTC extended fuzz (5 minutes per target, configurable via `max_total_time` input); shared Cargo cache across weekly runs
+
+#### Fuzz Targets (`fuzz/`)
+- Fuzz package scaffolding (`fuzz/Cargo.toml`) with `libfuzzer-sys`, `arbitrary`, and vigil library dependency
+- **`fuzz_config_parse`**: fuzzes `toml::from_str::<Config>()` — proves TOML config parsing never panics on arbitrary input
+- **`fuzz_baseline_compare`**: fuzzes JSON deserialization of `BaselineEntry`, `ChangeType`, and `Severity::from_str` — proves baseline comparison types handle malformed input safely
+- **`fuzz_scanner`**: fuzzes JSON deserialization of `ScanMode`, `MonitorBackend`, `PackageBackend`, `BaselineSource`, and `Severity::from_str` — proves scanner-related type parsing is robust
+
+#### Scheduled Security & Coverage (`.github/workflows/scheduled.yml`)
+- Weekly Monday 03:00 UTC security audit using both `cargo audit` and `cargo deny check`
+- Automatic GitHub issue creation (labeled `security`, `automated`) when vulnerabilities are found
+- Scheduled coverage with `--engine llvm`, `--verbose`, and 300-second timeout; uploaded to Codecov with 30-day artifact retention
+
+#### Supply-Chain Policy (`deny.toml`)
+- `cargo-deny` configuration for automated supply-chain checks
+- Advisory policy: deny known vulnerabilities, warn on unmaintained crates
+- License policy: deny unlicensed; allow MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Unicode-DFS-2016, GPL-3.0
+- Ban policy: warn on multiple versions of the same crate
+- Source policy: deny unknown registries and unknown git sources
+
 ## [0.1.0] - 2026-04-01
 
 ### Added

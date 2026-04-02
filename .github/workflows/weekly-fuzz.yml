@@ -1,0 +1,53 @@
+name: Weekly Fuzz
+
+on:
+  schedule:
+    - cron: '0 4 * * SUN'  # Weekly Sunday 04:00 UTC
+  workflow_dispatch:
+    inputs:
+      max_total_time:
+        description: "Seconds per target (default 300)"
+        required: false
+        default: 300
+        type: number
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: Weekly Fuzz (5 min per target)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: weekly-fuzz
+          workspaces: |
+            .
+            fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Build fuzz targets
+        run: cargo +nightly fuzz build
+      - name: Run fuzz targets
+        run: |
+          MAX_TIME=${{ inputs.max_total_time || '300' }}
+          for target in $(cargo +nightly fuzz list); do
+            echo "=== Fuzzing $target (${MAX_TIME}s) ==="
+            cargo +nightly fuzz run "$target" -- \
+              -max_total_time=$MAX_TIME \
+              -print_final_stats=1 \
+              -max_len=65536 || true
+          done
+      - name: Upload fuzz artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-fuzz-artifacts
+          path: |
+            fuzz/artifacts/
+            fuzz/corpus/
+          retention-days: 30

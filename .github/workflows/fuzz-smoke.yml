@@ -1,0 +1,44 @@
+name: Fuzz Smoke
+
+on:
+  push:
+    branches: [main]
+    paths: ['src/**', 'fuzz/**', 'Cargo.toml', 'Cargo.lock']
+  pull_request:
+    paths: ['src/**', 'fuzz/**', 'Cargo.toml', 'Cargo.lock']
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz-smoke:
+    name: Fuzz smoke test (60s)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Build fuzz targets
+        run: cargo +nightly fuzz build
+      - name: Run fuzz targets (60s each)
+        run: |
+          for target in $(cargo +nightly fuzz list); do
+            echo "=== Fuzzing $target (60s) ==="
+            cargo +nightly fuzz run "$target" -- \
+              -max_total_time=60 \
+              -print_final_stats=1 \
+              -max_len=65536
+          done
+      - name: Upload fuzz artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          retention-days: 7
