@@ -167,14 +167,12 @@ pub fn compare_entry(baseline: &BaselineEntry, _config: &Config) -> Result<Optio
             // Let's check if the file can be opened to distinguish.
             match File::open(path) {
                 Ok(_) => Ok(None), // File exists, no changes
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    Ok(Some(deletion_result(
-                        path,
-                        baseline,
-                        Severity::Medium,
-                        String::new(),
-                    )))
-                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Some(deletion_result(
+                    path,
+                    baseline,
+                    Severity::Medium,
+                    String::new(),
+                ))),
                 Err(e) => Err(e.into()),
             }
         }
@@ -199,20 +197,16 @@ pub fn compare_event(
     group_severity: Severity,
 ) -> Result<Option<ChangeResult>> {
     match compare_file_against_baseline(path, baseline)? {
-        None => {
-            match File::open(path) {
-                Ok(_) => Ok(None),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    Ok(Some(deletion_result(
-                        path,
-                        baseline,
-                        group_severity,
-                        group_name.to_string(),
-                    )))
-                }
-                Err(e) => Err(e.into()),
-            }
-        }
+        None => match File::open(path) {
+            Ok(_) => Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Some(deletion_result(
+                path,
+                baseline,
+                group_severity,
+                group_name.to_string(),
+            ))),
+            Err(e) => Err(e.into()),
+        },
         Some((change_types, current_hash, file_meta)) => Ok(Some(change_result(
             path,
             baseline,

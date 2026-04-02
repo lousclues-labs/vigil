@@ -57,7 +57,9 @@ pub fn daemon_run(config: &Config) -> Result<()> {
     let mut sigset = SigSet::empty();
     sigset.add(Signal::SIGINT);
     sigset.add(Signal::SIGTERM);
-    sigset.thread_block().expect("failed to block signals on main thread");
+    sigset
+        .thread_block()
+        .expect("failed to block signals on main thread");
 
     // Set up shutdown signal handler
     let shutdown = Arc::new(AtomicBool::new(false));

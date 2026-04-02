@@ -84,8 +84,6 @@ fn query_rpm(path: &str) -> Option<String> {
 
 fn command_exists(cmd: &str) -> bool {
     std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths).any(|dir| dir.join(cmd).is_file())
-        })
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(cmd).is_file()))
         .unwrap_or(false)
 }
