@@ -365,7 +365,7 @@ fn cmd_doctor(config_path: Option<&std::path::Path>) -> Result<()> {
     let fan_fd = unsafe {
         libc::syscall(
             libc::SYS_fanotify_init,
-            0x00000001u32 | 0x00000000u32, // FAN_CLOEXEC | FAN_CLASS_NOTIF
+            0x00000001u32, // FAN_CLOEXEC | FAN_CLASS_NOTIF
             libc::O_RDONLY,
         )
     };

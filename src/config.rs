@@ -413,7 +413,7 @@ fn validate_config(config: &Config) -> Result<()> {
     if let Some(parent) = config.alerts.log_file.parent() {
         if parent.exists() {
             // Check if writable by attempting metadata
-            if let Err(_) = std::fs::metadata(parent) {
+            if std::fs::metadata(parent).is_err() {
                 log::warn!(
                     "Log file directory may not be writable: {}",
                     parent.display()
@@ -538,7 +538,7 @@ pub fn expand_user_paths(paths: &[String]) -> Vec<PathBuf> {
             } else {
                 for home in &home_dirs {
                     let full = home.join(suffix);
-                    if full.exists() || full.parent().map_or(false, |p| p.exists()) {
+                    if full.exists() || full.parent().is_some_and(|p| p.exists()) {
                         expanded.push(full);
                     } else {
                         log::warn!("Expanded path does not exist: {}", full.display());
@@ -572,7 +572,7 @@ fn enumerate_home_dirs() -> Vec<PathBuf> {
         let fields: Vec<&str> = line.split(':').collect();
         if fields.len() >= 6 {
             if let Ok(uid) = fields[2].parse::<u32>() {
-                if uid >= 1000 && uid < 65534 {
+                if (1000..65534).contains(&uid) {
                     let home = PathBuf::from(fields[5]);
                     if home.is_dir() {
                         dirs.push(home);

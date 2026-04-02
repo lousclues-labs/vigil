@@ -52,7 +52,7 @@ pub fn start_monitor(
 /// Collect all expanded watch paths from config.
 fn collect_watch_paths(config: &Config) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    for (_name, group) in &config.watch {
+    for group in config.watch.values() {
         let expanded = crate::config::expand_user_paths(&group.paths);
         paths.extend(expanded);
     }

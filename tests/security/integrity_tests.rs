@@ -3,8 +3,6 @@
 use std::fs;
 use std::path::PathBuf;
 
-use vigil::baseline;
-use vigil::db;
 use vigil::db::ops;
 use vigil::types::*;
 
@@ -16,7 +14,6 @@ fn baseline_hash_is_deterministic() {
     let tmp = TempDir::new("sec-determinism");
     let file = tmp.create_file("deterministic.txt", b"fixed content for determinism test");
 
-    let config = test_config(&tmp);
     let entry1 = baseline_entry_for(&file);
     let entry2 = baseline_entry_for(&file);
 
@@ -161,8 +158,8 @@ fn metadata_captures_permissions_and_ownership() {
         0o600,
         "Permissions must be captured correctly"
     );
-    assert!(
-        entry.owner_uid > 0 || entry.owner_uid == 0,
-        "UID must be captured"
-    );
+    // Verify ownership metadata was captured (matches the file's actual UID)
+    use std::os::unix::fs::MetadataExt;
+    let file_uid = std::fs::metadata(&file).unwrap().uid();
+    assert_eq!(entry.owner_uid, file_uid, "UID must be captured");
 }

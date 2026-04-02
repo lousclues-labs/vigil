@@ -161,10 +161,8 @@ impl AlertEngine {
     fn is_suppressed(&self, change: &ChangeResult, maintenance_window: bool) -> bool {
         // During maintenance window, suppress notifications for package-managed paths
         // but HIGH/CRITICAL for non-package-managed paths still fire
-        if maintenance_window {
-            if change.package.is_some() {
-                return true;
-            }
+        if maintenance_window && change.package.is_some() {
+            return true;
         }
 
         // Per-path cooldown
@@ -205,7 +203,7 @@ impl AlertEngine {
             timestamp: Utc::now(),
             event_id: format!(
                 "vigil_{}",
-                uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string()
+                &uuid::Uuid::new_v4().to_string().replace('-', "")[..12]
             ),
             severity: change.severity,
             change_type: primary_change,

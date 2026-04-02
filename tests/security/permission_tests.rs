@@ -3,7 +3,6 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-use vigil::baseline;
 use vigil::db;
 use vigil::types::*;
 

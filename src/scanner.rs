@@ -63,7 +63,7 @@ pub fn run_scan(
 
     log::info!(
         "Scan complete ({} mode): {} checked, {} changes, {} errors",
-        mode.to_string(),
+        mode,
         result.total_checked,
         result.changes_found,
         result.errors,
@@ -106,7 +106,7 @@ fn set_idle_io_priority() {
             libc::SYS_ioprio_set,
             IOPRIO_WHO_PROCESS,
             0, // current process
-            (IOPRIO_CLASS_IDLE << 13) | 0,
+            IOPRIO_CLASS_IDLE << 13,
         );
     }
 }

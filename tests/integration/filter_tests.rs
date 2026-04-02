@@ -4,7 +4,6 @@ use std::path::PathBuf;
 
 use chrono::Utc;
 
-use vigil::config::*;
 use vigil::monitor::filter::EventFilter;
 use vigil::types::*;
 

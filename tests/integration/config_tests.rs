@@ -1,8 +1,5 @@
 // Integration tests: configuration loading and validation.
 
-use std::collections::HashMap;
-use std::fs;
-
 use vigil::config::*;
 use vigil::types::*;
 

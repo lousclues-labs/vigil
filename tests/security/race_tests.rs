@@ -1,9 +1,6 @@
 // Security tests: race condition and TOCTOU resilience.
 
 use std::fs;
-use std::sync::{Arc, Barrier};
-use std::thread;
-
 use vigil::baseline;
 use vigil::db;
 use vigil::types::*;

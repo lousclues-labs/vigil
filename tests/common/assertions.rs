@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Custom assertions for Vigil tests.
 
 use vigil::types::{ChangeResult, ChangeType, Severity};

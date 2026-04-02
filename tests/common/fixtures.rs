@@ -43,6 +43,7 @@ impl TempDir {
     }
 
     /// Create a subdirectory.
+    #[allow(dead_code)]
     pub fn create_dir(&self, name: &str) -> PathBuf {
         let dir_path = self.path.join(name);
         fs::create_dir_all(&dir_path).expect("create subdir");
@@ -121,6 +122,7 @@ pub fn test_config(tmp: &TempDir) -> Config {
 }
 
 /// Build a config with custom watch paths.
+#[allow(dead_code)]
 pub fn test_config_with_paths(tmp: &TempDir, paths: Vec<String>, severity: Severity) -> Config {
     let mut cfg = test_config(tmp);
     cfg.watch.clear();
@@ -142,6 +144,7 @@ pub fn test_db() -> Connection {
 }
 
 /// Open a file-backed test database in the given temp dir.
+#[allow(dead_code)]
 pub fn test_db_at(tmp: &TempDir) -> Connection {
     let cfg = test_config(tmp);
     db::open_db(&cfg).expect("open test db")
