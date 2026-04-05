@@ -60,6 +60,12 @@ impl Metrics {
     }
 }
 
+impl Default for Metrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Serializable point-in-time snapshot of all metrics counters.
 #[derive(Debug, Clone, Serialize)]
 pub struct MetricsSnapshot {

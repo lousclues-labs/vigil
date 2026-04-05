@@ -219,8 +219,8 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                                 .events_processed
                                 .fetch_add(1, Ordering::Relaxed);
 
-                            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                                || {
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     process_worker_event(
                                         event,
                                         &conn,
@@ -231,8 +231,7 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                                         &mut change_batch,
                                         &mut wal_writes,
                                     );
-                                },
-                            ));
+                                }));
 
                             if result.is_err() {
                                 worker_panic_count.fetch_add(1, Ordering::Relaxed);
@@ -523,26 +522,28 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                 }
             }
 
-            if matches!(&*daemon_state.read(), DaemonState::Degraded { .. }) {
-                if test_write_ok(&conn) {
-                    let mut flushed = 0u64;
-                    loop {
-                        let next = { pending_db_writes.lock().pop_front() };
-                        let Some(change) = next else { break };
-                        let maintenance = maintenance_active.load(Ordering::Acquire);
-                        if let Err(e) = alert_engine.dispatch(&change, maintenance, &conn) {
-                            if is_disk_full_error(&e) {
-                                pending_db_writes.lock().push_front(change);
-                                break;
-                            }
-                        } else {
-                            flushed += 1;
+            if matches!(&*daemon_state.read(), DaemonState::Degraded { .. }) && test_write_ok(&conn)
+            {
+                let mut flushed = 0u64;
+                loop {
+                    let next = { pending_db_writes.lock().pop_front() };
+                    let Some(change) = next else { break };
+                    let maintenance = maintenance_active.load(Ordering::Acquire);
+                    if let Err(e) = alert_engine.dispatch(&change, maintenance, &conn) {
+                        if is_disk_full_error(&e) {
+                            pending_db_writes.lock().push_front(change);
+                            break;
                         }
+                    } else {
+                        flushed += 1;
                     }
-
-                    *daemon_state.write() = DaemonState::Healthy;
-                    log::warn!("Daemon recovered from degraded mode; flushed {} queued writes", flushed);
                 }
+
+                *daemon_state.write() = DaemonState::Healthy;
+                log::warn!(
+                    "Daemon recovered from degraded mode; flushed {} queued writes",
+                    flushed
+                );
             }
 
             if let Err(e) = write_metrics_snapshot(&metrics) {
@@ -712,8 +713,10 @@ fn process_worker_event(
     let (group_name, severity) = group_lookup.unwrap_or(("unknown".into(), Severity::Medium));
 
     // Explicit deletion handling to avoid race with compare path
-    if matches!(event.event_type, FsEventType::Delete | FsEventType::MovedFrom)
-        && !event.path.exists()
+    if matches!(
+        event.event_type,
+        FsEventType::Delete | FsEventType::MovedFrom
+    ) && !event.path.exists()
     {
         let change = build_deleted_change(&event.path, &baseline_entry, group_name, severity);
         let maintenance = maintenance_active.load(Ordering::Acquire);
@@ -934,10 +937,13 @@ fn is_disk_full_error(err: &crate::error::VigilError) -> bool {
 }
 
 fn test_write_ok(conn: &rusqlite::Connection) -> bool {
-    conn.execute("CREATE TABLE IF NOT EXISTS _vigil_healthcheck (v INTEGER)", [])
-        .and_then(|_| conn.execute("INSERT INTO _vigil_healthcheck (v) VALUES (1)", []))
-        .and_then(|_| conn.execute("DELETE FROM _vigil_healthcheck", []))
-        .is_ok()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS _vigil_healthcheck (v INTEGER)",
+        [],
+    )
+    .and_then(|_| conn.execute("INSERT INTO _vigil_healthcheck (v) VALUES (1)", []))
+    .and_then(|_| conn.execute("DELETE FROM _vigil_healthcheck", []))
+    .is_ok()
 }
 
 fn write_metrics_snapshot(metrics: &Metrics) -> Result<()> {

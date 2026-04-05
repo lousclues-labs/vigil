@@ -55,13 +55,13 @@ pub fn open_db_at_with_options(
     conn.pragma_update(
         None,
         "synchronous",
-        &sync_mode.unwrap_or("NORMAL").to_string(),
+        sync_mode.unwrap_or("NORMAL").to_string(),
     )?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(
         None,
         "busy_timeout",
-        &busy_timeout_ms.unwrap_or(5000).to_string(),
+        busy_timeout_ms.unwrap_or(5000).to_string(),
     )?;
 
     // Performance pragmas
@@ -79,7 +79,11 @@ fn configure_connection(conn: &Connection, config: &Config) -> Result<()> {
     }
     conn.pragma_update(None, "synchronous", &config.database.sync_mode)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.pragma_update(None, "busy_timeout", &config.database.busy_timeout_ms.to_string())?;
+    conn.pragma_update(
+        None,
+        "busy_timeout",
+        config.database.busy_timeout_ms.to_string(),
+    )?;
 
     // Performance pragmas
     conn.pragma_update(None, "cache_size", "-8000")?;

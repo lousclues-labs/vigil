@@ -9,7 +9,10 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub enum DaemonState {
     Healthy,
-    Degraded { reason: String, since: DateTime<Utc> },
+    Degraded {
+        reason: String,
+        since: DateTime<Utc>,
+    },
 }
 
 // ── Severity ────────────────────────────────────────────────
