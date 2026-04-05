@@ -3,7 +3,6 @@ pub mod journal;
 pub mod json_log;
 pub mod socket;
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -12,14 +11,18 @@ use parking_lot::Mutex;
 
 use crate::config::Config;
 use crate::error::Result;
-use crate::types::{Alert, AlertContext, AlertFileInfo, ChangeResult, ChangeType};
+use crate::types::{Alert, AlertContext, AlertFileInfo, ChangeResult, ChangeType, Severity};
+
+static EVENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// The alert engine: dispatches classified changes to output channels
 /// with rate limiting, cooldown, and deduplication.
 pub struct AlertEngine {
-    config: Config,
+    syslog_enabled: bool,
+    log_min_severity: Severity,
+    dbus_min_severity: Severity,
     /// Per-path cooldown tracking (path → last alert time).
-    cooldowns: Mutex<HashMap<String, Instant>>,
+    cooldowns: Mutex<std::collections::HashMap<String, Instant>>,
     /// Alert count in the current minute window.
     rate_counter: Mutex<RateCounter>,
     /// D-Bus notifier (optional).
@@ -80,8 +83,10 @@ impl AlertEngine {
         };
 
         Ok(Self {
-            config: config.clone(),
-            cooldowns: Mutex::new(HashMap::new()),
+            syslog_enabled: config.alerts.syslog,
+            log_min_severity: config.alerts.severity_filter.log_min_severity,
+            dbus_min_severity: config.alerts.severity_filter.dbus_min_severity,
+            cooldowns: Mutex::new(std::collections::HashMap::new()),
             rate_counter: Mutex::new(RateCounter {
                 count: 0,
                 window_start: Instant::now(),
@@ -156,20 +161,20 @@ impl AlertEngine {
         let alert = self.build_alert(change, primary_change, maintenance_window);
 
         // journald/syslog (always, if enabled)
-        if self.config.alerts.syslog {
+        if self.syslog_enabled {
             journal::log_alert(&alert);
         }
 
         // JSON log file
         if let Some(ref logger) = self.json_logger {
-            if change.severity >= self.config.alerts.severity_filter.log_min_severity {
+            if change.severity >= self.log_min_severity {
                 logger.write(&alert);
             }
         }
 
         // D-Bus desktop notification
         if let Some(ref notifier) = self.dbus_notifier {
-            if change.severity >= self.config.alerts.severity_filter.dbus_min_severity {
+            if change.severity >= self.dbus_min_severity {
                 notifier.notify(&alert);
             }
         }
@@ -231,13 +236,15 @@ impl AlertEngine {
         primary_change: ChangeType,
         maintenance_window: bool,
     ) -> Alert {
+        let alert_timestamp = Utc::now();
+        let alert_timestamp_epoch = alert_timestamp.timestamp() as u64;
         Alert {
             version: 1,
-            timestamp: Utc::now(),
-            event_id: format!(
-                "vigil_{}",
-                &uuid::Uuid::new_v4().to_string().replace('-', "")[..12]
-            ),
+            timestamp: alert_timestamp,
+            event_id: {
+                let seq = EVENT_COUNTER.fetch_add(1, Ordering::Relaxed);
+                format!("vigil_{:x}_{:06x}", alert_timestamp_epoch, seq)
+            },
             severity: change.severity,
             change_type: primary_change,
             file: AlertFileInfo {

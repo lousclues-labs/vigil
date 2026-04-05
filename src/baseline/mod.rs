@@ -12,6 +12,31 @@ use crate::db::ops;
 use crate::error::{Result, ScanWarning, VigilError, WarningSeverity};
 use crate::types::{BaselineEntry, BaselineSource};
 
+/// Pre-compiled exclusion patterns for efficient matching.
+pub struct CompiledExclusions {
+    pub patterns: Vec<glob::Pattern>,
+    pub system_prefixes: Vec<String>,
+}
+
+impl CompiledExclusions {
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            patterns: config
+                .exclusions
+                .patterns
+                .iter()
+                .filter_map(|p| glob::Pattern::new(p).ok())
+                .collect(),
+            system_prefixes: config
+                .exclusions
+                .system_exclusions
+                .iter()
+                .map(|s| s.trim_end_matches('*').to_string())
+                .collect(),
+        }
+    }
+}
+
 /// Initialize the baseline: scan all configured watch paths and populate the database.
 pub fn init_baseline(
     conn: &Connection,
@@ -21,13 +46,35 @@ pub fn init_baseline(
     let mut count: u64 = 0;
     let now = Utc::now().timestamp();
     let mut warnings = Vec::new();
+    let exclusions = CompiledExclusions::from_config(config);
+
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let mut batch_count: u64 = 0;
 
     for (group_name, group) in &config.watch {
         let expanded_paths = expand_user_paths(&group.paths);
 
         for path in &expanded_paths {
-            match scan_path(conn, path, group_name, group, config, now, quiet) {
-                Ok(n) => count += n,
+            match scan_path(
+                conn,
+                path,
+                group_name,
+                group,
+                config,
+                now,
+                quiet,
+                &exclusions,
+            ) {
+                Ok(n) => {
+                    count += n;
+                    batch_count += n;
+                    // Commit every 1,000 inserts to avoid holding the write lock too long
+                    if batch_count >= 1000 {
+                        conn.execute_batch("COMMIT")?;
+                        conn.execute_batch("BEGIN IMMEDIATE")?;
+                        batch_count = 0;
+                    }
+                }
                 Err(e) => {
                     // Transient error — log and continue
                     log::warn!("Skipping {}: {}", path.display(), e);
@@ -40,6 +87,8 @@ pub fn init_baseline(
             }
         }
     }
+
+    conn.execute_batch("COMMIT")?;
 
     // Record baseline generation metadata
     ops::set_config_state(conn, "last_baseline_refresh", &now.to_string())?;
@@ -62,6 +111,10 @@ pub fn refresh_baseline(
     let mut count: u64 = 0;
     let now = Utc::now().timestamp();
     let mut warnings = Vec::new();
+    let exclusions = CompiledExclusions::from_config(config);
+
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let mut batch_count: u64 = 0;
 
     for (group_name, group) in &config.watch {
         let expanded_paths = expand_user_paths(&group.paths);
@@ -77,8 +130,25 @@ pub fn refresh_baseline(
                 }
             }
 
-            match scan_path(conn, path, group_name, group, config, now, quiet) {
-                Ok(n) => count += n,
+            match scan_path(
+                conn,
+                path,
+                group_name,
+                group,
+                config,
+                now,
+                quiet,
+                &exclusions,
+            ) {
+                Ok(n) => {
+                    count += n;
+                    batch_count += n;
+                    if batch_count >= 1000 {
+                        conn.execute_batch("COMMIT")?;
+                        conn.execute_batch("BEGIN IMMEDIATE")?;
+                        batch_count = 0;
+                    }
+                }
                 Err(e) => {
                     log::warn!("Skipping {}: {}", path.display(), e);
                     warnings.push(ScanWarning {
@@ -90,6 +160,8 @@ pub fn refresh_baseline(
             }
         }
     }
+
+    conn.execute_batch("COMMIT")?;
 
     ops::set_config_state(conn, "last_baseline_refresh", &now.to_string())?;
 
@@ -106,7 +178,7 @@ pub fn add_file(conn: &Connection, path: &Path, config: &Config) -> Result<()> {
         .canonicalize()
         .map_err(|e| VigilError::Path(format!("cannot canonicalize {}: {}", path.display(), e)))?;
 
-    let meta = metadata::collect_file_metadata(&canonical, config)?;
+    let meta = metadata::collect_file_metadata(&canonical, config, None)?;
     let now = Utc::now().timestamp();
 
     let pkg = crate::package::query_package_owner(&canonical, &config.package_manager);
@@ -155,6 +227,7 @@ pub fn diff_baseline(
 ) -> Result<Vec<crate::types::ChangeResult>> {
     let entries = ops::get_all_baselines(conn)?;
     let mut changes = Vec::new();
+    let exclusions = CompiledExclusions::from_config(config);
 
     // Build a lookup from path to (group_name, severity)
     let watch_lookup: Vec<(std::path::PathBuf, String, crate::types::Severity)> = config
@@ -186,16 +259,13 @@ pub fn diff_baseline(
     }
 
     // Check for new files in monitored directories that aren't in the baseline
-    let baseline_paths: std::collections::HashSet<String> = entries
-        .iter()
-        .map(|e| e.path.to_string_lossy().into_owned())
-        .collect();
+    let baseline_paths = ops::get_all_baseline_paths(conn)?;
 
     for (group_name, group) in &config.watch {
         let expanded = expand_user_paths(&group.paths);
         for path in &expanded {
             if path.is_dir() {
-                if let Ok(walker) = walk_directory(path, config) {
+                if let Ok(walker) = walk_directory(path, &exclusions) {
                     for file_path in walker {
                         let path_str = file_path.to_string_lossy().into_owned();
                         if !baseline_paths.contains(&path_str) {
@@ -260,6 +330,7 @@ pub struct BaselineStats {
 // ── Internal helpers ───────────────────────────────────────
 
 /// Scan a single path (file or directory) and insert/upsert baseline entries.
+#[allow(clippy::too_many_arguments)]
 fn scan_path(
     conn: &Connection,
     path: &Path,
@@ -268,15 +339,29 @@ fn scan_path(
     config: &Config,
     now: i64,
     quiet: bool,
+    exclusions: &CompiledExclusions,
 ) -> Result<u64> {
     let mut count = 0;
 
     if path.is_file() {
-        count += scan_single_file(conn, path, group_name, config, now)?;
+        count += scan_single_file(conn, path, group_name, config, now, exclusions, None)?;
     } else if path.is_dir() {
-        let files = walk_directory(path, config)?;
-        for file_path in files {
-            match scan_single_file(conn, &file_path, group_name, config, now) {
+        let files = walk_directory(path, exclusions)?;
+        // Batch query package ownership for all files at once
+        let path_refs: Vec<&Path> = files.iter().map(|p| p.as_path()).collect();
+        let pkg_map =
+            crate::package::batch_query_package_owners(&path_refs, &config.package_manager);
+        for file_path in &files {
+            let pkg = pkg_map.get(file_path).cloned().flatten();
+            match scan_single_file(
+                conn,
+                file_path,
+                group_name,
+                config,
+                now,
+                exclusions,
+                Some(pkg),
+            ) {
                 Ok(n) => count += n,
                 Err(e) => {
                     if !quiet {
@@ -300,27 +385,26 @@ fn scan_single_file(
     _group_name: &str,
     config: &Config,
     now: i64,
+    exclusions: &CompiledExclusions,
+    pre_resolved_pkg: Option<Option<String>>,
 ) -> Result<u64> {
-    // Skip files larger than max_file_size
-    if let Ok(meta) = std::fs::metadata(path) {
-        if meta.len() > config.scanner.max_file_size {
-            log::debug!(
-                "Skipping {} (size {} > max {})",
-                path.display(),
-                meta.len(),
-                config.scanner.max_file_size
-            );
-            return Ok(0);
-        }
-    }
-
     // Skip excluded patterns
-    if is_excluded(path, config) {
+    if is_excluded(path, exclusions) {
         return Ok(0);
     }
 
-    let file_meta = metadata::collect_file_metadata(path, config)?;
-    let pkg = crate::package::query_package_owner(path, &config.package_manager);
+    let file_meta =
+        match metadata::collect_file_metadata(path, config, Some(config.scanner.max_file_size)) {
+            Ok(m) => m,
+            Err(e) => {
+                log::debug!("Skipping {}: {}", path.display(), e);
+                return Ok(0);
+            }
+        };
+    let pkg = match pre_resolved_pkg {
+        Some(p) => p,
+        None => crate::package::query_package_owner(path, &config.package_manager),
+    };
 
     let entry = BaselineEntry {
         id: None,
@@ -347,15 +431,15 @@ fn scan_single_file(
 
 /// Walk a directory recursively, yielding regular file paths.
 /// Respects exclusion patterns.
-fn walk_directory(dir: &Path, config: &Config) -> Result<Vec<PathBuf>> {
+fn walk_directory(dir: &Path, exclusions: &CompiledExclusions) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    walk_recursive(dir, config, &mut files, 0, 20)?;
+    walk_recursive(dir, exclusions, &mut files, 0, 20)?;
     Ok(files)
 }
 
 fn walk_recursive(
     dir: &Path,
-    config: &Config,
+    exclusions: &CompiledExclusions,
     files: &mut Vec<PathBuf>,
     depth: u32,
     max_depth: u32,
@@ -380,7 +464,7 @@ fn walk_recursive(
 
         let path = entry.path();
 
-        if is_excluded(&path, config) {
+        if is_excluded(&path, exclusions) {
             continue;
         }
 
@@ -392,7 +476,7 @@ fn walk_recursive(
         if ft.is_file() {
             files.push(path);
         } else if ft.is_dir() {
-            walk_recursive(&path, config, files, depth + 1, max_depth)?;
+            walk_recursive(&path, exclusions, files, depth + 1, max_depth)?;
         }
         // Skip symlinks, sockets, etc.
     }
@@ -401,16 +485,12 @@ fn walk_recursive(
 }
 
 /// Check if a path matches any exclusion pattern.
-fn is_excluded(path: &Path, config: &Config) -> bool {
+fn is_excluded(path: &Path, exclusions: &CompiledExclusions) -> bool {
     let path_str = path.to_string_lossy();
 
     // System exclusions (absolute prefix match)
-    for excl in &config.exclusions.system_exclusions {
-        if let Some(prefix) = excl.strip_suffix('*') {
-            if path_str.starts_with(prefix) {
-                return true;
-            }
-        } else if path_str == excl.as_str() {
+    for prefix in &exclusions.system_prefixes {
+        if path_str.starts_with(prefix.as_str()) {
             return true;
         }
     }
@@ -418,16 +498,72 @@ fn is_excluded(path: &Path, config: &Config) -> bool {
     // Pattern exclusions (glob match against filename)
     let file_name = path
         .file_name()
-        .map(|f| f.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map(|f| f.to_string_lossy())
+        .unwrap_or(std::borrow::Cow::Borrowed(""));
 
-    for pattern in &config.exclusions.patterns {
-        if let Ok(glob) = glob::Pattern::new(pattern) {
-            if glob.matches(&file_name) || glob.matches(&path_str) {
-                return true;
-            }
+    for glob in &exclusions.patterns {
+        if glob.matches(&file_name) || glob.matches(&path_str) {
+            return true;
         }
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compiled_exclusions_from_config() {
+        let mut watch = HashMap::new();
+        watch.insert(
+            "test".into(),
+            crate::config::WatchGroup {
+                severity: crate::types::Severity::Medium,
+                paths: vec!["/tmp/test".into()],
+            },
+        );
+        let config = crate::config::Config {
+            daemon: crate::config::DaemonConfig::default(),
+            scanner: crate::config::ScannerConfig::default(),
+            alerts: crate::config::AlertsConfig::default(),
+            exclusions: crate::config::ExclusionsConfig {
+                patterns: vec!["*.swp".into(), "*.tmp".into()],
+                system_exclusions: vec!["/proc/*".into(), "/sys/*".into()],
+            },
+            package_manager: crate::config::PackageManagerConfig::default(),
+            hooks: crate::config::HooksConfig::default(),
+            security: crate::config::SecurityConfig::default(),
+            database: crate::config::DatabaseConfig::default(),
+            watch,
+        };
+
+        let exclusions = CompiledExclusions::from_config(&config);
+        assert!(!exclusions.patterns.is_empty());
+        assert!(!exclusions.system_prefixes.is_empty());
+
+        // Verify system prefixes have * stripped
+        for prefix in &exclusions.system_prefixes {
+            assert!(!prefix.ends_with('*'));
+        }
+    }
+
+    #[test]
+    fn compiled_exclusions_is_excluded() {
+        let exclusions = CompiledExclusions {
+            patterns: vec![
+                glob::Pattern::new("*.swp").unwrap(),
+                glob::Pattern::new("*.tmp").unwrap(),
+            ],
+            system_prefixes: vec!["/proc/".into(), "/sys/".into()],
+        };
+
+        assert!(is_excluded(Path::new("/proc/1/status"), &exclusions));
+        assert!(is_excluded(Path::new("/sys/class/net"), &exclusions));
+        assert!(is_excluded(Path::new("/home/user/.file.swp"), &exclusions));
+        assert!(is_excluded(Path::new("/tmp/data.tmp"), &exclusions));
+        assert!(!is_excluded(Path::new("/etc/passwd"), &exclusions));
+        assert!(!is_excluded(Path::new("/usr/bin/ls"), &exclusions));
+    }
 }

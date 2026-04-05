@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
@@ -11,7 +12,7 @@ const MAX_DEBOUNCE_ENTRIES: usize = 50_000;
 /// and per-path debounce logic.
 pub struct EventFilter {
     /// Per-path debounce timers (last event time).
-    debounce_timers: HashMap<String, Instant>,
+    debounce_timers: HashMap<PathBuf, Instant>,
     /// Debounce window duration.
     debounce_window: Duration,
     /// Compiled exclusion glob patterns.
@@ -59,8 +60,8 @@ impl EventFilter {
         let file_name = event
             .path
             .file_name()
-            .map(|f| f.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .map(|f| f.to_string_lossy())
+            .unwrap_or(std::borrow::Cow::Borrowed(""));
 
         for pattern in &self.exclusion_patterns {
             if pattern.matches(&file_name) || pattern.matches(&path_str) {
@@ -78,7 +79,6 @@ impl EventFilter {
         }
 
         // Per-path debounce
-        let key = path_str.into_owned();
         let now = Instant::now();
 
         // Bound debounce map to prevent unbounded memory growth
@@ -90,14 +90,14 @@ impl EventFilter {
             self.prune_debounce();
         }
 
-        if let Some(last) = self.debounce_timers.get(&key) {
+        if let Some(last) = self.debounce_timers.get(&event.path) {
             if now.duration_since(*last) < self.debounce_window {
                 // Update timer to latest event (we want the final state after debounce)
-                self.debounce_timers.insert(key, now);
+                self.debounce_timers.insert(event.path.clone(), now);
                 return false;
             }
         }
-        self.debounce_timers.insert(key, now);
+        self.debounce_timers.insert(event.path.clone(), now);
 
         true
     }

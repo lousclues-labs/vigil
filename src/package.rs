@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
@@ -117,4 +119,153 @@ fn command_exists(cmd: &str) -> bool {
     std::env::var_os("PATH")
         .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(cmd).is_file()))
         .unwrap_or(false)
+}
+
+/// Batch query package ownership for multiple paths at once.
+/// Batches paths into groups of ~100 for efficiency.
+pub fn batch_query_package_owners(
+    paths: &[&Path],
+    config: &PackageManagerConfig,
+) -> HashMap<PathBuf, Option<String>> {
+    let backend = if config.backend == PackageBackend::Auto {
+        detect_backend()
+    } else {
+        config.backend
+    };
+
+    let mut results = HashMap::with_capacity(paths.len());
+    let batch_size = 100;
+
+    for chunk in paths.chunks(batch_size) {
+        let path_strs: Vec<String> = chunk
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let batch_results = match backend {
+            PackageBackend::Pacman => batch_query_pacman(&path_strs),
+            PackageBackend::Dpkg => batch_query_dpkg(&path_strs),
+            PackageBackend::Rpm => batch_query_rpm(&path_strs),
+            PackageBackend::Auto => HashMap::new(),
+        };
+        for path in chunk {
+            let pkg = batch_results.get(&*path.to_string_lossy()).cloned();
+            results.insert(path.to_path_buf(), pkg);
+        }
+    }
+
+    results
+}
+
+fn batch_query_dpkg(paths: &[String]) -> HashMap<String, String> {
+    let mut results = HashMap::new();
+    let mut cmd = Command::new("dpkg");
+    cmd.arg("-S");
+    for p in paths {
+        cmd.arg(p);
+    }
+    if let Some(output) = run_with_timeout(&mut cmd, PKG_QUERY_TIMEOUT) {
+        // dpkg -S output: "package: /path/to/file" per line
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if let Some((pkg, path)) = line.split_once(": ") {
+                results.insert(path.trim().to_string(), pkg.trim().to_string());
+            }
+        }
+    }
+    results
+}
+
+fn batch_query_pacman(paths: &[String]) -> HashMap<String, String> {
+    let mut results = HashMap::new();
+    let mut cmd = Command::new("pacman");
+    cmd.args(["-Qo", "--quiet"]);
+    for p in paths {
+        cmd.arg(p);
+    }
+    if let Some(output) = run_with_timeout(&mut cmd, PKG_QUERY_TIMEOUT) {
+        // pacman -Qo --quiet outputs one package name per line matching input order
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for (path, pkg_line) in paths.iter().zip(stdout.lines()) {
+            let pkg = pkg_line.trim().to_string();
+            if !pkg.is_empty() {
+                results.insert(path.clone(), pkg);
+            }
+        }
+    }
+    results
+}
+
+fn batch_query_rpm(paths: &[String]) -> HashMap<String, String> {
+    let mut results = HashMap::new();
+    let mut cmd = Command::new("rpm");
+    cmd.arg("-qf");
+    for p in paths {
+        cmd.arg(p);
+    }
+    if let Some(output) = run_with_timeout(&mut cmd, PKG_QUERY_TIMEOUT) {
+        // rpm -qf outputs one package per line matching input order
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for (path, pkg_line) in paths.iter().zip(stdout.lines()) {
+            let pkg = pkg_line.trim().to_string();
+            if !pkg.is_empty() && !pkg.contains("not owned") {
+                results.insert(path.clone(), pkg);
+            }
+        }
+    }
+    results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_dpkg_batch_output() {
+        // Simulate dpkg -S output parsing
+        let output = "coreutils: /usr/bin/ls\ncoreutils: /usr/bin/cat\n";
+        let mut results = HashMap::new();
+        for line in output.lines() {
+            if let Some((pkg, path)) = line.split_once(": ") {
+                results.insert(path.trim().to_string(), pkg.trim().to_string());
+            }
+        }
+        assert_eq!(results.get("/usr/bin/ls"), Some(&"coreutils".to_string()));
+        assert_eq!(results.get("/usr/bin/cat"), Some(&"coreutils".to_string()));
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn parse_pacman_batch_output() {
+        let paths = ["/usr/bin/ls".to_string(), "/usr/bin/cat".to_string()];
+        // Simulate pacman -Qo --quiet output: one package per line
+        let output = "coreutils\ncoreutils\n";
+        let mut results = HashMap::new();
+        for (path, pkg_line) in paths.iter().zip(output.lines()) {
+            let pkg = pkg_line.trim().to_string();
+            if !pkg.is_empty() {
+                results.insert(path.clone(), pkg);
+            }
+        }
+        assert_eq!(results.get("/usr/bin/ls"), Some(&"coreutils".to_string()));
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn parse_rpm_batch_output_with_not_owned() {
+        let paths = ["/usr/bin/ls".to_string(), "/tmp/custom".to_string()];
+        // Simulate rpm -qf output: one result per line, "not owned" for unpackaged
+        let output = "coreutils-9.4-1.x86_64\nfile /tmp/custom is not owned by any package\n";
+        let mut results = HashMap::new();
+        for (path, pkg_line) in paths.iter().zip(output.lines()) {
+            let pkg = pkg_line.trim().to_string();
+            if !pkg.is_empty() && !pkg.contains("not owned") {
+                results.insert(path.clone(), pkg);
+            }
+        }
+        assert_eq!(
+            results.get("/usr/bin/ls"),
+            Some(&"coreutils-9.4-1.x86_64".to_string())
+        );
+        assert!(!results.contains_key("/tmp/custom"));
+    }
 }

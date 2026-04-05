@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::AsRawFd;
@@ -13,7 +13,13 @@ use crate::types::FileMetadata;
 /// 2. fstat on the open fd
 /// 3. Hash via the open fd
 /// 4. Read xattrs via the open fd
-pub fn collect_file_metadata(path: &Path, _config: &Config) -> Result<FileMetadata> {
+///
+/// If `max_file_size` is `Some`, files larger than the limit return `FileTooLarge`.
+pub fn collect_file_metadata(
+    path: &Path,
+    _config: &Config,
+    max_file_size: Option<u64>,
+) -> Result<FileMetadata> {
     // 1. Open file — pins the inode
     let file = File::open(path)
         .map_err(|e| VigilError::Baseline(format!("cannot open {}: {}", path.display(), e)))?;
@@ -29,6 +35,18 @@ pub fn collect_file_metadata(path: &Path, _config: &Config) -> Result<FileMetada
             "not a regular file: {}",
             path.display()
         )));
+    }
+
+    // Check file size limit
+    if let Some(max_size) = max_file_size {
+        if meta.len() > max_size {
+            return Err(VigilError::Baseline(format!(
+                "file too large: {} ({} > {})",
+                path.display(),
+                meta.len(),
+                max_size
+            )));
+        }
     }
 
     // 3. BLAKE3 hash via the open fd
@@ -57,7 +75,7 @@ pub fn collect_file_metadata(path: &Path, _config: &Config) -> Result<FileMetada
 
 /// Read extended attributes via /proc/self/fd/<fd> to avoid TOCTOU.
 fn read_xattrs_fd(file: &File) -> String {
-    let mut attrs = HashMap::new();
+    let mut attrs = BTreeMap::new();
     let fd_path = format!("/proc/self/fd/{}", file.as_raw_fd());
     let fd_path = Path::new(&fd_path);
 

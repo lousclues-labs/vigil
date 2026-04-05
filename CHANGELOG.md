@@ -4,6 +4,151 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-05
+
+### Release Summary
+- Delivers a full performance and efficiency overhaul across Vigil's hot path, baseline lifecycle, SQLite usage, and allocation behavior.
+- Implements 17 planned optimizations plus one CI/test-runner compatibility fix for benchmark execution.
+- Preserves CLI compatibility, TOML configuration compatibility, and database schema compatibility.
+
+### Compatibility Notes
+- No breaking CLI changes.
+- No `vigil.toml` format changes.
+- No SQLite schema migration required.
+- Existing databases remain readable/writable without migration.
+
+### Performance & Efficiency
+
+#### 1) mtime+size fast-reject before hashing (`src/compare.rs`)
+- Added a metadata fast path in `compare_file_against_baseline()` after `fstat` and before BLAKE3 hashing.
+- When all tracked metadata matches baseline (`mtime`, `size`, `inode`, `device`, `mode`, `uid`, `gid`), hashing is skipped.
+- Fast path performs xattr check only; if xattrs are equal returns `CompareOutcome::NoChange`.
+- If only xattrs differ, returns `CompareOutcome::Changed(vec![XattrChanged], baseline_hash, file_meta)` without hashing.
+- Result: unchanged-event path avoids expensive content hashing in real-time monitoring.
+
+#### 2) Pre-compiled glob exclusions (`src/baseline/mod.rs`)
+- Added `CompiledExclusions` with:
+  - `patterns: Vec<glob::Pattern>`
+  - `system_prefixes: Vec<String>`
+- Added `CompiledExclusions::from_config()` to compile patterns once per operation.
+- Updated `is_excluded()` to accept `&CompiledExclusions` instead of recompiling globs per path.
+- Wired compiled exclusions through `init_baseline`, `refresh_baseline`, `diff_baseline`, `walk_directory`, `scan_path`, `scan_single_file`, and `walk_recursive`.
+
+#### 3) Reduced hot-path string allocations (`src/monitor/filter.rs`, `src/baseline/mod.rs`)
+- Changed debounce timer map key type from `HashMap<String, Instant>` to `HashMap<PathBuf, Instant>`.
+- Replaced `path_str.into_owned()` key creation with `event.path.clone()`.
+- Updated filename extraction in exclusion checks to use `Cow<str>` without forcing owned allocations.
+
+#### 4) Cached home-directory enumeration (`src/config.rs`)
+- Added `static HOME_DIRS: OnceLock<Vec<PathBuf>>`.
+- Added `cached_home_dirs()` and switched `expand_user_paths()` to read from cache.
+- `enumerate_home_dirs()` is now executed once per process lifetime rather than multiple times during startup path expansion.
+
+#### 5) Removed redundant `stat()` syscall (`src/baseline/mod.rs`, `src/baseline/metadata.rs`)
+- Reordered `scan_single_file()` to apply exclusions first.
+- Moved max-file-size enforcement into `collect_file_metadata(path, config, max_file_size)` after open+fstat.
+- Eliminated path-based pre-stat (`std::fs::metadata`) followed by fd-based metadata call.
+- New path uses one open and one fstat for metadata collection.
+
+#### 6) Batched package ownership queries (`src/package.rs`, `src/baseline/mod.rs`)
+- Added `batch_query_package_owners(paths, config)` returning `HashMap<PathBuf, Option<String>>`.
+- Added backend-specific batch implementations for `dpkg`, `pacman`, and `rpm` with chunking (100 paths per batch).
+- Reused existing timeout semantics (`PKG_QUERY_TIMEOUT`) for batched calls.
+- Updated directory scan flow to gather file paths, batch query once, then scan files using cached package ownership.
+- Kept per-file query path for single-file add/update paths.
+
+#### 7) SQLite transaction batching for baseline init/refresh (`src/baseline/mod.rs`)
+- Wrapped baseline initialization and refresh writes in explicit transactions (`BEGIN IMMEDIATE` / `COMMIT`).
+- Added commit cadence every 1,000 inserts to limit long write-lock windows.
+- Immediately starts a new transaction after each periodic commit during ongoing scan work.
+
+#### 8) `WatchGroupIndex` moved to tree-based lookup (`src/watch_index.rs`)
+- Replaced vector-based longest-first linear scan with `BTreeMap<PathBuf, (String, Severity)>`.
+- Implemented lookup via reverse range walk from `..=path` and first valid prefix match.
+- Updated constructors and iterator helpers for the new internal representation.
+
+#### 9) Larger fanotify read buffer (`src/monitor/fanotify.rs`)
+- Increased monitor read buffer from `4096` to `262_144` bytes (256KB).
+- Reduces read syscall frequency under bursty event conditions.
+
+#### 10) Alert event IDs use atomic counter + timestamp (`src/alert/mod.rs`, `Cargo.toml`)
+- Added `static EVENT_COUNTER: AtomicU64`.
+- Replaced UUID generation with deterministic format: `vigil_{timestamp_hex}_{seq_hex}`.
+- Removed direct `uuid` dependency from `Cargo.toml`.
+
+#### 11) `AlertEngine` stores only needed config fields (`src/alert/mod.rs`)
+- Removed full `Config` clone from `AlertEngine` state.
+- Added focused fields: `syslog_enabled`, `log_min_severity`, `dbus_min_severity`.
+- Updated dispatch paths to reference these stored fields.
+
+#### 12) Single child-reaper thread for desktop notifications (`src/alert/dbus.rs`)
+- Added `reaper_tx: crossbeam_channel::Sender<std::process::Child>` to `DbusNotifier`.
+- `DbusNotifier::new()` now spawns one long-lived reaper thread (`vigil-reaper`).
+- `notify()` now sends child processes to the shared reaper instead of spawning one thread per alert.
+
+#### 13) Reduced `diff_baseline` memory duplication (`src/baseline/mod.rs`, `src/db/ops.rs`)
+- Added `get_all_baseline_paths()` query to fetch path set directly (`SELECT path FROM baseline`).
+- `diff_baseline()` now uses this path-only query for created-file detection.
+- Avoids building a secondary path set from fully loaded baseline rows.
+
+#### 14) Deterministic xattr JSON serialization (`src/compare.rs`, `src/baseline/metadata.rs`)
+- Switched xattr collection maps from `HashMap` to `BTreeMap` in both compare and baseline metadata paths.
+- Ensures stable JSON key ordering and avoids false-positive xattr-drift detection from map iteration order.
+
+#### 15) Release profile tuned for runtime performance (`Cargo.toml`)
+- Changed `[profile.release] opt-level` from `"z"` to `2`.
+- Retained `lto = true`, `codegen-units = 1`, and `strip = true`.
+- Improves hash-heavy throughput while preserving compact release behavior from existing LTO/strip settings.
+
+#### 16) Prepared-statement caching for repeated SQL (`src/db/ops.rs`)
+- Switched loop/hot-path SQL to `prepare_cached()` in:
+  - `insert_baseline`
+  - `update_baseline`
+  - `upsert_baseline`
+  - `get_baseline_by_path`
+  - `insert_audit_entry`
+- Eliminates repeated SQL parse overhead for frequently executed statements.
+
+#### 17) Additional SQLite performance pragmas (`src/db/mod.rs`)
+- Added to connection setup (`open_db` and `open_db_at`):
+  - `cache_size = -8000`
+  - `mmap_size = 268435456`
+  - `temp_store = MEMORY`
+- Kept existing settings for `journal_mode` (config-driven), `synchronous = NORMAL`, and `foreign_keys = ON`.
+
+### Benchmark/Test Runner Compatibility
+
+#### Criterion bench binaries now tolerate libtest-only flags (`benches/benchmarks.rs`)
+- Replaced `criterion_main!` macro entrypoint with explicit `main()`.
+- Added libtest-arg detection (`--test-threads`, `--nocapture`, `--show-output`, `--format*`).
+- If libtest args are present, runs Criterion with defaults (no CLI parsing) to avoid unknown-arg failures.
+- If absent, preserves normal Criterion CLI behavior via `configure_from_args()`.
+- Fixes CI failures where benchmark targets were executed with forwarded `--test-threads`.
+
+### Correctness Fixes
+
+#### Config load precedence now matches documented order (`src/config.rs`)
+- Fixed `load_config()` iteration order so sources are applied from lowest to highest priority.
+- Ensures higher-priority config sources (including `VIGIL_CONFIG` and explicit CLI path) correctly override lower-priority sources (`/etc`, then user config).
+- Aligns runtime behavior with the documented search-order contract in the config module docs.
+
+### Tests Added/Updated
+- Added fast-reject unit tests in `src/compare.rs`:
+  - `fast_reject_skips_hash_when_metadata_unchanged`
+  - `fast_reject_detects_size_change`
+- Added compiled exclusions tests in `src/baseline/mod.rs`.
+- Added baseline path-query tests in `src/db/ops.rs`:
+  - `get_all_baseline_paths_returns_all_paths`
+  - `get_all_baseline_paths_empty_db`
+- Added batch package parsing tests in `src/package.rs` for `dpkg`, `pacman`, and `rpm` output handling.
+- Updated integration tests to avoid equal-size/same-second false negatives when validating modified-file detection.
+
+### Validation
+- `cargo test --all-targets` passes.
+- `cargo clippy --all-targets` passes.
+- `cargo fmt` passes.
+- `cargo test --bench benchmarks -- --test-threads=4` now executes successfully.
+
 ## [0.6.0] - 2026-04-05
 
 ### Release Summary

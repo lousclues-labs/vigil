@@ -3,9 +3,7 @@ use crate::types::Alert;
 
 /// D-Bus desktop notification sender.
 pub struct DbusNotifier {
-    // We use the /usr/bin/notify-send fallback approach for simplicity,
-    // since zbus blocking mode can be complex in a threaded daemon.
-    // A future version can use zbus directly.
+    reaper_tx: crossbeam_channel::Sender<std::process::Child>,
 }
 
 impl DbusNotifier {
@@ -20,7 +18,18 @@ impl DbusNotifier {
         {
             return Err(VigilError::DBus("notify-send not available".into()));
         }
-        Ok(Self {})
+
+        let (reaper_tx, reaper_rx) = crossbeam_channel::unbounded::<std::process::Child>();
+        std::thread::Builder::new()
+            .name("vigil-reaper".into())
+            .spawn(move || {
+                for mut child in reaper_rx {
+                    let _ = child.wait();
+                }
+            })
+            .map_err(|e| VigilError::DBus(format!("cannot spawn reaper thread: {}", e)))?;
+
+        Ok(Self { reaper_tx })
     }
 
     /// Send a desktop notification for the given alert.
@@ -91,11 +100,8 @@ impl DbusNotifier {
             .spawn();
 
         match result {
-            Ok(mut child) => {
-                // Fire-and-forget: spawn a reaper thread to avoid zombies
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
+            Ok(child) => {
+                let _ = self.reaper_tx.send(child);
             }
             Err(e) => {
                 log::warn!("Failed to send D-Bus notification: {}", e);

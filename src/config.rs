@@ -317,7 +317,7 @@ pub fn load_config(explicit_path: Option<&Path>) -> Result<Config> {
     let mut base: Option<Config> = None;
 
     // Load from lowest to highest priority so higher overrides lower
-    for path in paths.iter().rev() {
+    for path in &paths {
         if path.exists() {
             log::info!("Loading config from: {}", path.display());
             let content = std::fs::read_to_string(path).map_err(|e| {
@@ -556,7 +556,7 @@ fn default_config() -> Config {
 pub fn expand_user_paths(paths: &[String]) -> Vec<PathBuf> {
     let mut expanded = Vec::new();
 
-    let home_dirs = enumerate_home_dirs();
+    let home_dirs = cached_home_dirs();
 
     for path_str in paths {
         if let Some(suffix) = path_str.strip_prefix("~/") {
@@ -566,7 +566,7 @@ pub fn expand_user_paths(paths: &[String]) -> Vec<PathBuf> {
                     expanded.push(PathBuf::from(home).join(suffix));
                 }
             } else {
-                for home in &home_dirs {
+                for home in home_dirs {
                     let full = home.join(suffix);
                     if full.exists() || full.parent().is_some_and(|p| p.exists()) {
                         expanded.push(full);
@@ -581,6 +581,12 @@ pub fn expand_user_paths(paths: &[String]) -> Vec<PathBuf> {
     }
 
     expanded
+}
+
+static HOME_DIRS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+
+fn cached_home_dirs() -> &'static [PathBuf] {
+    HOME_DIRS.get_or_init(enumerate_home_dirs)
 }
 
 /// Read /etc/passwd to find home directories for real users (UID 1000..65533).

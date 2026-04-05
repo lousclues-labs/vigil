@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
@@ -5,71 +6,35 @@ use crate::types::Severity;
 
 /// An index for efficient watch group lookups by path prefix.
 ///
-/// Paths are sorted longest-first so that a binary search followed by a
-/// linear scan of equal-length prefixes always returns the most-specific
-/// match. For example, given watch paths `/usr/bin/` and `/usr/`, a lookup
-/// for `/usr/bin/ls` correctly returns `/usr/bin/`.
+/// Uses a BTreeMap for O(log n) lookups via range queries. The
+/// `.range(..=path).rev()` pattern walks backwards from the query path,
+/// and the first entry where `path.starts_with(key)` is the most-specific
+/// match.
 #[derive(Debug, Clone)]
 pub struct WatchGroupIndex {
-    /// Entries sorted by path length (longest first), then lexicographically.
-    entries: Vec<WatchGroupEntry>,
-}
-
-#[derive(Debug, Clone)]
-struct WatchGroupEntry {
-    path: PathBuf,
-    group_name: String,
-    severity: Severity,
+    tree: BTreeMap<PathBuf, (String, Severity)>,
 }
 
 impl WatchGroupIndex {
     /// Build the index from a config's watch groups.
-    ///
-    /// Expands user paths (`~`) and sorts entries longest-prefix-first
-    /// so that lookups always return the most-specific match.
     pub fn from_config(config: &Config) -> Self {
-        let mut entries: Vec<WatchGroupEntry> = config
-            .watch
-            .iter()
-            .flat_map(|(group_name, group)| {
-                let expanded = crate::config::expand_user_paths(&group.paths);
-                expanded.into_iter().map(move |p| WatchGroupEntry {
-                    path: p,
-                    group_name: group_name.clone(),
-                    severity: group.severity,
-                })
-            })
-            .collect();
-
-        // Sort by path component count (descending) to ensure most-specific
-        // prefixes come first, then lexicographically for determinism.
-        entries.sort_by(|a, b| {
-            let a_len = a.path.as_os_str().len();
-            let b_len = b.path.as_os_str().len();
-            b_len.cmp(&a_len).then_with(|| a.path.cmp(&b.path))
-        });
-
-        Self { entries }
+        let mut tree = BTreeMap::new();
+        for (group_name, group) in &config.watch {
+            let expanded = crate::config::expand_user_paths(&group.paths);
+            for p in expanded {
+                tree.insert(p, (group_name.clone(), group.severity));
+            }
+        }
+        Self { tree }
     }
 
     /// Build the index from pre-expanded entries.
     pub fn from_expanded(expanded: Vec<(PathBuf, String, Severity)>) -> Self {
-        let mut entries: Vec<WatchGroupEntry> = expanded
-            .into_iter()
-            .map(|(path, group_name, severity)| WatchGroupEntry {
-                path,
-                group_name,
-                severity,
-            })
-            .collect();
-
-        entries.sort_by(|a, b| {
-            let a_len = a.path.as_os_str().len();
-            let b_len = b.path.as_os_str().len();
-            b_len.cmp(&a_len).then_with(|| a.path.cmp(&b.path))
-        });
-
-        Self { entries }
+        let mut tree = BTreeMap::new();
+        for (path, group_name, severity) in expanded {
+            tree.insert(path, (group_name, severity));
+        }
+        Self { tree }
     }
 
     /// Look up which watch group a path belongs to.
@@ -77,11 +42,10 @@ impl WatchGroupIndex {
     /// Returns the most-specific (longest prefix) match, or `None` if the
     /// path is not under any watch group.
     pub fn lookup(&self, path: &Path) -> Option<(&str, Severity)> {
-        // Since entries are sorted longest-first, the first match we find
-        // is the most-specific prefix.
-        for entry in &self.entries {
-            if path.starts_with(&entry.path) || path == entry.path {
-                return Some((&entry.group_name, entry.severity));
+        // Walk backwards from the query path to find longest prefix match
+        for (key, (group_name, severity)) in self.tree.range(..=path.to_path_buf()).rev() {
+            if path.starts_with(key) || path == key {
+                return Some((group_name.as_str(), *severity));
             }
         }
         None
@@ -89,20 +53,20 @@ impl WatchGroupIndex {
 
     /// Return the number of entries in the index.
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.tree.len()
     }
 
     /// Return whether the index is empty.
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.tree.is_empty()
     }
 
-    /// Return the entries as a slice of (path, group_name, severity) for
+    /// Return the entries as an iterator of (path, group_name, severity) for
     /// backward compatibility with code that iterates over expanded groups.
     pub fn iter(&self) -> impl Iterator<Item = (&Path, &str, Severity)> {
-        self.entries
+        self.tree
             .iter()
-            .map(|e| (e.path.as_path(), e.group_name.as_str(), e.severity))
+            .map(|(path, (group_name, severity))| (path.as_path(), group_name.as_str(), *severity))
     }
 }
 

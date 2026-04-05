@@ -42,6 +42,11 @@ pub fn open_db_at(path: &Path, wal_mode: bool) -> Result<Connection> {
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
 
+    // Performance pragmas
+    conn.pragma_update(None, "cache_size", "-8000")?;
+    conn.pragma_update(None, "mmap_size", "268435456")?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+
     schema::create_tables(&conn)?;
     Ok(conn)
 }
@@ -52,6 +57,12 @@ fn configure_connection(conn: &Connection, config: &Config) -> Result<()> {
     }
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+
+    // Performance pragmas
+    conn.pragma_update(None, "cache_size", "-8000")?;
+    conn.pragma_update(None, "mmap_size", "268435456")?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+
     Ok(())
 }
 

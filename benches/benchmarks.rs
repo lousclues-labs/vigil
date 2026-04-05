@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{black_box, BenchmarkId, Criterion};
 
 use vigil::baseline::hash::{blake3_hash_bytes, blake3_hash_file};
 use vigil::config::{Config, WatchGroup};
@@ -335,13 +335,28 @@ fn bench_watch_group_lookup(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(
-    benches,
-    bench_blake3_hash_file,
-    bench_blake3_hash_bytes,
-    bench_compare_entry,
-    bench_event_filter,
-    bench_full_scan,
-    bench_watch_group_lookup,
-);
-criterion_main!(benches);
+fn main() {
+    // When benchmarks are executed through `cargo test --all-targets -- --test-threads=N`,
+    // libtest-only flags are forwarded to bench binaries. Criterion rejects those flags.
+    // In that case, run with defaults instead of parsing CLI args.
+    let has_libtest_args = std::env::args().any(|arg| {
+        arg.starts_with("--test-threads")
+            || arg == "--nocapture"
+            || arg == "--show-output"
+            || arg.starts_with("--format")
+    });
+
+    let mut c = if has_libtest_args {
+        Criterion::default()
+    } else {
+        Criterion::default().configure_from_args()
+    };
+
+    bench_blake3_hash_file(&mut c);
+    bench_blake3_hash_bytes(&mut c);
+    bench_compare_entry(&mut c);
+    bench_event_filter(&mut c);
+    bench_full_scan(&mut c);
+    bench_watch_group_lookup(&mut c);
+    c.final_summary();
+}

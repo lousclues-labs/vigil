@@ -8,42 +8,44 @@ use crate::types::{BaselineEntry, BaselineSource, ChangeResult, ChangeType};
 
 /// Insert a new baseline entry. Returns the row id.
 pub fn insert_baseline(conn: &Connection, entry: &BaselineEntry) -> Result<i64> {
-    conn.execute(
+    conn.prepare_cached(
         "INSERT INTO baseline (
             path, hash, size, permissions, owner_uid, owner_gid,
             mtime, inode, device, xattrs, security_context,
             package, source, added_at, updated_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-        params![
-            entry.path.to_string_lossy().as_ref(),
-            entry.hash,
-            entry.size as i64,
-            entry.permissions as i64,
-            entry.owner_uid as i64,
-            entry.owner_gid as i64,
-            entry.mtime,
-            entry.inode as i64,
-            entry.device as i64,
-            entry.xattrs,
-            entry.security_context,
-            entry.package,
-            entry.source.to_string(),
-            entry.added_at,
-            entry.updated_at,
-        ],
-    )?;
+    )?
+    .execute(params![
+        entry.path.to_string_lossy().as_ref(),
+        entry.hash,
+        entry.size as i64,
+        entry.permissions as i64,
+        entry.owner_uid as i64,
+        entry.owner_gid as i64,
+        entry.mtime,
+        entry.inode as i64,
+        entry.device as i64,
+        entry.xattrs,
+        entry.security_context,
+        entry.package,
+        entry.source.to_string(),
+        entry.added_at,
+        entry.updated_at,
+    ])?;
     Ok(conn.last_insert_rowid())
 }
 
 /// Update an existing baseline entry identified by path.
 pub fn update_baseline(conn: &Connection, entry: &BaselineEntry) -> Result<usize> {
-    let rows = conn.execute(
-        "UPDATE baseline SET
+    let rows = conn
+        .prepare_cached(
+            "UPDATE baseline SET
             hash = ?1, size = ?2, permissions = ?3, owner_uid = ?4, owner_gid = ?5,
             mtime = ?6, inode = ?7, device = ?8, xattrs = ?9, security_context = ?10,
             package = ?11, source = ?12, updated_at = ?13
         WHERE path = ?14",
-        params![
+        )?
+        .execute(params![
             entry.hash,
             entry.size as i64,
             entry.permissions as i64,
@@ -58,14 +60,13 @@ pub fn update_baseline(conn: &Connection, entry: &BaselineEntry) -> Result<usize
             entry.source.to_string(),
             entry.updated_at,
             entry.path.to_string_lossy().as_ref(),
-        ],
-    )?;
+        ])?;
     Ok(rows)
 }
 
 /// Upsert: insert or update if path already exists.
 pub fn upsert_baseline(conn: &Connection, entry: &BaselineEntry) -> Result<()> {
-    conn.execute(
+    conn.prepare_cached(
         "INSERT INTO baseline (
             path, hash, size, permissions, owner_uid, owner_gid,
             mtime, inode, device, xattrs, security_context,
@@ -83,60 +84,59 @@ pub fn upsert_baseline(conn: &Connection, entry: &BaselineEntry) -> Result<()> {
             package = excluded.package,
             source = excluded.source,
             updated_at = excluded.updated_at",
-        params![
-            entry.path.to_string_lossy().as_ref(),
-            entry.hash,
-            entry.size as i64,
-            entry.permissions as i64,
-            entry.owner_uid as i64,
-            entry.owner_gid as i64,
-            entry.mtime,
-            entry.inode as i64,
-            entry.device as i64,
-            entry.xattrs,
-            entry.security_context,
-            entry.package,
-            entry.source.to_string(),
-            entry.added_at,
-            entry.updated_at,
-        ],
-    )?;
+    )?
+    .execute(params![
+        entry.path.to_string_lossy().as_ref(),
+        entry.hash,
+        entry.size as i64,
+        entry.permissions as i64,
+        entry.owner_uid as i64,
+        entry.owner_gid as i64,
+        entry.mtime,
+        entry.inode as i64,
+        entry.device as i64,
+        entry.xattrs,
+        entry.security_context,
+        entry.package,
+        entry.source.to_string(),
+        entry.added_at,
+        entry.updated_at,
+    ])?;
     Ok(())
 }
 
 /// Look up a baseline entry by absolute path.
 pub fn get_baseline_by_path(conn: &Connection, path: &str) -> Result<Option<BaselineEntry>> {
     let entry = conn
-        .query_row(
+        .prepare_cached(
             "SELECT id, path, hash, size, permissions, owner_uid, owner_gid,
                     mtime, inode, device, xattrs, security_context,
                     package, source, added_at, updated_at
              FROM baseline WHERE path = ?1",
-            params![path],
-            |row| {
-                Ok(BaselineEntry {
-                    id: Some(row.get::<_, i64>(0)?),
-                    path: std::path::PathBuf::from(row.get::<_, String>(1)?),
-                    hash: row.get(2)?,
-                    size: row.get::<_, i64>(3)? as u64,
-                    permissions: row.get::<_, i64>(4)? as u32,
-                    owner_uid: row.get::<_, i64>(5)? as u32,
-                    owner_gid: row.get::<_, i64>(6)? as u32,
-                    mtime: row.get(7)?,
-                    inode: row.get::<_, i64>(8)? as u64,
-                    device: row.get::<_, i64>(9)? as u64,
-                    xattrs: row.get(10)?,
-                    security_context: row.get(11)?,
-                    package: row.get(12)?,
-                    source: row
-                        .get::<_, String>(13)?
-                        .parse::<BaselineSource>()
-                        .unwrap_or(BaselineSource::AutoScan),
-                    added_at: row.get(14)?,
-                    updated_at: row.get(15)?,
-                })
-            },
-        )
+        )?
+        .query_row(params![path], |row| {
+            Ok(BaselineEntry {
+                id: Some(row.get::<_, i64>(0)?),
+                path: std::path::PathBuf::from(row.get::<_, String>(1)?),
+                hash: row.get(2)?,
+                size: row.get::<_, i64>(3)? as u64,
+                permissions: row.get::<_, i64>(4)? as u32,
+                owner_uid: row.get::<_, i64>(5)? as u32,
+                owner_gid: row.get::<_, i64>(6)? as u32,
+                mtime: row.get(7)?,
+                inode: row.get::<_, i64>(8)? as u64,
+                device: row.get::<_, i64>(9)? as u64,
+                xattrs: row.get(10)?,
+                security_context: row.get(11)?,
+                package: row.get(12)?,
+                source: row
+                    .get::<_, String>(13)?
+                    .parse::<BaselineSource>()
+                    .unwrap_or(BaselineSource::AutoScan),
+                added_at: row.get(14)?,
+                updated_at: row.get(15)?,
+            })
+        })
         .optional()?;
 
     Ok(entry)
@@ -205,7 +205,7 @@ pub fn insert_audit_entry(
 ) -> Result<i64> {
     let now = Utc::now().timestamp();
 
-    conn.execute(
+    conn.prepare_cached(
         "INSERT INTO audit_log (
             timestamp, event_type, path, change_type, severity,
             old_hash, new_hash, old_permissions, new_permissions,
@@ -216,30 +216,30 @@ pub fn insert_audit_entry(
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
             ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
         )",
-        params![
-            now,
-            "change",
-            change.path.to_string_lossy().as_ref(),
-            primary_change.to_string(),
-            change.severity.to_string(),
-            change.old_hash,
-            change.new_hash,
-            change.old_permissions.map(|v| v as i64),
-            change.new_permissions.map(|v| v as i64),
-            change.old_owner_uid.map(|v| v as i64),
-            change.new_owner_uid.map(|v| v as i64),
-            change.old_owner_gid.map(|v| v as i64),
-            change.new_owner_gid.map(|v| v as i64),
-            change.old_inode.map(|v| v as i64),
-            change.new_inode.map(|v| v as i64),
-            change.package,
-            change.package_update as i32,
-            maintenance_window as i32,
-            suppressed as i32,
-            change.monitored_group,
-            hmac,
-        ],
-    )?;
+    )?
+    .execute(params![
+        now,
+        "change",
+        change.path.to_string_lossy().as_ref(),
+        primary_change.to_string(),
+        change.severity.to_string(),
+        change.old_hash,
+        change.new_hash,
+        change.old_permissions.map(|v| v as i64),
+        change.new_permissions.map(|v| v as i64),
+        change.old_owner_uid.map(|v| v as i64),
+        change.new_owner_uid.map(|v| v as i64),
+        change.old_owner_gid.map(|v| v as i64),
+        change.new_owner_gid.map(|v| v as i64),
+        change.old_inode.map(|v| v as i64),
+        change.new_inode.map(|v| v as i64),
+        change.package,
+        change.package_update as i32,
+        maintenance_window as i32,
+        suppressed as i32,
+        change.monitored_group,
+        hmac,
+    ])?;
 
     Ok(conn.last_insert_rowid())
 }
@@ -398,6 +398,17 @@ pub fn rotate_audit_log(conn: &Connection, retention_days: u32) -> Result<usize>
         params![cutoff],
     )?;
     Ok(deleted)
+}
+
+/// Get all baseline paths (without loading full entries).
+/// Used for efficient new-file detection during diff.
+pub fn get_all_baseline_paths(conn: &Connection) -> Result<std::collections::HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT path FROM baseline")?;
+    let paths = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(paths)
 }
 
 /// Get the HMAC value for a specific audit entry by id.
@@ -737,5 +748,26 @@ mod tests {
 
         let results = search_audit(&conn, Some("nonexistent"), None, 100).unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn get_all_baseline_paths_returns_all_paths() {
+        let conn = test_conn();
+        insert_baseline(&conn, &sample_entry("/etc/passwd")).unwrap();
+        insert_baseline(&conn, &sample_entry("/etc/shadow")).unwrap();
+        insert_baseline(&conn, &sample_entry("/usr/bin/ls")).unwrap();
+
+        let paths = get_all_baseline_paths(&conn).unwrap();
+        assert_eq!(paths.len(), 3);
+        assert!(paths.contains("/etc/passwd"));
+        assert!(paths.contains("/etc/shadow"));
+        assert!(paths.contains("/usr/bin/ls"));
+    }
+
+    #[test]
+    fn get_all_baseline_paths_empty_db() {
+        let conn = test_conn();
+        let paths = get_all_baseline_paths(&conn).unwrap();
+        assert!(paths.is_empty());
     }
 }

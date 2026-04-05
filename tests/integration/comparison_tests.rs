@@ -30,8 +30,8 @@ fn compare_detects_content_modification() {
     let config = test_config(&tmp);
     let entry = baseline_entry_for(&file_path);
 
-    // Modify the file
-    fs::write(&file_path, b"tampered").unwrap();
+    // Modify the file (use different length to ensure size change triggers hash comparison)
+    fs::write(&file_path, b"tampered content that is longer").unwrap();
 
     let result =
         compare::compare_entry(&entry, &config, vigil::types::Severity::Medium, "test").unwrap();
@@ -106,7 +106,7 @@ fn compare_event_with_group_severity() {
     let entry = baseline_entry_for(&file_path);
 
     // Modify
-    fs::write(&file_path, b"changed").unwrap();
+    fs::write(&file_path, b"changed content that is longer").unwrap();
 
     let result = compare::compare_event(
         &file_path,

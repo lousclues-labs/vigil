@@ -55,7 +55,43 @@ fn compare_file_against_baseline(
         }
     }
 
-    // 4. Collect change types
+    // 4. Fast path: if ALL metadata matches baseline, skip expensive hash
+    let metadata_unchanged = meta.mtime() == baseline.mtime
+        && meta.len() == baseline.size
+        && meta.ino() == baseline.inode
+        && meta.dev() == baseline.device
+        && meta.mode() == baseline.permissions
+        && meta.uid() == baseline.owner_uid
+        && meta.gid() == baseline.owner_gid;
+
+    if metadata_unchanged {
+        // Only check xattrs (cheap compared to full file hash)
+        let current_xattrs = read_xattrs_json_fd(&file);
+        if current_xattrs == baseline.xattrs {
+            return Ok(CompareOutcome::NoChange);
+        }
+        // xattr changed — build result with baseline hash since content is unchanged
+        let file_meta = FileMetadata {
+            path: path.to_path_buf(),
+            hash: baseline.hash.clone(),
+            size: meta.len(),
+            permissions: meta.mode(),
+            owner_uid: meta.uid(),
+            owner_gid: meta.gid(),
+            mtime: meta.mtime(),
+            inode: meta.ino(),
+            device: meta.dev(),
+            xattrs: current_xattrs,
+            security_context: String::new(),
+        };
+        return Ok(CompareOutcome::Changed(
+            vec![ChangeType::XattrChanged],
+            baseline.hash.clone(),
+            file_meta,
+        ));
+    }
+
+    // Slow path: metadata differs, compute full comparison
     let mut change_types = Vec::new();
 
     // Inode changed? (file replaced, not modified in place)
@@ -242,7 +278,7 @@ pub fn compare_event(
 /// Read extended attributes via file descriptor (flistxattr/fgetxattr).
 /// This avoids TOCTOU by using the already-open fd instead of the path.
 fn read_xattrs_json_fd(file: &File) -> String {
-    let mut attrs = std::collections::HashMap::new();
+    let mut attrs = std::collections::BTreeMap::new();
     let fd = file.as_raw_fd();
     // Use /proc/self/fd/<fd> path for the xattr crate, which internally
     // uses the fd-based path and avoids path-based races.
@@ -257,4 +293,61 @@ fn read_xattrs_json_fd(file: &File) -> String {
         }
     }
     serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn make_baseline(path: &Path) -> BaselineEntry {
+        let file = File::open(path).unwrap();
+        let meta = file.metadata().unwrap();
+        use std::os::unix::fs::MetadataExt;
+        let hash = crate::baseline::hash::blake3_hash_file(&file).unwrap();
+        BaselineEntry {
+            id: None,
+            path: path.to_path_buf(),
+            hash,
+            size: meta.len(),
+            permissions: meta.mode(),
+            owner_uid: meta.uid(),
+            owner_gid: meta.gid(),
+            mtime: meta.mtime(),
+            inode: meta.ino(),
+            device: meta.dev(),
+            xattrs: "{}".into(),
+            security_context: String::new(),
+            package: None,
+            source: crate::types::BaselineSource::AutoScan,
+            added_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn fast_reject_skips_hash_when_metadata_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("stable.txt");
+        fs::write(&file_path, b"stable content").unwrap();
+
+        let baseline = make_baseline(&file_path);
+        // File hasn't changed — should return NoChange via fast-reject
+        let outcome = compare_file_against_baseline(&file_path, &baseline, None).unwrap();
+        assert!(matches!(outcome, CompareOutcome::NoChange));
+    }
+
+    #[test]
+    fn fast_reject_detects_size_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("grow.txt");
+        fs::write(&file_path, b"short").unwrap();
+
+        let baseline = make_baseline(&file_path);
+        // Change content with different length
+        fs::write(&file_path, b"much longer content now").unwrap();
+
+        let outcome = compare_file_against_baseline(&file_path, &baseline, None).unwrap();
+        assert!(matches!(outcome, CompareOutcome::Changed(..)));
+    }
 }

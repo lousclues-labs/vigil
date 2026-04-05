@@ -54,8 +54,8 @@ fn diff_detects_modified_file() {
     let conn = db::open_db(&config).unwrap();
     baseline::init_baseline(&conn, &config, true).unwrap();
 
-    // Modify the file
-    fs::write(&file_path, b"modified content").unwrap();
+    // Modify the file (use different length to ensure size change triggers hash comparison)
+    fs::write(&file_path, b"modified content that is now longer").unwrap();
 
     let changes = baseline::diff_baseline(&conn, &config).unwrap();
     let modified: Vec<_> = changes

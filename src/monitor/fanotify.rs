@@ -126,7 +126,7 @@ pub fn start(
         .spawn(move || {
             let _fan_fd_guard = fan_fd_owned; // dropped (closed) when thread exits
             let fan_fd = _fan_fd_guard.0;
-            let mut buf = vec![0u8; 4096];
+            let mut buf = vec![0u8; 262_144]; // 256KB — reduces read() syscalls during bursts
 
             // Set up epoll
             // SAFETY: epoll_create1 with EPOLL_CLOEXEC is a safe Linux syscall.
