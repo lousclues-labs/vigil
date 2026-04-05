@@ -4,7 +4,8 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
-- No entries yet.
+### Fixed
+- Coordinator housekeeping now performs its first runtime snapshot tick immediately at daemon startup, eliminating the initial 60-second window where `vigil doctor`/`vigil status` could still show reduced visibility right after `vigil update` restarts `vigild`.
 
 ## [0.13.1] - 2026-04-05
 

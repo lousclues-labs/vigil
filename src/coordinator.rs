@@ -24,7 +24,9 @@ pub fn spawn(
     std::thread::Builder::new()
         .name("vigil-coordinator".into())
         .spawn(move || {
-            let mut last_tick = std::time::Instant::now();
+            // Trigger the first housekeeping/snapshot tick immediately on startup
+            // so post-update doctor/status calls do not wait a full minute.
+            let mut last_tick = std::time::Instant::now() - Duration::from_secs(60);
 
             while !shutdown.load(Ordering::Acquire) {
                 if reload_flag.swap(false, Ordering::AcqRel) {
