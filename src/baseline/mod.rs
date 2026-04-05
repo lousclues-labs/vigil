@@ -178,7 +178,8 @@ pub fn add_file(conn: &Connection, path: &Path, config: &Config) -> Result<()> {
         .canonicalize()
         .map_err(|e| VigilError::Path(format!("cannot canonicalize {}: {}", path.display(), e)))?;
 
-    let meta = metadata::collect_file_metadata(&canonical, config, Some(config.scanner.max_file_size))?;
+    let meta =
+        metadata::collect_file_metadata(&canonical, config, Some(config.scanner.max_file_size))?;
     let now = Utc::now().timestamp();
 
     let pkg = crate::package::query_package_owner(&canonical, &config.package_manager);

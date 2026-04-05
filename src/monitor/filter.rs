@@ -155,8 +155,8 @@ impl EventFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
     use crate::types::{FsEvent, FsEventType};
+    use chrono::Utc;
 
     fn test_config() -> Config {
         Config {
@@ -200,7 +200,9 @@ mod tests {
         assert!(!filter.should_process(&event));
 
         // Should now be in pending
-        assert!(filter.pending_paths.contains(&PathBuf::from("/tmp/test.txt")));
+        assert!(filter
+            .pending_paths
+            .contains(&PathBuf::from("/tmp/test.txt")));
 
         // drain_pending should return nothing yet (debounce window hasn't expired)
         let _pending = filter.drain_pending();

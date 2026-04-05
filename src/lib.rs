@@ -130,7 +130,11 @@ pub fn daemon_run(config: &Config) -> Result<()> {
     let cron_schedule = match croner::Cron::new(&config.scanner.schedule).parse() {
         Ok(cron) => Some(cron),
         Err(e) => {
-            log::warn!("Invalid cron schedule '{}': {}. Scheduled scans disabled.", config.scanner.schedule, e);
+            log::warn!(
+                "Invalid cron schedule '{}': {}. Scheduled scans disabled.",
+                config.scanner.schedule,
+                e
+            );
             None
         }
     };
@@ -173,10 +177,7 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                     Ok(Some(entry)) => entry,
                     Ok(None) => {
                         // New file in monitored directory (not in baseline)
-                        if matches!(
-                            event.event_type,
-                            FsEventType::Create | FsEventType::MovedTo
-                        ) {
+                        if matches!(event.event_type, FsEventType::Create | FsEventType::MovedTo) {
                             log::info!("New file detected: {}", event.path.display());
                         }
                         continue;
@@ -228,12 +229,23 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                             if cfg_guard.package_manager.auto_rebaseline {
                                 drop(cfg_guard);
                                 let cfg_for_rebaseline = active_config.read().clone();
-                                match crate::baseline::add_file(&conn, &change.path, &cfg_for_rebaseline) {
+                                match crate::baseline::add_file(
+                                    &conn,
+                                    &change.path,
+                                    &cfg_for_rebaseline,
+                                ) {
                                     Ok(()) => {
-                                        log::info!("Auto-rebaselined package-updated file: {}", change.path.display());
+                                        log::info!(
+                                            "Auto-rebaselined package-updated file: {}",
+                                            change.path.display()
+                                        );
                                     }
                                     Err(e) => {
-                                        log::warn!("Auto-rebaseline failed for {}: {}", change.path.display(), e);
+                                        log::warn!(
+                                            "Auto-rebaseline failed for {}: {}",
+                                            change.path.display(),
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -292,7 +304,13 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                             if cron.is_time_matching(&now).unwrap_or(false) {
                                 log::info!("Running scheduled {} integrity scan", scan_mode);
                                 let cfg_for_scan = active_config.read().clone();
-                                match scanner::run_scan(&conn, &cfg_for_scan, &alert_engine, scan_mode, None) {
+                                match scanner::run_scan(
+                                    &conn,
+                                    &cfg_for_scan,
+                                    &alert_engine,
+                                    scan_mode,
+                                    None,
+                                ) {
                                     Ok(result) => {
                                         log::info!(
                                             "Scheduled scan complete: {} checked, {} changes, {} errors",
@@ -352,7 +370,8 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                             watch_index = WatchGroupIndex::from_config(&new_config);
                             log::info!("Watch group index rebuilt ({} entries)", watch_index.len());
                             // Update cached max_file_size (Fix #17)
-                            max_file_size.store(new_config.scanner.max_file_size, Ordering::Release);
+                            max_file_size
+                                .store(new_config.scanner.max_file_size, Ordering::Release);
                             // Swap the active config atomically
                             *active_config.write() = new_config;
                         }
@@ -407,13 +426,21 @@ fn process_event_path(
         .unwrap_or(("unknown".into(), types::Severity::Medium));
 
     let current_max_file_size = max_file_size.load(Ordering::Acquire);
-    match compare::compare_event(path, &baseline_entry, &group_name, severity, current_max_file_size) {
+    match compare::compare_event(
+        path,
+        &baseline_entry,
+        &group_name,
+        severity,
+        current_max_file_size,
+    ) {
         Ok(Some(mut change)) => {
             let maintenance = maintenance_active.load(Ordering::Acquire);
 
             if change.package.is_some() && maintenance {
-                let still_owned =
-                    crate::package::query_package_owner(path, &active_config.read().package_manager);
+                let still_owned = crate::package::query_package_owner(
+                    path,
+                    &active_config.read().package_manager,
+                );
                 if still_owned == change.package {
                     change.package_update = true;
                 }
@@ -430,10 +457,17 @@ fn process_event_path(
                     let cfg_for_rebaseline = active_config.read().clone();
                     match crate::baseline::add_file(conn, &change.path, &cfg_for_rebaseline) {
                         Ok(()) => {
-                            log::info!("Auto-rebaselined package-updated file: {}", change.path.display());
+                            log::info!(
+                                "Auto-rebaselined package-updated file: {}",
+                                change.path.display()
+                            );
                         }
                         Err(e) => {
-                            log::warn!("Auto-rebaseline failed for {}: {}", change.path.display(), e);
+                            log::warn!(
+                                "Auto-rebaseline failed for {}: {}",
+                                change.path.display(),
+                                e
+                            );
                         }
                     }
                 }

@@ -263,15 +263,10 @@ mod tests {
         // The key invariant: /usr/bin/cat must NOT map to the package
         // that owns /tmp/definitely_not_owned... (which was the old bug).
         if let Some(cat_pkg) = results.get("/usr/bin/cat") {
-            assert!(
-                !cat_pkg.is_empty(),
-                "cat should be owned by a real package"
-            );
+            assert!(!cat_pkg.is_empty(), "cat should be owned by a real package");
         }
         // The unowned file must not appear in results
-        assert!(!results.contains_key(
-            "/tmp/definitely_not_owned_by_any_package_12345"
-        ));
+        assert!(!results.contains_key("/tmp/definitely_not_owned_by_any_package_12345"));
     }
 
     #[test]
@@ -284,8 +279,6 @@ mod tests {
         ];
         let results = batch_query_rpm(&paths);
         // The unowned file must not appear in results
-        assert!(!results.contains_key(
-            "/tmp/definitely_not_owned_by_any_package_12345"
-        ));
+        assert!(!results.contains_key("/tmp/definitely_not_owned_by_any_package_12345"));
     }
 }
