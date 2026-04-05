@@ -4,8 +4,16 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+- No entries yet.
+
+## [0.13.2] - 2026-04-05
+
+### Release Summary
+- Fixes a post-update diagnostics timing gap where runtime snapshots could be unavailable during the first minute after daemon restart.
+
 ### Fixed
-- Coordinator housekeeping now performs its first runtime snapshot tick immediately at daemon startup, eliminating the initial 60-second window where `vigil doctor`/`vigil status` could still show reduced visibility right after `vigil update` restarts `vigild`.
+- Coordinator housekeeping now performs its first runtime snapshot tick immediately at daemon startup.
+- This removes the initial 60-second window where `vigil doctor`/`vigil status` could still show reduced visibility right after `vigil update` restarts `vigild`.
 
 ## [0.13.1] - 2026-04-05
 

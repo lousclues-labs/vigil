@@ -354,7 +354,7 @@ vigil version
 Output:
 
 ```text
-vigil 0.13.1
+vigil 0.13.2
 ```
 
 ---
