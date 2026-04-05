@@ -1,38 +1,22 @@
+use crate::alert::AlertSink;
+use crate::error::Result;
 use crate::types::Alert;
 
-/// Log an alert to the system journal (via log crate/syslog).
-pub fn log_alert(alert: &Alert) {
-    let path = alert.file.path.display();
-    let severity = &alert.severity;
-    let change = &alert.change_type;
+pub struct JournalSink;
 
-    match alert.severity {
-        crate::types::Severity::Critical => {
-            log::error!(
-                "[VIGIL] CRITICAL: {} — {} ({})",
-                change,
-                path,
-                alert.event_id
-            );
-        }
-        crate::types::Severity::High => {
-            log::warn!("[VIGIL] HIGH: {} — {} ({})", change, path, alert.event_id);
-        }
-        crate::types::Severity::Medium => {
-            log::warn!("[VIGIL] MEDIUM: {} — {} ({})", change, path, alert.event_id);
-        }
-        crate::types::Severity::Low => {
-            log::info!("[VIGIL] LOW: {} — {} ({})", change, path, alert.event_id);
-        }
+impl AlertSink for JournalSink {
+    fn name(&self) -> &str {
+        "journal"
     }
 
-    // Log full details at debug level
-    log::debug!(
-        "[VIGIL] Detail: severity={} change={} path={} old_hash={:?} new_hash={:?} package={:?} group={}",
-        severity, change, path,
-        alert.file.baseline_hash,
-        alert.file.current_hash,
-        alert.file.package,
-        alert.context.monitored_group,
-    );
+    fn dispatch(&self, alert: &Alert) -> Result<()> {
+        tracing::info!(
+            path = %alert.file.path.display(),
+            severity = %alert.severity,
+            group = %alert.context.monitored_group,
+            event_id = %alert.event_id,
+            "file integrity violation detected"
+        );
+        Ok(())
+    }
 }

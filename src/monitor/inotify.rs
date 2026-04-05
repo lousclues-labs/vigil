@@ -15,7 +15,6 @@ use crate::error::{Result, VigilError};
 use crate::metrics::Metrics;
 use crate::types::{FsEvent, FsEventType};
 
-/// Start inotify-based filesystem monitoring (fallback when fanotify is unavailable).
 pub fn start(
     _config: &Config,
     watch_paths: &[PathBuf],
@@ -35,18 +34,12 @@ pub fn start(
         | AddWatchFlags::IN_MOVED_FROM
         | AddWatchFlags::IN_MOVED_TO;
 
-    // Map watch descriptors back to paths
     let mut wd_to_path: HashMap<WatchDescriptor, PathBuf> = HashMap::new();
-    let mut unwatched = Vec::new();
 
     for path in watch_paths {
         if path.is_dir() {
-            match add_directory_watches(&inotify, path, flags, &mut wd_to_path) {
-                Ok(_) => {}
-                Err(e) => {
-                    log::warn!("Cannot watch {}: {}", path.display(), e);
-                    unwatched.push(path.clone());
-                }
+            if let Err(e) = add_directory_watches(&inotify, path, flags, &mut wd_to_path) {
+                tracing::warn!(path = %path.display(), error = %e, "cannot watch directory");
             }
         } else if path.is_file() {
             if let Some(parent) = path.parent() {
@@ -55,130 +48,89 @@ pub fn start(
                         wd_to_path.insert(wd, parent.to_path_buf());
                     }
                     Err(e) => {
-                        log::warn!("Cannot watch {}: {}", path.display(), e);
-                        unwatched.push(path.clone());
+                        tracing::warn!(path = %path.display(), error = %e, "cannot watch file parent");
                     }
                 }
             }
-        } else if !path.exists() {
-            log::warn!("Watch path does not exist: {}", path.display());
         }
     }
 
-    if !unwatched.is_empty() {
-        log::warn!("The following paths could not be watched:");
-        for p in &unwatched {
-            log::warn!("  {} — Permission denied", p.display());
-        }
-    }
-
-    log::info!(
-        "inotify watching {} directories ({} paths could not be watched)",
-        wd_to_path.len(),
-        unwatched.len()
-    );
-
-    // Spawn event reader thread
     std::thread::Builder::new()
         .name("vigil-inotify".into())
         .spawn(move || {
             let inotify_fd = inotify.as_fd();
-            let poll_fd = PollFd::new(inotify_fd, PollFlags::POLLIN);
 
             while !shutdown.load(Ordering::Acquire) {
                 while let Ok(new_paths) = control_rx.try_recv() {
                     if let Err(e) = rebuild_watches(&inotify, &mut wd_to_path, &new_paths, flags) {
-                        log::error!("Failed to reconfigure inotify watches: {}", e);
-                    } else {
-                        log::info!("inotify watch set reconfigured ({} paths)", new_paths.len());
+                        tracing::error!(error = %e, "failed to reconfigure inotify watches");
                     }
                 }
 
-                // Poll with 500ms timeout so we can check shutdown flag
-                match poll(&mut [poll_fd], PollTimeout::from(500u16)) {
-                    Ok(n) if n > 0 => {
-                        match inotify.read_events() {
-                            Ok(events) => {
-                                for event in events {
-                                    let dir_path = match wd_to_path.get(&event.wd) {
-                                        Some(p) => p,
-                                        None => continue,
+                let mut fds = [PollFd::new(inotify_fd, PollFlags::POLLIN)];
+                match poll(&mut fds, PollTimeout::from(500u16)) {
+                    Ok(n) if n > 0 => match inotify.read_events() {
+                        Ok(events) => {
+                            for event in events {
+                                let dir_path = match wd_to_path.get(&event.wd) {
+                                    Some(p) => p,
+                                    None => continue,
+                                };
+
+                                let file_path = if let Some(name) = &event.name {
+                                    dir_path.join(name)
+                                } else {
+                                    dir_path.clone()
+                                };
+
+                                if event.mask.contains(AddWatchFlags::IN_CREATE)
+                                    && event.mask.contains(AddWatchFlags::IN_ISDIR)
+                                {
+                                    let _ = add_directory_watches(&inotify, &file_path, flags, &mut wd_to_path);
+                                }
+
+                                if let Some(event_type) = inotify_mask_to_event_type(event.mask) {
+                                    metrics.events_received.fetch_add(1, Ordering::Relaxed);
+
+                                    let fs_event = FsEvent {
+                                        path: file_path.clone(),
+                                        event_type,
+                                        timestamp: Utc::now(),
+                                        event_fd: None,
+                                        process: None,
                                     };
 
-                                    let file_path = if let Some(name) = &event.name {
-                                        dir_path.join(name)
-                                    } else {
-                                        dir_path.clone()
-                                    };
-
-                                    // Dynamically watch new subdirectories:
-                                    // When IN_CREATE fires for a directory (IN_ISDIR),
-                                    // recursively add watches so files created inside
-                                    // the new directory are visible.
-                                    if event.mask.contains(AddWatchFlags::IN_CREATE)
-                                        && event.mask.contains(AddWatchFlags::IN_ISDIR)
-                                    {
-                                        log::info!(
-                                            "inotify: dynamically watching new directory: {}",
-                                            file_path.display()
-                                        );
-                                        match add_directory_watches(
-                                            &inotify,
-                                            &file_path,
-                                            flags,
-                                            &mut wd_to_path,
-                                        ) {
-                                            Ok(_) => {}
-                                            Err(e) => {
-                                                log::warn!(
-                                                    "Cannot watch new directory {}: {}",
-                                                    file_path.display(),
-                                                    e
-                                                );
-                                            }
+                                    match event_tx.send_timeout(fs_event, Duration::from_secs(1)) {
+                                        Ok(()) => {}
+                                        Err(crossbeam_channel::SendTimeoutError::Timeout(_)) => {
+                                            metrics
+                                                .events_dropped
+                                                .fetch_add(1, Ordering::Relaxed);
+                                            tracing::warn!(path = %file_path.display(), "inotify channel full; dropping event");
                                         }
-                                    }
-
-                                    let event_type = inotify_mask_to_event_type(event.mask);
-                                    if let Some(et) = event_type {
-                                        metrics.events_received.fetch_add(1, Ordering::Relaxed);
-                                        let fs_event = FsEvent {
-                                            path: file_path.clone(),
-                                            event_type: et,
-                                            timestamp: Utc::now(),
-                                            responsible_pid: None,
-                                            responsible_exe: None,
-                                        };
-                                        match event_tx.send_timeout(fs_event, Duration::from_secs(1)) {
-                                            Ok(()) => {}
-                                            Err(crossbeam_channel::SendTimeoutError::Timeout(_)) => {
-                                                log::error!("Event channel full for 1s — dropping filesystem event for {}. Scheduling recovery scan.", file_path.display());
-                                                metrics.events_dropped.fetch_add(1, Ordering::Relaxed);
-                                            }
-                                            Err(crossbeam_channel::SendTimeoutError::Disconnected(_)) => {
-                                                log::error!("Event channel disconnected");
-                                                break;
-                                            }
+                                        Err(crossbeam_channel::SendTimeoutError::Disconnected(_)) => {
+                                            tracing::error!("event channel disconnected");
+                                            return;
                                         }
                                     }
                                 }
                             }
-                            Err(e) => {
-                                log::error!("inotify read error: {}", e);
-                                std::thread::sleep(std::time::Duration::from_secs(1));
-                            }
                         }
-                    }
-                    Ok(_) => continue, // timeout, loop back to check shutdown
+                        Err(e) => {
+                            tracing::error!(error = %e, "inotify read error");
+                            std::thread::sleep(Duration::from_millis(200));
+                        }
+                    },
+                    Ok(_) => continue,
                     Err(nix::errno::Errno::EINTR) => continue,
                     Err(e) => {
-                        log::error!("poll error: {}", e);
+                        tracing::error!(error = %e, "poll error");
                         break;
                     }
                 }
             }
 
-            log::info!("inotify monitor stopped");
+            tracing::info!("inotify monitor stopped");
         })
         .map_err(|e| VigilError::Inotify(format!("cannot spawn thread: {}", e)))?;
 
@@ -214,21 +166,30 @@ fn rebuild_watches(
 
 fn add_directory_watches(
     inotify: &Inotify,
-    dir: &std::path::Path,
+    root: &std::path::Path,
     flags: AddWatchFlags,
     wd_map: &mut HashMap<WatchDescriptor, PathBuf>,
 ) -> Result<()> {
-    let wd = inotify
-        .add_watch(dir, flags)
-        .map_err(|e| VigilError::Inotify(format!("{}: {}", dir.display(), e)))?;
-    wd_map.insert(wd, dir.to_path_buf());
+    if !root.is_dir() {
+        return Ok(());
+    }
 
-    // Recursively watch subdirectories
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            if let Ok(ft) = entry.file_type() {
-                if ft.is_dir() {
-                    let _ = add_directory_watches(inotify, &entry.path(), flags, wd_map);
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        match inotify.add_watch(&dir, flags) {
+            Ok(wd) => {
+                wd_map.insert(wd, dir.clone());
+            }
+            Err(e) => {
+                tracing::warn!(path = %dir.display(), error = %e, "cannot add watch");
+            }
+        }
+
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
                 }
             }
         }

@@ -4,6 +4,88 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-04-05
+
+### Release Summary
+- Delivers a full post-rewrite architecture update across the domain model, daemon runtime pipeline, database layout, monitoring path, and alert dispatch layer.
+- Replaces older flat data structures with composable typed snapshots and change variants.
+- Finalized with a repository-wide verification pass: build, feature build, tests, clippy, and fuzz target compilation all pass.
+
+### Compatibility Notes
+- This release is a pre-1.0 MINOR bump. As documented in VERSIONING.md, compatibility may change across 0.y releases.
+- Runtime and operational behavior is intentionally improved and more explicit, especially around event handling, scheduled scans, and alert dispatching.
+- Existing baseline and audit stores remain migration-safe through additive schema evolution and startup migration hooks.
+
+### Architecture
+- Introduced a structured daemon runtime with a first-class `Daemon` type and lifecycle methods (`from_config`, `run`).
+- Implemented a lock-free runtime config model based on `Arc<ArcSwap<Config>>` for low-contention reads in hot paths.
+- Split event processing into bounded stages:
+  - monitor -> coordinator queue
+  - coordinator -> worker queue
+  - worker -> alert dispatcher queue
+- Added dedicated background components for housekeeping and scheduled scan execution.
+
+### Type System and Data Model
+- Replaced parallel old/new flat comparison fields with `Vec<Change>` based classification.
+- Expanded `Change` into explicit variants for content, permissions, ownership, inode, type, symlink target, capabilities, xattrs, security context, created, and deleted outcomes.
+- Reworked baseline and snapshot representations into composed sub-structures:
+  - `FileIdentity`
+  - `ContentFingerprint`
+  - `PermissionState`
+  - `SecurityState`
+- Standardized file capture and comparison through `FileSnapshot` with `from_fd`, `from_path`, and `diff` methods.
+- Added `FsEvent` support for open-fd transfer (`event_fd`) and process attribution (`pid`, `exe`).
+
+### Database and Integrity
+- Formalized dual-database operation:
+  - `baseline.db` optimized for read-heavy baseline lookups.
+  - `audit.db` configured for durability-focused append semantics.
+- Stored baseline sub-structures as JSON columns to reduce schema churn and simplify forward compatibility.
+- Added and enforced tamper-evident `chain_hash` storage in `audit_log` entries.
+- Added chain verification support and CLI access through audit verification flows.
+- Increased statement caching and prepared-statement reuse in hot paths.
+
+### Monitoring, TOCTOU, and Security
+- Added fd-first capture flow so workers can process fanotify events using the same open descriptor where available.
+- Consolidated metadata and content collection so identity, hash, xattrs, and security context are captured consistently.
+- Kept hardening protections active at daemon startup, including no-new-privs and non-dumpable process mode.
+- Preserved and expanded HMAC-based integrity tooling for baseline verification workflows.
+
+### Alerting and Outputs
+- Migrated alert outputs to sink-based polymorphism through an `AlertSink` interface.
+- Added/maintained sink implementations for journal, JSON log, desktop notifications, socket, and remote syslog.
+- Isolated alert emission on its own bounded dispatch thread to decouple worker throughput from output latency.
+
+### Performance and Scalability
+- Added mmap-aware BLAKE3 hashing for large files with high-capacity buffered fallback for smaller files.
+- Switched exclusion matching to compiled `globset` rules for efficient repeated matching.
+- Added Bloom-filter fast reject support for watch path prefiltering.
+- Continued bounded-channel backpressure behavior to prevent unbounded memory growth during spikes.
+
+### Test and Quality Verification
+- Integration coverage includes:
+  - audit chain break detection
+  - baseline JSON compatibility
+  - snapshot diff behavior across multiple change dimensions
+  - exclusion filter correctness
+  - worker event processing
+  - daemon smoke behavior
+  - alert dispatcher chain integration
+- Validation results for this release:
+  - `cargo build` passed
+  - `cargo build --features parallel` passed
+  - `cargo test --all-targets` passed
+  - `cargo clippy --all-targets -- -D warnings` passed
+  - `cd fuzz && cargo build` passed
+
+### Packaging and Operations
+- Updated the primary systemd unit to `Type=notify` to align with daemon `sd_notify` readiness/watchdog lifecycle events.
+- Kept watchdog, restart policy, and hardening directives aligned with runtime behavior.
+
+### Cleanup
+- Consolidated legacy module layout into the new split `types`, `config`, `db`, and runtime orchestration modules.
+- Replaced older integration test tree layout with direct test targets matching the rewritten architecture.
+
 ## [0.10.0] - 2026-04-05
 
 ### Release Summary

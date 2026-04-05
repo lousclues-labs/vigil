@@ -4,97 +4,109 @@ pub mod json_log;
 pub mod remote_syslog;
 pub mod socket;
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
+use crossbeam_channel::{Receiver, RecvTimeoutError};
 use parking_lot::Mutex;
 
 use crate::config::Config;
+use crate::db::audit_ops;
 use crate::error::Result;
-use crate::types::{Alert, AlertContext, AlertFileInfo, ChangeResult, ChangeType, Severity};
+use crate::metrics::Metrics;
+use crate::types::{Alert, AlertContext, AlertFileInfo, Change, ChangeResult, Severity};
 
-static EVENT_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// The alert engine: dispatches classified changes to output channels
-/// with rate limiting, cooldown, and deduplication.
-pub struct AlertEngine {
-    syslog_enabled: bool,
-    log_min_severity: Severity,
-    dbus_min_severity: Severity,
-    /// Per-path cooldown tracking (path → last alert time).
-    cooldowns: Mutex<std::collections::HashMap<String, Instant>>,
-    /// Alert count in the current minute window.
-    rate_counter: Mutex<RateCounter>,
-    /// D-Bus notifier (optional).
-    dbus_notifier: Option<dbus::DbusNotifier>,
-    /// JSON log writer (optional).
-    json_logger: Option<json_log::JsonLogger>,
-    /// Signal socket writer (optional).
-    signal_socket: Option<socket::SignalSocket>,
-    /// Remote syslog sender (optional, Item 30).
-    remote_syslog: Option<remote_syslog::RemoteSyslogSender>,
-    /// Cached hostname (read once at startup).
-    hostname: String,
-    /// Hot-reloadable rate limit (alerts per minute).
-    rate_limit: AtomicU32,
-    /// Hot-reloadable per-path cooldown (seconds).
-    cooldown_secs: AtomicU64,
-    /// HMAC key for signing audit entries (loaded at startup if configured).
-    hmac_key: Option<Vec<u8>>,
+/// Message passed from workers/scanners to the alert dispatcher.
+#[derive(Debug, Clone)]
+pub struct AlertPayload {
+    pub change: ChangeResult,
+    pub maintenance_window: bool,
 }
 
-struct RateCounter {
+pub trait AlertSink: Send + Sync {
+    fn name(&self) -> &str;
+    fn dispatch(&self, alert: &Alert) -> Result<()>;
+    fn min_severity(&self) -> Severity {
+        Severity::Low
+    }
+}
+
+struct RateLimiter {
     count: u32,
     window_start: Instant,
 }
 
-impl AlertEngine {
-    pub fn new(config: &Config) -> Result<Self> {
-        let dbus_notifier = if config.alerts.desktop_notifications {
-            match dbus::DbusNotifier::with_rate_config(
+pub struct AlertDispatcher {
+    sinks: Vec<Box<dyn AlertSink>>,
+    audit_conn: rusqlite::Connection,
+    rate_limiter: Mutex<RateLimiter>,
+    cooldowns: Mutex<HashMap<String, Instant>>,
+    cooldown_secs: u64,
+    hmac_key: Option<Vec<u8>>,
+    last_chain_hash: Mutex<String>,
+    metrics: Arc<Metrics>,
+    hostname: String,
+}
+
+impl AlertDispatcher {
+    pub fn new(config: &Config, audit_db_path: &Path, metrics: Arc<Metrics>) -> Result<Self> {
+        if let Some(parent) = audit_db_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let audit_conn = rusqlite::Connection::open(audit_db_path)?;
+        audit_conn.pragma_update(None, "journal_mode", "WAL")?;
+        audit_conn.pragma_update(None, "synchronous", "FULL")?;
+        audit_conn.pragma_update(None, "foreign_keys", "ON")?;
+        audit_conn.pragma_update(None, "busy_timeout", "5000")?;
+        crate::db::schema::create_audit_tables(&audit_conn)?;
+
+        let mut sinks: Vec<Box<dyn AlertSink>> = Vec::new();
+
+        if config.alerts.syslog {
+            sinks.push(Box::new(journal::JournalSink));
+        }
+
+        if !config.alerts.log_file.as_os_str().is_empty() {
+            if let Ok(sink) = json_log::JsonFileSink::new(&config.alerts.log_file) {
+                sinks.push(Box::new(sink));
+            } else {
+                tracing::warn!(path = %config.alerts.log_file.display(), "failed to initialize JSON log sink");
+            }
+        }
+
+        if config.alerts.desktop_notifications {
+            sinks.push(Box::new(dbus::DbusSink::new(
                 config.alerts.notification_rate_limit,
                 config.alerts.notification_rate_window_secs,
-            ) {
-                Ok(n) => Some(n),
-                Err(e) => {
-                    log::warn!("D-Bus notifications unavailable: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        };
+            )));
+        }
 
-        let json_logger = if !config.alerts.log_file.as_os_str().is_empty() {
-            match json_log::JsonLogger::new(&config.alerts.log_file) {
-                Ok(l) => Some(l),
-                Err(e) => {
-                    log::warn!("JSON log file unavailable: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        if !config.hooks.signal_socket.is_empty() {
+            sinks.push(Box::new(socket::SocketSink::new(&config.hooks.signal_socket)));
+        }
 
-        let signal_socket = if !config.hooks.signal_socket.is_empty() {
-            match socket::SignalSocket::new(&config.hooks.signal_socket) {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    log::warn!("Signal socket unavailable: {}", e);
-                    None
-                }
+        if config.alerts.remote_syslog.enabled {
+            if let Ok(sink) = remote_syslog::RemoteSyslogSink::new(&config.alerts.remote_syslog) {
+                sinks.push(Box::new(sink));
+            } else {
+                tracing::warn!("failed to initialize remote syslog sink");
             }
-        } else {
-            None
-        };
+        }
+
+        let last_hash = audit_ops::get_last_chain_hash(&audit_conn)?.unwrap_or_else(|| {
+            blake3::hash(b"vigil-audit-chain-genesis")
+                .to_hex()
+                .to_string()
+        });
 
         let hmac_key = if config.security.hmac_signing {
             match crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
                 Ok(key) => Some(key),
                 Err(e) => {
-                    log::warn!("HMAC signing enabled but key load failed: {}. Audit entries will not be signed.", e);
+                    tracing::warn!(error = %e, "HMAC key load failed; audit entries will be unsigned");
                     None
                 }
             }
@@ -102,245 +114,228 @@ impl AlertEngine {
             None
         };
 
-        let remote_syslog_sender = if config.alerts.remote_syslog.enabled {
-            match remote_syslog::RemoteSyslogSender::new(&config.alerts.remote_syslog) {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    log::warn!("Remote syslog unavailable: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let hostname = std::fs::read_to_string("/etc/hostname")
+            .ok()
+            .map(|h| h.trim().to_string())
+            .filter(|h| !h.is_empty())
+            .unwrap_or_else(|| "localhost".to_string());
 
         Ok(Self {
-            syslog_enabled: config.alerts.syslog,
-            log_min_severity: config.alerts.severity_filter.log_min_severity,
-            dbus_min_severity: config.alerts.severity_filter.dbus_min_severity,
-            cooldowns: Mutex::new(std::collections::HashMap::new()),
-            rate_counter: Mutex::new(RateCounter {
+            sinks,
+            audit_conn,
+            rate_limiter: Mutex::new(RateLimiter {
                 count: 0,
                 window_start: Instant::now(),
             }),
-            dbus_notifier,
-            json_logger,
-            signal_socket,
-            remote_syslog: remote_syslog_sender,
-            hostname: hostname(),
-            rate_limit: AtomicU32::new(config.alerts.rate_limit),
-            cooldown_secs: AtomicU64::new(config.alerts.cooldown_seconds),
+            cooldowns: Mutex::new(HashMap::new()),
+            cooldown_secs: config.alerts.cooldown_seconds,
             hmac_key,
+            last_chain_hash: Mutex::new(last_hash),
+            metrics,
+            hostname,
         })
     }
 
-    /// Access the JSON logger for rotation.
-    pub fn json_logger(&self) -> Option<&json_log::JsonLogger> {
-        self.json_logger.as_ref()
-    }
+    pub fn run(self, alert_rx: Receiver<AlertPayload>, shutdown: Arc<std::sync::atomic::AtomicBool>) {
+        while !shutdown.load(std::sync::atomic::Ordering::Acquire) {
+            match alert_rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(payload) => {
+                    let suppressed = self.is_suppressed(&payload.change, payload.maintenance_window);
 
-    /// Update the rate limiter and cooldown settings from a reloaded config.
-    ///
-    /// Called on SIGHUP after a successful config reload. Resets the rate
-    /// counter window so the new limit takes effect immediately.
-    pub fn update_rate_config(&self, rate_limit: u32, cooldown_seconds: u64) {
-        {
-            let mut rate = self.rate_counter.lock();
-            rate.count = 0;
-            rate.window_start = Instant::now();
-        }
-        self.rate_limit.store(rate_limit, Ordering::Release);
-        self.cooldown_secs
-            .store(cooldown_seconds, Ordering::Release);
-        log::info!(
-            "Alert engine updated: rate_limit={}, cooldown_seconds={}",
-            rate_limit,
-            cooldown_seconds
-        );
-    }
+                    if let Err(e) = self.write_audit_entry(&payload, suppressed) {
+                        tracing::error!(error = %e, "audit write failed");
+                        self.metrics
+                            .db_errors
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    } else {
+                        self.metrics
+                            .db_writes
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
 
-    /// Dispatch a change result to all configured output channels.
-    /// Always writes to audit log regardless of suppression.
-    pub fn dispatch(
-        &self,
-        change: &ChangeResult,
-        maintenance_window: bool,
-        conn: &rusqlite::Connection,
-    ) -> Result<()> {
-        let primary_change = change
-            .change_types
-            .first()
-            .copied()
-            .unwrap_or(ChangeType::Modified);
+                    if suppressed {
+                        self.metrics
+                            .alerts_suppressed
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        continue;
+                    }
 
-        // Compute HMAC for audit entry if key is available
-        let hmac_str = self.hmac_key.as_ref().map(|key| {
-            let now = chrono::Utc::now().timestamp();
-            let data = crate::hmac::build_audit_hmac_data(
-                now,
-                &change.path.to_string_lossy(),
-                &primary_change.to_string(),
-                &change.severity.to_string(),
-                change.old_hash.as_deref(),
-                change.new_hash.as_deref(),
-            );
-            crate::hmac::compute_hmac(key, &data)
-        });
+                    let alert = self.build_alert(&payload);
+                    for sink in &self.sinks {
+                        if alert.severity >= sink.min_severity() {
+                            if let Err(e) = sink.dispatch(&alert) {
+                                tracing::warn!(sink = sink.name(), error = %e, "alert sink failed");
+                            }
+                        }
+                    }
 
-        // Always update cooldown timer *before* the suppression check.
-        // This ensures rapid modifications keep pushing the cooldown window
-        // forward, so the alert only fires once the file has been stable for
-        // the full cooldown period. (Fix #11)
-        let path_str = change.path.to_string_lossy().into_owned();
-        self.cooldowns
-            .lock()
-            .insert(path_str.clone(), Instant::now());
-
-        // Always write to audit log (never suppress audit trail)
-        let suppressed = self.is_suppressed(change, maintenance_window);
-        crate::db::ops::insert_audit_entry(
-            conn,
-            change,
-            primary_change,
-            maintenance_window,
-            suppressed,
-            hmac_str.as_deref(),
-        )?;
-
-        if suppressed {
-            log::debug!(
-                "Alert suppressed for {}: cooldown/rate-limit/maintenance",
-                change.path.display()
-            );
-            return Ok(());
-        }
-
-        let alert = self.build_alert(change, primary_change, maintenance_window);
-
-        // journald/syslog (always, if enabled)
-        if self.syslog_enabled {
-            journal::log_alert(&alert);
-        }
-
-        // JSON log file
-        if let Some(ref logger) = self.json_logger {
-            if change.severity >= self.log_min_severity {
-                logger.write(&alert);
+                    self.metrics
+                        .alerts_dispatched
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
             }
         }
-
-        // D-Bus desktop notification
-        if let Some(ref notifier) = self.dbus_notifier {
-            if change.severity >= self.dbus_min_severity {
-                notifier.notify(&alert);
-            }
-        }
-
-        // Signal socket
-        if let Some(ref sock) = self.signal_socket {
-            sock.send_event(change);
-        }
-
-        // Remote syslog (Item 30)
-        if let Some(ref syslog) = self.remote_syslog {
-            if let Err(e) = syslog.send(&alert) {
-                log::warn!("Remote syslog send failed: {}", e);
-            }
-        }
-
-        // Update rate counter (only for actually-dispatched alerts)
-        self.rate_counter.lock().count += 1;
-
-        Ok(())
     }
 
     fn is_suppressed(&self, change: &ChangeResult, maintenance_window: bool) -> bool {
-        // During maintenance window, suppress notifications for package-managed paths
-        // but HIGH/CRITICAL for non-package-managed paths still fire
         if maintenance_window && change.package.is_some() {
             return true;
         }
 
-        // Per-path cooldown (uses hot-reloadable cooldown value)
-        let cooldown_secs = self.cooldown_secs.load(Ordering::Acquire);
-        let path_str = change.path.to_string_lossy();
+        let now = Instant::now();
+        let path = change.path.to_string_lossy().to_string();
+
         {
-            let cooldowns = self.cooldowns.lock();
-            if let Some(last) = cooldowns.get(path_str.as_ref()) {
-                if last.elapsed() < Duration::from_secs(cooldown_secs) {
+            let mut cooldowns = self.cooldowns.lock();
+            let previous = cooldowns.insert(path, now);
+            if let Some(last) = previous {
+                if now.duration_since(last) < Duration::from_secs(self.cooldown_secs) {
                     return true;
                 }
             }
         }
 
-        // Rate limiting (uses hot-reloadable rate limit)
-        let rate_limit = self.rate_limit.load(Ordering::Acquire);
         {
-            let mut rate = self.rate_counter.lock();
-            // Reset window if it's been more than a minute
-            if rate.window_start.elapsed() > Duration::from_secs(60) {
-                rate.count = 0;
-                rate.window_start = Instant::now();
+            let mut rl = self.rate_limiter.lock();
+            if rl.window_start.elapsed() > Duration::from_secs(60) {
+                rl.count = 0;
+                rl.window_start = Instant::now();
             }
-            if rate.count >= rate_limit {
+
+            if rl.count >= 10_000 {
                 return true;
             }
+            rl.count += 1;
         }
 
         false
     }
 
-    fn build_alert(
-        &self,
-        change: &ChangeResult,
-        primary_change: ChangeType,
-        maintenance_window: bool,
-    ) -> Alert {
-        let alert_timestamp = Utc::now();
-        let alert_timestamp_epoch = alert_timestamp.timestamp() as u64;
+    fn write_audit_entry(&self, payload: &AlertPayload, suppressed: bool) -> Result<()> {
+        let change = &payload.change;
+
+        let hmac = self.hmac_key.as_ref().map(|key| {
+            let ts = chrono::Utc::now().timestamp();
+            let primary = change
+                .changes
+                .first()
+                .map(change_to_name)
+                .unwrap_or("unknown");
+            let data = crate::hmac::build_audit_hmac_data(
+                ts,
+                &change.path.to_string_lossy(),
+                primary,
+                &change.severity.to_string(),
+                None,
+                None,
+            );
+            crate::hmac::compute_hmac(key, &data)
+        });
+
+        let previous = self.last_chain_hash.lock().clone();
+        let new_hash = audit_ops::insert_audit_entry(
+            &self.audit_conn,
+            change,
+            payload.maintenance_window,
+            suppressed,
+            hmac.as_deref(),
+            &previous,
+        )?;
+
+        *self.last_chain_hash.lock() = new_hash;
+        Ok(())
+    }
+
+    fn build_alert(&self, payload: &AlertPayload) -> Alert {
+        let change = &payload.change;
+        let change_type = change
+            .changes
+            .first()
+            .map(change_to_name)
+            .unwrap_or("unknown")
+            .to_string();
+
+        let event_id = format!(
+            "{}-{}",
+            chrono::Utc::now().timestamp_millis(),
+            blake3::hash(change.path.to_string_lossy().as_bytes())
+                .to_hex()
+                .to_string()
+                .chars()
+                .take(8)
+                .collect::<String>()
+        );
+
         Alert {
-            version: 1,
-            timestamp: alert_timestamp,
-            event_id: {
-                let seq = EVENT_COUNTER.fetch_add(1, Ordering::Relaxed);
-                format!("vigil_{:x}_{:06x}", alert_timestamp_epoch, seq)
-            },
+            version: 2,
+            timestamp: chrono::Utc::now(),
+            event_id,
             severity: change.severity,
-            change_type: primary_change,
+            change_type,
             file: AlertFileInfo {
                 path: change.path.clone(),
-                baseline_hash: change.old_hash.clone(),
-                current_hash: change.new_hash.clone(),
-                baseline_size: None,
-                current_size: None,
-                baseline_permissions: change
-                    .old_permissions
-                    .map(|p| format!("{:04o}", p & 0o7777)),
-                current_permissions: change
-                    .new_permissions
-                    .map(|p| format!("{:04o}", p & 0o7777)),
-                baseline_owner: change.old_owner_uid.map(|u| format!("{}", u)),
-                current_owner: change.new_owner_uid.map(|u| format!("{}", u)),
-                inode_changed: change.change_types.contains(&ChangeType::InodeChanged),
-                mtime_changed: change.old_mtime != change.new_mtime,
+                changes_json: serde_json::to_string(&change.changes).unwrap_or_else(|_| "[]".to_string()),
                 package: change.package.clone(),
                 package_update: change.package_update,
-                responsible_pid: change.responsible_pid,
-                responsible_exe: change.responsible_exe.clone(),
-                baseline_capabilities: None,
-                current_capabilities: None,
+                responsible_pid: change.process.as_ref().map(|p| p.pid),
+                responsible_exe: change.process.as_ref().and_then(|p| p.exe.clone()),
             },
             context: AlertContext {
                 hostname: self.hostname.clone(),
                 monitored_group: change.monitored_group.clone(),
-                maintenance_window,
+                maintenance_window: payload.maintenance_window,
             },
         }
     }
 }
 
-fn hostname() -> String {
-    std::fs::read_to_string("/etc/hostname")
-        .map(|h| h.trim().to_string())
-        .unwrap_or_else(|_| "unknown".to_string())
+fn change_to_name(change: &Change) -> &'static str {
+    match change {
+        Change::ContentModified { .. } => "content_modified",
+        Change::PermissionsChanged { .. } => "permissions_changed",
+        Change::OwnerChanged { .. } => "owner_changed",
+        Change::InodeChanged { .. } => "inode_changed",
+        Change::TypeChanged { .. } => "type_changed",
+        Change::SymlinkTargetChanged { .. } => "symlink_target_changed",
+        Change::CapabilitiesChanged { .. } => "capabilities_changed",
+        Change::XattrChanged { .. } => "xattr_changed",
+        Change::SecurityContextChanged { .. } => "security_context_changed",
+        Change::Deleted => "deleted",
+        Change::Created => "created",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{ChangeResult, Severity};
+
+    #[test]
+    fn dispatcher_writes_audit() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit_path = dir.path().join("audit.db");
+
+        let cfg = crate::config::default_config();
+        let metrics = Arc::new(crate::metrics::Metrics::new());
+        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics).unwrap();
+
+        let payload = AlertPayload {
+            change: ChangeResult {
+                path: std::path::PathBuf::from("/tmp/test"),
+                changes: vec![Change::Created],
+                severity: Severity::High,
+                monitored_group: "test".into(),
+                process: None,
+                package: None,
+                package_update: false,
+            },
+            maintenance_window: false,
+        };
+
+        dispatcher.write_audit_entry(&payload, false).unwrap();
+        let entries = audit_ops::get_recent(&dispatcher.audit_conn, 10).unwrap();
+        assert_eq!(entries.len(), 1);
+    }
 }

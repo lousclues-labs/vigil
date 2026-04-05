@@ -4,7 +4,7 @@ Documentation=man:vigild(8)
 After=local-fs.target
 
 [Service]
-Type=simple
+Type=notify
 ExecStart=/usr/bin/vigild
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure

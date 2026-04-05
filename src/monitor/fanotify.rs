@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::ffi::CString;
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
 use std::path::PathBuf;
@@ -7,17 +8,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use chrono::Utc;
 use crossbeam_channel::Sender;
-use parking_lot::RwLock;
 
 use crate::config::Config;
 use crate::error::{Result, VigilError};
 use crate::metrics::Metrics;
-use crate::types::{FsEvent, FsEventType};
+use crate::types::{FsEvent, FsEventType, ProcessAttribution};
 use crate::watch_index::WatchGroupIndex;
 
-// fanotify constants (not all exposed by libc/nix)
+// fanotify constants
 const FAN_CLOEXEC: u32 = 0x0000_0001;
 const FAN_CLASS_NOTIF: u32 = 0x0000_0000;
 const FAN_NONBLOCK: u32 = 0x0000_0002;
@@ -35,21 +36,6 @@ const FAN_MOVED_TO: u64 = 0x0000_0080;
 
 const FAN_EVENT_METADATA_LEN: usize = std::mem::size_of::<FanotifyEventMetadata>();
 
-/// RAII wrapper for a raw file descriptor. Calls close() on drop.
-struct OwnedFd(RawFd);
-
-impl Drop for OwnedFd {
-    fn drop(&mut self) {
-        if self.0 >= 0 {
-            // SAFETY: self.0 is a valid fd (checked >= 0). OwnedFd has
-            // exclusive ownership, so no double-close can occur.
-            unsafe {
-                libc::close(self.0);
-            }
-        }
-    }
-}
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct FanotifyEventMetadata {
@@ -62,18 +48,28 @@ struct FanotifyEventMetadata {
     pid: i32,
 }
 
-/// Start fanotify-based filesystem monitoring on a background thread.
+struct OwnedRawFd(RawFd);
+
+impl Drop for OwnedRawFd {
+    fn drop(&mut self) {
+        if self.0 >= 0 {
+            // SAFETY: fd is owned by this RAII wrapper and valid when >= 0.
+            unsafe {
+                libc::close(self.0);
+            }
+        }
+    }
+}
+
 pub fn start(
     _config: &Config,
     watch_paths: &[PathBuf],
     event_tx: Sender<FsEvent>,
     shutdown: Arc<AtomicBool>,
-    watch_index: Arc<RwLock<WatchGroupIndex>>,
+    watch_index: Arc<ArcSwap<WatchGroupIndex>>,
     metrics: Arc<Metrics>,
 ) -> Result<crossbeam_channel::Sender<Vec<PathBuf>>> {
-    // Initialize fanotify fd
-    // SAFETY: fanotify_init is a Linux syscall. We pass valid flags and
-    // O_RDONLY for read-only access. The return value is checked below.
+    // SAFETY: fanotify_init syscall with valid flags; return value checked.
     let fan_fd = unsafe {
         libc::syscall(
             libc::SYS_fanotify_init,
@@ -90,52 +86,23 @@ pub fn start(
     }
 
     let fan_fd = fan_fd as RawFd;
-
-    // Wrap in OwnedFd so it's cleaned up on early return
-    let fan_fd_owned = OwnedFd(fan_fd);
+    let fan_fd_owned = OwnedRawFd(fan_fd);
 
     let (control_tx, control_rx) = crossbeam_channel::unbounded::<Vec<PathBuf>>();
 
-    // Determine unique mount points to mark
     let mount_points = resolve_mount_points(watch_paths);
-
     let mask = FAN_MODIFY | FAN_ATTRIB | FAN_CREATE | FAN_DELETE | FAN_MOVED_FROM | FAN_MOVED_TO;
 
     for mount in &mount_points {
         let _ = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD);
     }
 
-    // Spawn event reader thread — transfer ownership of fan_fd_owned into the closure
     std::thread::Builder::new()
         .name("vigil-fanotify".into())
         .spawn(move || {
-            let _fan_fd_guard = fan_fd_owned; // dropped (closed) when thread exits
-            let fan_fd = _fan_fd_guard.0;
-            let mut buf = vec![0u8; 262_144]; // 256KB — reduces read() syscalls during bursts
-
-            // Set up epoll
-            // SAFETY: epoll_create1 with EPOLL_CLOEXEC is a safe Linux syscall.
-            let epoll_fd_raw = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
-            if epoll_fd_raw < 0 {
-                log::error!("epoll_create1 failed: {}", std::io::Error::last_os_error());
-                return;
-            }
-            let _epoll_guard = OwnedFd(epoll_fd_raw);
-
-            let mut ev = libc::epoll_event {
-                events: libc::EPOLLIN as u32,
-                u64: fan_fd as u64,
-            };
-            // SAFETY: epoll_fd_raw and fan_fd are valid fds. ev points to
-            // a valid epoll_event on the stack.
-            let ret =
-                unsafe { libc::epoll_ctl(epoll_fd_raw, libc::EPOLL_CTL_ADD, fan_fd, &mut ev) };
-            if ret < 0 {
-                log::error!("epoll_ctl failed: {}", std::io::Error::last_os_error());
-                return;
-            }
-
-            let mut events = [libc::epoll_event { events: 0, u64: 0 }; 1];
+            let _fan_guard = fan_fd_owned;
+            let fan_fd = _fan_guard.0;
+            let mut buf = vec![0u8; 262_144];
 
             let mut current_mounts: HashSet<PathBuf> = mount_points.into_iter().collect();
 
@@ -153,94 +120,95 @@ pub fn start(
                     current_mounts = new_mounts;
                 }
 
-                // SAFETY: epoll_fd_raw is valid, events array has capacity for 1 event.
-                let nfds = unsafe {
-                    libc::epoll_wait(epoll_fd_raw, events.as_mut_ptr(), 1, 500) // 500ms timeout
-                };
-
-                if nfds <= 0 {
-                    continue;
-                }
-
-                // SAFETY: fan_fd is valid, buf is a valid mutable slice.
+                // SAFETY: valid fd + valid buffer pointer.
                 let n = unsafe { libc::read(fan_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
                 if n <= 0 {
+                    std::thread::sleep(Duration::from_millis(50));
                     continue;
                 }
 
-                let mut offset = 0;
+                let mut offset = 0usize;
                 while offset + FAN_EVENT_METADATA_LEN <= n as usize {
                     let event =
-                        // SAFETY: offset is bounds-checked (offset + FAN_EVENT_METADATA_LEN <= n).
-                        // The buffer contains valid fanotify event data from the kernel.
+                        // SAFETY: offset bounds checked and kernel produced this buffer.
                         unsafe { &*(buf.as_ptr().add(offset) as *const FanotifyEventMetadata) };
 
                     if event.fd >= 0 {
-                        // Read path from /proc/self/fd/<fd>
                         let fd_link = format!("/proc/self/fd/{}", event.fd);
                         if let Ok(path) = std::fs::read_link(&fd_link) {
-                            // Check if path is in our watch set using O(log n) prefix lookup
-                            let is_watched = watch_index.read().is_watched(&path);
+                            let idx = watch_index.load();
+                            let is_watched = idx.is_watched(&path);
 
                             if is_watched {
-                                // Filter out self-generated events
-                                let self_pid = std::process::id() as i32;
-                                if event.pid == self_pid {
-                                    // SAFETY: event.fd is a valid fd from the kernel (checked >= 0).
-                                    unsafe { libc::close(event.fd) };
-                                    offset += event.event_len as usize;
-                                    continue;
-                                }
-
                                 if let Some(event_type) = mask_to_event_type(event.mask) {
-                                    metrics.events_received.fetch_add(1, Ordering::Relaxed);
+                                    metrics
+                                        .events_received
+                                        .fetch_add(1, Ordering::Relaxed);
 
-                                    // Process attribution: read exe from /proc/<pid>/exe
-                                    let responsible_pid = if event.pid > 0 {
-                                        Some(event.pid as u32)
+                                    let process = if event.pid > 0 {
+                                        let exe = std::fs::read_link(format!("/proc/{}/exe", event.pid))
+                                            .ok()
+                                            .map(|p| p.to_string_lossy().to_string());
+                                        Some(ProcessAttribution {
+                                            pid: event.pid as u32,
+                                            exe,
+                                        })
                                     } else {
                                         None
                                     };
-                                    let responsible_exe = responsible_pid.and_then(|pid| {
-                                        std::fs::read_link(format!("/proc/{}/exe", pid))
-                                            .ok()
-                                            .map(|p| p.to_string_lossy().into_owned())
-                                    });
+
+                                    // SAFETY: event.fd is uniquely owned here and has not been closed.
+                                    let owned_fd = unsafe { OwnedFd::from_raw_fd(event.fd) };
 
                                     let fs_event = FsEvent {
                                         path: path.clone(),
                                         event_type,
                                         timestamp: Utc::now(),
-                                        responsible_pid,
-                                        responsible_exe,
+                                        event_fd: Some(owned_fd),
+                                        process,
                                     };
+
                                     match event_tx.send_timeout(fs_event, Duration::from_secs(1)) {
                                         Ok(()) => {}
-                                        Err(crossbeam_channel::SendTimeoutError::Timeout(_)) => {
-                                            log::error!("Event channel full for 1s — dropping filesystem event for {}. Scheduling recovery scan.", path.display());
-                                            metrics.events_dropped.fetch_add(1, Ordering::Relaxed);
+                                        Err(crossbeam_channel::SendTimeoutError::Timeout(_dropped)) => {
+                                            metrics
+                                                .events_dropped
+                                                .fetch_add(1, Ordering::Relaxed);
+                                            tracing::warn!(
+                                                path = %path.display(),
+                                                "fanotify event channel full for 1s; dropping event fd"
+                                            );
                                         }
-                                        Err(crossbeam_channel::SendTimeoutError::Disconnected(_)) => {
-                                            log::error!("Event channel disconnected");
-                                            break;
+                                        Err(crossbeam_channel::SendTimeoutError::Disconnected(_dropped)) => {
+                                            tracing::error!("event channel disconnected");
+                                            return;
                                         }
                                     }
+                                } else {
+                                    // SAFETY: fd still owned here and not transferred.
+                                    unsafe {
+                                        libc::close(event.fd);
+                                    }
+                                }
+                            } else {
+                                // SAFETY: fd still owned here and not transferred.
+                                unsafe {
+                                    libc::close(event.fd);
                                 }
                             }
+                        } else {
+                            // SAFETY: fd still owned here and not transferred.
+                            unsafe {
+                                libc::close(event.fd);
+                            }
                         }
-
-                        // Close the event fd
-                        // SAFETY: event.fd is a valid fd provided by the kernel
-                        // via fanotify (checked >= 0 above).
-                        unsafe { libc::close(event.fd) };
                     }
 
                     offset += event.event_len as usize;
                 }
             }
 
-            // OwnedFd guards handle cleanup
-            log::info!("fanotify monitor stopped");
+            tracing::info!("fanotify monitor stopped");
         })
         .map_err(|e| VigilError::Fanotify(format!("cannot spawn thread: {}", e)))?;
 
@@ -251,8 +219,7 @@ fn apply_fanotify_mark(fan_fd: RawFd, mount: &std::path::Path, mask: u64, op: u3
     let c_path = CString::new(mount.as_os_str().as_bytes())
         .map_err(|_| VigilError::Fanotify(format!("invalid path: {}", mount.display())))?;
 
-    // SAFETY: fanotify_mark is a Linux syscall. fan_fd is a valid fd from
-    // fanotify_init and c_path is a valid NUL-terminated C string.
+    // SAFETY: fanotify_mark syscall with valid fd and C string; result checked.
     let ret = unsafe {
         libc::syscall(
             libc::SYS_fanotify_mark,
@@ -265,20 +232,13 @@ fn apply_fanotify_mark(fan_fd: RawFd, mount: &std::path::Path, mask: u64, op: u3
     };
 
     if ret < 0 {
-        let err = std::io::Error::last_os_error();
-        log::warn!("fanotify_mark failed for {}: {}", mount.display(), err);
         return Err(VigilError::Fanotify(format!(
             "fanotify_mark failed for {}: {}",
             mount.display(),
-            err
+            std::io::Error::last_os_error()
         )));
     }
 
-    if op == FAN_MARK_ADD {
-        log::info!("fanotify watching mount: {}", mount.display());
-    } else {
-        log::info!("fanotify unwatching mount: {}", mount.display());
-    }
     Ok(())
 }
 
@@ -300,44 +260,12 @@ fn mask_to_event_type(mask: u64) -> Option<FsEventType> {
     }
 }
 
-/// Resolve watch paths to their mount points by reading /proc/self/mountinfo.
-fn resolve_mount_points(watch_paths: &[PathBuf]) -> Vec<PathBuf> {
-    let mut mount_points = HashSet::new();
-
-    let mountinfo = match std::fs::read_to_string("/proc/self/mountinfo") {
-        Ok(m) => m,
-        Err(_) => {
-            // Fallback: use "/" and the paths themselves
-            log::warn!("Cannot read /proc/self/mountinfo, using root mount");
-            return vec![PathBuf::from("/")];
+fn resolve_mount_points(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut mounts = HashSet::new();
+    for path in paths {
+        if path.starts_with("/") {
+            mounts.insert(PathBuf::from("/"));
         }
-    };
-
-    // Parse mount points from mountinfo
-    let known_mounts: Vec<PathBuf> = mountinfo
-        .lines()
-        .filter_map(|line| {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() >= 5 {
-                Some(PathBuf::from(fields[4]))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    for watch_path in watch_paths {
-        // Find the longest mount point that is a prefix of this watch path
-        let mut best_mount = PathBuf::from("/");
-        for mount in &known_mounts {
-            if watch_path.starts_with(mount)
-                && mount.as_os_str().len() > best_mount.as_os_str().len()
-            {
-                best_mount = mount.clone();
-            }
-        }
-        mount_points.insert(best_mount);
     }
-
-    mount_points.into_iter().collect()
+    mounts.into_iter().collect()
 }

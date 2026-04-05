@@ -6,9 +6,8 @@ use crate::types::OutputFormat;
 #[derive(Parser)]
 #[command(
     name = "vigil",
-    about = "Lightweight File Integrity Monitor for Linux Desktops",
+    about = "Linux file integrity monitor",
     version = env!("CARGO_PKG_VERSION"),
-    long_about = None,
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -25,156 +24,56 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Initialize baseline database (first run)
+    /// Initialize baseline database
     Init,
 
-    /// Manage baselines
-    Baseline {
-        #[command(subcommand)]
-        action: BaselineAction,
-    },
-
-    /// Start real-time monitoring daemon
+    /// Run daemon in foreground
     Watch,
 
-    /// Run immediate integrity check (one-shot)
+    /// Run one-shot integrity check
     Check {
-        /// Run a full scan instead of incremental
+        /// Run full scan instead of incremental
         #[arg(long)]
         full: bool,
     },
 
-    /// Manage maintenance windows
-    Maintenance {
-        #[command(subcommand)]
-        action: MaintenanceAction,
-    },
-
-    /// View alert history
-    Log {
-        #[command(subcommand)]
-        action: LogAction,
-    },
-
-    /// Show daemon status and health
+    /// Show daemon status
     Status,
 
-    /// Configuration management
+    /// Audit log operations
+    Audit {
+        #[command(subcommand)]
+        action: AuditAction,
+    },
+
+    /// Configuration operations
     Config {
         #[command(subcommand)]
         action: ConfigAction,
     },
 
-    /// Run self-diagnostics
-    Doctor,
-
-    /// Print version information
+    /// Print version
     Version,
 }
 
 #[derive(Subcommand)]
-pub enum BaselineAction {
-    /// Create initial baseline (alias for top-level init)
-    Init,
-
-    /// Re-scan and update baseline
-    Refresh {
-        /// Only refresh paths under this directory
-        #[arg(long)]
-        paths: Option<PathBuf>,
-
-        /// Suppress non-error output
-        #[arg(long)]
-        quiet: bool,
-    },
-
-    /// Show changes since last baseline
-    Diff,
-
-    /// Add single file to baseline
-    Add {
-        /// File path to add
-        path: PathBuf,
-    },
-
-    /// Remove single file from baseline
-    Remove {
-        /// File path to remove
-        path: PathBuf,
-    },
-
-    /// Show baseline statistics
-    Stats,
-
-    /// Export baseline as JSON
-    Export,
-}
-
-#[derive(Subcommand)]
-pub enum MaintenanceAction {
-    /// Enter maintenance window (suppress alerts)
-    Enter {
-        /// Suppress non-error output
-        #[arg(long)]
-        quiet: bool,
-    },
-
-    /// Exit maintenance window (resume alerts)
-    Exit {
-        /// Suppress non-error output
-        #[arg(long)]
-        quiet: bool,
-    },
-
-    /// Show maintenance window state
-    Status,
-}
-
-#[derive(Subcommand)]
-pub enum LogAction {
-    /// Show recent alerts
+pub enum AuditAction {
+    /// Show recent audit entries
     Show {
-        /// Filter by minimum severity
-        #[arg(long)]
-        severity: Option<String>,
-
-        /// Number of most recent alerts to show
+        /// Number of entries to show
         #[arg(long, default_value = "20")]
         last: u32,
     },
 
-    /// Search audit log
-    Search {
-        /// Search by path (substring match)
-        #[arg(long)]
-        path: Option<String>,
-
-        /// Search by severity
-        #[arg(long)]
-        severity: Option<String>,
-    },
-
-    /// Show alert statistics
-    Stats,
-
-    /// Verify HMAC integrity of audit log
+    /// Verify audit chain integrity
     Verify,
 }
 
 #[derive(Subcommand)]
 pub enum ConfigAction {
-    /// Display active configuration
+    /// Show active configuration as TOML
     Show,
 
-    /// Validate configuration file
+    /// Validate configuration
     Validate,
-
-    /// Deep-validate configuration file (checks filesystem access, permissions, etc.)
-    Check,
-
-    /// Dump fully-resolved config as TOML (all defaults filled in)
-    Dump,
-
-    /// Migrate config to latest version and print to stdout
-    Migrate,
 }

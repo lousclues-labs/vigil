@@ -2,52 +2,37 @@ use std::process;
 
 use clap::Parser;
 
-use vigil::alert::AlertEngine;
-use vigil::baseline;
-use vigil::cli::{BaselineAction, Cli, Command, ConfigAction, LogAction, MaintenanceAction};
-use vigil::config;
-use vigil::db;
-use vigil::error::Result;
+use vigil::cli::{AuditAction, Cli, Command, ConfigAction};
 use vigil::types::{OutputFormat, ScanMode};
 
 fn main() {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
-    tracing_log::LogTracer::init().ok();
+    init_tracing();
 
     let cli = Cli::parse();
 
     if let Err(e) = run(cli) {
-        if matches!(
-            &e,
-            vigil::error::VigilError::Database(rusqlite::Error::SqliteFailure(db_err, _))
-                if db_err.code == rusqlite::ErrorCode::DatabaseBusy
-        ) {
-            eprintln!(
-                "Database is locked by the vigil daemon. Try again in a moment, or use 'vigil status' to check daemon state."
-            );
-        } else {
-            log::error!("{}", e);
-        }
+        eprintln!("error: {}", e);
         process::exit(1);
     }
 }
 
-fn run(cli: Cli) -> Result<()> {
+fn init_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+}
+
+fn run(cli: Cli) -> vigil::Result<()> {
     let config_path = cli.config;
     let format = cli.format;
 
     match cli.command {
         Command::Init => cmd_init(config_path.as_deref()),
-        Command::Baseline { action } => cmd_baseline(config_path.as_deref(), format, action),
         Command::Watch => cmd_watch(config_path.as_deref()),
         Command::Check { full } => cmd_check(config_path.as_deref(), full),
-        Command::Maintenance { action } => cmd_maintenance(config_path.as_deref(), action),
-        Command::Log { action } => cmd_log(config_path.as_deref(), action),
         Command::Status => cmd_status(config_path.as_deref(), format),
+        Command::Audit { action } => cmd_audit(config_path.as_deref(), action, format),
         Command::Config { action } => cmd_config(config_path.as_deref(), action),
-        Command::Doctor => cmd_doctor(config_path.as_deref()),
         Command::Version => {
             println!("vigil {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -55,139 +40,26 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
-// ── Commands ───────────────────────────────────────────────
-
-fn print_warnings(warnings: &[vigil::error::ScanWarning]) {
-    if warnings.is_empty() {
-        return;
-    }
-    println!("\nWarnings ({}):", warnings.len());
-    for w in warnings {
-        let level = match w.severity {
-            vigil::error::WarningSeverity::Info => "INFO",
-            vigil::error::WarningSeverity::Warning => "WARN",
-            vigil::error::WarningSeverity::Error => "ERROR",
-        };
-        println!("  [{}] {}: {}", level, w.path.display(), w.detail);
-    }
-}
-
-fn cmd_init(config_path: Option<&std::path::Path>) -> Result<()> {
-    let cfg = config::load_config(config_path)?;
-    let conn = db::open_db(&cfg)?;
+fn cmd_init(config_path: Option<&std::path::Path>) -> vigil::Result<()> {
+    let cfg = vigil::config::load_config(config_path)?;
+    let conn = vigil::db::open_baseline_db(&cfg)?;
 
     println!("Initializing baseline...");
-    let (count, warnings) = baseline::init_baseline(&conn, &cfg, false)?;
+    let count = vigil::scanner::build_initial_baseline(&conn, &cfg)?;
     println!("Baseline initialized: {} entries", count);
-    print_warnings(&warnings);
 
     Ok(())
 }
 
-fn cmd_baseline(
-    config_path: Option<&std::path::Path>,
-    _format: OutputFormat,
-    action: BaselineAction,
-) -> Result<()> {
-    let cfg = config::load_config(config_path)?;
-    let conn = db::open_db(&cfg)?;
-
-    match action {
-        BaselineAction::Init => {
-            let (count, warnings) = baseline::init_baseline(&conn, &cfg, false)?;
-            println!("Baseline initialized: {} entries", count);
-            print_warnings(&warnings);
-        }
-        BaselineAction::Refresh { paths, quiet } => {
-            let filter = paths.map(|p| vec![p]);
-            let (count, warnings) =
-                baseline::refresh_baseline(&conn, &cfg, filter.as_deref(), quiet)?;
-            if !quiet {
-                println!("Baseline refreshed: {} entries", count);
-                print_warnings(&warnings);
-            }
-        }
-        BaselineAction::Diff => {
-            let changes = baseline::diff_baseline(&conn, &cfg)?;
-            if changes.is_empty() {
-                println!("No changes detected.");
-            } else {
-                println!("{} change(s) detected:\n", changes.len());
-                for change in &changes {
-                    let types: Vec<String> =
-                        change.change_types.iter().map(|c| c.to_string()).collect();
-                    println!(
-                        "  {} [{}] {} ({})",
-                        change.severity.to_string().to_uppercase(),
-                        types.join(", "),
-                        change.path.display(),
-                        change.monitored_group,
-                    );
-
-                    if let (Some(old), Some(new)) = (&change.old_hash, &change.new_hash) {
-                        println!(
-                            "    Hash: {}… → {}…",
-                            &old[..8.min(old.len())],
-                            &new[..8.min(new.len())]
-                        );
-                    }
-                    if let (Some(old_p), Some(new_p)) =
-                        (change.old_permissions, change.new_permissions)
-                    {
-                        if old_p != new_p {
-                            println!("    Perms: {:04o} → {:04o}", old_p & 0o7777, new_p & 0o7777);
-                        }
-                    }
-                }
-            }
-        }
-        BaselineAction::Add { path } => {
-            baseline::add_file(&conn, &path, &cfg)?;
-            println!("Added to baseline: {}", path.display());
-        }
-        BaselineAction::Remove { path } => {
-            baseline::remove_file(&conn, &path)?;
-            println!("Removed from baseline: {}", path.display());
-        }
-        BaselineAction::Stats => {
-            let stats = baseline::baseline_stats(&conn)?;
-            println!("Baseline Statistics");
-            println!("━━━━━━━━━━━━━━━━━━━");
-            println!("  Total entries: {}", stats.total_entries);
-            for (source, count) in &stats.by_source {
-                println!("  {}: {}", source, count);
-            }
-            if let Some(ref refresh) = stats.last_refresh {
-                println!("  Last refresh: {}", refresh);
-            }
-        }
-        BaselineAction::Export => {
-            let entries = db::ops::get_all_baselines(&conn)?;
-            let json = serde_json::to_string_pretty(&entries)?;
-            println!("{}", json);
-        }
-    }
-
-    Ok(())
+fn cmd_watch(config_path: Option<&std::path::Path>) -> vigil::Result<()> {
+    let cfg = vigil::config::load_config(config_path)?;
+    println!("Starting vigilant monitor in foreground mode (Ctrl+C to stop)...");
+    vigil::Daemon::from_config(cfg)?.run()
 }
 
-fn cmd_watch(config_path: Option<&std::path::Path>) -> Result<()> {
-    let cfg = config::load_config(config_path)?;
-
-    // The 'watch' command in the CLI starts the daemon inline (foreground mode).
-    // For systemd-managed daemon, use vigild binary instead.
-    println!("Starting Vigil real-time monitor (foreground mode)...");
-    println!("Press Ctrl+C to stop.\n");
-
-    vigil::daemon_run(&cfg)?;
-
-    Ok(())
-}
-
-fn cmd_check(config_path: Option<&std::path::Path>, full: bool) -> Result<()> {
-    let cfg = config::load_config(config_path)?;
-    let conn = db::open_db(&cfg)?;
-    let alert_engine = AlertEngine::new(&cfg)?;
+fn cmd_check(config_path: Option<&std::path::Path>, full: bool) -> vigil::Result<()> {
+    let cfg = vigil::config::load_config(config_path)?;
+    let conn = vigil::db::open_baseline_db(&cfg)?;
 
     let mode = if full {
         ScanMode::Full
@@ -195,61 +67,88 @@ fn cmd_check(config_path: Option<&std::path::Path>, full: bool) -> Result<()> {
         ScanMode::Incremental
     };
 
-    println!("Running {} integrity check...", mode);
+    println!("Running {} scan...", mode);
+    let result = vigil::scanner::run_scan(&conn, &cfg, mode)?;
 
-    let is_tty = atty_is_tty();
-    let progress_cb = |step: &str| {
-        eprint!("\r\x1b[K [>] {}", step);
-    };
-    let progress: vigil::ProgressCallback = if is_tty { Some(&progress_cb) } else { None };
+    println!("Checked: {}", result.total_checked);
+    println!("Changes: {}", result.changes_found);
+    println!("Errors: {}", result.errors);
 
-    let result = vigil::scanner::run_scan(&conn, &cfg, &alert_engine, mode, progress)?;
-
-    if is_tty {
-        eprint!("\r\x1b[K"); // Clear progress line
+    for change in result.changes.iter().take(20) {
+        println!(
+            "  [{}] {} ({})",
+            change.severity,
+            change.path.display(),
+            change.primary_change_name()
+        );
     }
-
-    println!("\nScan complete:");
-    println!("  Files checked: {}", result.total_checked);
-    println!("  Changes found: {}", result.changes_found);
-    println!("  Errors: {}", result.errors);
-    print_warnings(&result.warnings);
 
     Ok(())
 }
 
-fn cmd_maintenance(config_path: Option<&std::path::Path>, action: MaintenanceAction) -> Result<()> {
-    let cfg = config::load_config(config_path)?;
-    let conn = db::open_db(&cfg)?;
+fn cmd_status(config_path: Option<&std::path::Path>, format: OutputFormat) -> vigil::Result<()> {
+    let cfg = vigil::config::load_config(config_path)?;
+
+    let metrics_path = cfg.daemon.runtime_dir.join("metrics.json");
+    let state_path = cfg.daemon.runtime_dir.join("state.json");
+
+    let metrics = std::fs::read_to_string(&metrics_path).unwrap_or_else(|_| "{}".to_string());
+    let state = std::fs::read_to_string(&state_path).unwrap_or_else(|_| "{}".to_string());
+
+    match format {
+        OutputFormat::Json => {
+            let metrics_json: serde_json::Value = serde_json::from_str(&metrics).unwrap_or(serde_json::json!({}));
+            let state_json: serde_json::Value = serde_json::from_str(&state).unwrap_or(serde_json::json!({}));
+            let out = serde_json::json!({
+                "metrics": metrics_json,
+                "state": state_json,
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        _ => {
+            println!("Status");
+            println!("------");
+            println!("Metrics file: {}", metrics_path.display());
+            println!("State file:   {}", state_path.display());
+            println!("\nState JSON:\n{}", state);
+            println!("\nMetrics JSON:\n{}", metrics);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_audit(
+    config_path: Option<&std::path::Path>,
+    action: AuditAction,
+    format: OutputFormat,
+) -> vigil::Result<()> {
+    let cfg = vigil::config::load_config(config_path)?;
+    let conn = vigil::db::open_audit_db(&cfg)?;
 
     match action {
-        MaintenanceAction::Enter { quiet } => {
-            db::ops::set_config_state(&conn, "maintenance_window_active", "1")?;
-            db::ops::set_config_state(
-                &conn,
-                "maintenance_window_started",
-                &chrono::Utc::now().timestamp().to_string(),
-            )?;
-            if !quiet {
-                println!("Maintenance window entered. Notifications suppressed for package-managed paths.");
-            }
-        }
-        MaintenanceAction::Exit { quiet } => {
-            db::ops::set_config_state(&conn, "maintenance_window_active", "0")?;
-            if !quiet {
-                println!("Maintenance window exited. Normal alerting resumed.");
-            }
-        }
-        MaintenanceAction::Status => {
-            let active = db::ops::get_config_state(&conn, "maintenance_window_active")?
-                .map(|v| v == "1")
-                .unwrap_or(false);
-            if active {
-                let started = db::ops::get_config_state(&conn, "maintenance_window_started")?
-                    .unwrap_or_else(|| "unknown".into());
-                println!("Maintenance window: ACTIVE (since {})", started);
+        AuditAction::Show { last } => {
+            let entries = vigil::db::audit_ops::get_recent(&conn, last)?;
+            if format == OutputFormat::Json {
+                println!("{}", serde_json::to_string_pretty(&entries_to_json(&entries))?);
             } else {
-                println!("Maintenance window: INACTIVE");
+                for e in entries {
+                    println!("{} {} {}", e.timestamp, e.severity, e.path);
+                }
+            }
+        }
+        AuditAction::Verify => {
+            let (total, valid, breaks, missing) = vigil::db::audit_ops::verify_chain(&conn)?;
+            println!("Audit Chain Verification");
+            println!("------------------------");
+            println!("Total entries: {}", total);
+            println!("Valid links:   {}", valid);
+            println!("Missing hash:  {}", missing);
+            println!("Breaks:        {}", breaks.len());
+            if !breaks.is_empty() {
+                for (id, ts) in breaks {
+                    println!("  break at id={} timestamp={}", id, ts);
+                }
             }
         }
     }
@@ -257,469 +156,52 @@ fn cmd_maintenance(config_path: Option<&std::path::Path>, action: MaintenanceAct
     Ok(())
 }
 
-fn cmd_log(config_path: Option<&std::path::Path>, action: LogAction) -> Result<()> {
-    let cfg = config::load_config(config_path)?;
-    let conn = db::open_db(&cfg)?;
-
-    match action {
-        LogAction::Show { severity, last } => {
-            let entries = db::ops::get_recent_audit(&conn, last)?;
-            if entries.is_empty() {
-                println!("No audit entries found.");
-                return Ok(());
-            }
-
-            for entry in &entries {
-                if let Some(ref sev_filter) = severity {
-                    if entry.severity != *sev_filter {
-                        continue;
-                    }
-                }
-
-                let ts = chrono::DateTime::from_timestamp(entry.timestamp, 0)
-                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                    .unwrap_or_else(|| entry.timestamp.to_string());
-
-                println!(
-                    "  {} [{}] {} — {}{}",
-                    ts,
-                    entry.severity.to_uppercase(),
-                    entry.change_type,
-                    entry.path,
-                    if entry.suppressed {
-                        " (suppressed)"
-                    } else {
-                        ""
-                    },
-                );
-            }
-        }
-        LogAction::Search { path, severity } => {
-            let entries = db::ops::search_audit(&conn, path.as_deref(), severity.as_deref(), 1000)?;
-            for entry in &entries {
-                println!(
-                    "  {} [{}] {} — {}",
-                    entry.timestamp, entry.severity, entry.change_type, entry.path
-                );
-            }
-            println!("\n{} entries found.", entries.len());
-        }
-        LogAction::Stats => {
-            let entries = db::ops::get_recent_audit(&conn, 10000)?;
-            let total = entries.len();
-            let suppressed = entries.iter().filter(|e| e.suppressed).count();
-            let critical = entries.iter().filter(|e| e.severity == "critical").count();
-            let high = entries.iter().filter(|e| e.severity == "high").count();
-            let medium = entries.iter().filter(|e| e.severity == "medium").count();
-            let low = entries.iter().filter(|e| e.severity == "low").count();
-
-            println!("Alert Statistics");
-            println!("━━━━━━━━━━━━━━━━");
-            println!("  Total events: {}", total);
-            println!("  Suppressed:   {}", suppressed);
-            println!("  Critical:     {}", critical);
-            println!("  High:         {}", high);
-            println!("  Medium:       {}", medium);
-            println!("  Low:          {}", low);
-        }
-        LogAction::Verify => {
-            if !cfg.security.hmac_signing {
-                println!("HMAC signing is not enabled in configuration.");
-                println!("Set security.hmac_signing = true and provide a key file.");
-                return Ok(());
-            }
-
-            let key = vigil::hmac::load_hmac_key(&cfg.security.hmac_key_path)?;
-            let entries = db::ops::get_recent_audit(&conn, u32::MAX)?;
-
-            let mut valid = 0u64;
-            let mut invalid = 0u64;
-            let mut missing = 0u64;
-
-            for entry in &entries {
-                // Reconstruct the HMAC data from entry fields
-                let data = vigil::hmac::build_audit_hmac_data(
-                    entry.timestamp,
-                    &entry.path,
-                    &entry.change_type,
-                    &entry.severity,
-                    entry.old_hash.as_deref(),
-                    entry.new_hash.as_deref(),
-                );
-
-                // Get the stored HMAC from the database
-                match db::ops::get_audit_hmac(&conn, entry.id) {
-                    Ok(Some(stored_hmac)) => {
-                        if vigil::hmac::verify_hmac(&key, &data, &stored_hmac) {
-                            valid += 1;
-                        } else {
-                            invalid += 1;
-                            println!(
-                                "  INVALID: {} [{}] {} (id={})",
-                                entry.timestamp, entry.severity, entry.path, entry.id
-                            );
-                        }
-                    }
-                    Ok(None) => {
-                        missing += 1;
-                    }
-                    Err(e) => {
-                        log::debug!("Error reading HMAC for entry {}: {}", entry.id, e);
-                        missing += 1;
-                    }
-                }
-            }
-
-            println!("HMAC Verification Results");
-            println!("━━━━━━━━━━━━━━━━━━━━━━━━━");
-            println!("  Total entries: {}", entries.len());
-            println!("  Valid:         {}", valid);
-            println!("  Invalid:       {}", invalid);
-            println!("  Missing HMAC:  {}", missing);
-
-            if invalid > 0 {
-                println!(
-                    "\n  ⚠ {} entries have invalid HMACs — possible tampering!",
-                    invalid
-                );
-            }
-
-            // Also verify audit chain (Item 16)
-            println!("\nAudit Chain Verification");
-            println!("━━━━━━━━━━━━━━━━━━━━━━━━━");
-            match db::ops::verify_audit_chain(&conn) {
-                Ok((total, chain_valid, broken, chain_missing)) => {
-                    println!("  Total entries:     {}", total);
-                    println!("  Valid chain links:  {}", chain_valid);
-                    println!("  Broken links:      {}", broken.len());
-                    println!("  Missing chain hash: {}", chain_missing);
-
-                    if broken.is_empty() {
-                        println!("\n  Audit chain integrity: VERIFIED");
-                    } else {
-                        for (id, ts) in &broken {
-                            println!(
-                                "  BROKEN at entry {} (timestamp {}) — possible tampering",
-                                id, ts
-                            );
-                        }
-                        println!(
-                            "\n  Audit chain integrity: BROKEN at entry {} — possible tampering",
-                            broken[0].0
-                        );
-                    }
-                }
-                Err(e) => println!("  Chain verification error: {}", e),
-            }
-        }
-    }
-
-    Ok(())
+fn entries_to_json(entries: &[vigil::db::audit_ops::AuditEntry]) -> serde_json::Value {
+    serde_json::Value::Array(
+        entries
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "id": e.id,
+                    "timestamp": e.timestamp,
+                    "path": e.path,
+                    "changes_json": e.changes_json,
+                    "severity": e.severity,
+                    "monitored_group": e.monitored_group,
+                    "process_json": e.process_json,
+                    "package": e.package,
+                    "maintenance": e.maintenance,
+                    "suppressed": e.suppressed,
+                    "hmac": e.hmac,
+                    "chain_hash": e.chain_hash,
+                })
+            })
+            .collect(),
+    )
 }
 
-fn cmd_status(config_path: Option<&std::path::Path>, format: OutputFormat) -> Result<()> {
-    let cfg = config::load_config(config_path)?;
-    let conn = db::open_db(&cfg)?;
+fn cmd_config(
+    config_path: Option<&std::path::Path>,
+    action: ConfigAction,
+) -> vigil::Result<()> {
+    let cfg = vigil::config::load_config(config_path)?;
 
-    let count = db::ops::baseline_count(&conn)?;
-    let last_refresh = db::ops::get_config_state(&conn, "last_baseline_refresh")?;
-    let maint = db::ops::get_config_state(&conn, "maintenance_window_active")?
-        .map(|v| v == "1")
-        .unwrap_or(false);
-
-    let daemon_state = std::fs::read_to_string("/run/vigil/state.json")
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-    let metrics = std::fs::read_to_string("/run/vigil/metrics.json")
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-
-    if matches!(format, OutputFormat::Json) {
-        let pid = if cfg.daemon.pid_file.exists() {
-            std::fs::read_to_string(&cfg.daemon.pid_file)
-                .ok()
-                .map(|s| s.trim().to_string())
-        } else {
-            None
-        };
-
-        let payload = serde_json::json!({
-            "baseline_entries": count,
-            "last_refresh": last_refresh,
-            "maintenance_window": maint,
-            "database": cfg.daemon.db_path,
-            "monitor_backend": cfg.daemon.monitor_backend.to_string(),
-            "daemon_pid": pid,
-            "daemon_state": daemon_state,
-            "metrics": metrics,
-        });
-
-        println!("{}", serde_json::to_string_pretty(&payload)?);
-        return Ok(());
-    }
-
-    println!("Vigil Status");
-    println!("━━━━━━━━━━━━");
-    println!("  Baseline entries:    {}", count);
-    println!(
-        "  Last refresh:        {}",
-        last_refresh.unwrap_or_else(|| "never".into())
-    );
-    println!(
-        "  Maintenance window:  {}",
-        if maint { "ACTIVE" } else { "inactive" }
-    );
-    println!("  Database:            {}", cfg.daemon.db_path.display());
-    println!("  Monitor backend:     {}", cfg.daemon.monitor_backend);
-
-    // Check if daemon PID file exists
-    if cfg.daemon.pid_file.exists() {
-        if let Ok(pid_str) = std::fs::read_to_string(&cfg.daemon.pid_file) {
-            println!("  Daemon PID:          {}", pid_str.trim());
-        }
-    } else {
-        println!("  Daemon:              not running");
-    }
-
-    if let Some(state) = daemon_state {
-        let state_name = state
-            .get("state")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        println!("  Daemon state:        {}", state_name);
-        if state_name == "degraded" {
-            if let Some(reason) = state.get("reason").and_then(|v| v.as_str()) {
-                println!("  Degraded reason:     {}", reason);
-            }
-        }
-    }
-
-    if let Some(metrics) = metrics {
-        if let Some(events_received) = metrics.get("events_received").and_then(|v| v.as_u64()) {
-            println!("  Events received:     {}", events_received);
-        }
-        if let Some(events_dropped) = metrics.get("events_dropped").and_then(|v| v.as_u64()) {
-            println!("  Events dropped:      {}", events_dropped);
-        }
-        if let Some(changes_detected) = metrics.get("changes_detected").and_then(|v| v.as_u64()) {
-            println!("  Changes detected:    {}", changes_detected);
-        }
-    }
-
-    Ok(())
-}
-
-fn cmd_config(config_path: Option<&std::path::Path>, action: ConfigAction) -> Result<()> {
     match action {
         ConfigAction::Show => {
-            let cfg = config::load_config(config_path)?;
-            // Print the loaded config as TOML
-            println!("{:#?}", cfg);
+            println!("{}", toml::to_string_pretty(&cfg).map_err(|e| vigil::VigilError::Config(e.to_string()))?);
         }
-        ConfigAction::Validate => match config::load_config(config_path) {
-            Ok(_) => println!("Configuration is valid."),
-            Err(e) => {
-                println!("Configuration error: {}", e);
-                process::exit(1);
-            }
-        },
-        ConfigAction::Check => {
-            let cfg = match config::load_config(config_path) {
-                Ok(c) => c,
-                Err(e) => {
-                    println!("Configuration error: {}", e);
-                    process::exit(1);
-                }
-            };
-            println!("Basic validation: OK");
-            match config::validate_config_deep(&cfg) {
-                Ok(warnings) => {
-                    if warnings.is_empty() {
-                        println!("Deep validation: OK (no warnings)");
-                    } else {
-                        println!("Deep validation: OK ({} warnings)", warnings.len());
-                        for w in &warnings {
-                            println!("  WARNING: {}", w);
-                        }
-                    }
-                }
-                Err(e) => {
-                    println!("Deep validation FAILED: {}", e);
-                    process::exit(1);
+        ConfigAction::Validate => {
+            vigil::config::validate_config(&cfg)?;
+            let warnings = vigil::config::validate_config_deep(&cfg)?;
+            println!("Configuration is valid.");
+            if !warnings.is_empty() {
+                println!("Warnings:");
+                for w in warnings {
+                    println!("  - {}", w);
                 }
             }
-        }
-        ConfigAction::Dump => {
-            let cfg = config::load_config(config_path)?;
-            let toml_string = toml::to_string_pretty(&cfg).map_err(|e| {
-                vigil::error::VigilError::Config(format!("TOML serialization error: {}", e))
-            })?;
-            println!("{}", toml_string);
-        }
-        ConfigAction::Migrate => {
-            let cfg = config::load_config(config_path)?;
-            eprintln!("Config migrated to version {}", cfg.config_version);
-            let toml_string = toml::to_string_pretty(&cfg).map_err(|e| {
-                vigil::error::VigilError::Config(format!("TOML serialization error: {}", e))
-            })?;
-            println!("{}", toml_string);
         }
     }
 
     Ok(())
-}
-
-fn cmd_doctor(config_path: Option<&std::path::Path>) -> Result<()> {
-    println!("\nVigil — Self-Diagnostics");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━\n");
-
-    // fanotify availability
-    // SAFETY: fanotify_init is a Linux syscall. We pass valid flags
-    // (FAN_CLOEXEC) and O_RDONLY. The returned fd is checked before use.
-    let fan_fd = unsafe {
-        libc::syscall(
-            libc::SYS_fanotify_init,
-            0x00000001u32, // FAN_CLOEXEC | FAN_CLASS_NOTIF
-            libc::O_RDONLY,
-        )
-    };
-    if fan_fd >= 0 {
-        // SAFETY: fan_fd is a valid fd returned by fanotify_init (checked >= 0).
-        unsafe { libc::close(fan_fd as i32) };
-        let uname = nix::sys::utsname::uname().ok();
-        let release = uname
-            .as_ref()
-            .map(|u| u.release().to_string_lossy().into_owned())
-            .unwrap_or_else(|| "unknown".into());
-        println!("  ✓ fanotify available (kernel {})", release);
-    } else {
-        println!("  ✗ fanotify unavailable (requires CAP_SYS_ADMIN)");
-    }
-
-    // CAP_SYS_ADMIN check
-    if nix::unistd::geteuid().is_root() {
-        println!("  ✓ Running as root (full capability)");
-    } else {
-        println!("  ⚠ Not running as root (fanotify may be unavailable)");
-    }
-
-    // Config
-    let cfg_result = config::load_config(config_path);
-    match &cfg_result {
-        Ok(_) => println!("  ✓ Config valid"),
-        Err(e) => println!("  ✗ Config error: {}", e),
-    }
-
-    if let Ok(ref cfg) = cfg_result {
-        // Database
-        match db::open_db(cfg) {
-            Ok(conn) => {
-                println!("  ✓ Database writable ({})", cfg.daemon.db_path.display());
-                match db::integrity_check(&conn) {
-                    Ok(()) => println!("  ✓ Database integrity check passed"),
-                    Err(e) => println!("  ✗ Database integrity check failed: {}", e),
-                }
-
-                let count = db::ops::baseline_count(&conn).unwrap_or(0);
-                let last = db::ops::get_config_state(&conn, "last_baseline_refresh")
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| "never".into());
-                println!("  ✓ Baseline: {} entries (last refresh: {})", count, last);
-
-                // Database HMAC verification (Item 17)
-                if cfg.security.hmac_signing {
-                    if let Ok(key) = vigil::hmac::load_hmac_key(&cfg.security.hmac_key_path) {
-                        match db::ops::get_config_state(&conn, "database_hmac") {
-                            Ok(Some(stored)) => match db::ops::compute_baseline_hmac(&conn, &key) {
-                                Ok(computed) => {
-                                    if computed == stored {
-                                        println!("  ✓ Database integrity HMAC valid");
-                                    } else {
-                                        println!("  ✗ Database integrity HMAC mismatch — baseline may have been tampered with");
-                                    }
-                                }
-                                Err(e) => println!("  ✗ Database HMAC computation failed: {}", e),
-                            },
-                            Ok(None) => println!(
-                                "  ⚠ No database HMAC stored (run init/refresh to generate)"
-                            ),
-                            Err(e) => println!("  ✗ Cannot read database HMAC: {}", e),
-                        }
-                    }
-                }
-            }
-            Err(e) => println!("  ✗ Database error: {}", e),
-        }
-
-        // HMAC key
-        if cfg.security.hmac_signing {
-            if cfg.security.hmac_key_path.exists() {
-                println!(
-                    "  ✓ HMAC key present ({})",
-                    cfg.security.hmac_key_path.display()
-                );
-                // Validate key file permissions and ownership
-                let issues = vigil::hmac::validate_hmac_key_doctor(&cfg.security.hmac_key_path);
-                if issues.is_empty() {
-                    println!("  ✓ HMAC key permissions OK");
-                } else {
-                    for issue in &issues {
-                        println!("  ✗ {}", issue);
-                    }
-                }
-            } else {
-                println!(
-                    "  ✗ HMAC key missing ({})",
-                    cfg.security.hmac_key_path.display()
-                );
-            }
-        } else {
-            println!("  ⚠ HMAC signing disabled");
-        }
-
-        // D-Bus
-        if std::process::Command::new("notify-send")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-        {
-            println!("  ✓ D-Bus notifications available (notify-send)");
-        } else {
-            println!("  ⚠ notify-send not found (D-Bus notifications unavailable)");
-        }
-
-        // Log file
-        if let Some(parent) = cfg.alerts.log_file.parent() {
-            if parent.exists() {
-                println!("  ✓ Log file writable ({})", cfg.alerts.log_file.display());
-            } else {
-                println!("  ⚠ Log directory does not exist: {}", parent.display());
-            }
-        }
-
-        // Package manager
-        let pkg_backend = vigil::package::detect_backend();
-        println!("  ✓ Package manager detected: {}", pkg_backend);
-
-        // Signal socket
-        if cfg.hooks.signal_socket.is_empty() {
-            println!("  ⚠ Signal socket not configured (optional)");
-        } else {
-            println!("  ✓ Signal socket: {}", cfg.hooks.signal_socket);
-        }
-    }
-
-    println!();
-    Ok(())
-}
-
-/// Check if stderr is a TTY (for progress output).
-fn atty_is_tty() -> bool {
-    // SAFETY: isatty is a POSIX function safe to call with any fd.
-    // STDERR_FILENO (2) is always a valid fd number.
-    unsafe { libc::isatty(libc::STDERR_FILENO) != 0 }
 }

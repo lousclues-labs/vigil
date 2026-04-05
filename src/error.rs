@@ -57,6 +57,9 @@ pub enum VigilError {
 
     #[error("syslog error: {0}")]
     Syslog(String),
+
+    #[error("glob pattern error: {0}")]
+    GlobPattern(#[from] globset::Error),
 }
 
 pub type Result<T> = std::result::Result<T, VigilError>;

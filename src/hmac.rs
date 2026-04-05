@@ -9,7 +9,13 @@ type HmacSha256 = Hmac<Sha256>;
 
 /// Compute HMAC-SHA256 over data using the provided key.
 pub fn compute_hmac(key: &[u8], data: &[u8]) -> String {
-    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC can take key of any size");
+    let mut mac = match HmacSha256::new_from_slice(key) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to initialize HMAC");
+            return String::new();
+        }
+    };
     mac.update(data);
     let result = mac.finalize();
     hex::encode(result.into_bytes())
@@ -18,7 +24,13 @@ pub fn compute_hmac(key: &[u8], data: &[u8]) -> String {
 /// Verify HMAC-SHA256: recompute and compare against expected.
 pub fn verify_hmac(key: &[u8], data: &[u8], expected: &str) -> bool {
     // Constant-time comparison via the hmac crate
-    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC can take key of any size");
+    let mut mac = match HmacSha256::new_from_slice(key) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to initialize HMAC for verification");
+            return false;
+        }
+    };
     mac.update(data);
     let expected_bytes = match hex::decode(expected) {
         Ok(b) => b,
@@ -87,7 +99,7 @@ fn check_hmac_key_permissions(path: &Path) {
         Ok(meta) => {
             let mode = meta.mode() & 0o777;
             if mode & 0o077 != 0 {
-                log::warn!(
+                tracing::warn!(
                     "HMAC key file {} has overly permissive mode {:04o} \
                      (should be 0400 or 0600). Other users may read the key.",
                     path.display(),
@@ -96,7 +108,7 @@ fn check_hmac_key_permissions(path: &Path) {
             }
         }
         Err(e) => {
-            log::warn!(
+            tracing::warn!(
                 "Cannot stat HMAC key file {} to check permissions: {}",
                 path.display(),
                 e

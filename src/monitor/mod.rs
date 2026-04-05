@@ -1,13 +1,12 @@
 pub mod fanotify;
-pub mod filter;
 pub mod inotify;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use crossbeam_channel::Sender;
-use parking_lot::RwLock;
 
 use crate::config::Config;
 use crate::error::Result;
@@ -20,15 +19,12 @@ pub struct MonitorHandle {
     pub reconfigure_tx: Option<crossbeam_channel::Sender<Vec<PathBuf>>>,
 }
 
-/// Start the real-time filesystem monitor.
-/// Returns a receiver channel that yields filtered filesystem events.
-///
-/// Attempts fanotify first; falls back to inotify if fanotify is unavailable.
+/// Start the real-time filesystem monitor and return backend handle.
 pub fn start_monitor(
     config: &Config,
     event_tx: Sender<FsEvent>,
     shutdown: Arc<AtomicBool>,
-    watch_index: Arc<RwLock<WatchGroupIndex>>,
+    watch_index: Arc<ArcSwap<WatchGroupIndex>>,
     metrics: Arc<Metrics>,
 ) -> Result<MonitorHandle> {
     let watch_paths = collect_watch_paths(config);
@@ -40,7 +36,7 @@ pub fn start_monitor(
                 &watch_paths,
                 event_tx.clone(),
                 shutdown.clone(),
-                watch_index.clone(),
+                watch_index,
                 metrics.clone(),
             ) {
                 Ok(reconfigure_tx) => {
@@ -50,15 +46,9 @@ pub fn start_monitor(
                     });
                 }
                 Err(e) => {
-                    log::warn!(
-                        "fanotify unavailable (requires CAP_SYS_ADMIN): {}. Falling back to inotify.",
-                        e
-                    );
-                    log::warn!("Inotify fallback has reduced coverage:");
-                    log::warn!("  - Cannot watch files owned by other users");
-                    log::warn!("  - Subject to max_user_watches limit");
-                    log::warn!(
-                        "  - New subdirectories in monitored paths require manual watch registration"
+                    tracing::warn!(
+                        error = %e,
+                        "fanotify unavailable (usually requires CAP_SYS_ADMIN), falling back to inotify"
                     );
                 }
             }
@@ -66,7 +56,6 @@ pub fn start_monitor(
         MonitorBackend::Inotify => {}
     }
 
-    // Fallback to inotify
     let reconfigure_tx = inotify::start(config, &watch_paths, event_tx, shutdown, metrics)?;
     Ok(MonitorHandle {
         backend: MonitorBackend::Inotify,

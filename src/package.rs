@@ -38,7 +38,7 @@ pub fn detect_backend() -> PackageBackend {
     } else if command_exists("rpm") {
         PackageBackend::Rpm
     } else {
-        log::warn!("No supported package manager detected");
+        tracing::warn!("No supported package manager detected");
         PackageBackend::Auto
     }
 }
@@ -103,7 +103,7 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process
             }
             Ok(None) => {
                 if start.elapsed() > timeout {
-                    log::warn!("Package manager query timed out after {:?}", timeout);
+                    tracing::warn!("Package manager query timed out after {:?}", timeout);
                     let _ = child.kill();
                     let _ = child.wait();
                     return None;

@@ -3,7 +3,7 @@ use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 
 use vigil::config::Config;
-use vigil::monitor::filter::EventFilter;
+use vigil::filter::EventFilter;
 use vigil::types::{FsEvent, FsEventType};
 
 #[derive(Arbitrary, Debug)]
@@ -13,7 +13,6 @@ struct FuzzInput {
 }
 
 fuzz_target!(|input: FuzzInput| {
-    // Create a default config for the filter
     let toml_str = r#"
         [watch.test]
         severity = "medium"
@@ -39,10 +38,9 @@ fuzz_target!(|input: FuzzInput| {
         path: std::path::PathBuf::from(&input.path),
         event_type,
         timestamp: chrono::Utc::now(),
-        responsible_pid: None,
-        responsible_exe: None,
+        event_fd: None,
+        process: None,
     };
 
-    // should_process must never panic
     let _ = filter.should_process(&event);
 });

@@ -7,8 +7,8 @@ fuzz_target!(|data: &[u8]| {
         // This must never panic.
         let _ = serde_json::from_str::<vigil::types::BaselineEntry>(s);
 
-        // Also fuzz ChangeType deserialization
-        let _ = serde_json::from_str::<vigil::types::ChangeType>(s);
+        // Fuzz Change enum deserialization
+        let _ = serde_json::from_str::<vigil::types::Change>(s);
 
         // Fuzz Severity parsing
         let _ = s.parse::<vigil::types::Severity>();
