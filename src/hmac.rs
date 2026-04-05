@@ -28,7 +28,14 @@ pub fn verify_hmac(key: &[u8], data: &[u8], expected: &str) -> bool {
 }
 
 /// Load HMAC key from a file. The key file should contain raw bytes or hex-encoded key.
+///
+/// Warns at runtime if the key file permissions are more permissive than 0600,
+/// since a readable key undermines the tamper-evidence guarantee.
+/// See docs/SECURITY.md "HMAC Key Lifecycle" for key management guidance.
 pub fn load_hmac_key(path: &Path) -> Result<Vec<u8>> {
+    // Check key file permissions before reading
+    check_hmac_key_permissions(path);
+
     let content = std::fs::read(path).map_err(|e| {
         VigilError::HmacVerification(format!(
             "cannot read HMAC key file {}: {}",
@@ -67,6 +74,67 @@ pub fn build_audit_hmac_data(
         new_hash.unwrap_or(""),
     )
     .into_bytes()
+}
+
+/// Check HMAC key file permissions and warn if too permissive.
+///
+/// The key file should be mode 0400 or 0600 to prevent other users from
+/// reading the HMAC secret. If the file is readable by group or others,
+/// a warning is emitted because the tamper-evidence guarantee is weakened.
+fn check_hmac_key_permissions(path: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    match std::fs::metadata(path) {
+        Ok(meta) => {
+            let mode = meta.mode() & 0o777;
+            if mode & 0o077 != 0 {
+                log::warn!(
+                    "HMAC key file {} has overly permissive mode {:04o} \
+                     (should be 0400 or 0600). Other users may read the key.",
+                    path.display(),
+                    mode
+                );
+            }
+        }
+        Err(e) => {
+            log::warn!(
+                "Cannot stat HMAC key file {} to check permissions: {}",
+                path.display(),
+                e
+            );
+        }
+    }
+}
+
+/// Validate HMAC key file permissions and ownership for `vigil doctor`.
+///
+/// Returns a list of diagnostic messages describing any issues found.
+/// An empty list means the key file passes all checks.
+pub fn validate_hmac_key_doctor(path: &Path) -> Vec<String> {
+    use std::os::unix::fs::MetadataExt;
+    let mut issues = Vec::new();
+
+    match std::fs::metadata(path) {
+        Ok(meta) => {
+            let mode = meta.mode() & 0o777;
+            if mode & 0o077 != 0 {
+                issues.push(format!(
+                    "HMAC key file permissions are {:04o} (should be 0400 or 0600)",
+                    mode
+                ));
+            }
+            if meta.uid() != 0 {
+                issues.push(format!(
+                    "HMAC key file is owned by UID {} (should be root/UID 0)",
+                    meta.uid()
+                ));
+            }
+        }
+        Err(e) => {
+            issues.push(format!("Cannot stat HMAC key file: {}", e));
+        }
+    }
+
+    issues
 }
 
 #[cfg(test)]
@@ -131,6 +199,46 @@ mod tests {
         assert_eq!(
             String::from_utf8(data).unwrap(),
             "1700000000|/etc/test|deleted|high||"
+        );
+    }
+
+    #[test]
+    fn validate_hmac_key_doctor_permissive_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let key_path = dir.path().join("hmac.key");
+        std::fs::write(&key_path, b"test-key-data").expect("write key");
+
+        // Set overly permissive (world-readable)
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644))
+            .expect("set permissions");
+
+        let issues = validate_hmac_key_doctor(&key_path);
+        assert!(
+            issues.iter().any(|i| i.contains("permissions")),
+            "should flag permissive mode: {:?}",
+            issues
+        );
+    }
+
+    #[test]
+    fn validate_hmac_key_doctor_strict_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let key_path = dir.path().join("hmac.key");
+        std::fs::write(&key_path, b"test-key-data").expect("write key");
+
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+            .expect("set permissions");
+
+        let issues = validate_hmac_key_doctor(&key_path);
+        // The only possible issue is ownership (not root in test), but perms should be fine
+        assert!(
+            !issues.iter().any(|i| i.contains("permissions")),
+            "should not flag strict mode: {:?}",
+            issues
         );
     }
 }

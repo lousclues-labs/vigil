@@ -501,6 +501,15 @@ fn cmd_doctor(config_path: Option<&std::path::Path>) -> Result<()> {
                     "  ✓ HMAC key present ({})",
                     cfg.security.hmac_key_path.display()
                 );
+                // Validate key file permissions and ownership
+                let issues = vigil::hmac::validate_hmac_key_doctor(&cfg.security.hmac_key_path);
+                if issues.is_empty() {
+                    println!("  ✓ HMAC key permissions OK");
+                } else {
+                    for issue in &issues {
+                        println!("  ✗ {}", issue);
+                    }
+                }
             } else {
                 println!(
                     "  ✗ HMAC key missing ({})",

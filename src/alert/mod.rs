@@ -4,6 +4,7 @@ pub mod json_log;
 pub mod socket;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -29,6 +30,10 @@ pub struct AlertEngine {
     signal_socket: Option<socket::SignalSocket>,
     /// Cached hostname (read once at startup).
     hostname: String,
+    /// Hot-reloadable rate limit (alerts per minute).
+    rate_limit: AtomicU32,
+    /// Hot-reloadable per-path cooldown (seconds).
+    cooldown_secs: AtomicU64,
 }
 
 struct RateCounter {
@@ -85,12 +90,34 @@ impl AlertEngine {
             json_logger,
             signal_socket,
             hostname: hostname(),
+            rate_limit: AtomicU32::new(config.alerts.rate_limit),
+            cooldown_secs: AtomicU64::new(config.alerts.cooldown_seconds),
         })
     }
 
     /// Access the JSON logger for rotation.
     pub fn json_logger(&self) -> Option<&json_log::JsonLogger> {
         self.json_logger.as_ref()
+    }
+
+    /// Update the rate limiter and cooldown settings from a reloaded config.
+    ///
+    /// Called on SIGHUP after a successful config reload. Resets the rate
+    /// counter window so the new limit takes effect immediately.
+    pub fn update_rate_config(&self, rate_limit: u32, cooldown_seconds: u64) {
+        {
+            let mut rate = self.rate_counter.lock();
+            rate.count = 0;
+            rate.window_start = Instant::now();
+        }
+        self.rate_limit.store(rate_limit, Ordering::Release);
+        self.cooldown_secs
+            .store(cooldown_seconds, Ordering::Release);
+        log::info!(
+            "Alert engine updated: rate_limit={}, cooldown_seconds={}",
+            rate_limit,
+            cooldown_seconds
+        );
     }
 
     /// Dispatch a change result to all configured output channels.
@@ -169,18 +196,20 @@ impl AlertEngine {
             return true;
         }
 
-        // Per-path cooldown
+        // Per-path cooldown (uses hot-reloadable cooldown value)
+        let cooldown_secs = self.cooldown_secs.load(Ordering::Acquire);
         let path_str = change.path.to_string_lossy();
         {
             let cooldowns = self.cooldowns.lock();
             if let Some(last) = cooldowns.get(path_str.as_ref()) {
-                if last.elapsed() < Duration::from_secs(self.config.alerts.cooldown_seconds) {
+                if last.elapsed() < Duration::from_secs(cooldown_secs) {
                     return true;
                 }
             }
         }
 
-        // Rate limiting
+        // Rate limiting (uses hot-reloadable rate limit)
+        let rate_limit = self.rate_limit.load(Ordering::Acquire);
         {
             let mut rate = self.rate_counter.lock();
             // Reset window if it's been more than a minute
@@ -188,7 +217,7 @@ impl AlertEngine {
                 rate.count = 0;
                 rate.window_start = Instant::now();
             }
-            if rate.count >= self.config.alerts.rate_limit {
+            if rate.count >= rate_limit {
                 return true;
             }
         }

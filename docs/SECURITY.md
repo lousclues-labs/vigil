@@ -158,6 +158,69 @@ Principle alignment:
 
 ---
 
+## HMAC Key Lifecycle
+
+The optional HMAC signing feature (`security.hmac_signing = true`) provides
+tamper-evidence for audit log entries. Its value depends entirely on proper
+key management. If an attacker who can modify monitored files can also read
+the HMAC key, the signed audit trail offers no additional protection.
+
+### Key Generation
+
+Generate a 32-byte (256-bit) random key:
+
+```bash
+head -c 32 /dev/urandom | xxd -p -c 64 > /etc/vigil/hmac.key
+```
+
+Or equivalently:
+
+```bash
+openssl rand -hex 32 > /etc/vigil/hmac.key
+```
+
+### File Permissions
+
+The key file **must** be readable only by root:
+
+```bash
+sudo chown root:root /etc/vigil/hmac.key
+sudo chmod 0400 /etc/vigil/hmac.key
+```
+
+Acceptable modes are `0400` (read-only) or `0600` (read-write for rotation).
+Vigil warns at runtime if the key file is more permissive than `0600`, and
+`vigil doctor` flags both permission and ownership issues.
+
+### Rotation Procedure
+
+1. Generate a new key file (see above).
+2. Existing audit entries signed with the old key remain verifiable only
+   with the old key. You have two options:
+   - **New audit epoch**: archive the current audit log and database,
+     start fresh with `vigil init`. Previous entries can be verified
+     offline using the archived key.
+   - **Re-sign**: export audit entries, re-compute HMACs with the new key,
+     and re-import. This is not yet automated.
+3. Restart the daemon (`systemctl restart vigild`) to pick up the new key.
+
+### Threat Model
+
+The HMAC key **must** reside on a different trust boundary than the files
+being monitored:
+
+| Placement | Tamper-Evidence |
+|-----------|-----------------|
+| Root-owned file on the same partition | protects against non-root attackers |
+| Separate partition mounted read-only | protects against root-level file writes (attacker must remount) |
+| External/HSM-backed key (future) | protects against full disk compromise |
+
+If an attacker has root access **and** can read the key, they can forge
+audit entries. In that scenario, the HMAC provides no additional guarantee
+beyond what the filesystem permissions already offer.
+
+---
+
 ## HMAC Baseline Integrity
 
 Current state:

@@ -274,7 +274,11 @@ Audit truth rule:
 When `security.hmac_signing = true`:
 - Vigil expects `security.hmac_key_path` to exist.
 - Config validation fails if key file is missing.
-- `vigil doctor` reports key presence/absence.
+- `vigil doctor` reports key presence/absence, permissions, and ownership.
+- At runtime, Vigil warns if the key file is more permissive than mode `0600`.
+
+For detailed guidance on key generation, storage, rotation, and threat
+model, see [SECURITY.md — HMAC Key Lifecycle](SECURITY.md#hmac-key-lifecycle).
 
 Key management baseline:
 
@@ -292,6 +296,35 @@ Do:
 Do not:
 - commit key material
 - reuse keys across unrelated hosts
+
+---
+
+## Live Reload (SIGHUP)
+
+Sending `SIGHUP` to the daemon (`systemctl reload vigild` or `kill -HUP <pid>`)
+triggers a config reload. Not all fields can be applied without a restart.
+
+### Fields that take effect immediately on SIGHUP
+
+| Field | Effect |
+|-------|--------|
+| `exclusions.patterns` | event filter rebuilt |
+| `exclusions.system_exclusions` | event filter rebuilt |
+| `alerts.rate_limit` | rate limiter reset with new limit |
+| `alerts.cooldown_seconds` | per-path cooldown updated |
+| `scanner.max_file_size` | used on next event comparison |
+| `database.audit_retention_days` | used on next rotation cycle |
+
+### Fields that require a full daemon restart
+
+| Field | Why |
+|-------|-----|
+| `daemon.pid_file` | bound at startup |
+| `daemon.db_path` | database opened at startup |
+| `daemon.monitor_backend` | fanotify/inotify backend chosen at startup |
+| `watch.*` paths | monitor marks set at startup |
+
+Changes to restart-only fields are logged as warnings on SIGHUP.
 
 ---
 

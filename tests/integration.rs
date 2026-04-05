@@ -8,6 +8,8 @@ mod baseline_tests;
 mod comparison_tests;
 #[path = "integration/config_tests.rs"]
 mod config_tests;
+#[path = "integration/daemon_tests.rs"]
+mod daemon_tests;
 #[path = "integration/db_tests.rs"]
 mod db_tests;
 #[path = "integration/filter_tests.rs"]

@@ -35,17 +35,8 @@ pub fn run_scan(
 
     let maintenance_window = is_maintenance_window(conn);
 
-    // Build watch group lookup for severity/group resolution
-    let watch_lookup: Vec<(std::path::PathBuf, String, crate::types::Severity)> = config
-        .watch
-        .iter()
-        .flat_map(|(group_name, group)| {
-            let expanded = crate::config::expand_user_paths(&group.paths);
-            expanded
-                .into_iter()
-                .map(move |p| (p, group_name.clone(), group.severity))
-        })
-        .collect();
+    // Build watch group index for severity/group resolution
+    let watch_index = crate::watch_index::WatchGroupIndex::from_config(config);
 
     let total_entries = entries.len();
 
@@ -64,10 +55,9 @@ pub fn run_scan(
         let compare_results: Vec<_> = entries
             .par_iter()
             .map(|entry| {
-                let (severity, group_name) = watch_lookup
-                    .iter()
-                    .find(|(wp, _, _)| entry.path.starts_with(wp) || entry.path == *wp)
-                    .map(|(_, gn, sev)| (*sev, gn.as_str()))
+                let (severity, group_name) = watch_index
+                    .lookup(&entry.path)
+                    .map(|(gn, sev)| (sev, gn))
                     .unwrap_or((crate::types::Severity::Medium, "unknown"));
 
                 (
@@ -137,10 +127,9 @@ pub fn run_scan(
         result.total_checked += 1;
 
         // Find watch group for this entry
-        let (severity, group_name) = watch_lookup
-            .iter()
-            .find(|(wp, _, _)| entry.path.starts_with(wp) || entry.path == *wp)
-            .map(|(_, gn, sev)| (*sev, gn.as_str()))
+        let (severity, group_name) = watch_index
+            .lookup(&entry.path)
+            .map(|(gn, sev)| (sev, gn))
             .unwrap_or((crate::types::Severity::Medium, "unknown"));
 
         match crate::compare::compare_entry(entry, config, severity, group_name) {

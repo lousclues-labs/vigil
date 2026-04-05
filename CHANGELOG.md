@@ -4,6 +4,97 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-05
+
+### Release Summary
+- Addresses 3 security fixes (P0), 2 correctness/reliability improvements (P1), 2 testing expansions (P2), and 1 performance optimization (P3).
+- Adds a shared `WatchGroupIndex` for efficient path-to-group resolution, criterion benchmarks, and a daemon lifecycle integration test.
+- Preserves backward compatibility with existing CLI commands, configuration format, and SQLite schema.
+
+### Compatibility Notes
+- No breaking CLI changes.
+- No baseline schema migration required.
+- Existing configuration files remain valid.
+- SIGHUP reload now applies more config fields at runtime (see "Live Reload" section in `docs/CONFIGURATION.md`).
+
+### Security
+
+#### P0-1: Check flock return values in PID file handling (`src/lib.rs`)
+- Both `libc::flock()` calls in `write_pid_file` now check the return value; if `flock` returns `-1`, a `VigilError::Daemon` error is returned with the OS error message
+- Extracted `acquire_pid_lock()` helper with `// SAFETY:` comment explaining the invariants
+- Added unit tests: `write_pid_file_creates_and_locks` (happy path) and `write_pid_file_detects_held_lock` (error path with a second file handle holding the lock)
+
+#### P0-2: PID file stale detection TOCTOU window (`src/lib.rs`)
+- Eliminated the TOCTOU race between `kill(pid, 0)` returning `ESRCH` and `remove_file` + `create_new` by replacing the two-step pattern with a single atomic operation
+- Stale recovery now opens the *existing* file with `O_WRONLY | O_TRUNC` (preserving the inode), acquires `flock`, verifies the PID is still stale, then overwrites — keeping the inode locked throughout
+- Added inline comment documenting the race condition mitigation strategy
+
+#### P0-3: HMAC key management documentation and hardening (`src/hmac.rs`, `src/main.rs`, `docs/SECURITY.md`, `docs/CONFIGURATION.md`)
+- `load_hmac_key()` now calls `check_hmac_key_permissions()` which emits `log::warn!` if key file mode is more permissive than `0600`
+- New `validate_hmac_key_doctor()` public function checks both permissions and ownership (expects root/UID 0) for use by `vigil doctor`
+- `cmd_doctor` now reports HMAC key file permission and ownership issues when signing is enabled
+- New "HMAC Key Lifecycle" section in `docs/SECURITY.md` covering: key generation (`head -c 32 /dev/urandom | xxd -p -c 64`), file permissions (must be `0400` or `0600`, root-owned), rotation procedure (new epoch vs re-sign), and threat model (key must be on a different trust boundary than monitored files)
+- `docs/CONFIGURATION.md` HMAC Signing section updated to reference the new security doc and mention the runtime permission warning
+- Added unit tests: `validate_hmac_key_doctor_permissive_mode` and `validate_hmac_key_doctor_strict_mode`
+
+### Changed
+
+#### P1-4: Full config reload on SIGHUP (`src/lib.rs`, `src/alert/mod.rs`, `docs/CONFIGURATION.md`)
+- Active config is now held in `Arc<parking_lot::RwLock<Config>>` and swapped atomically on SIGHUP reload
+- `AlertEngine` gains `rate_limit: AtomicU32` and `cooldown_secs: AtomicU64` fields; `is_suppressed()` reads from these atomics instead of `self.config`
+- New `AlertEngine::update_rate_config()` method resets the rate counter window and stores new values on reload
+- The daemon event loop reads `scanner.max_file_size` and `database.audit_retention_days` from the live config snapshot on each cycle
+- `diff_config()` output is now computed against the live config (not the startup parameter)
+- New "Live Reload (SIGHUP)" section in `docs/CONFIGURATION.md` documenting which fields take effect immediately vs. which require restart:
+  - **Immediate**: `exclusions.*`, `alerts.rate_limit`, `alerts.cooldown_seconds`, `scanner.max_file_size`, `database.audit_retention_days`
+  - **Restart required**: `daemon.pid_file`, `daemon.db_path`, `daemon.monitor_backend`, `watch.*` paths
+
+### Fixed
+
+#### P1-5: README version badge out of sync
+- Updated version badge in `README.md` from `0.4.0` to match `Cargo.toml` (now `0.6.0`)
+
+### Added
+
+#### P2-6: Daemon lifecycle integration test (`tests/integration/daemon_tests.rs`)
+- New `daemon_lifecycle_create_modify_delete` test exercising the full event processing pipeline:
+  - Creates a temporary directory and config pointing at it
+  - Initializes a baseline with test files
+  - Starts the inotify monitor in a background thread
+  - Spawns an event processing thread that handles comparison and alert dispatch
+  - Performs file modification, creation, and deletion
+  - Asserts that `modified` audit entries are recorded in the database
+  - Verifies WAL checkpoint succeeds on shutdown
+- Gated behind `#[ignore]` (requires inotify); run with `cargo test --test integration daemon -- --ignored`
+- Registered in `tests/integration.rs` module list
+
+#### P2-7: Criterion benchmarks (`benches/benchmarks.rs`, `Cargo.toml`)
+- Added `criterion` to `[dev-dependencies]` with `html_reports` feature
+- Added `[[bench]] name = "benchmarks"` section to `Cargo.toml`
+- Six benchmark groups:
+  - `blake3_hash_file` — files of 1KB, 1MB, and 100MB
+  - `blake3_hash_bytes` — 1MB in-memory baseline
+  - `compare_entry` — unchanged file, modified file, and deleted file
+  - `event_filter_10k_debounce` — `EventFilter::should_process` with 10K pre-populated debounce entries
+  - `full_scan_100_entries` — end-to-end scan throughput with 100 baseline entries
+  - `watch_group_lookup` — `WatchGroupIndex::lookup` with 100 and 1000 watch paths
+
+#### P3-8: WatchGroupIndex for efficient path lookup (`src/watch_index.rs`, `src/lib.rs`, `src/scanner.rs`)
+- New `WatchGroupIndex` struct that sorts expanded watch group entries longest-prefix-first so the first match is always the most-specific
+- `from_config()` builds the index from a `Config`; `from_expanded()` builds from pre-expanded entries
+- `lookup()` returns `Option<(&str, Severity)>` — the group name and severity of the best-matching prefix
+- Replaced the linear `find_watch_group()` scan in `daemon_run()` with `watch_index.lookup()`
+- Replaced the linear `watch_lookup.iter().find()` in `scanner::run_scan()` (both sequential and parallel paths) with `watch_index.lookup()`
+- Registered as `pub mod watch_index` in `src/lib.rs`
+- Unit tests: `most_specific_prefix_wins`, `overlapping_prefixes_three_levels`, `exact_path_match`, `no_match_returns_none`, `empty_index_returns_none`
+- Benchmark: `watch_group_lookup` with 100 and 1000 paths in `benches/benchmarks.rs`
+
+### Validation
+- `cargo fmt --all --check` passes
+- `cargo clippy --all-targets --all-features -- -D warnings` passes
+- `cargo test --all-targets` passes (136 tests: 77 unit + 40 integration + 19 security; 2 intentionally ignored)
+- All benchmark smoke tests pass
+
 ## [0.5.0] - 2026-04-05
 
 ### Release Summary
