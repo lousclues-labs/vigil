@@ -6,5 +6,7 @@ mod common;
 mod integrity_tests;
 #[path = "security/permission_tests.rs"]
 mod permission_tests;
+#[path = "security/property_tests.rs"]
+mod property_tests;
 #[path = "security/race_tests.rs"]
 mod race_tests;

@@ -2,6 +2,101 @@
 
 All notable changes to Vigil will be documented in this file.
 
+## [Unreleased]
+
+## [0.5.0] - 2026-04-05
+
+### Release Summary
+- Delivers the 12 planned reliability, observability, and test-hardening improvements in one coordinated release.
+- Preserves backward compatibility with existing CLI commands, configuration format, and SQLite schema.
+- Maintains Vigil principles: deterministic behavior, local-only operation, and no network I/O.
+
+### Compatibility Notes
+- No breaking CLI changes were introduced.
+- No baseline schema migration is required.
+- Existing configuration files remain valid.
+
+### Added
+
+#### Panic Isolation in Daemon Event Loop
+- Wrapped comparison and alert dispatch in `std::panic::catch_unwind` so a panic in any single file's processing cannot crash the daemon
+- Added panic counter with threshold logging (warns after 10 panics)
+- Added unit test verifying panic isolation behavior
+
+#### Structured Scan Warnings
+- Added `ScanWarning` type with `WarningSeverity` enum in `src/error.rs`
+- `init_baseline()`, `refresh_baseline()`, and `run_scan()` now collect structured warnings alongside results
+- `ScanResult` includes `warnings: Vec<ScanWarning>` field
+- CLI prints warnings summary after scan operations when warnings are non-empty
+
+#### `PartialEq` on `VigilError`
+- Manual `PartialEq` implementation for ergonomic error-path testing
+- `Io` and `Database` variants always return false (not structurally comparable)
+- String-based variants compare by value; `TomlParse` and `Json` compare by Display output
+- Added unit tests for equality semantics
+
+#### Builder Pattern for Library Scan API
+- New `CheckBuilder` in `src/check_builder.rs` with fluent API: `.mode()`, `.filter_paths()`, `.on_progress()`, `.quiet()`
+- Exported as `vigil::CheckBuilder` from `src/lib.rs`
+- Added tests for builder defaults and chaining
+
+#### Progress Callbacks for Long Operations
+- Defined `ProgressCallback<'a>` type alias in `src/lib.rs`
+- `run_scan()` accepts optional progress callback
+- CLI passes TTY-aware progress callback using `eprint!("\r\x1b[K ...")`
+
+#### Optional Parallel Scanning
+- Added `parallel` feature flag gating `rayon` dependency
+- `run_scan()` uses `par_iter()` for Full mode when `parallel` feature is enabled
+- Sequential path remains the default; daemon event loop stays single-threaded
+- CI test matrix includes `--features parallel`
+
+#### Snapshot Testing
+- Added `insta` (dev-dependency) with JSON feature for snapshot testing
+- Three snapshot tests: `baseline_export`, `diff_output`, `alert_json`
+- CI includes `cargo insta test --check` step
+
+#### Property-Based Testing
+- Added `proptest` and `tempfile` dev-dependencies
+- Four property tests: DB roundtrip, BLAKE3 determinism, file/bytes hash equivalence, severity ordering
+- Wired into `tests/security/property_tests.rs`
+
+#### SQL-Backed Log Search
+- New `search_audit()` function in `src/db/ops.rs` with parameterized SQL WHERE clauses
+- Replaces in-memory brute-force search in `cmd_log LogAction::Search`
+- Supports path substring filter (`LIKE`) and severity exact match
+- Added four unit tests for search scenarios
+
+#### Config Diffing for SIGHUP Reload
+- New `diff_config()` function in `src/config.rs` returning human-readable change descriptions
+- SIGHUP handler now logs specific config changes instead of generic "reloaded" message
+- Logs "Configuration unchanged" when no differences detected
+- Warns about fanotify restart requirement only when watch paths actually changed
+
+#### HMAC Audit Log Verification
+- New `src/hmac.rs` module with `compute_hmac()`, `verify_hmac()`, `load_hmac_key()`
+- Implemented `vigil log verify` command (previously a stub)
+- Reports count of valid/invalid/missing HMAC entries
+- Added unit tests for HMAC computation and verification roundtrip
+
+#### Expanded Fuzz Targets
+- Added four new fuzz targets (7 total): `fuzz_toml_config`, `fuzz_event_filter`, `fuzz_db_roundtrip`, `fuzz_xattr_parsing`
+- Made `validate_config()` public for fuzz target access
+
+### Changed
+
+#### Cross-Cutting
+- All `unsafe` blocks now have `// SAFETY:` comments explaining invariants
+- Updated CI test matrix to include `--features parallel` and `cargo insta test --check`
+- Updated `docs/TESTING.md` with snapshot and property-based test documentation
+- Updated `CONTRIBUTING.md` with `cargo insta review` workflow
+- Updated `CHANGELOG.md` with all improvement entries
+
+### Validation
+- `cargo fmt --all --check` passes
+- `cargo clippy --all-targets --all-features -- -D warnings` passes
+- `cargo test --all-targets --all-features` passes (127 passed, 1 ignored privileged test)
+
 ## [0.4.0] - 2026-04-02
 
 ### Fixed

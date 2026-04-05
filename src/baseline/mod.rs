@@ -9,13 +9,18 @@ use rusqlite::Connection;
 
 use crate::config::{expand_user_paths, Config, WatchGroup};
 use crate::db::ops;
-use crate::error::{Result, VigilError};
+use crate::error::{Result, ScanWarning, VigilError, WarningSeverity};
 use crate::types::{BaselineEntry, BaselineSource};
 
 /// Initialize the baseline: scan all configured watch paths and populate the database.
-pub fn init_baseline(conn: &Connection, config: &Config, quiet: bool) -> Result<u64> {
+pub fn init_baseline(
+    conn: &Connection,
+    config: &Config,
+    quiet: bool,
+) -> Result<(u64, Vec<ScanWarning>)> {
     let mut count: u64 = 0;
     let now = Utc::now().timestamp();
+    let mut warnings = Vec::new();
 
     for (group_name, group) in &config.watch {
         let expanded_paths = expand_user_paths(&group.paths);
@@ -26,6 +31,11 @@ pub fn init_baseline(conn: &Connection, config: &Config, quiet: bool) -> Result<
                 Err(e) => {
                     // Transient error — log and continue
                     log::warn!("Skipping {}: {}", path.display(), e);
+                    warnings.push(ScanWarning {
+                        path: path.clone(),
+                        detail: format!("Skipping: {}", e),
+                        severity: WarningSeverity::Warning,
+                    });
                 }
             }
         }
@@ -39,7 +49,7 @@ pub fn init_baseline(conn: &Connection, config: &Config, quiet: bool) -> Result<
         log::info!("Baseline initialized: {} entries", count);
     }
 
-    Ok(count)
+    Ok((count, warnings))
 }
 
 /// Refresh the baseline: re-scan all configured paths and update existing entries.
@@ -48,9 +58,10 @@ pub fn refresh_baseline(
     config: &Config,
     filter_paths: Option<&[PathBuf]>,
     quiet: bool,
-) -> Result<u64> {
+) -> Result<(u64, Vec<ScanWarning>)> {
     let mut count: u64 = 0;
     let now = Utc::now().timestamp();
+    let mut warnings = Vec::new();
 
     for (group_name, group) in &config.watch {
         let expanded_paths = expand_user_paths(&group.paths);
@@ -70,6 +81,11 @@ pub fn refresh_baseline(
                 Ok(n) => count += n,
                 Err(e) => {
                     log::warn!("Skipping {}: {}", path.display(), e);
+                    warnings.push(ScanWarning {
+                        path: path.clone(),
+                        detail: format!("Skipping: {}", e),
+                        severity: WarningSeverity::Warning,
+                    });
                 }
             }
         }
@@ -81,7 +97,7 @@ pub fn refresh_baseline(
         log::info!("Baseline refreshed: {} entries updated", count);
     }
 
-    Ok(count)
+    Ok((count, warnings))
 }
 
 /// Add a single file to the baseline.

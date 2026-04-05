@@ -1,0 +1,24 @@
+---
+source: tests/integration/snapshot_tests.rs
+expression: entries
+---
+[
+  {
+    "id": 1,
+    "path": "/etc/passwd",
+    "hash": "abc123def456789012345678901234567890123456789012345678901234",
+    "size": 2048,
+    "permissions": 33188,
+    "owner_uid": 0,
+    "owner_gid": 0,
+    "mtime": 1700000000,
+    "inode": 12345,
+    "device": 1,
+    "xattrs": "{}",
+    "security_context": "",
+    "package": "base",
+    "source": "package_manager",
+    "added_at": 1700000000,
+    "updated_at": 1700000000
+  }
+]

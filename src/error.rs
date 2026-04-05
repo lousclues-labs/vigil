@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use thiserror::Error;
 
 /// Central error type for Vigil.
@@ -56,3 +57,92 @@ pub enum VigilError {
 }
 
 pub type Result<T> = std::result::Result<T, VigilError>;
+
+/// A structured warning collected during scanning operations.
+#[derive(Debug, Clone)]
+pub struct ScanWarning {
+    pub path: PathBuf,
+    pub detail: String,
+    pub severity: WarningSeverity,
+}
+
+/// Severity level for scan warnings.
+#[derive(Debug, Clone, Copy)]
+pub enum WarningSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+impl PartialEq for VigilError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            // Io and Database are never structurally comparable
+            (VigilError::Io(_), VigilError::Io(_)) => false,
+            (VigilError::Database(_), VigilError::Database(_)) => false,
+            // String-based variants compare by string value
+            (VigilError::Config(a), VigilError::Config(b)) => a == b,
+            (VigilError::Hash(a), VigilError::Hash(b)) => a == b,
+            (VigilError::Fanotify(a), VigilError::Fanotify(b)) => a == b,
+            (VigilError::Inotify(a), VigilError::Inotify(b)) => a == b,
+            (VigilError::Monitor(a), VigilError::Monitor(b)) => a == b,
+            (VigilError::Baseline(a), VigilError::Baseline(b)) => a == b,
+            (VigilError::Alert(a), VigilError::Alert(b)) => a == b,
+            (VigilError::DBus(a), VigilError::DBus(b)) => a == b,
+            (VigilError::HmacVerification(a), VigilError::HmacVerification(b)) => a == b,
+            (VigilError::PackageManager(a), VigilError::PackageManager(b)) => a == b,
+            (VigilError::PermissionDenied(a), VigilError::PermissionDenied(b)) => a == b,
+            (VigilError::Daemon(a), VigilError::Daemon(b)) => a == b,
+            (VigilError::Path(a), VigilError::Path(b)) => a == b,
+            // TomlParse and Json compare by Display output
+            (VigilError::TomlParse(a), VigilError::TomlParse(b)) => a.to_string() == b.to_string(),
+            (VigilError::Json(a), VigilError::Json(b)) => a.to_string() == b.to_string(),
+            // Different variants are never equal
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_equality_config() {
+        assert_eq!(
+            VigilError::Config("test".into()),
+            VigilError::Config("test".into()),
+        );
+        assert_ne!(
+            VigilError::Config("a".into()),
+            VigilError::Config("b".into()),
+        );
+    }
+
+    #[test]
+    fn error_io_never_equal() {
+        let a = VigilError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "x"));
+        let b = VigilError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "x"));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn error_different_variants_not_equal() {
+        assert_ne!(
+            VigilError::Config("test".into()),
+            VigilError::Hash("test".into()),
+        );
+    }
+
+    #[test]
+    fn error_string_variants_equal() {
+        assert_eq!(
+            VigilError::Hash("bad hash".into()),
+            VigilError::Hash("bad hash".into()),
+        );
+        assert_eq!(
+            VigilError::Baseline("missing".into()),
+            VigilError::Baseline("missing".into()),
+        );
+    }
+}

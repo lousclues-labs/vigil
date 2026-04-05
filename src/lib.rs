@@ -1,14 +1,21 @@
 pub mod alert;
 pub mod baseline;
+pub mod check_builder;
 pub mod cli;
 pub mod compare;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod hmac;
 pub mod monitor;
 pub mod package;
 pub mod scanner;
 pub mod types;
+
+pub use check_builder::CheckBuilder;
+
+/// Optional progress callback for long-running operations.
+pub type ProgressCallback<'a> = Option<&'a dyn Fn(&str)>;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -101,6 +108,9 @@ pub fn daemon_run(config: &Config) -> Result<()> {
 
     log::info!("Vigil daemon ready. Monitoring filesystem changes...");
 
+    let mut panic_count: u64 = 0;
+    const PANIC_THRESHOLD: u64 = 10;
+
     while !shutdown.load(Ordering::Acquire) {
         // Receive events with a timeout so we can check shutdown flag
         match event_rx.recv_timeout(std::time::Duration::from_millis(500)) {
@@ -110,57 +120,79 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                     continue;
                 }
 
-                // Look up baseline entry
-                let path_str = event.path.to_string_lossy().into_owned();
-                let baseline_entry = match ops::get_baseline_by_path(&conn, &path_str) {
-                    Ok(Some(entry)) => entry,
-                    Ok(None) => {
-                        // New file in monitored directory (not in baseline)
-                        // Determine which watch group it belongs to
-                        if matches!(event.event_type, FsEventType::Create | FsEventType::MovedTo) {
-                            log::info!("New file detected: {}", event.path.display());
+                // Wrap comparison and dispatch in catch_unwind to isolate panics
+                let event_path = event.path.clone();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // Look up baseline entry
+                    let path_str = event.path.to_string_lossy().into_owned();
+                    let baseline_entry = match ops::get_baseline_by_path(&conn, &path_str) {
+                        Ok(Some(entry)) => entry,
+                        Ok(None) => {
+                            // New file in monitored directory (not in baseline)
+                            if matches!(
+                                event.event_type,
+                                FsEventType::Create | FsEventType::MovedTo
+                            ) {
+                                log::info!("New file detected: {}", event.path.display());
+                            }
+                            return;
                         }
-                        continue;
-                    }
-                    Err(e) => {
-                        log::debug!("DB lookup error for {}: {}", path_str, e);
-                        continue;
-                    }
-                };
-
-                // Determine watch group and severity for this path
-                let (group_name, severity) = find_watch_group(&event.path, &expanded_watch_groups)
-                    .unwrap_or(("unknown".into(), types::Severity::Medium));
-
-                // Compare against baseline
-                match compare::compare_event(
-                    &event.path,
-                    &baseline_entry,
-                    &group_name,
-                    severity,
-                    config.scanner.max_file_size,
-                ) {
-                    Ok(Some(change)) => {
-                        let maintenance = ops::get_config_state(&conn, "maintenance_window_active")
-                            .ok()
-                            .flatten()
-                            .map(|v| v == "1")
-                            .unwrap_or(false);
-
-                        if let Err(e) = alert_engine.dispatch(&change, maintenance, &conn) {
-                            log::error!("Alert dispatch error: {}", e);
+                        Err(e) => {
+                            log::debug!("DB lookup error for {}: {}", path_str, e);
+                            return;
                         }
+                    };
 
-                        // WAL checkpoint every 1000 DB writes
-                        wal_writes += 1;
-                        if wal_writes >= 1000 {
-                            let _ = db::wal_checkpoint(&conn);
-                            wal_writes = 0;
+                    // Determine watch group and severity for this path
+                    let (group_name, severity) =
+                        find_watch_group(&event.path, &expanded_watch_groups)
+                            .unwrap_or(("unknown".into(), types::Severity::Medium));
+
+                    // Compare against baseline
+                    match compare::compare_event(
+                        &event.path,
+                        &baseline_entry,
+                        &group_name,
+                        severity,
+                        config.scanner.max_file_size,
+                    ) {
+                        Ok(Some(change)) => {
+                            let maintenance =
+                                ops::get_config_state(&conn, "maintenance_window_active")
+                                    .ok()
+                                    .flatten()
+                                    .map(|v| v == "1")
+                                    .unwrap_or(false);
+
+                            if let Err(e) = alert_engine.dispatch(&change, maintenance, &conn) {
+                                log::error!("Alert dispatch error: {}", e);
+                            }
+
+                            // WAL checkpoint every 1000 DB writes
+                            wal_writes += 1;
+                            if wal_writes >= 1000 {
+                                let _ = db::wal_checkpoint(&conn);
+                                wal_writes = 0;
+                            }
+                        }
+                        Ok(None) => {} // no change (hash matched despite event)
+                        Err(e) => {
+                            log::debug!("Comparison error for {}: {}", event.path.display(), e);
                         }
                     }
-                    Ok(None) => {} // no change (hash matched despite event)
-                    Err(e) => {
-                        log::debug!("Comparison error for {}: {}", event.path.display(), e);
+                }));
+
+                if let Err(_panic) = result {
+                    panic_count += 1;
+                    log::error!(
+                        "Panic during event processing for {}: caught and continuing",
+                        event_path.display()
+                    );
+                    if panic_count >= PANIC_THRESHOLD {
+                        log::warn!(
+                            "Panic threshold reached ({} panics in this run)",
+                            panic_count
+                        );
                     }
                 }
             }
@@ -186,12 +218,24 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                     log::info!("Reloading configuration...");
                     match config::load_config(None) {
                         Ok(new_config) => {
+                            // Diff old and new config
+                            let changes = config::diff_config(config, &new_config);
+                            if changes.is_empty() {
+                                log::info!("Configuration unchanged.");
+                            } else {
+                                for change in &changes {
+                                    log::info!("Config change: {}", change);
+                                }
+                                // Check if watch paths changed
+                                let watch_changed = changes
+                                    .iter()
+                                    .any(|c| c.contains("watch group") || c.contains("path '"));
+                                if watch_changed {
+                                    log::warn!("Fanotify/inotify watch marks require a daemon restart to apply watch path changes");
+                                }
+                            }
                             // Rebuild event filter with new config
                             event_filter = EventFilter::new(&new_config);
-                            // Rebuild expanded watch groups
-                            // Note: fanotify marks require a full restart to update
-                            log::info!("Configuration reloaded successfully");
-                            log::warn!("Fanotify/inotify watch marks require a daemon restart to apply watch path changes");
                         }
                         Err(e) => {
                             log::error!("Failed to reload config: {}", e);
@@ -247,6 +291,8 @@ fn write_pid_file(path: &std::path::Path) -> Result<()> {
                 use std::os::unix::io::AsRawFd;
                 file.as_raw_fd()
             };
+            // SAFETY: fd is a valid file descriptor obtained from as_raw_fd().
+            // flock is safe to call with any valid fd and lock operation.
             unsafe {
                 libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB);
             }
@@ -257,6 +303,8 @@ fn write_pid_file(path: &std::path::Path) -> Result<()> {
             // PID file exists — check if the process is still alive
             if let Ok(contents) = std::fs::read_to_string(path) {
                 if let Ok(pid) = contents.trim().parse::<i32>() {
+                    // SAFETY: kill with signal 0 only checks process existence,
+                    // does not send any signal. pid is parsed from the PID file.
                     if unsafe { libc::kill(pid, 0) } == 0 {
                         return Err(crate::error::VigilError::Config(format!(
                             "Another vigil instance is running (PID {})",
@@ -275,6 +323,8 @@ fn write_pid_file(path: &std::path::Path) -> Result<()> {
                 use std::os::unix::io::AsRawFd;
                 file.as_raw_fd()
             };
+            // SAFETY: fd is a valid file descriptor from as_raw_fd().
+            // flock is safe with any valid fd and lock operation.
             unsafe {
                 libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB);
             }
@@ -317,4 +367,29 @@ fn ctrlc_handler(
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn catch_unwind_isolates_panics() {
+        // Simulate the daemon's panic-catching pattern
+        let mut panic_count: u64 = 0;
+        let paths = ["/etc/passwd", "/etc/shadow", "/etc/hosts"];
+
+        for (i, path) in paths.iter().enumerate() {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if i == 1 {
+                    panic!("simulated comparison panic for {}", path);
+                }
+            }));
+
+            if result.is_err() {
+                panic_count += 1;
+            }
+        }
+
+        // The loop should have continued past the panic
+        assert_eq!(panic_count, 1);
+    }
 }

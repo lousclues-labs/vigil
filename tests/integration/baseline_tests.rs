@@ -20,7 +20,7 @@ fn init_baseline_scans_files() {
     let config = test_config(&tmp);
     let conn = db::open_db(&config).unwrap();
 
-    let count = baseline::init_baseline(&conn, &config, true).unwrap();
+    let (count, _warnings) = baseline::init_baseline(&conn, &config, true).unwrap();
     assert!(
         count >= 3,
         "Should have scanned at least 3 files, got {}",

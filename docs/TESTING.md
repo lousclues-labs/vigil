@@ -11,8 +11,10 @@ If a security claim cannot be tested, it is not a claim.
 |----------|-------|----------|---------|
 | Unit | 43 | inline in `src/**/*.rs` | validate isolated functions/types |
 | Integration | 37 | `tests/integration/` | cross-module behavior |
+| Snapshot | 3 | `tests/integration/snapshot_tests.rs` | pin critical output formats (baseline export, diff, alert JSON) |
 | Security | 15 + 1 ignored privileged | `tests/security/` | security properties and race resilience |
-| Fuzz | 3 targets | `fuzz/fuzz_targets/` | panic/crash resistance under arbitrary input |
+| Property-based | 4 | `tests/security/property_tests.rs` | invariant validation via proptest (roundtrip, determinism, reflexivity, ordering) |
+| Fuzz | 7 targets | `fuzz/fuzz_targets/` | panic/crash resistance under arbitrary input |
 
 Reference: `tests/README.md` is the canonical test-layout guide.
 
@@ -71,13 +73,17 @@ cargo test race
 
 ## Fuzz Testing
 
-Vigil includes three fuzz targets:
+Vigil includes seven fuzz targets:
 
 | Target | File | Property Tested |
 |--------|------|-----------------|
 | `fuzz_config_parse` | `fuzz/fuzz_targets/fuzz_config_parse.rs` | TOML config parsing does not panic on arbitrary input |
 | `fuzz_baseline_compare` | `fuzz/fuzz_targets/fuzz_baseline_compare.rs` | baseline compare pipeline handles arbitrary metadata safely |
 | `fuzz_scanner` | `fuzz/fuzz_targets/fuzz_scanner.rs` | scanner path handles malformed/edge file states without crashes |
+| `fuzz_toml_config` | `fuzz/fuzz_targets/fuzz_toml_config.rs` | TOML parse + validate_config does not panic |
+| `fuzz_event_filter` | `fuzz/fuzz_targets/fuzz_event_filter.rs` | EventFilter.should_process() does not panic on arbitrary events |
+| `fuzz_db_roundtrip` | `fuzz/fuzz_targets/fuzz_db_roundtrip.rs` | DB insert + read back never panics or loses data |
+| `fuzz_xattr_parsing` | `fuzz/fuzz_targets/fuzz_xattr_parsing.rs` | xattr JSON parsing does not panic on arbitrary bytes |
 
 Setup:
 
@@ -102,6 +108,54 @@ cargo +nightly fuzz run fuzz_baseline_compare -- \
   -max_total_time=1800 \
   -print_final_stats=1 \
   -use_value_profile=1
+```
+
+---
+
+## Snapshot Testing
+
+Vigil uses [insta](https://insta.rs/) to snapshot critical output formats. Snapshot tests pin the exact JSON structure of baseline exports, diff outputs, and alert payloads so that format changes are caught automatically.
+
+Location: `tests/integration/snapshot_tests.rs`
+
+| Snapshot | What It Pins |
+|----------|-------------|
+| `baseline_export` | JSON output of `vigil baseline export` |
+| `diff_output` | Serialized `ChangeResult` vec from `diff_baseline()` |
+| `alert_json` | Full `Alert` struct serialized as JSON |
+
+Commands:
+
+```bash
+# Run snapshot tests
+cargo insta test
+
+# Review and accept/reject changes interactively
+cargo insta review
+
+# Check in CI (fails if snapshots are out of date)
+cargo insta test --check
+```
+
+---
+
+## Property-Based Testing
+
+Vigil uses [proptest](https://proptest-rs.github.io/proptest/) for property-based testing of comparison engine invariants.
+
+Location: `tests/security/property_tests.rs`
+
+| Property | What It Validates |
+|----------|-------------------|
+| Roundtrip | `BaselineEntry` written to DB then read back has identical fields |
+| Determinism | `blake3_hash_bytes` on same content always returns same hash |
+| File-bytes equivalence | `blake3_hash_file` matches `blake3_hash_bytes` for same content |
+| Severity ordering | Distinct `Severity` values have distinct `Display` output |
+
+Run property tests:
+
+```bash
+cargo test --test security property
 ```
 
 ---

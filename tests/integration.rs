@@ -12,3 +12,5 @@ mod config_tests;
 mod db_tests;
 #[path = "integration/filter_tests.rs"]
 mod filter_tests;
+#[path = "integration/snapshot_tests.rs"]
+mod snapshot_tests;

@@ -23,7 +23,7 @@ fn concurrent_baseline_writes_safe() {
     let conn = db::open_db(&config).unwrap();
 
     // Init baseline (single-threaded, but exercises DB under load)
-    let count = baseline::init_baseline(&conn, &config, true).unwrap();
+    let (count, _warnings) = baseline::init_baseline(&conn, &config, true).unwrap();
     assert!(count >= 10);
 
     // Verify DB integrity after bulk writes

@@ -206,6 +206,18 @@ Single function behavior?
 
 If behavior changes, add tests in same PR.
 
+### Snapshot Tests
+
+Vigil uses [insta](https://insta.rs/) for snapshot testing of critical output formats.
+When a snapshot changes:
+
+```bash
+cargo insta test       # Run tests and capture new snapshots
+cargo insta review     # Interactively review and accept/reject changes
+```
+
+Snapshot files live in `tests/integration/snapshots/`. Review changes carefully — they indicate a change in alert, baseline export, or diff output format.
+
 ---
 
 ## AI Transparency

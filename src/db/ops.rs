@@ -276,6 +276,73 @@ pub fn get_recent_audit(conn: &Connection, limit: u32) -> Result<Vec<AuditEntry>
     Ok(entries)
 }
 
+/// Search audit entries with optional SQL WHERE clauses for path and severity.
+pub fn search_audit(
+    conn: &Connection,
+    path_filter: Option<&str>,
+    severity_filter: Option<&str>,
+    limit: u32,
+) -> Result<Vec<AuditEntry>> {
+    let mut sql = String::from(
+        "SELECT id, timestamp, event_type, path, change_type, severity,
+                old_hash, new_hash, package, package_update,
+                maintenance_window, suppressed, monitored_group
+         FROM audit_log",
+    );
+
+    let mut conditions = Vec::new();
+    if path_filter.is_some() {
+        conditions.push("path LIKE ?");
+    }
+    if severity_filter.is_some() {
+        conditions.push("severity = ?");
+    }
+
+    if !conditions.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&conditions.join(" AND "));
+    }
+
+    sql.push_str(" ORDER BY timestamp DESC LIMIT ?");
+
+    let mut stmt = conn.prepare(&sql)?;
+
+    let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+    if let Some(path) = path_filter {
+        params_vec.push(Box::new(format!("%{}%", path)));
+    }
+    if let Some(sev) = severity_filter {
+        params_vec.push(Box::new(sev.to_string()));
+    }
+    params_vec.push(Box::new(limit));
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params_vec.iter().map(|p| p.as_ref()).collect();
+
+    let entries = stmt
+        .query_map(param_refs.as_slice(), |row| {
+            Ok(AuditEntry {
+                id: row.get(0)?,
+                timestamp: row.get(1)?,
+                event_type: row.get(2)?,
+                path: row.get(3)?,
+                change_type: row.get(4)?,
+                severity: row.get(5)?,
+                old_hash: row.get(6)?,
+                new_hash: row.get(7)?,
+                package: row.get(8)?,
+                package_update: row.get::<_, i32>(9)? != 0,
+                maintenance_window: row.get::<_, i32>(10)? != 0,
+                suppressed: row.get::<_, i32>(11)? != 0,
+                monitored_group: row.get(12)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    Ok(entries)
+}
+
 /// A read-friendly representation of an audit log row.
 #[derive(Debug, Clone)]
 pub struct AuditEntry {
@@ -331,6 +398,18 @@ pub fn rotate_audit_log(conn: &Connection, retention_days: u32) -> Result<usize>
         params![cutoff],
     )?;
     Ok(deleted)
+}
+
+/// Get the HMAC value for a specific audit entry by id.
+pub fn get_audit_hmac(conn: &Connection, id: i64) -> Result<Option<String>> {
+    let hmac = conn
+        .query_row(
+            "SELECT hmac FROM audit_log WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(hmac)
 }
 
 #[cfg(test)]
@@ -605,5 +684,58 @@ mod tests {
 
         let entries = get_recent_audit(&conn, 10).unwrap();
         assert_eq!(entries.len(), 1);
+    }
+
+    fn insert_test_audit(conn: &Connection, path: &str, severity: &str) {
+        let now = Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO audit_log (timestamp, event_type, path, change_type, severity, monitored_group)
+             VALUES (?1, 'change', ?2, 'modified', ?3, 'test')",
+            params![now, path, severity],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn search_audit_by_path() {
+        let conn = test_conn();
+        insert_test_audit(&conn, "/etc/passwd", "critical");
+        insert_test_audit(&conn, "/etc/shadow", "critical");
+        insert_test_audit(&conn, "/usr/bin/test", "medium");
+
+        let results = search_audit(&conn, Some("passwd"), None, 100).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, "/etc/passwd");
+    }
+
+    #[test]
+    fn search_audit_by_severity() {
+        let conn = test_conn();
+        insert_test_audit(&conn, "/etc/passwd", "critical");
+        insert_test_audit(&conn, "/etc/shadow", "medium");
+        insert_test_audit(&conn, "/usr/bin/test", "medium");
+
+        let results = search_audit(&conn, None, Some("medium"), 100).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn search_audit_both_filters() {
+        let conn = test_conn();
+        insert_test_audit(&conn, "/etc/passwd", "critical");
+        insert_test_audit(&conn, "/etc/shadow", "critical");
+        insert_test_audit(&conn, "/usr/bin/test", "medium");
+
+        let results = search_audit(&conn, Some("/etc"), Some("critical"), 100).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn search_audit_no_results() {
+        let conn = test_conn();
+        insert_test_audit(&conn, "/etc/passwd", "critical");
+
+        let results = search_audit(&conn, Some("nonexistent"), None, 100).unwrap();
+        assert!(results.is_empty());
     }
 }

@@ -1,0 +1,28 @@
+---
+source: tests/integration/snapshot_tests.rs
+expression: "vec![change]"
+---
+[
+  {
+    "path": "/etc/passwd",
+    "change_types": [
+      "modified"
+    ],
+    "severity": "critical",
+    "old_hash": "aaa111",
+    "new_hash": "bbb222",
+    "old_permissions": 33188,
+    "new_permissions": 33188,
+    "old_owner_uid": 0,
+    "new_owner_uid": 0,
+    "old_owner_gid": 0,
+    "new_owner_gid": 0,
+    "old_inode": 12345,
+    "new_inode": 12345,
+    "old_mtime": 1700000000,
+    "new_mtime": 1700001000,
+    "package": "base",
+    "package_update": false,
+    "monitored_group": "system_critical"
+  }
+]

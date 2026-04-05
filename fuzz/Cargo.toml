@@ -13,6 +13,9 @@ vigil = { path = ".." }
 arbitrary = { version = "1", features = ["derive"] }
 toml = "0.8"
 serde_json = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+chrono = "0.4"
+hex = "0.4"
 
 [[bin]]
 name = "fuzz_config_parse"
@@ -29,6 +32,30 @@ doc = false
 [[bin]]
 name = "fuzz_scanner"
 path = "fuzz_targets/fuzz_scanner.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_toml_config"
+path = "fuzz_targets/fuzz_toml_config.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_event_filter"
+path = "fuzz_targets/fuzz_event_filter.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_db_roundtrip"
+path = "fuzz_targets/fuzz_db_roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_xattr_parsing"
+path = "fuzz_targets/fuzz_xattr_parsing.rs"
 test = false
 doc = false
 

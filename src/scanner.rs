@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::alert::AlertEngine;
 use crate::config::Config;
 use crate::db::ops;
-use crate::error::Result;
+use crate::error::{Result, ScanWarning};
 use crate::types::ScanMode;
 
 /// Run a scheduled integrity scan.
@@ -17,6 +17,7 @@ pub fn run_scan(
     config: &Config,
     alert_engine: &AlertEngine,
     mode: ScanMode,
+    progress: crate::ProgressCallback,
 ) -> Result<ScanResult> {
     // Set I/O scheduling class to idle (class 3) — only runs when disk is idle
     set_idle_io_priority();
@@ -29,6 +30,7 @@ pub fn run_scan(
         total_checked: 0,
         changes_found: 0,
         errors: 0,
+        warnings: Vec::new(),
     };
 
     let maintenance_window = is_maintenance_window(conn);
@@ -45,7 +47,83 @@ pub fn run_scan(
         })
         .collect();
 
-    for entry in &entries {
+    let total_entries = entries.len();
+
+    // Parallel scanning path for Full mode when feature is enabled
+    #[cfg(feature = "parallel")]
+    if mode == ScanMode::Full {
+        use rayon::prelude::*;
+
+        // Note: progress callback is not used in parallel path because
+        // Fn(&str) is not Sync. Progress is emitted after parallel collection.
+        if progress.is_some() {
+            log::debug!("Progress callback ignored in parallel scanning mode");
+        }
+
+        // Parallel: hash and compare all entries, collect results
+        let compare_results: Vec<_> = entries
+            .par_iter()
+            .map(|entry| {
+                let (severity, group_name) = watch_lookup
+                    .iter()
+                    .find(|(wp, _, _)| entry.path.starts_with(wp) || entry.path == *wp)
+                    .map(|(_, gn, sev)| (*sev, gn.as_str()))
+                    .unwrap_or((crate::types::Severity::Medium, "unknown"));
+
+                (
+                    entry,
+                    crate::compare::compare_entry(entry, config, severity, group_name),
+                )
+            })
+            .collect();
+
+        // Dispatch alerts sequentially (DB connection is not Sync)
+        for (entry, cmp_result) in compare_results {
+            result.total_checked += 1;
+            match cmp_result {
+                Ok(Some(change)) => {
+                    result.changes_found += 1;
+                    if let Err(e) = alert_engine.dispatch(&change, maintenance_window, conn) {
+                        log::error!("Alert dispatch error for {}: {}", entry.path.display(), e);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    result.errors += 1;
+                    let detail = format!("Scan error: {}", e);
+                    log::debug!("Scan error for {}: {}", entry.path.display(), e);
+                    result.warnings.push(ScanWarning {
+                        path: entry.path.clone(),
+                        detail,
+                        severity: crate::error::WarningSeverity::Error,
+                    });
+                }
+            }
+        }
+
+        log::info!(
+            "Scan complete ({} mode, parallel): {} checked, {} changes, {} errors",
+            mode,
+            result.total_checked,
+            result.changes_found,
+            result.errors,
+        );
+
+        return Ok(result);
+    }
+
+    // Sequential scanning path (default, also used for Incremental mode)
+    for (idx, entry) in entries.iter().enumerate() {
+        // Emit progress callback
+        if let Some(ref cb) = progress {
+            cb(&format!(
+                "scanning {} ({}/{})",
+                entry.path.display(),
+                idx + 1,
+                total_entries
+            ));
+        }
+
         // Incremental mode: skip files whose mtime hasn't changed
         if mode == ScanMode::Incremental {
             if let Ok(meta) = std::fs::metadata(&entry.path) {
@@ -75,7 +153,13 @@ pub fn run_scan(
             Ok(None) => {} // no change
             Err(e) => {
                 result.errors += 1;
+                let detail = format!("Scan error: {}", e);
                 log::debug!("Scan error for {}: {}", entry.path.display(), e);
+                result.warnings.push(ScanWarning {
+                    path: entry.path.clone(),
+                    detail,
+                    severity: crate::error::WarningSeverity::Error,
+                });
             }
         }
     }
@@ -105,6 +189,7 @@ pub struct ScanResult {
     pub total_checked: u64,
     pub changes_found: u64,
     pub errors: u64,
+    pub warnings: Vec<ScanWarning>,
 }
 
 fn is_maintenance_window(conn: &Connection) -> bool {
@@ -120,6 +205,8 @@ fn set_idle_io_priority() {
     const IOPRIO_WHO_PROCESS: i32 = 1;
     const IOPRIO_CLASS_IDLE: i32 = 3;
 
+    // SAFETY: SYS_ioprio_set with IOPRIO_WHO_PROCESS and pid=0 (current process)
+    // is a well-defined Linux syscall. No memory safety invariants to uphold.
     unsafe {
         libc::syscall(
             libc::SYS_ioprio_set,
@@ -132,6 +219,8 @@ fn set_idle_io_priority() {
 
 /// Set CPU nice to 19 (lowest priority).
 fn set_low_cpu_priority() {
+    // SAFETY: setpriority with PRIO_PROCESS and who=0 (current process)
+    // is a well-defined POSIX call. No memory safety invariants.
     unsafe {
         libc::setpriority(libc::PRIO_PROCESS, 0, 19);
     }

@@ -36,6 +36,8 @@ struct OwnedFd(RawFd);
 impl Drop for OwnedFd {
     fn drop(&mut self) {
         if self.0 >= 0 {
+            // SAFETY: self.0 is a valid fd (checked >= 0). OwnedFd has
+            // exclusive ownership, so no double-close can occur.
             unsafe {
                 libc::close(self.0);
             }
@@ -63,6 +65,8 @@ pub fn start(
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
     // Initialize fanotify fd
+    // SAFETY: fanotify_init is a Linux syscall. We pass valid flags and
+    // O_RDONLY for read-only access. The return value is checked below.
     let fan_fd = unsafe {
         libc::syscall(
             libc::SYS_fanotify_init,
@@ -92,6 +96,8 @@ pub fn start(
         let c_path = CString::new(mount.as_os_str().as_bytes())
             .map_err(|_| VigilError::Fanotify(format!("invalid path: {}", mount.display())))?;
 
+        // SAFETY: fanotify_mark is a Linux syscall. fan_fd is a valid fd
+        // from fanotify_init, c_path is a valid NUL-terminated C string.
         let ret = unsafe {
             libc::syscall(
                 libc::SYS_fanotify_mark,
@@ -123,6 +129,7 @@ pub fn start(
             let mut buf = vec![0u8; 4096];
 
             // Set up epoll
+            // SAFETY: epoll_create1 with EPOLL_CLOEXEC is a safe Linux syscall.
             let epoll_fd_raw = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
             if epoll_fd_raw < 0 {
                 log::error!("epoll_create1 failed: {}", std::io::Error::last_os_error());
@@ -134,6 +141,8 @@ pub fn start(
                 events: libc::EPOLLIN as u32,
                 u64: fan_fd as u64,
             };
+            // SAFETY: epoll_fd_raw and fan_fd are valid fds. ev points to
+            // a valid epoll_event on the stack.
             let ret =
                 unsafe { libc::epoll_ctl(epoll_fd_raw, libc::EPOLL_CTL_ADD, fan_fd, &mut ev) };
             if ret < 0 {
@@ -144,6 +153,7 @@ pub fn start(
             let mut events = [libc::epoll_event { events: 0, u64: 0 }; 1];
 
             while !shutdown.load(Ordering::Acquire) {
+                // SAFETY: epoll_fd_raw is valid, events array has capacity for 1 event.
                 let nfds = unsafe {
                     libc::epoll_wait(epoll_fd_raw, events.as_mut_ptr(), 1, 500) // 500ms timeout
                 };
@@ -152,6 +162,7 @@ pub fn start(
                     continue;
                 }
 
+                // SAFETY: fan_fd is valid, buf is a valid mutable slice.
                 let n = unsafe { libc::read(fan_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
                 if n <= 0 {
                     continue;
@@ -160,6 +171,8 @@ pub fn start(
                 let mut offset = 0;
                 while offset + FAN_EVENT_METADATA_LEN <= n as usize {
                     let event =
+                        // SAFETY: offset is bounds-checked (offset + FAN_EVENT_METADATA_LEN <= n).
+                        // The buffer contains valid fanotify event data from the kernel.
                         unsafe { &*(buf.as_ptr().add(offset) as *const FanotifyEventMetadata) };
 
                     if event.fd >= 0 {
@@ -193,6 +206,8 @@ pub fn start(
                         }
 
                         // Close the event fd
+                        // SAFETY: event.fd is a valid fd provided by the kernel
+                        // via fanotify (checked >= 0 above).
                         unsafe { libc::close(event.fd) };
                     }
 

@@ -46,13 +46,29 @@ fn run(cli: Cli) -> Result<()> {
 
 // ── Commands ───────────────────────────────────────────────
 
+fn print_warnings(warnings: &[vigil::error::ScanWarning]) {
+    if warnings.is_empty() {
+        return;
+    }
+    println!("\nWarnings ({}):", warnings.len());
+    for w in warnings {
+        let level = match w.severity {
+            vigil::error::WarningSeverity::Info => "INFO",
+            vigil::error::WarningSeverity::Warning => "WARN",
+            vigil::error::WarningSeverity::Error => "ERROR",
+        };
+        println!("  [{}] {}: {}", level, w.path.display(), w.detail);
+    }
+}
+
 fn cmd_init(config_path: Option<&std::path::Path>) -> Result<()> {
     let cfg = config::load_config(config_path)?;
     let conn = db::open_db(&cfg)?;
 
     println!("Initializing baseline...");
-    let count = baseline::init_baseline(&conn, &cfg, false)?;
+    let (count, warnings) = baseline::init_baseline(&conn, &cfg, false)?;
     println!("Baseline initialized: {} entries", count);
+    print_warnings(&warnings);
 
     Ok(())
 }
@@ -67,14 +83,17 @@ fn cmd_baseline(
 
     match action {
         BaselineAction::Init => {
-            let count = baseline::init_baseline(&conn, &cfg, false)?;
+            let (count, warnings) = baseline::init_baseline(&conn, &cfg, false)?;
             println!("Baseline initialized: {} entries", count);
+            print_warnings(&warnings);
         }
         BaselineAction::Refresh { paths, quiet } => {
             let filter = paths.map(|p| vec![p]);
-            let count = baseline::refresh_baseline(&conn, &cfg, filter.as_deref(), quiet)?;
+            let (count, warnings) =
+                baseline::refresh_baseline(&conn, &cfg, filter.as_deref(), quiet)?;
             if !quiet {
                 println!("Baseline refreshed: {} entries", count);
+                print_warnings(&warnings);
             }
         }
         BaselineAction::Diff => {
@@ -166,12 +185,24 @@ fn cmd_check(config_path: Option<&std::path::Path>, full: bool) -> Result<()> {
     };
 
     println!("Running {} integrity check...", mode);
-    let result = vigil::scanner::run_scan(&conn, &cfg, &alert_engine, mode)?;
+
+    let is_tty = atty_is_tty();
+    let progress_cb = |step: &str| {
+        eprint!("\r\x1b[K [>] {}", step);
+    };
+    let progress: vigil::ProgressCallback = if is_tty { Some(&progress_cb) } else { None };
+
+    let result = vigil::scanner::run_scan(&conn, &cfg, &alert_engine, mode, progress)?;
+
+    if is_tty {
+        eprint!("\r\x1b[K"); // Clear progress line
+    }
 
     println!("\nScan complete:");
     println!("  Files checked: {}", result.total_checked);
     println!("  Changes found: {}", result.changes_found);
     println!("  Errors: {}", result.errors);
+    print_warnings(&result.warnings);
 
     Ok(())
 }
@@ -253,28 +284,14 @@ fn cmd_log(config_path: Option<&std::path::Path>, action: LogAction) -> Result<(
             }
         }
         LogAction::Search { path, severity } => {
-            // Basic search — for MVP, just filter the recent entries
-            let entries = db::ops::get_recent_audit(&conn, 1000)?;
-            let mut found = 0;
+            let entries = db::ops::search_audit(&conn, path.as_deref(), severity.as_deref(), 1000)?;
             for entry in &entries {
-                let path_match = path
-                    .as_ref()
-                    .map(|p| entry.path.contains(p.as_str()))
-                    .unwrap_or(true);
-                let sev_match = severity
-                    .as_ref()
-                    .map(|s| entry.severity == *s)
-                    .unwrap_or(true);
-
-                if path_match && sev_match {
-                    println!(
-                        "  {} [{}] {} — {}",
-                        entry.timestamp, entry.severity, entry.change_type, entry.path
-                    );
-                    found += 1;
-                }
+                println!(
+                    "  {} [{}] {} — {}",
+                    entry.timestamp, entry.severity, entry.change_type, entry.path
+                );
             }
-            println!("\n{} entries found.", found);
+            println!("\n{} entries found.", entries.len());
         }
         LogAction::Stats => {
             let entries = db::ops::get_recent_audit(&conn, 10000)?;
@@ -295,7 +312,66 @@ fn cmd_log(config_path: Option<&std::path::Path>, action: LogAction) -> Result<(
             println!("  Low:          {}", low);
         }
         LogAction::Verify => {
-            println!("HMAC verification not yet implemented (requires hmac_signing = true).");
+            if !cfg.security.hmac_signing {
+                println!("HMAC signing is not enabled in configuration.");
+                println!("Set security.hmac_signing = true and provide a key file.");
+                return Ok(());
+            }
+
+            let key = vigil::hmac::load_hmac_key(&cfg.security.hmac_key_path)?;
+            let entries = db::ops::get_recent_audit(&conn, u32::MAX)?;
+
+            let mut valid = 0u64;
+            let mut invalid = 0u64;
+            let mut missing = 0u64;
+
+            for entry in &entries {
+                // Reconstruct the HMAC data from entry fields
+                let data = vigil::hmac::build_audit_hmac_data(
+                    entry.timestamp,
+                    &entry.path,
+                    &entry.change_type,
+                    &entry.severity,
+                    entry.old_hash.as_deref(),
+                    entry.new_hash.as_deref(),
+                );
+
+                // Get the stored HMAC from the database
+                match db::ops::get_audit_hmac(&conn, entry.id) {
+                    Ok(Some(stored_hmac)) => {
+                        if vigil::hmac::verify_hmac(&key, &data, &stored_hmac) {
+                            valid += 1;
+                        } else {
+                            invalid += 1;
+                            println!(
+                                "  INVALID: {} [{}] {} (id={})",
+                                entry.timestamp, entry.severity, entry.path, entry.id
+                            );
+                        }
+                    }
+                    Ok(None) => {
+                        missing += 1;
+                    }
+                    Err(e) => {
+                        log::debug!("Error reading HMAC for entry {}: {}", entry.id, e);
+                        missing += 1;
+                    }
+                }
+            }
+
+            println!("HMAC Verification Results");
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━");
+            println!("  Total entries: {}", entries.len());
+            println!("  Valid:         {}", valid);
+            println!("  Invalid:       {}", invalid);
+            println!("  Missing HMAC:  {}", missing);
+
+            if invalid > 0 {
+                println!(
+                    "\n  ⚠ {} entries have invalid HMACs — possible tampering!",
+                    invalid
+                );
+            }
         }
     }
 
@@ -362,6 +438,8 @@ fn cmd_doctor(config_path: Option<&std::path::Path>) -> Result<()> {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     // fanotify availability
+    // SAFETY: fanotify_init is a Linux syscall. We pass valid flags
+    // (FAN_CLOEXEC) and O_RDONLY. The returned fd is checked before use.
     let fan_fd = unsafe {
         libc::syscall(
             libc::SYS_fanotify_init,
@@ -370,6 +448,7 @@ fn cmd_doctor(config_path: Option<&std::path::Path>) -> Result<()> {
         )
     };
     if fan_fd >= 0 {
+        // SAFETY: fan_fd is a valid fd returned by fanotify_init (checked >= 0).
         unsafe { libc::close(fan_fd as i32) };
         let uname = nix::sys::utsname::uname().ok();
         let release = uname
@@ -469,4 +548,11 @@ fn cmd_doctor(config_path: Option<&std::path::Path>) -> Result<()> {
 
     println!();
     Ok(())
+}
+
+/// Check if stderr is a TTY (for progress output).
+fn atty_is_tty() -> bool {
+    // SAFETY: isatty is a POSIX function safe to call with any fd.
+    // STDERR_FILENO (2) is always a valid fd number.
+    unsafe { libc::isatty(libc::STDERR_FILENO) != 0 }
 }

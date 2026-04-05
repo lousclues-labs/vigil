@@ -58,7 +58,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        features: ["--all-features", ""]
+        features: ["--all-features", "", "--features parallel"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -67,6 +67,8 @@ jobs:
         run: cargo test --all-targets ${{ matrix.features }} -- --test-threads=4
       - name: Run doc-tests
         run: cargo test --doc
+      - name: Snapshot test check
+        run: cargo install cargo-insta --locked && cargo insta test --check
 
   coverage:
     name: Coverage

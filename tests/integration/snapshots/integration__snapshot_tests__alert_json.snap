@@ -1,0 +1,31 @@
+---
+source: tests/integration/snapshot_tests.rs
+expression: alert
+---
+{
+  "version": 1,
+  "timestamp": "2026-04-02T12:00:00Z",
+  "event_id": "vigil_test12345678",
+  "severity": "critical",
+  "change_type": "modified",
+  "file": {
+    "path": "/etc/passwd",
+    "baseline_hash": "aaa111",
+    "current_hash": "bbb222",
+    "baseline_size": 2048,
+    "current_size": 2100,
+    "baseline_permissions": "0644",
+    "current_permissions": "0644",
+    "baseline_owner": "0",
+    "current_owner": "0",
+    "inode_changed": false,
+    "mtime_changed": true,
+    "package": "base",
+    "package_update": false
+  },
+  "context": {
+    "hostname": "test-host",
+    "monitored_group": "system_critical",
+    "maintenance_window": false
+  }
+}
