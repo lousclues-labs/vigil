@@ -1,4 +1,5 @@
 use rusqlite::Connection;
+use std::path::Path;
 
 use crate::config::Config;
 use crate::db::baseline_ops;
@@ -18,49 +19,90 @@ pub struct ScanResult {
 /// Build a full initial baseline by walking all configured watch paths.
 pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<u64> {
     let mut count = 0u64;
+    let mut processed = 0u64;
     let now = chrono::Utc::now().timestamp();
+    let exclusions = crate::filter::exclusion::ExclusionFilter::new(config);
 
-    for group in config.watch.values() {
-        let roots = crate::config::expand_user_paths(&group.paths);
-        for root in roots {
-            let mut paths = Vec::new();
-            collect_paths(&root, &mut paths);
+    let skip_package_owner = std::env::var("VIGIL_SKIP_PACKAGE_OWNER")
+        .map(|v| {
+            let v = v.trim();
+            v == "1"
+                || v.eq_ignore_ascii_case("true")
+                || v.eq_ignore_ascii_case("yes")
+                || v.eq_ignore_ascii_case("on")
+        })
+        .unwrap_or(false);
 
-            for path in paths {
-                let opts = CaptureOpts {
-                    force_hash: true,
-                    max_file_size: config.scanner.max_file_size,
-                    mmap_threshold: config.scanner.mmap_threshold,
-                };
+    conn.execute_batch("BEGIN IMMEDIATE")?;
 
-                match crate::types::FileSnapshot::from_path(&path, &opts) {
-                    Ok(SnapshotOrDeleted::Snapshot(snapshot)) => {
-                        let package =
-                            crate::package::query_package_owner(&path, &config.package_manager);
-
-                        let entry = crate::types::BaselineEntry {
-                            id: None,
-                            path: path.clone(),
-                            identity: snapshot.identity,
-                            content: snapshot.content,
-                            permissions: snapshot.permissions,
-                            security: snapshot.security,
-                            mtime: snapshot.mtime,
-                            package,
-                            source: crate::types::BaselineSource::AutoScan,
-                            added_at: now,
-                            updated_at: now,
-                        };
-
-                        baseline_ops::upsert(conn, &entry)?;
-                        count += 1;
+    let result = (|| -> Result<()> {
+        for group in config.watch.values() {
+            let roots = crate::config::expand_user_paths(&group.paths);
+            for root in roots {
+                walk_files(&root, &exclusions, &mut |path| {
+                    processed += 1;
+                    if processed % 5000 == 0 {
+                        tracing::info!(
+                            processed_files = processed,
+                            inserted_entries = count,
+                            "baseline init progress"
+                        );
                     }
-                    Ok(SnapshotOrDeleted::Deleted) => {}
-                    Err(e) => {
-                        tracing::debug!(path = %path.display(), error = %e, "baseline capture error");
+
+                    let opts = CaptureOpts {
+                        force_hash: true,
+                        max_file_size: config.scanner.max_file_size,
+                        mmap_threshold: config.scanner.mmap_threshold,
+                    };
+
+                    match crate::types::FileSnapshot::from_path(path, &opts) {
+                        Ok(SnapshotOrDeleted::Snapshot(snapshot)) => {
+                            let package = if skip_package_owner {
+                                None
+                            } else {
+                                crate::package::query_package_owner(path, &config.package_manager)
+                            };
+
+                            let entry = crate::types::BaselineEntry {
+                                id: None,
+                                path: path.to_path_buf(),
+                                identity: snapshot.identity,
+                                content: snapshot.content,
+                                permissions: snapshot.permissions,
+                                security: snapshot.security,
+                                mtime: snapshot.mtime,
+                                package,
+                                source: crate::types::BaselineSource::AutoScan,
+                                added_at: now,
+                                updated_at: now,
+                            };
+
+                            baseline_ops::upsert(conn, &entry)?;
+                            count += 1;
+                        }
+                        Ok(SnapshotOrDeleted::Deleted) => {}
+                        Err(e) => {
+                            tracing::debug!(
+                                path = %path.display(),
+                                error = %e,
+                                "baseline capture error"
+                            );
+                        }
                     }
-                }
+
+                    Ok(())
+                })?;
             }
+        }
+
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
         }
     }
 
@@ -128,26 +170,85 @@ pub fn run_scan(conn: &Connection, config: &Config, mode: ScanMode) -> Result<Sc
     Ok(result)
 }
 
-fn collect_paths(root: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+fn walk_files<F>(
+    root: &Path,
+    exclusions: &crate::filter::exclusion::ExclusionFilter,
+    visit: &mut F,
+) -> Result<()>
+where
+    F: FnMut(&Path) -> Result<()>,
+{
     if !root.exists() {
-        return;
+        return Ok(());
     }
 
-    if root.is_file() {
-        out.push(root.to_path_buf());
-        return;
-    }
+    let mut stack = vec![root.to_path_buf()];
 
-    if root.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(root) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file() {
-                    out.push(path);
-                } else if path.is_dir() {
-                    collect_paths(&path, out);
+    while let Some(path) = stack.pop() {
+        let path_str = path.to_string_lossy();
+        if exclusions.is_excluded(&path_str) {
+            continue;
+        }
+
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::debug!(path = %path.display(), error = %e, "baseline walk metadata error");
+                continue;
+            }
+        };
+
+        let ft = meta.file_type();
+
+        if ft.is_symlink() {
+            // Follow symlinked files, but never descend into symlinked directories.
+            // This avoids recursive loops in trees like /etc/systemd/system.
+            match std::fs::metadata(&path) {
+                Ok(target) if target.is_file() => {
+                    visit(&path)?;
+                }
+                Ok(target) if target.is_dir() => {
+                    tracing::debug!(
+                        path = %path.display(),
+                        "skipping symlinked directory during baseline walk"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::debug!(
+                        path = %path.display(),
+                        error = %e,
+                        "baseline walk symlink target error"
+                    );
+                }
+            }
+            continue;
+        }
+
+        if ft.is_file() {
+            visit(&path)?;
+            continue;
+        }
+
+        if ft.is_dir() {
+            let entries = match std::fs::read_dir(&path) {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::debug!(path = %path.display(), error = %e, "baseline walk read_dir error");
+                    continue;
+                }
+            };
+
+            for entry in entries {
+                match entry {
+                    Ok(ent) => stack.push(ent.path()),
+                    Err(e) => {
+                        tracing::debug!(path = %path.display(), error = %e, "baseline walk dir entry error");
+                    }
                 }
             }
         }
     }
+
+    Ok(())
 }

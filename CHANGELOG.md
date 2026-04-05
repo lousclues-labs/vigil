@@ -4,6 +4,21 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-04-05
+
+### Release Summary
+- Fixes an operator-facing upgrade blocker where `vigil init` could appear to hang indefinitely at `Initializing baseline...` on large or loop-prone trees.
+- Improves baseline initialization reliability and throughput for clean-install rebuild workflows.
+
+### Fixed
+- Reworked baseline initialization traversal to stream files directly instead of recursively collecting all paths first.
+- Added safe handling for symlinked directories during baseline walks to avoid recursive loop traps.
+- Added periodic baseline init progress logging (`processed_files`/`inserted_entries`) so long runs are observable.
+- Wrapped baseline insert/update work in a single transaction for better performance and atomicity.
+
+### Operational
+- Added optional `VIGIL_SKIP_PACKAGE_OWNER=1` mode for baseline init to bypass per-file package manager ownership lookups during migration/reset flows where package attribution is not required.
+
 ## [0.12.0] - 2026-04-05
 
 ### Release Summary
