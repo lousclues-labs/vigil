@@ -1,5 +1,6 @@
 use rusqlite::Connection;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use crate::db::baseline_ops;
@@ -16,9 +17,26 @@ pub struct ScanResult {
     pub duration_ms: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct GroupInitResult {
+    pub name: String,
+    pub paths: Vec<String>,
+    pub file_count: u64,
+    pub errors: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BaselineInitResult {
+    pub total_count: u64,
+    pub groups: Vec<GroupInitResult>,
+    pub duration: Duration,
+    pub db_size_bytes: u64,
+}
+
 /// Build a full initial baseline by walking all configured watch paths.
-pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<u64> {
-    let mut count = 0u64;
+pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<BaselineInitResult> {
+    let started = Instant::now();
+    let mut total_count = 0u64;
     let mut processed = 0u64;
     let now = chrono::Utc::now().timestamp();
     let exclusions = crate::filter::exclusion::ExclusionFilter::new(config);
@@ -35,8 +53,12 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<u64>
 
     conn.execute_batch("BEGIN IMMEDIATE")?;
 
-    let result = (|| -> Result<()> {
-        for group in config.watch.values() {
+    let result = (|| -> Result<Vec<GroupInitResult>> {
+        let mut groups = Vec::with_capacity(config.watch.len());
+
+        for (group_name, group) in &config.watch {
+            let mut group_count = 0u64;
+            let mut group_errors = 0u64;
             let roots = crate::config::expand_user_paths(&group.paths);
             for root in roots {
                 walk_files(&root, &exclusions, &mut |path| {
@@ -44,7 +66,7 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<u64>
                     if processed % 5000 == 0 {
                         tracing::info!(
                             processed_files = processed,
-                            inserted_entries = count,
+                            inserted_entries = total_count,
                             "baseline init progress"
                         );
                     }
@@ -78,10 +100,12 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<u64>
                             };
 
                             baseline_ops::upsert(conn, &entry)?;
-                            count += 1;
+                            total_count += 1;
+                            group_count += 1;
                         }
                         Ok(SnapshotOrDeleted::Deleted) => {}
                         Err(e) => {
+                            group_errors += 1;
                             tracing::debug!(
                                 path = %path.display(),
                                 error = %e,
@@ -93,24 +117,44 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<u64>
                     Ok(())
                 })?;
             }
+
+            groups.push(GroupInitResult {
+                name: group_name.clone(),
+                paths: group.paths.clone(),
+                file_count: group_count,
+                errors: group_errors,
+            });
         }
 
-        Ok(())
+        Ok(groups)
     })();
 
-    match result {
-        Ok(()) => conn.execute_batch("COMMIT")?,
+    let groups = match result {
+        Ok(groups) => {
+            conn.execute_batch("COMMIT")?;
+            groups
+        }
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             return Err(e);
         }
-    }
+    };
 
-    Ok(count)
+    baseline_ops::set_config_state(conn, "last_baseline_refresh", &now.to_string())?;
+    let db_size_bytes = std::fs::metadata(&config.daemon.db_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    Ok(BaselineInitResult {
+        total_count,
+        groups,
+        duration: started.elapsed(),
+        db_size_bytes,
+    })
 }
 
 /// Refresh baseline by rebuilding entries under watch paths.
-pub fn refresh_baseline(conn: &Connection, config: &Config) -> Result<u64> {
+pub fn refresh_baseline(conn: &Connection, config: &Config) -> Result<BaselineInitResult> {
     build_initial_baseline(conn, config)
 }
 

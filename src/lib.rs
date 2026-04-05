@@ -4,6 +4,7 @@ pub mod cli;
 pub mod config;
 pub mod coordinator;
 pub mod db;
+pub mod doctor;
 pub mod error;
 pub mod filter;
 pub mod hash;
@@ -30,6 +31,7 @@ pub use error::{Result, VigilError};
 
 use crate::alert::{AlertDispatcher, AlertPayload};
 use crate::config::Config;
+use crate::db::baseline_ops;
 use crate::metrics::Metrics;
 use crate::types::{DaemonState, FsEvent};
 use crate::watch_index::WatchGroupIndex;
@@ -38,6 +40,7 @@ use crate::watch_index::WatchGroupIndex;
 pub struct Daemon {
     pub config: Arc<ArcSwap<Config>>,
     pub baseline_conn: rusqlite::Connection,
+    pub baseline_db_preexisting: bool,
     pub metrics: Arc<Metrics>,
     pub state: Arc<RwLock<DaemonState>>,
     pub shutdown: Arc<AtomicBool>,
@@ -47,12 +50,14 @@ pub struct Daemon {
 
 impl Daemon {
     pub fn from_config(config: Config) -> Result<Self> {
+        let baseline_db_preexisting = config.daemon.db_path.exists();
         let baseline_conn = db::open_baseline_db(&config)?;
         let watch_index = WatchGroupIndex::from_config(&config);
 
         Ok(Self {
             config: Arc::new(ArcSwap::from_pointee(config)),
             baseline_conn,
+            baseline_db_preexisting,
             metrics: Arc::new(Metrics::new()),
             state: Arc::new(RwLock::new(DaemonState::Healthy)),
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -65,9 +70,9 @@ impl Daemon {
         harden_process();
         raise_nofile_limit(4096);
 
-        db::integrity_check(&self.baseline_conn)?;
-
         let cfg = self.config.load();
+        self.ensure_baseline_health(&cfg)?;
+
         let pid_file = cfg.daemon.pid_file.clone();
         let baseline_db_path = cfg.daemon.db_path.clone();
         let audit_db_path = db::audit_db_path(&cfg);
@@ -145,6 +150,80 @@ impl Daemon {
         cleanup_pid_file(&pid_file);
 
         tracing::info!("vigil daemon stopped");
+        Ok(())
+    }
+
+    fn ensure_baseline_health(&self, config: &Config) -> Result<()> {
+        if !self.baseline_db_preexisting {
+            tracing::warn!(
+                "Baseline database not found. Auto-initializing from configured watch paths."
+            );
+            let result = scanner::build_initial_baseline(&self.baseline_conn, config)?;
+            notify_desktop(&format!(
+                "Vigil: Baseline auto-initialized with {} entries.",
+                result.total_count
+            ));
+            return Ok(());
+        }
+
+        if let Err(e) = db::integrity_check(&self.baseline_conn) {
+            let db_path = &config.daemon.db_path;
+            tracing::error!(
+                error = %e,
+                path = %db_path.display(),
+                "Baseline database integrity check failed. Backing up and reinitializing."
+            );
+
+            let backup_path = corrupt_backup_path(db_path);
+            if let Err(copy_err) = std::fs::copy(db_path, &backup_path) {
+                tracing::error!(
+                    path = %db_path.display(),
+                    backup = %backup_path.display(),
+                    error = %copy_err,
+                    "failed to back up corrupt baseline database"
+                );
+                return Err(VigilError::Baseline(format!(
+                    "failed to back up corrupt baseline DB: {}",
+                    copy_err
+                )));
+            }
+
+            if let Err(remove_err) = std::fs::remove_file(db_path) {
+                tracing::error!(
+                    path = %db_path.display(),
+                    error = %remove_err,
+                    "failed to remove corrupt baseline database"
+                );
+                return Err(VigilError::Baseline(format!(
+                    "failed to remove corrupt baseline DB: {}",
+                    remove_err
+                )));
+            }
+
+            let fresh_conn = db::open_baseline_db(config)?;
+            let result = scanner::build_initial_baseline(&fresh_conn, config)?;
+
+            tracing::error!(
+                backup = %backup_path.display(),
+                entries = result.total_count,
+                "baseline database reinitialized after corruption"
+            );
+
+            notify_desktop(&format!(
+                "Vigil: Baseline was corrupt. Backed up to {} and reinitialized with {} entries. Review the backup.",
+                backup_path.display(),
+                result.total_count
+            ));
+
+            return Ok(());
+        }
+
+        let count = baseline_ops::count(&self.baseline_conn)?;
+        if count <= 0 {
+            tracing::warn!("Baseline is empty. Populating from configured watch paths.");
+            let _ = scanner::build_initial_baseline(&self.baseline_conn, config)?;
+        }
+
         Ok(())
     }
 }
@@ -241,6 +320,26 @@ fn harden_process() {
     // This is a process attribute change and has no Rust memory safety implications.
     unsafe {
         libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+    }
+}
+
+fn corrupt_backup_path(db_path: &std::path::Path) -> std::path::PathBuf {
+    let mut backup = db_path.as_os_str().to_os_string();
+    backup.push(format!(
+        ".corrupt.{}",
+        chrono::Utc::now().format("%Y%m%d%H%M%S")
+    ));
+    std::path::PathBuf::from(backup)
+}
+
+fn notify_desktop(message: &str) {
+    let status = std::process::Command::new("notify-send")
+        .arg("Vigil")
+        .arg(message)
+        .status();
+
+    if let Err(e) = status {
+        tracing::debug!(error = %e, "notify-send failed");
     }
 }
 

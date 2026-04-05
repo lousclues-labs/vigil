@@ -25,7 +25,11 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Initialize baseline database
-    Init,
+    Init {
+        /// Skip confirmation when overwriting existing baseline
+        #[arg(long)]
+        force: bool,
+    },
 
     /// Run daemon in foreground
     Watch,
@@ -39,6 +43,20 @@ pub enum Command {
 
     /// Show daemon status
     Status,
+
+    /// Run system health diagnostics
+    Doctor {
+        /// Output format
+        #[arg(long, default_value = "human", value_enum)]
+        format: Option<OutputFormat>,
+    },
+
+    /// Update Vigil from a local git repository
+    Update {
+        /// Path to the Vigil git repository (defaults to current directory)
+        #[arg(long)]
+        repo: Option<PathBuf>,
+    },
 
     /// Audit log operations
     Audit {
@@ -76,4 +94,40 @@ pub enum ConfigAction {
 
     /// Validate configuration
     Validate,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn init_force_flag_parses() {
+        let cli = Cli::try_parse_from(["vigil", "init", "--force"]).expect("parse init --force");
+        match cli.command {
+            Command::Init { force } => assert!(force),
+            _ => panic!("expected init command"),
+        }
+    }
+
+    #[test]
+    fn doctor_format_parses() {
+        let cli = Cli::try_parse_from(["vigil", "doctor", "--format", "json"])
+            .expect("parse doctor --format json");
+        match cli.command {
+            Command::Doctor { format } => assert_eq!(format, Some(OutputFormat::Json)),
+            _ => panic!("expected doctor command"),
+        }
+    }
+
+    #[test]
+    fn update_repo_parses() {
+        let cli = Cli::try_parse_from(["vigil", "update", "--repo", "/opt/vigil"])
+            .expect("parse update --repo");
+        match cli.command {
+            Command::Update { repo } => {
+                assert_eq!(repo, Some(PathBuf::from("/opt/vigil")));
+            }
+            _ => panic!("expected update command"),
+        }
+    }
 }

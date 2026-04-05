@@ -28,9 +28,6 @@ fn daemon_start_and_shutdown_smoke_test() {
         },
     );
 
-    let conn = vigil::db::open_baseline_db(&cfg).unwrap();
-    let _ = vigil::scanner::build_initial_baseline(&conn, &cfg).unwrap();
-
     let daemon = vigil::Daemon::from_config(cfg).unwrap();
     let shutdown = daemon.shutdown.clone();
 
@@ -44,4 +41,11 @@ fn daemon_start_and_shutdown_smoke_test() {
 
     let run_result = handle.join().unwrap();
     assert!(run_result.is_ok());
+
+    let baseline_conn = vigil::db::open_db_at(&dir.path().join("baseline.db"), true).unwrap();
+    let baseline_count = vigil::db::baseline_ops::count(&baseline_conn).unwrap();
+    assert!(
+        baseline_count > 0,
+        "expected daemon startup to auto-initialize baseline"
+    );
 }

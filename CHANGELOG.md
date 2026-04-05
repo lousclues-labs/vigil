@@ -4,6 +4,125 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-04-05
+
+### Release Summary
+- Overhauls Vigil's end-to-end operator experience from first install through long-term upgrades and diagnostics.
+- Introduces one-command setup/uninstall workflows, first-class upgrade orchestration, and comprehensive health diagnostics with actionable remediation hints.
+- Improves baseline reliability by adding daemon startup self-healing for missing, empty, or corrupt baseline databases.
+
+### Compatibility and Behavioral Notes
+- `vigil init` now prompts before reinitializing a non-empty baseline unless `--force` is provided.
+- `vigil status` default human output is now a concise operational pulse (instead of raw JSON dumps).
+  - Automation should use `vigil status --format json` for structured machine-readable output.
+- New command surfaces were added:
+  - `vigil doctor`
+  - `vigil update [--repo <path>]`
+
+### Added
+
+#### 1) One-command installer workflow (`setup.sh`)
+- Added root-level `setup.sh` with three operational modes:
+  - install (default)
+  - `--check` dry-run (no changes)
+  - `--uninstall` with optional `--purge`
+- Install mode now handles:
+  - distro-aware dependency detection/install prompts (pacman/apt/dnf)
+  - release build and binary verification
+  - binary install + compatibility symlinks
+  - non-destructive config install
+  - runtime directory provisioning
+  - systemd unit deployment and enablement
+  - package manager hook deployment
+  - mandatory baseline initialization
+  - final diagnostics via `vigil doctor`
+- Uninstall mode now handles:
+  - service disable/stop
+  - unit/binary/hook removal
+  - optional full data purge (`/var/lib/vigil`, `/var/log/vigil`, `/run/vigil`, `/etc/vigil`)
+
+#### 2) Dedicated diagnostics engine (`src/doctor.rs`)
+- Added new diagnostics module and command output model:
+  - `DiagnosticCheck { name, status, detail, fix }`
+  - `CheckStatus::{Ok, Warning, Failed, Unknown}`
+- Added broad system-health coverage checks for:
+  - daemon runtime state
+  - monitor backend mode
+  - baseline presence/age/count
+  - baseline/audit DB integrity
+  - audit chain state
+  - config validation/deep validation
+  - scan timer presence/activity/next run
+  - HMAC key posture (when enabled)
+  - package manager hook installation
+  - desktop notification availability
+  - optional signal socket configuration
+- Added explicit verdict synthesis and command exit codes:
+  - `0` all checks OK
+  - `1` warnings present, no failures
+  - `2` one or more failures
+
+#### 3) Offline local-repo update command (`vigil update`)
+- Added `vigil update` command with optional `--repo` source path.
+- Added repository guardrails to prevent accidental updates from non-Vigil directories.
+- Update flow now performs:
+  - local `cargo build --release`
+  - installed/new version comparison
+  - idempotent early exit on no-op upgrades
+  - daemon stop/start around binary replacement
+  - selective systemd unit replacement only when content changes
+  - selective hook replacement only when content changes
+  - post-update doctor run and concise summary output
+- The update path remains strictly local/offline and does not perform network I/O.
+
+### Changed
+
+#### 4) CLI wiring and command surface (`src/cli.rs`, `src/main.rs`)
+- Added `Doctor` and `Update` command variants to the CLI.
+- Added `force: bool` to `Init` command.
+- Updated command dispatch to support doctor exit-code passthrough semantics.
+- Reduced default CLI tracing noise (`warn` default) for cleaner operator output.
+
+#### 5) `vigil status` UX redesign (`src/main.rs`, `src/doctor.rs` helpers)
+- Replaced raw-state/raw-metrics human output with concise operational status lines:
+  - daemon running/offline signal
+  - backend mode
+  - baseline entry count
+  - recent change count window
+  - last scan timestamp summary
+- Kept and enhanced structured JSON output for automation by including derived status fields alongside state/metrics snapshots.
+
+#### 6) Rich grouped baseline init output (`src/scanner.rs`, `src/main.rs`)
+- Refactored baseline initialization return model to provide structured init telemetry:
+  - `BaselineInitResult`
+  - `GroupInitResult`
+- `vigil init` now reports per-group path coverage, per-group file counts, total duration, and baseline DB size.
+- Baseline refresh timestamp is now persisted in config-state metadata during initialization.
+
+### Reliability and Self-Healing
+
+#### 7) Daemon baseline self-healing on startup (`src/lib.rs`)
+- Added startup health guard for baseline state before normal daemon operation.
+- New behavior:
+  - if baseline DB is missing: auto-initialize from configured watch paths
+  - if baseline DB integrity fails: back up corrupt DB (`.corrupt.<timestamp>`), remove, and reinitialize
+  - if baseline DB is present but empty: repopulate baseline
+- Added explicit logging and best-effort desktop notifications for auto-initialization/recovery events.
+
+### Tests and Validation
+- Added CLI parsing tests for:
+  - `vigil init --force`
+  - `vigil doctor --format json`
+  - `vigil update --repo ...`
+- Added `main.rs` unit coverage for:
+  - update repo validation
+  - version normalization behavior
+- Updated daemon smoke test to validate baseline auto-initialization behavior.
+- Verified quality gates for this release state:
+  - `cargo check`
+  - `cargo test --all-targets`
+  - `bash -n setup.sh`
+
 ## [0.12.1] - 2026-04-05
 
 ### Release Summary
