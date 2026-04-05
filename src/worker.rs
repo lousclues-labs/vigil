@@ -19,6 +19,19 @@ use crate::types::{
 };
 use crate::watch_index::WatchGroupIndex;
 
+/// Duplicate a raw file descriptor and wrap it in a `File` with RAII ownership.
+/// Combines `dup()` and `from_raw_fd()` to eliminate any gap where a panic
+/// could leak the duplicated descriptor.
+fn dup_to_file(raw_fd: std::os::fd::RawFd) -> std::io::Result<std::fs::File> {
+    // SAFETY: dup() creates a new fd referring to the same open file description.
+    let dup_fd = unsafe { libc::dup(raw_fd) };
+    if dup_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: dup_fd is a fresh owned descriptor returned by dup above.
+    Ok(unsafe { std::fs::File::from_raw_fd(dup_fd) })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_workers(
     count: u32,
@@ -135,19 +148,13 @@ pub fn process_event(
 
     let snapshot = if let Some(ref fd) = event.event_fd {
         let raw = fd.as_raw_fd();
-        // SAFETY: dup() creates a new fd referring to the same open file description.
-        // The returned fd is owned by this scope and converted into File.
-        let dup_fd = unsafe { libc::dup(raw) };
-        if dup_fd < 0 {
-            return Err(VigilError::Baseline(format!(
+        let file = dup_to_file(raw).map_err(|e| {
+            VigilError::Baseline(format!(
                 "failed to dup event fd for {}: {}",
                 event.path.display(),
-                std::io::Error::last_os_error()
-            )));
-        }
-
-        // SAFETY: dup_fd is a fresh owned descriptor returned by dup above.
-        let file = unsafe { std::fs::File::from_raw_fd(dup_fd) };
+                e
+            ))
+        })?;
         crate::types::FileSnapshot::from_fd(&file, &event.path, &opts)?
     } else {
         match crate::types::FileSnapshot::from_path(&event.path, &opts)? {
@@ -195,6 +202,23 @@ pub fn process_event(
 mod tests {
     use super::*;
     use chrono::Utc;
+    use std::io::Read;
+
+    #[test]
+    fn dup_to_file_returns_valid_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut tmp.as_file(), b"hello").unwrap();
+
+        let raw_fd = tmp.as_raw_fd();
+        let mut duped = dup_to_file(raw_fd).unwrap();
+
+        // Seek to start and read contents
+        use std::io::Seek;
+        duped.seek(std::io::SeekFrom::Start(0)).unwrap();
+        let mut buf = String::new();
+        duped.read_to_string(&mut buf).unwrap();
+        assert_eq!(buf, "hello");
+    }
 
     #[test]
     fn process_event_returns_none_for_non_baselined_create() {

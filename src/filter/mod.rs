@@ -11,6 +11,8 @@ use crate::types::FsEvent;
 
 use self::exclusion::ExclusionFilter;
 
+const PRUNE_INTERVAL: Duration = Duration::from_secs(30);
+
 /// Event filter: exclusion matching + per-path debounce.
 pub struct EventFilter {
     debounce_timers: HashMap<PathBuf, Instant>,
@@ -18,6 +20,7 @@ pub struct EventFilter {
     debounce_window: Duration,
     exclusion: ExclusionFilter,
     metrics: Option<Arc<Metrics>>,
+    last_prune: Instant,
 }
 
 impl EventFilter {
@@ -32,11 +35,17 @@ impl EventFilter {
             debounce_window: Duration::from_millis(100),
             exclusion: ExclusionFilter::new(config),
             metrics,
+            last_prune: Instant::now(),
         }
     }
 
     /// Returns true if event should be processed.
     pub fn should_process(&mut self, event: &FsEvent) -> bool {
+        if self.last_prune.elapsed() >= PRUNE_INTERVAL {
+            self.prune_debounce();
+            self.last_prune = Instant::now();
+        }
+
         let path_str = event.path.to_string_lossy();
 
         if self.exclusion.is_excluded(&path_str) {
@@ -139,5 +148,36 @@ mod tests {
 
         let e = event("/tmp/test.swp");
         assert!(!filter.should_process(&e));
+    }
+
+    #[test]
+    fn prune_runs_periodically() {
+        let cfg = crate::config::default_config();
+        let mut filter = EventFilter::new(&cfg);
+
+        // Insert many stale entries with old timestamps
+        for i in 0..100 {
+            let path = PathBuf::from(format!("/tmp/stale-{}", i));
+            filter
+                .debounce_timers
+                .insert(path.clone(), Instant::now() - Duration::from_secs(120));
+            filter.pending_paths.insert(path);
+        }
+
+        assert_eq!(filter.debounce_timers.len(), 100);
+        assert_eq!(filter.pending_paths.len(), 100);
+
+        // Force prune interval to have elapsed
+        filter.last_prune = Instant::now() - PRUNE_INTERVAL - Duration::from_secs(1);
+
+        // Trigger should_process which will call prune
+        let e = event("/etc/new-file");
+        filter.should_process(&e);
+
+        // Stale entries should have been pruned (only the new one remains)
+        assert_eq!(filter.debounce_timers.len(), 1);
+        assert!(filter
+            .debounce_timers
+            .contains_key(&PathBuf::from("/etc/new-file")));
     }
 }

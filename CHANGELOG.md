@@ -4,6 +4,92 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-04-05
+
+### Release Summary
+- Delivers the security-audit remediation batch and unblocks CI coverage by isolating a ptrace-incompatible integration test from tarpaulin instrumentation.
+- Resolves critical correctness gaps in HMAC signing, event-debounce memory management, and file descriptor ownership under panic scenarios.
+- Improves database pragma consistency, config type safety, scan observability metrics, and integration test depth for edge conditions.
+
+### Compatibility and Breaking Notes
+- `compute_hmac()` now returns `Result<String>` instead of `String`. Callers must handle initialization errors explicitly.
+- Several config fields are now strongly typed enums instead of stringly typed values:
+  - `daemon.log_level`
+  - `daemon.log_format`
+  - `scanner.hash_algorithm`
+  - `database.sync_mode`
+  - `alerts.remote_syslog.protocol`
+  - `alerts.remote_syslog.facility`
+- Existing TOML values remain the same lowercase literals; invalid values are now rejected by deserialization before runtime validation.
+
+### CI and Coverage Stability
+- Fixed tarpaulin coverage segfault path by skipping `daemon_start_and_shutdown_smoke_test` only when `cfg(tarpaulin)` is active.
+- Added `check-cfg` metadata for `tarpaulin` in `Cargo.toml` to keep `unexpected_cfgs` lint noise out of test builds.
+
+### Critical Security and Correctness Fixes
+
+#### 1) HMAC compute path fails closed
+- Changed `src/hmac.rs` `compute_hmac()` to return `Result<String>` and propagate `HmacVerification` errors.
+- Removed silent empty-string fallback that could previously produce blank HMAC audit fields.
+- Updated all affected call sites (including audit entry writing and baseline HMAC computation) to propagate failures correctly.
+
+#### 2) Event debounce map no longer grows unbounded
+- Added periodic internal pruning to `EventFilter` with:
+  - `last_prune: Instant`
+  - `PRUNE_INTERVAL` cadence
+  - automatic stale-entry cleanup from `should_process()`
+- Prevents long-lived daemons from accumulating stale per-path debounce state indefinitely.
+
+#### 3) Worker fd duplication is panic-safe
+- Extracted a tight `dup_to_file()` helper to combine `dup()` and `File::from_raw_fd()` ownership transfer.
+- Eliminates leak window where a panic between raw fd duplication and RAII wrapping could leave descriptors unowned.
+
+### Medium-Severity Hardening and Refactors
+
+#### 4) Unified SQLite pragma application
+- Added `PragmaOpts` + `apply_pragmas()` in `src/db/mod.rs`.
+- Refactored all major connection setup paths to use one canonical pragma function:
+  - `open_baseline_db_readonly`
+  - `open_db_internal`
+  - `open_db_at_with_options`
+  - `configure_connection`
+  - alert audit connection initialization
+
+#### 5) Strongly typed configuration enums
+- Replaced six runtime-validated string fields with serde enums and `rename_all = "lowercase"`.
+- Removed redundant string-based runtime validation branches from `validate_config()`.
+- Updated downstream consumers (notably remote syslog protocol/facility handling and DB sync pragma mapping).
+
+#### 6) Added edge-case integration coverage
+- Added integration tests for:
+  - tampered audit chain hash detection
+  - self-path exclusion (baseline/audit DB + alert log)
+  - graceful scan behavior when baselined files are deleted before scan
+
+#### 7) Added scan duration and volume metrics
+- Added `scan_duration_ms` and `last_scan_total` atomics to `Metrics` and `MetricsSnapshot`.
+- Added scan timing capture in `run_scan()` and persisted latest values from scheduler execution.
+
+### Low-Severity Items
+- Verified exclusion filter path matching already avoids unnecessary `to_string()` allocation in `is_excluded()` call flow.
+- Updated RLIMIT logic to read current limits first and prefer safe soft-limit raising:
+  - `rlim_cur = min(target, current.rlim_max)`
+  - only attempts hard-limit raise when target exceeds existing hard limit
+  - fallback path logs and degrades safely when privilege elevation is unavailable
+
+### Tests and Verification
+- Added/updated unit and integration tests for all major fixes, including:
+  - HMAC error-propagation behavior
+  - periodic debounce pruning
+  - fd duplication validity
+  - pragma application expectations
+  - enum deserialization failures
+  - audit tamper detection and deleted-file scan handling
+- Quality gates pass for this release state:
+  - `cargo fmt --all --check`
+  - `cargo clippy --all-targets --all-features -- -D warnings`
+  - `cargo test --all-targets`
+
 ## [0.11.0] - 2026-04-05
 
 ### Release Summary

@@ -8,17 +8,12 @@ use crate::error::{Result, VigilError};
 type HmacSha256 = Hmac<Sha256>;
 
 /// Compute HMAC-SHA256 over data using the provided key.
-pub fn compute_hmac(key: &[u8], data: &[u8]) -> String {
-    let mut mac = match HmacSha256::new_from_slice(key) {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to initialize HMAC");
-            return String::new();
-        }
-    };
+pub fn compute_hmac(key: &[u8], data: &[u8]) -> Result<String> {
+    let mut mac = HmacSha256::new_from_slice(key)
+        .map_err(|e| VigilError::HmacVerification(format!("failed to initialize HMAC: {}", e)))?;
     mac.update(data);
     let result = mac.finalize();
-    hex::encode(result.into_bytes())
+    Ok(hex::encode(result.into_bytes()))
 }
 
 /// Verify HMAC-SHA256: recompute and compare against expected.
@@ -158,7 +153,7 @@ mod tests {
         let key = b"test-secret-key-for-vigil";
         let data = b"1700000000|/etc/passwd|modified|critical|oldhash|newhash";
 
-        let hmac_str = compute_hmac(key, data);
+        let hmac_str = compute_hmac(key, data).unwrap();
         assert!(verify_hmac(key, data, &hmac_str));
     }
 
@@ -168,7 +163,7 @@ mod tests {
         let wrong_key = b"wrong-key";
         let data = b"test data";
 
-        let hmac_str = compute_hmac(key, data);
+        let hmac_str = compute_hmac(key, data).unwrap();
         assert!(!verify_hmac(wrong_key, data, &hmac_str));
     }
 
@@ -178,8 +173,16 @@ mod tests {
         let data = b"original data";
         let tampered = b"tampered data";
 
-        let hmac_str = compute_hmac(key, data);
+        let hmac_str = compute_hmac(key, data).unwrap();
         assert!(!verify_hmac(key, tampered, &hmac_str));
+    }
+
+    #[test]
+    fn hmac_empty_key_returns_error() {
+        let data = b"test data";
+        // HMAC-SHA256 accepts any key length (including empty), but a zero-length
+        // key is still valid per RFC 2104. Verify compute_hmac succeeds with empty key.
+        assert!(compute_hmac(b"", data).is_ok());
     }
 
     #[test]

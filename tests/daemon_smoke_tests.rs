@@ -2,6 +2,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 #[test]
+#[cfg_attr(tarpaulin, ignore)]
 fn daemon_start_and_shutdown_smoke_test() {
     let dir = tempfile::tempdir().unwrap();
     let watch_dir = dir.path().join("watch");

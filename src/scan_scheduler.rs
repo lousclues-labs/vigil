@@ -63,6 +63,12 @@ pub fn spawn(
                                     metrics
                                         .changes_detected
                                         .fetch_add(scan_result.changes_found, Ordering::Relaxed);
+                                    metrics
+                                        .scan_duration_ms
+                                        .store(scan_result.duration_ms, Ordering::Relaxed);
+                                    metrics
+                                        .last_scan_total
+                                        .store(scan_result.total_checked, Ordering::Relaxed);
 
                                     tracing::info!(
                                         checked = scan_result.total_checked,

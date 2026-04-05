@@ -8,6 +8,41 @@ use crate::error::{Result, VigilError};
 use rusqlite::Connection;
 use std::path::Path;
 
+/// Common SQLite pragma configuration.
+pub struct PragmaOpts<'a> {
+    pub sync_mode: &'a str,
+    pub busy_timeout_ms: u32,
+    pub wal_mode: bool,
+    pub cache_size: &'a str,
+    pub mmap_size: &'a str,
+}
+
+impl<'a> Default for PragmaOpts<'a> {
+    fn default() -> Self {
+        Self {
+            sync_mode: "NORMAL",
+            busy_timeout_ms: 5000,
+            wal_mode: true,
+            cache_size: "-8000",
+            mmap_size: "268435456",
+        }
+    }
+}
+
+/// Apply all standard pragmas to a SQLite connection in one place.
+pub fn apply_pragmas(conn: &Connection, opts: &PragmaOpts) -> Result<()> {
+    if opts.wal_mode {
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+    }
+    conn.pragma_update(None, "synchronous", opts.sync_mode)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.pragma_update(None, "busy_timeout", opts.busy_timeout_ms.to_string())?;
+    conn.pragma_update(None, "cache_size", opts.cache_size)?;
+    conn.pragma_update(None, "mmap_size", opts.mmap_size)?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    Ok(())
+}
+
 /// Open (or create) the baseline SQLite database.
 /// Uses synchronous = NORMAL for performance on the hot path.
 pub fn open_baseline_db(config: &Config) -> Result<Connection> {
@@ -27,10 +62,14 @@ pub fn open_baseline_db_readonly(path: &Path) -> Result<Connection> {
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    conn.pragma_update(None, "busy_timeout", "5000")?;
-    conn.pragma_update(None, "cache_size", "-8000")?;
-    conn.pragma_update(None, "mmap_size", "268435456")?;
-    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    apply_pragmas(
+        &conn,
+        &PragmaOpts {
+            sync_mode: "NORMAL",
+            wal_mode: false,
+            ..PragmaOpts::default()
+        },
+    )?;
     Ok(conn)
 }
 
@@ -75,15 +114,15 @@ fn open_db_internal(
         std::fs::set_permissions(db_path, std::fs::Permissions::from_mode(0o600))?;
     }
 
-    if wal_mode {
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-    }
-    conn.pragma_update(None, "synchronous", sync_mode)?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.pragma_update(None, "busy_timeout", busy_timeout_ms.to_string())?;
-    conn.pragma_update(None, "cache_size", "-8000")?;
-    conn.pragma_update(None, "mmap_size", "268435456")?;
-    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    apply_pragmas(
+        &conn,
+        &PragmaOpts {
+            sync_mode,
+            busy_timeout_ms,
+            wal_mode,
+            ..PragmaOpts::default()
+        },
+    )?;
 
     if is_baseline {
         schema::create_baseline_tables(&conn)?;
@@ -125,42 +164,29 @@ pub fn open_db_at_with_options(
         std::fs::create_dir_all(parent)?;
     }
     let conn = Connection::open(path)?;
-    if wal_mode {
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-    }
-    conn.pragma_update(
-        None,
-        "synchronous",
-        sync_mode.unwrap_or("NORMAL").to_string(),
+    apply_pragmas(
+        &conn,
+        &PragmaOpts {
+            sync_mode: sync_mode.unwrap_or("NORMAL"),
+            busy_timeout_ms: busy_timeout_ms.unwrap_or(5000),
+            wal_mode,
+            ..PragmaOpts::default()
+        },
     )?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.pragma_update(
-        None,
-        "busy_timeout",
-        busy_timeout_ms.unwrap_or(5000).to_string(),
-    )?;
-    conn.pragma_update(None, "cache_size", "-8000")?;
-    conn.pragma_update(None, "mmap_size", "268435456")?;
-    conn.pragma_update(None, "temp_store", "MEMORY")?;
     schema::create_tables(&conn)?;
     Ok(conn)
 }
 
 fn configure_connection(conn: &Connection, config: &Config) -> Result<()> {
-    if config.database.wal_mode {
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-    }
-    conn.pragma_update(None, "synchronous", &config.database.sync_mode)?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.pragma_update(
-        None,
-        "busy_timeout",
-        config.database.busy_timeout_ms.to_string(),
-    )?;
-    conn.pragma_update(None, "cache_size", "-8000")?;
-    conn.pragma_update(None, "mmap_size", "268435456")?;
-    conn.pragma_update(None, "temp_store", "MEMORY")?;
-    Ok(())
+    apply_pragmas(
+        conn,
+        &PragmaOpts {
+            sync_mode: config.database.sync_mode.as_pragma(),
+            busy_timeout_ms: config.database.busy_timeout_ms,
+            wal_mode: config.database.wal_mode,
+            ..PragmaOpts::default()
+        },
+    )
 }
 
 /// Run SQLite integrity check. Returns Ok(()) if database is healthy.
@@ -179,4 +205,30 @@ pub fn integrity_check(conn: &Connection) -> Result<()> {
 pub fn wal_checkpoint(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_pragmas_sets_values() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_pragmas(&conn, &PragmaOpts::default()).unwrap();
+
+        let cache_size: i64 = conn
+            .pragma_query_value(None, "cache_size", |row| row.get(0))
+            .unwrap();
+        assert_eq!(cache_size, -8000);
+
+        let foreign_keys: i64 = conn
+            .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+            .unwrap();
+        assert_eq!(foreign_keys, 1);
+
+        let busy_timeout: i64 = conn
+            .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+            .unwrap();
+        assert_eq!(busy_timeout, 5000);
+    }
 }

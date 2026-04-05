@@ -227,7 +227,7 @@ pub fn compute_baseline_hmac(conn: &Connection, key: &[u8]) -> Result<String> {
         ));
     }
 
-    Ok(crate::hmac::compute_hmac(key, canonical.as_bytes()))
+    crate::hmac::compute_hmac(key, canonical.as_bytes())
 }
 
 #[cfg(test)]

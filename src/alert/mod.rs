@@ -57,10 +57,14 @@ impl AlertDispatcher {
         }
 
         let audit_conn = rusqlite::Connection::open(audit_db_path)?;
-        audit_conn.pragma_update(None, "journal_mode", "WAL")?;
-        audit_conn.pragma_update(None, "synchronous", "FULL")?;
-        audit_conn.pragma_update(None, "foreign_keys", "ON")?;
-        audit_conn.pragma_update(None, "busy_timeout", "5000")?;
+        crate::db::apply_pragmas(
+            &audit_conn,
+            &crate::db::PragmaOpts {
+                sync_mode: "FULL",
+                wal_mode: true,
+                ..crate::db::PragmaOpts::default()
+            },
+        )?;
         crate::db::schema::create_audit_tables(&audit_conn)?;
 
         let mut sinks: Vec<Box<dyn AlertSink>> = Vec::new();
@@ -223,23 +227,26 @@ impl AlertDispatcher {
     fn write_audit_entry(&self, payload: &AlertPayload, suppressed: bool) -> Result<()> {
         let change = &payload.change;
 
-        let hmac = self.hmac_key.as_ref().map(|key| {
-            let ts = chrono::Utc::now().timestamp();
-            let primary = change
-                .changes
-                .first()
-                .map(change_to_name)
-                .unwrap_or("unknown");
-            let data = crate::hmac::build_audit_hmac_data(
-                ts,
-                &change.path.to_string_lossy(),
-                primary,
-                &change.severity.to_string(),
-                None,
-                None,
-            );
-            crate::hmac::compute_hmac(key, &data)
-        });
+        let hmac = match self.hmac_key.as_ref() {
+            Some(key) => {
+                let ts = chrono::Utc::now().timestamp();
+                let primary = change
+                    .changes
+                    .first()
+                    .map(change_to_name)
+                    .unwrap_or("unknown");
+                let data = crate::hmac::build_audit_hmac_data(
+                    ts,
+                    &change.path.to_string_lossy(),
+                    primary,
+                    &change.severity.to_string(),
+                    None,
+                    None,
+                );
+                Some(crate::hmac::compute_hmac(key, &data)?)
+            }
+            None => None,
+        };
 
         let previous = self.last_chain_hash.lock().clone();
         let new_hash = audit_ops::insert_audit_entry(

@@ -2,13 +2,13 @@ use std::io::Write;
 use std::net::{TcpStream, UdpSocket};
 
 use crate::alert::AlertSink;
-use crate::config::RemoteSyslogConfig;
+use crate::config::{RemoteSyslogConfig, SyslogProtocol};
 use crate::error::{Result, VigilError};
 use crate::types::{Alert, Severity};
 
 pub struct RemoteSyslogSink {
     addr: String,
-    protocol: String,
+    protocol: SyslogProtocol,
     facility: String,
 }
 
@@ -20,8 +20,8 @@ impl RemoteSyslogSink {
 
         Ok(Self {
             addr: format!("{}:{}", cfg.server, cfg.port),
-            protocol: cfg.protocol.to_lowercase(),
-            facility: cfg.facility.clone(),
+            protocol: cfg.protocol.clone(),
+            facility: cfg.facility.to_string(),
         })
     }
 
@@ -62,8 +62,8 @@ impl AlertSink for RemoteSyslogSink {
     fn dispatch(&self, alert: &Alert) -> Result<()> {
         let msg = self.format_rfc5424(alert);
 
-        match self.protocol.as_str() {
-            "tcp" => {
+        match self.protocol {
+            SyslogProtocol::Tcp => {
                 let mut stream = TcpStream::connect(&self.addr).map_err(|e| {
                     VigilError::Syslog(format!("TCP connect {} failed: {}", self.addr, e))
                 })?;

@@ -17,6 +17,8 @@ pub struct Metrics {
     pub db_writes: AtomicU64,
     pub db_errors: AtomicU64,
     pub panics_caught: AtomicU64,
+    pub scan_duration_ms: AtomicU64,
+    pub last_scan_total: AtomicU64,
     /// Unix timestamp set once at daemon startup.
     pub uptime_start: i64,
 }
@@ -36,6 +38,8 @@ impl Metrics {
             db_writes: AtomicU64::new(0),
             db_errors: AtomicU64::new(0),
             panics_caught: AtomicU64::new(0),
+            scan_duration_ms: AtomicU64::new(0),
+            last_scan_total: AtomicU64::new(0),
             uptime_start: chrono::Utc::now().timestamp(),
         }
     }
@@ -55,6 +59,8 @@ impl Metrics {
             db_writes: self.db_writes.load(Ordering::Relaxed),
             db_errors: self.db_errors.load(Ordering::Relaxed),
             panics_caught: self.panics_caught.load(Ordering::Relaxed),
+            scan_duration_ms: self.scan_duration_ms.load(Ordering::Relaxed),
+            last_scan_total: self.last_scan_total.load(Ordering::Relaxed),
             uptime_start: self.uptime_start,
         }
     }
@@ -81,6 +87,8 @@ pub struct MetricsSnapshot {
     pub db_writes: u64,
     pub db_errors: u64,
     pub panics_caught: u64,
+    pub scan_duration_ms: u64,
+    pub last_scan_total: u64,
     pub uptime_start: i64,
 }
 
@@ -93,6 +101,8 @@ mod tests {
         let m = Metrics::new();
         assert_eq!(m.events_received.load(Ordering::Relaxed), 0);
         assert_eq!(m.events_dropped.load(Ordering::Relaxed), 0);
+        assert_eq!(m.scan_duration_ms.load(Ordering::Relaxed), 0);
+        assert_eq!(m.last_scan_total.load(Ordering::Relaxed), 0);
         assert!(m.uptime_start > 0);
     }
 

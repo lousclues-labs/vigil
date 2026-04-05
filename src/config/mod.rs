@@ -9,6 +9,146 @@ use crate::types::{MonitorBackend, PackageBackend, ScanMode, Severity};
 
 pub use diff::diff_config;
 
+/// Supported hash algorithms.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HashAlgorithm {
+    Blake3,
+}
+
+impl std::fmt::Display for HashAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HashAlgorithm::Blake3 => write!(f, "blake3"),
+        }
+    }
+}
+
+/// Log output format.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    Text,
+    Json,
+}
+
+impl std::fmt::Display for LogFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LogFormat::Text => write!(f, "text"),
+            LogFormat::Json => write!(f, "json"),
+        }
+    }
+}
+
+/// Log verbosity level.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl std::fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LogLevel::Error => write!(f, "error"),
+            LogLevel::Warn => write!(f, "warn"),
+            LogLevel::Info => write!(f, "info"),
+            LogLevel::Debug => write!(f, "debug"),
+            LogLevel::Trace => write!(f, "trace"),
+        }
+    }
+}
+
+/// Syslog transport protocol.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SyslogProtocol {
+    Tcp,
+    Udp,
+}
+
+impl std::fmt::Display for SyslogProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SyslogProtocol::Tcp => write!(f, "tcp"),
+            SyslogProtocol::Udp => write!(f, "udp"),
+        }
+    }
+}
+
+/// Syslog facility.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SyslogFacility {
+    Auth,
+    Authpriv,
+    Daemon,
+    Local0,
+    Local1,
+    Local2,
+    Local3,
+    Local4,
+    Local5,
+    Local6,
+    Local7,
+}
+
+impl std::fmt::Display for SyslogFacility {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SyslogFacility::Auth => write!(f, "auth"),
+            SyslogFacility::Authpriv => write!(f, "authpriv"),
+            SyslogFacility::Daemon => write!(f, "daemon"),
+            SyslogFacility::Local0 => write!(f, "local0"),
+            SyslogFacility::Local1 => write!(f, "local1"),
+            SyslogFacility::Local2 => write!(f, "local2"),
+            SyslogFacility::Local3 => write!(f, "local3"),
+            SyslogFacility::Local4 => write!(f, "local4"),
+            SyslogFacility::Local5 => write!(f, "local5"),
+            SyslogFacility::Local6 => write!(f, "local6"),
+            SyslogFacility::Local7 => write!(f, "local7"),
+        }
+    }
+}
+
+/// SQLite synchronous mode.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncMode {
+    Off,
+    Normal,
+    Full,
+    Extra,
+}
+
+impl std::fmt::Display for SyncMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SyncMode::Off => write!(f, "off"),
+            SyncMode::Normal => write!(f, "normal"),
+            SyncMode::Full => write!(f, "full"),
+            SyncMode::Extra => write!(f, "extra"),
+        }
+    }
+}
+
+impl SyncMode {
+    /// Return the pragma value string for SQLite.
+    pub fn as_pragma(&self) -> &str {
+        match self {
+            SyncMode::Off => "OFF",
+            SyncMode::Normal => "NORMAL",
+            SyncMode::Full => "FULL",
+            SyncMode::Extra => "EXTRA",
+        }
+    }
+}
+
 /// Top-level Vigil configuration, deserialized from TOML.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -45,13 +185,13 @@ pub struct DaemonConfig {
     #[serde(default = "default_db_path")]
     pub db_path: PathBuf,
     #[serde(default = "default_log_level")]
-    pub log_level: String,
+    pub log_level: LogLevel,
     #[serde(default = "default_monitor_backend")]
     pub monitor_backend: MonitorBackend,
     #[serde(default = "default_worker_threads")]
     pub worker_threads: u32,
     #[serde(default = "default_log_format")]
-    pub log_format: String,
+    pub log_format: LogFormat,
     #[serde(default = "default_runtime_dir")]
     pub runtime_dir: PathBuf,
 }
@@ -74,8 +214,8 @@ fn default_worker_threads() -> u32 {
     2
 }
 
-fn default_log_format() -> String {
-    "text".to_string()
+fn default_log_format() -> LogFormat {
+    LogFormat::Text
 }
 
 fn default_runtime_dir() -> PathBuf {
@@ -90,8 +230,8 @@ fn default_db_path() -> PathBuf {
     PathBuf::from("/var/lib/vigil/baseline.db")
 }
 
-fn default_log_level() -> String {
-    "info".to_string()
+fn default_log_level() -> LogLevel {
+    LogLevel::Info
 }
 
 fn default_monitor_backend() -> MonitorBackend {
@@ -105,7 +245,7 @@ pub struct ScannerConfig {
     #[serde(default = "default_scan_mode")]
     pub mode: ScanMode,
     #[serde(default = "default_hash_algorithm")]
-    pub hash_algorithm: String,
+    pub hash_algorithm: HashAlgorithm,
     #[serde(default = "default_max_file_size")]
     pub max_file_size: u64,
     #[serde(default = "default_mmap_threshold")]
@@ -139,8 +279,8 @@ fn default_scan_mode() -> ScanMode {
     ScanMode::Incremental
 }
 
-fn default_hash_algorithm() -> String {
-    "blake3".to_string()
+fn default_hash_algorithm() -> HashAlgorithm {
+    HashAlgorithm::Blake3
 }
 
 fn default_max_file_size() -> u64 {
@@ -324,7 +464,7 @@ pub struct DatabaseConfig {
     #[serde(default = "default_audit_retention_days")]
     pub audit_retention_days: u32,
     #[serde(default = "default_sync_mode")]
-    pub sync_mode: String,
+    pub sync_mode: SyncMode,
     #[serde(default = "default_busy_timeout_ms")]
     pub busy_timeout_ms: u32,
 }
@@ -341,8 +481,8 @@ impl Default for DatabaseConfig {
     }
 }
 
-fn default_sync_mode() -> String {
-    "normal".to_string()
+fn default_sync_mode() -> SyncMode {
+    SyncMode::Normal
 }
 
 fn default_busy_timeout_ms() -> u32 {
@@ -366,9 +506,9 @@ pub struct RemoteSyslogConfig {
     #[serde(default = "default_syslog_port")]
     pub port: u16,
     #[serde(default = "default_syslog_protocol")]
-    pub protocol: String,
+    pub protocol: SyslogProtocol,
     #[serde(default = "default_syslog_facility")]
-    pub facility: String,
+    pub facility: SyslogFacility,
 }
 
 impl Default for RemoteSyslogConfig {
@@ -387,12 +527,12 @@ fn default_syslog_port() -> u16 {
     514
 }
 
-fn default_syslog_protocol() -> String {
-    "udp".to_string()
+fn default_syslog_protocol() -> SyslogProtocol {
+    SyslogProtocol::Udp
 }
 
-fn default_syslog_facility() -> String {
-    "authpriv".to_string()
+fn default_syslog_facility() -> SyslogFacility {
+    SyslogFacility::Authpriv
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -484,43 +624,6 @@ pub fn validate_config(config: &Config) -> Result<()> {
         return Err(VigilError::Config(
             "worker_threads must be between 1 and 16".into(),
         ));
-    }
-
-    match config.database.sync_mode.to_lowercase().as_str() {
-        "off" | "normal" | "full" | "extra" => {}
-        other => {
-            return Err(VigilError::Config(format!(
-                "invalid sync_mode '{}', must be one of: off, normal, full, extra",
-                other
-            )));
-        }
-    }
-
-    match config.daemon.log_level.to_lowercase().as_str() {
-        "error" | "warn" | "info" | "debug" | "trace" => {}
-        other => {
-            return Err(VigilError::Config(format!(
-                "invalid log_level '{}', must be one of: error, warn, info, debug, trace",
-                other
-            )));
-        }
-    }
-
-    if config.scanner.hash_algorithm.to_lowercase() != "blake3" {
-        return Err(VigilError::Config(format!(
-            "unsupported hash algorithm '{}', only 'blake3' is supported",
-            config.scanner.hash_algorithm
-        )));
-    }
-
-    match config.daemon.log_format.to_lowercase().as_str() {
-        "text" | "json" => {}
-        other => {
-            return Err(VigilError::Config(format!(
-                "invalid log_format '{}', must be one of: text, json",
-                other
-            )));
-        }
     }
 
     if croner::Cron::new(&config.scanner.schedule).parse().is_err() {
@@ -700,5 +803,19 @@ mod tests {
         let paths = vec!["/etc/passwd".into()];
         let expanded = expand_user_paths(&paths);
         assert_eq!(expanded[0], PathBuf::from("/etc/passwd"));
+    }
+
+    #[test]
+    fn invalid_enum_value_produces_serde_error() {
+        let toml_str = r#"
+            [daemon]
+            log_level = "verbose"
+
+            [watch.test]
+            severity = "high"
+            paths = ["/tmp/test"]
+        "#;
+        let result: std::result::Result<Config, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
     }
 }

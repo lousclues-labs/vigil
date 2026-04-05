@@ -12,6 +12,7 @@ pub struct ScanResult {
     pub errors: u64,
     pub warnings: Vec<ScanWarning>,
     pub changes: Vec<ChangeResult>,
+    pub duration_ms: u64,
 }
 
 /// Build a full initial baseline by walking all configured watch paths.
@@ -73,6 +74,7 @@ pub fn refresh_baseline(conn: &Connection, config: &Config) -> Result<u64> {
 
 /// Run a baseline comparison scan.
 pub fn run_scan(conn: &Connection, config: &Config, mode: ScanMode) -> Result<ScanResult> {
+    let scan_start = std::time::Instant::now();
     let entries = baseline_ops::get_all(conn)?;
     let mut result = ScanResult::default();
 
@@ -120,6 +122,8 @@ pub fn run_scan(conn: &Connection, config: &Config, mode: ScanMode) -> Result<Sc
             }
         }
     }
+
+    result.duration_ms = scan_start.elapsed().as_millis() as u64;
 
     Ok(result)
 }

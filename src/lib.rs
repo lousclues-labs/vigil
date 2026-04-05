@@ -245,15 +245,48 @@ fn harden_process() {
 }
 
 fn raise_nofile_limit(target: u64) {
+    let mut current = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // Read current limits first so we can respect the existing hard limit.
+    // SAFETY: getrlimit is called with a valid pointer to rlimit.
+    let rc = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut current as *mut libc::rlimit) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        tracing::warn!(error = %err, "failed to read RLIMIT_NOFILE");
+        return;
+    }
+
+    // Set soft limit to the lesser of target and current hard limit.
+    // Only attempt to raise the hard limit if target exceeds it
+    // (requires CAP_SYS_RESOURCE).
+    let new_cur = target.min(current.rlim_max);
+    let new_max = if target > current.rlim_max {
+        target
+    } else {
+        current.rlim_max
+    };
+
     let mut lim = libc::rlimit {
-        rlim_cur: target,
-        rlim_max: target,
+        rlim_cur: new_cur,
+        rlim_max: new_max,
     };
     // SAFETY: setrlimit is called with a valid pointer to rlimit.
     // Failure is non-fatal and handled by logging.
     let rc = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &mut lim as *mut libc::rlimit) };
     if rc != 0 {
-        let err = std::io::Error::last_os_error();
-        tracing::warn!(error = %err, "failed to raise RLIMIT_NOFILE");
+        // If raising hard limit failed, fall back to only raising soft limit
+        // within the existing hard limit.
+        let mut fallback = libc::rlimit {
+            rlim_cur: new_cur,
+            rlim_max: current.rlim_max,
+        };
+        let rc2 =
+            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &mut fallback as *mut libc::rlimit) };
+        if rc2 != 0 {
+            let err = std::io::Error::last_os_error();
+            tracing::warn!(error = %err, "failed to raise RLIMIT_NOFILE");
+        }
     }
 }
