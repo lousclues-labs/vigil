@@ -248,7 +248,6 @@ fn deletion_result(
 
 /// Build a change ChangeResult from comparison results.
 fn change_result(
-    path: &Path,
     baseline: &BaselineEntry,
     change_types: Vec<ChangeType>,
     current_hash: String,
@@ -258,7 +257,7 @@ fn change_result(
     package_update: bool,
 ) -> ChangeResult {
     ChangeResult {
-        path: path.to_path_buf(),
+        path: baseline.path.clone(),
         change_types,
         severity,
         old_hash: Some(baseline.hash.clone()),
@@ -315,7 +314,6 @@ pub fn compare_entry(
             false,
         ))),
         CompareOutcome::Changed(change_types, current_hash, file_meta) => Ok(Some(change_result(
-            path,
             baseline,
             change_types,
             current_hash,
@@ -348,7 +346,6 @@ pub fn compare_event(
             false,
         ))),
         CompareOutcome::Changed(change_types, current_hash, file_meta) => Ok(Some(change_result(
-            path,
             baseline,
             change_types,
             current_hash,
