@@ -63,7 +63,8 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<Base
             for root in roots {
                 walk_files(&root, &exclusions, &mut |path| {
                     processed += 1;
-                    if processed.is_multiple_of(5000) {
+                    #[allow(clippy::manual_is_multiple_of)]
+                    if processed % 5000 == 0 {
                         tracing::info!(
                             processed_files = processed,
                             inserted_entries = total_count,
