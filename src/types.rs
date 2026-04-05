@@ -52,6 +52,7 @@ pub enum ChangeType {
     OwnerChanged,
     InodeChanged,
     XattrChanged,
+    SecurityContextChanged,
 }
 
 impl fmt::Display for ChangeType {
@@ -64,6 +65,7 @@ impl fmt::Display for ChangeType {
             ChangeType::OwnerChanged => write!(f, "owner_changed"),
             ChangeType::InodeChanged => write!(f, "inode_changed"),
             ChangeType::XattrChanged => write!(f, "xattr_changed"),
+            ChangeType::SecurityContextChanged => write!(f, "security_context_changed"),
         }
     }
 }
@@ -334,6 +336,10 @@ mod tests {
         assert_eq!(ChangeType::OwnerChanged.to_string(), "owner_changed");
         assert_eq!(ChangeType::InodeChanged.to_string(), "inode_changed");
         assert_eq!(ChangeType::XattrChanged.to_string(), "xattr_changed");
+        assert_eq!(
+            ChangeType::SecurityContextChanged.to_string(),
+            "security_context_changed"
+        );
     }
 
     #[test]
@@ -370,6 +376,15 @@ mod tests {
         assert_eq!(json, "\"permissions_changed\"");
         let parsed: ChangeType = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, ChangeType::PermissionsChanged);
+    }
+
+    #[test]
+    fn security_context_changed_serde_roundtrip() {
+        let ct = ChangeType::SecurityContextChanged;
+        let json = serde_json::to_string(&ct).unwrap();
+        assert_eq!(json, "\"security_context_changed\"");
+        let parsed: ChangeType = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, ChangeType::SecurityContextChanged);
     }
 
     #[test]

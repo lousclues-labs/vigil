@@ -120,6 +120,7 @@ fn bench_compare_entry(c: &mut Criterion) {
                 black_box(&config),
                 Severity::High,
                 "bench",
+                false,
             )
         })
     });
@@ -158,6 +159,7 @@ fn bench_compare_entry(c: &mut Criterion) {
                 black_box(&config),
                 Severity::High,
                 "bench",
+                false,
             )
         })
     });
@@ -190,6 +192,7 @@ fn bench_compare_entry(c: &mut Criterion) {
                 black_box(&config),
                 Severity::High,
                 "bench",
+                false,
             )
         })
     });

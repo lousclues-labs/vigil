@@ -176,40 +176,29 @@ fn batch_query_dpkg(paths: &[String]) -> HashMap<String, String> {
 }
 
 fn batch_query_pacman(paths: &[String]) -> HashMap<String, String> {
+    // Fall back to individual queries per path. The batch approach using
+    // `pacman -Qo --quiet` with positional zip was broken: when a file is
+    // unowned, pacman skips it in stdout (writing errors to stderr), causing
+    // all subsequent path→package mappings to shift by one.
     let mut results = HashMap::new();
-    let mut cmd = Command::new("pacman");
-    cmd.args(["-Qo", "--quiet"]);
-    for p in paths {
-        cmd.arg(p);
-    }
-    if let Some(output) = run_with_timeout(&mut cmd, PKG_QUERY_TIMEOUT) {
-        // pacman -Qo --quiet outputs one package name per line matching input order
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for (path, pkg_line) in paths.iter().zip(stdout.lines()) {
-            let pkg = pkg_line.trim().to_string();
-            if !pkg.is_empty() {
-                results.insert(path.clone(), pkg);
-            }
+    for path in paths {
+        if let Some(pkg) = query_pacman(path) {
+            results.insert(path.clone(), pkg);
         }
     }
     results
 }
 
 fn batch_query_rpm(paths: &[String]) -> HashMap<String, String> {
+    // Fall back to individual queries per path. The batch approach using
+    // positional zip was broken: when a file is unowned, rpm writes the
+    // error to stderr but still outputs a line to stdout containing "not
+    // owned", yet the line count can still mismatch on some rpm versions,
+    // causing silent corruption of path→package mappings.
     let mut results = HashMap::new();
-    let mut cmd = Command::new("rpm");
-    cmd.arg("-qf");
-    for p in paths {
-        cmd.arg(p);
-    }
-    if let Some(output) = run_with_timeout(&mut cmd, PKG_QUERY_TIMEOUT) {
-        // rpm -qf outputs one package per line matching input order
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for (path, pkg_line) in paths.iter().zip(stdout.lines()) {
-            let pkg = pkg_line.trim().to_string();
-            if !pkg.is_empty() && !pkg.contains("not owned") {
-                results.insert(path.clone(), pkg);
-            }
+    for path in paths {
+        if let Some(pkg) = query_rpm(path) {
+            results.insert(path.clone(), pkg);
         }
     }
     results
@@ -235,37 +224,68 @@ mod tests {
     }
 
     #[test]
-    fn parse_pacman_batch_output() {
-        let paths = ["/usr/bin/ls".to_string(), "/usr/bin/cat".to_string()];
-        // Simulate pacman -Qo --quiet output: one package per line
-        let output = "coreutils\ncoreutils\n";
+    fn parse_dpkg_batch_output_with_unowned() {
+        // dpkg -S includes the path in each line, so unowned files (which
+        // produce error lines to stderr) simply don't appear in stdout.
+        // This test verifies that the parser correctly handles a batch
+        // where the middle file is unowned.
+        let output = "coreutils: /usr/bin/ls\ncoreutils: /usr/bin/cat\n";
+        // Note: /tmp/custom would produce an error on stderr, not stdout
         let mut results = HashMap::new();
-        for (path, pkg_line) in paths.iter().zip(output.lines()) {
-            let pkg = pkg_line.trim().to_string();
-            if !pkg.is_empty() {
-                results.insert(path.clone(), pkg);
+        for line in output.lines() {
+            if let Some((pkg, path)) = line.split_once(": ") {
+                results.insert(path.trim().to_string(), pkg.trim().to_string());
             }
         }
         assert_eq!(results.get("/usr/bin/ls"), Some(&"coreutils".to_string()));
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.get("/usr/bin/cat"), Some(&"coreutils".to_string()));
+        assert!(!results.contains_key("/tmp/custom"));
     }
 
     #[test]
-    fn parse_rpm_batch_output_with_not_owned() {
-        let paths = ["/usr/bin/ls".to_string(), "/tmp/custom".to_string()];
-        // Simulate rpm -qf output: one result per line, "not owned" for unpackaged
-        let output = "coreutils-9.4-1.x86_64\nfile /tmp/custom is not owned by any package\n";
-        let mut results = HashMap::new();
-        for (path, pkg_line) in paths.iter().zip(output.lines()) {
-            let pkg = pkg_line.trim().to_string();
-            if !pkg.is_empty() && !pkg.contains("not owned") {
-                results.insert(path.clone(), pkg);
-            }
+    fn batch_pacman_handles_unowned_in_middle() {
+        // Regression test: with the old positional-zip approach, an unowned
+        // file in the middle of a batch would cause all subsequent mappings
+        // to shift by one. The fix uses individual queries per path.
+        //
+        // We can't easily mock pacman in a unit test, but we verify the
+        // function signature is correct and returns an empty HashMap when
+        // pacman is not available (which is the case in most CI environments).
+        let paths = vec![
+            "/usr/bin/ls".to_string(),
+            "/tmp/definitely_not_owned_by_any_package_12345".to_string(),
+            "/usr/bin/cat".to_string(),
+        ];
+        let results = batch_query_pacman(&paths);
+        // On systems without pacman, this returns empty.
+        // On Arch systems, /usr/bin/ls and /usr/bin/cat would be owned by
+        // coreutils, and the unowned file would correctly be absent.
+        // The key invariant: /usr/bin/cat must NOT map to the package
+        // that owns /tmp/definitely_not_owned... (which was the old bug).
+        if let Some(cat_pkg) = results.get("/usr/bin/cat") {
+            assert!(
+                !cat_pkg.is_empty(),
+                "cat should be owned by a real package"
+            );
         }
-        assert_eq!(
-            results.get("/usr/bin/ls"),
-            Some(&"coreutils-9.4-1.x86_64".to_string())
-        );
-        assert!(!results.contains_key("/tmp/custom"));
+        // The unowned file must not appear in results
+        assert!(!results.contains_key(
+            "/tmp/definitely_not_owned_by_any_package_12345"
+        ));
+    }
+
+    #[test]
+    fn batch_rpm_handles_unowned_in_middle() {
+        // Same regression test for RPM.
+        let paths = vec![
+            "/usr/bin/ls".to_string(),
+            "/tmp/definitely_not_owned_by_any_package_12345".to_string(),
+            "/usr/bin/cat".to_string(),
+        ];
+        let results = batch_query_rpm(&paths);
+        // The unowned file must not appear in results
+        assert!(!results.contains_key(
+            "/tmp/definitely_not_owned_by_any_package_12345"
+        ));
     }
 }

@@ -98,6 +98,34 @@ pub fn start(
                                         dir_path.clone()
                                     };
 
+                                    // Dynamically watch new subdirectories:
+                                    // When IN_CREATE fires for a directory (IN_ISDIR),
+                                    // recursively add watches so files created inside
+                                    // the new directory are visible.
+                                    if event.mask.contains(AddWatchFlags::IN_CREATE)
+                                        && event.mask.contains(AddWatchFlags::IN_ISDIR)
+                                    {
+                                        log::info!(
+                                            "inotify: dynamically watching new directory: {}",
+                                            file_path.display()
+                                        );
+                                        match add_directory_watches(
+                                            &inotify,
+                                            &file_path,
+                                            flags,
+                                            &mut wd_to_path,
+                                        ) {
+                                            Ok(_) => {}
+                                            Err(e) => {
+                                                log::warn!(
+                                                    "Cannot watch new directory {}: {}",
+                                                    file_path.display(),
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    }
+
                                     let event_type = inotify_mask_to_event_type(event.mask);
                                     if let Some(et) = event_type {
                                         let fs_event = FsEvent {

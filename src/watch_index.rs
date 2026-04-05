@@ -6,10 +6,16 @@ use crate::types::Severity;
 
 /// An index for efficient watch group lookups by path prefix.
 ///
-/// Uses a BTreeMap for O(log n) lookups via range queries. The
+/// Uses a BTreeMap for efficient lookups via range queries. The
 /// `.range(..=path).rev()` pattern walks backwards from the query path,
 /// and the first entry where `path.starts_with(key)` is the most-specific
 /// match.
+///
+/// Complexity: O(log n) to find the starting position via the B-tree range
+/// query, then O(k) to scan backward past non-matching entries where k is
+/// the number of watch paths that sort between the query path and its actual
+/// prefix. An early termination check breaks the scan when the first path
+/// component diverges, avoiding a full O(n) scan in the worst case.
 #[derive(Debug, Clone)]
 pub struct WatchGroupIndex {
     tree: BTreeMap<PathBuf, (String, Severity)>,
@@ -41,11 +47,28 @@ impl WatchGroupIndex {
     ///
     /// Returns the most-specific (longest prefix) match, or `None` if the
     /// path is not under any watch group.
+    ///
+    /// Complexity: O(log n) for the range lookup, then O(k) backward scan
+    /// where k is bounded by early termination when the first path component
+    /// diverges.
     pub fn lookup(&self, path: &Path) -> Option<(&str, Severity)> {
+        // Extract the first component of the query path for early termination
+        let query_first_component = path.components().next();
+
         // Walk backwards from the query path to find longest prefix match
         for (key, (group_name, severity)) in self.tree.range(..=path.to_path_buf()).rev() {
             if path.starts_with(key) || path == key {
                 return Some((group_name.as_str(), *severity));
+            }
+            // Early termination: if the key's first component is less than the
+            // query path's first component, no further entries can be a prefix
+            // of the query path, so stop scanning.
+            if let Some(query_fc) = &query_first_component {
+                if let Some(key_fc) = key.components().next() {
+                    if key_fc < *query_fc {
+                        break;
+                    }
+                }
             }
         }
         None

@@ -62,7 +62,7 @@ pub fn run_scan(
 
                 (
                     entry,
-                    crate::compare::compare_entry(entry, config, severity, group_name),
+                    crate::compare::compare_entry(entry, config, severity, group_name, false),
                 )
             })
             .collect();
@@ -114,15 +114,11 @@ pub fn run_scan(
             ));
         }
 
-        // Incremental mode: skip files whose mtime hasn't changed
-        if mode == ScanMode::Incremental {
-            if let Ok(meta) = std::fs::metadata(&entry.path) {
-                use std::os::unix::fs::MetadataExt;
-                if meta.mtime() == entry.mtime {
-                    continue; // mtime unchanged, skip hash computation
-                }
-            }
-        }
+        // Incremental mode: the skip_unchanged flag is passed into
+        // compare_entry, which performs the mtime check *inside* the
+        // TOCTOU-hardened open-first pattern (fstat on pinned fd)
+        // instead of a racy stat-by-path here.
+        let skip_unchanged = mode == ScanMode::Incremental;
 
         result.total_checked += 1;
 
@@ -132,7 +128,7 @@ pub fn run_scan(
             .map(|(gn, sev)| (sev, gn))
             .unwrap_or((crate::types::Severity::Medium, "unknown"));
 
-        match crate::compare::compare_entry(entry, config, severity, group_name) {
+        match crate::compare::compare_entry(entry, config, severity, group_name, skip_unchanged) {
             Ok(Some(change)) => {
                 result.changes_found += 1;
                 if let Err(e) = alert_engine.dispatch(&change, maintenance_window, conn) {

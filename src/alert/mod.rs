@@ -37,6 +37,8 @@ pub struct AlertEngine {
     rate_limit: AtomicU32,
     /// Hot-reloadable per-path cooldown (seconds).
     cooldown_secs: AtomicU64,
+    /// HMAC key for signing audit entries (loaded at startup if configured).
+    hmac_key: Option<Vec<u8>>,
 }
 
 struct RateCounter {
@@ -82,6 +84,18 @@ impl AlertEngine {
             None
         };
 
+        let hmac_key = if config.security.hmac_signing {
+            match crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
+                Ok(key) => Some(key),
+                Err(e) => {
+                    log::warn!("HMAC signing enabled but key load failed: {}. Audit entries will not be signed.", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
             syslog_enabled: config.alerts.syslog,
             log_min_severity: config.alerts.severity_filter.log_min_severity,
@@ -97,6 +111,7 @@ impl AlertEngine {
             hostname: hostname(),
             rate_limit: AtomicU32::new(config.alerts.rate_limit),
             cooldown_secs: AtomicU64::new(config.alerts.cooldown_seconds),
+            hmac_key,
         })
     }
 
@@ -139,6 +154,29 @@ impl AlertEngine {
             .copied()
             .unwrap_or(ChangeType::Modified);
 
+        // Compute HMAC for audit entry if key is available
+        let hmac_str = self.hmac_key.as_ref().map(|key| {
+            let now = chrono::Utc::now().timestamp();
+            let data = crate::hmac::build_audit_hmac_data(
+                now,
+                &change.path.to_string_lossy(),
+                &primary_change.to_string(),
+                &change.severity.to_string(),
+                change.old_hash.as_deref(),
+                change.new_hash.as_deref(),
+            );
+            crate::hmac::compute_hmac(key, &data)
+        });
+
+        // Always update cooldown timer *before* the suppression check.
+        // This ensures rapid modifications keep pushing the cooldown window
+        // forward, so the alert only fires once the file has been stable for
+        // the full cooldown period. (Fix #11)
+        let path_str = change.path.to_string_lossy().into_owned();
+        self.cooldowns
+            .lock()
+            .insert(path_str.clone(), Instant::now());
+
         // Always write to audit log (never suppress audit trail)
         let suppressed = self.is_suppressed(change, maintenance_window);
         crate::db::ops::insert_audit_entry(
@@ -147,7 +185,7 @@ impl AlertEngine {
             primary_change,
             maintenance_window,
             suppressed,
-            None,
+            hmac_str.as_deref(),
         )?;
 
         if suppressed {
@@ -184,11 +222,7 @@ impl AlertEngine {
             sock.send_event(change);
         }
 
-        // Update cooldown
-        let path_str = change.path.to_string_lossy().into_owned();
-        self.cooldowns.lock().insert(path_str, Instant::now());
-
-        // Update rate counter
+        // Update rate counter (only for actually-dispatched alerts)
         self.rate_counter.lock().count += 1;
 
         Ok(())

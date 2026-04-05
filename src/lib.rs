@@ -103,7 +103,7 @@ pub fn daemon_run(config: &Config) -> Result<()> {
     let alert_engine = AlertEngine::new(config)?;
 
     // Pre-compute watch group index for O(n) sorted-prefix lookup
-    let watch_index = WatchGroupIndex::from_config(config);
+    let mut watch_index = WatchGroupIndex::from_config(config);
 
     // Event channel: monitor → hasher workers
     let (event_tx, event_rx) = bounded(1024);
@@ -115,6 +115,27 @@ pub fn daemon_run(config: &Config) -> Result<()> {
     // Event filter
     let mut event_filter = EventFilter::new(config);
 
+    // Cached max_file_size to avoid cloning Config on every event (Fix #17)
+    let max_file_size = std::sync::atomic::AtomicU64::new(config.scanner.max_file_size);
+
+    // Cached maintenance window state to avoid per-event DB query (Fix #15)
+    let maintenance_active = std::sync::atomic::AtomicBool::new(
+        ops::get_config_state(&conn, "maintenance_window_active")?
+            .map(|v| v == "1")
+            .unwrap_or(false),
+    );
+
+    // Scheduled scan tracking (Fix #8)
+    let mut last_scheduled_scan = std::time::Instant::now();
+    let cron_schedule = match croner::Cron::new(&config.scanner.schedule).parse() {
+        Ok(cron) => Some(cron),
+        Err(e) => {
+            log::warn!("Invalid cron schedule '{}': {}. Scheduled scans disabled.", config.scanner.schedule, e);
+            None
+        }
+    };
+    let scan_mode = config.scanner.mode;
+
     // Hasher worker loop (runs on main thread for simplicity in MVP;
     // can be split into a worker pool in a future version)
     let mut wal_writes = 0u64;
@@ -122,10 +143,22 @@ pub fn daemon_run(config: &Config) -> Result<()> {
 
     log::info!("Vigil daemon ready. Monitoring filesystem changes...");
 
-    let mut panic_count: u64 = 0;
-    const PANIC_THRESHOLD: u64 = 10;
-
     while !shutdown.load(Ordering::Acquire) {
+        // Process any pending debounced paths (Fix #3)
+        let pending = event_filter.drain_pending();
+        for pending_path in pending {
+            process_event_path(
+                &pending_path,
+                &conn,
+                &watch_index,
+                &alert_engine,
+                &max_file_size,
+                &maintenance_active,
+                &active_config,
+                &mut wal_writes,
+            );
+        }
+
         // Receive events with a timeout so we can check shutdown flag
         match event_rx.recv_timeout(std::time::Duration::from_millis(500)) {
             Ok(event) => {
@@ -134,103 +167,154 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                     continue;
                 }
 
-                // Read the current config snapshot for this event
-                let cfg_snapshot = active_config.read().clone();
-
-                // Wrap comparison and dispatch in catch_unwind to isolate panics
-                let event_path = event.path.clone();
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    // Look up baseline entry
-                    let path_str = event.path.to_string_lossy().into_owned();
-                    let baseline_entry = match ops::get_baseline_by_path(&conn, &path_str) {
-                        Ok(Some(entry)) => entry,
-                        Ok(None) => {
-                            // New file in monitored directory (not in baseline)
-                            if matches!(
-                                event.event_type,
-                                FsEventType::Create | FsEventType::MovedTo
-                            ) {
-                                log::info!("New file detected: {}", event.path.display());
-                            }
-                            return;
+                // Look up baseline entry
+                let path_str = event.path.to_string_lossy().into_owned();
+                let baseline_entry = match ops::get_baseline_by_path(&conn, &path_str) {
+                    Ok(Some(entry)) => entry,
+                    Ok(None) => {
+                        // New file in monitored directory (not in baseline)
+                        if matches!(
+                            event.event_type,
+                            FsEventType::Create | FsEventType::MovedTo
+                        ) {
+                            log::info!("New file detected: {}", event.path.display());
                         }
-                        Err(e) => {
-                            log::debug!("DB lookup error for {}: {}", path_str, e);
-                            return;
-                        }
-                    };
+                        continue;
+                    }
+                    Err(e) => {
+                        log::debug!("DB lookup error for {}: {}", path_str, e);
+                        continue;
+                    }
+                };
 
-                    // Determine watch group and severity for this path
-                    let (group_name, severity) = watch_index
-                        .lookup(&event.path)
-                        .map(|(g, s)| (g.to_string(), s))
-                        .unwrap_or(("unknown".into(), types::Severity::Medium));
+                // Determine watch group and severity for this path
+                let (group_name, severity) = watch_index
+                    .lookup(&event.path)
+                    .map(|(g, s)| (g.to_string(), s))
+                    .unwrap_or(("unknown".into(), types::Severity::Medium));
 
-                    // Compare against baseline (uses hot-reloadable max_file_size)
-                    match compare::compare_event(
-                        &event.path,
-                        &baseline_entry,
-                        &group_name,
-                        severity,
-                        cfg_snapshot.scanner.max_file_size,
-                    ) {
-                        Ok(Some(change)) => {
-                            let maintenance =
-                                ops::get_config_state(&conn, "maintenance_window_active")
-                                    .ok()
-                                    .flatten()
-                                    .map(|v| v == "1")
-                                    .unwrap_or(false);
+                // Compare against baseline (uses cached max_file_size)
+                let current_max_file_size = max_file_size.load(Ordering::Acquire);
+                match compare::compare_event(
+                    &event.path,
+                    &baseline_entry,
+                    &group_name,
+                    severity,
+                    current_max_file_size,
+                ) {
+                    Ok(Some(mut change)) => {
+                        let maintenance = maintenance_active.load(Ordering::Acquire);
 
-                            if let Err(e) = alert_engine.dispatch(&change, maintenance, &conn) {
-                                log::error!("Alert dispatch error: {}", e);
-                            }
-
-                            // WAL checkpoint every 1000 DB writes
-                            wal_writes += 1;
-                            if wal_writes >= 1000 {
-                                let _ = db::wal_checkpoint(&conn);
-                                wal_writes = 0;
+                        // Determine if this is a package update (Fix #6):
+                        // If the file is package-owned, re-query the package manager
+                        // to verify the file is still owned by the same package.
+                        if change.package.is_some() && maintenance {
+                            let still_owned = crate::package::query_package_owner(
+                                &event.path,
+                                &active_config.read().package_manager,
+                            );
+                            if still_owned == change.package {
+                                change.package_update = true;
                             }
                         }
-                        Ok(None) => {} // no change (hash matched despite event)
-                        Err(e) => {
-                            log::debug!("Comparison error for {}: {}", event.path.display(), e);
+
+                        if let Err(e) = alert_engine.dispatch(&change, maintenance, &conn) {
+                            log::error!("Alert dispatch error: {}", e);
+                        }
+
+                        // Auto-rebaseline package-updated files (Fix #10)
+                        if change.package_update {
+                            let cfg_guard = active_config.read();
+                            if cfg_guard.package_manager.auto_rebaseline {
+                                drop(cfg_guard);
+                                let cfg_for_rebaseline = active_config.read().clone();
+                                match crate::baseline::add_file(&conn, &change.path, &cfg_for_rebaseline) {
+                                    Ok(()) => {
+                                        log::info!("Auto-rebaselined package-updated file: {}", change.path.display());
+                                    }
+                                    Err(e) => {
+                                        log::warn!("Auto-rebaseline failed for {}: {}", change.path.display(), e);
+                                    }
+                                }
+                            }
+                        }
+
+                        // WAL checkpoint every 1000 DB writes
+                        wal_writes += 1;
+                        if wal_writes >= 1000 {
+                            let _ = db::wal_checkpoint(&conn);
+                            wal_writes = 0;
                         }
                     }
-                }));
-
-                if let Err(_panic) = result {
-                    panic_count += 1;
-                    log::error!(
-                        "Panic during event processing for {}: caught and continuing",
-                        event_path.display()
-                    );
-                    if panic_count >= PANIC_THRESHOLD {
-                        log::warn!(
-                            "Panic threshold reached ({} panics in this run)",
-                            panic_count
-                        );
+                    Ok(None) => {} // no change (hash matched despite event)
+                    Err(e) => {
+                        log::debug!("Comparison error for {}: {}", event.path.display(), e);
                     }
                 }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                // Read config for housekeeping
-                let cfg_snapshot = active_config.read().clone();
-
                 // Periodic housekeeping
                 if last_prune.elapsed() > std::time::Duration::from_secs(60) {
                     event_filter.prune_debounce();
+
+                    // Access config through read guard (not clone) for housekeeping
+                    let cfg_guard = active_config.read();
+                    let audit_retention_days = cfg_guard.database.audit_retention_days;
+                    let audit_rotation_size = cfg_guard.database.audit_rotation_size;
+                    drop(cfg_guard);
+
                     // Rotate audit log (uses hot-reloadable retention days)
-                    match ops::rotate_audit_log(&conn, cfg_snapshot.database.audit_retention_days) {
+                    match ops::rotate_audit_log(&conn, audit_retention_days) {
                         Ok(0) => {}
                         Ok(n) => log::info!("Rotated {} old audit log entries", n),
                         Err(e) => log::warn!("Audit log rotation error: {}", e),
                     }
                     // Rotate JSON log file if configured
                     if let Some(logger) = alert_engine.json_logger() {
-                        logger.rotate_if_needed(cfg_snapshot.database.audit_rotation_size);
+                        logger.rotate_if_needed(audit_rotation_size);
                     }
+
+                    // Refresh cached maintenance window state from DB (Fix #15)
+                    maintenance_active.store(
+                        ops::get_config_state(&conn, "maintenance_window_active")
+                            .ok()
+                            .flatten()
+                            .map(|v| v == "1")
+                            .unwrap_or(false),
+                        Ordering::Release,
+                    );
+
+                    // Check if scheduled scan should run (Fix #8)
+                    if let Some(ref cron) = cron_schedule {
+                        if last_scheduled_scan.elapsed() > std::time::Duration::from_secs(60) {
+                            let now = chrono::Utc::now();
+                            // Check if current time matches the cron schedule
+                            if cron.is_time_matching(&now).unwrap_or(false) {
+                                log::info!("Running scheduled {} integrity scan", scan_mode);
+                                let cfg_for_scan = active_config.read().clone();
+                                match scanner::run_scan(&conn, &cfg_for_scan, &alert_engine, scan_mode, None) {
+                                    Ok(result) => {
+                                        log::info!(
+                                            "Scheduled scan complete: {} checked, {} changes, {} errors",
+                                            result.total_checked,
+                                            result.changes_found,
+                                            result.errors,
+                                        );
+                                        let _ = ops::set_config_state(
+                                            &conn,
+                                            "last_baseline_refresh",
+                                            &chrono::Utc::now().timestamp().to_string(),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        log::error!("Scheduled scan failed: {}", e);
+                                    }
+                                }
+                                last_scheduled_scan = std::time::Instant::now();
+                            }
+                        }
+                    }
+
                     last_prune = std::time::Instant::now();
                 }
                 // Check for config reload (SIGHUP)
@@ -264,6 +348,11 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                             }
                             // Rebuild event filter with new config
                             event_filter = EventFilter::new(&new_config);
+                            // Rebuild watch group index (Fix #12)
+                            watch_index = WatchGroupIndex::from_config(&new_config);
+                            log::info!("Watch group index rebuilt ({} entries)", watch_index.len());
+                            // Update cached max_file_size (Fix #17)
+                            max_file_size.store(new_config.scanner.max_file_size, Ordering::Release);
                             // Swap the active config atomically
                             *active_config.write() = new_config;
                         }
@@ -287,6 +376,80 @@ pub fn daemon_run(config: &Config) -> Result<()> {
     log::info!("Vigil daemon stopped.");
 
     Ok(())
+}
+
+/// Process a single path for comparison against baseline. Used both for
+/// real-time events and for re-processing debounced pending paths (Fix #3).
+#[allow(clippy::too_many_arguments)]
+fn process_event_path(
+    path: &std::path::Path,
+    conn: &rusqlite::Connection,
+    watch_index: &WatchGroupIndex,
+    alert_engine: &AlertEngine,
+    max_file_size: &std::sync::atomic::AtomicU64,
+    maintenance_active: &std::sync::atomic::AtomicBool,
+    active_config: &Arc<RwLock<Config>>,
+    wal_writes: &mut u64,
+) {
+    let path_str = path.to_string_lossy().into_owned();
+    let baseline_entry = match ops::get_baseline_by_path(conn, &path_str) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => return,
+        Err(e) => {
+            log::debug!("DB lookup error for {}: {}", path_str, e);
+            return;
+        }
+    };
+
+    let (group_name, severity) = watch_index
+        .lookup(path)
+        .map(|(g, s)| (g.to_string(), s))
+        .unwrap_or(("unknown".into(), types::Severity::Medium));
+
+    let current_max_file_size = max_file_size.load(Ordering::Acquire);
+    match compare::compare_event(path, &baseline_entry, &group_name, severity, current_max_file_size) {
+        Ok(Some(mut change)) => {
+            let maintenance = maintenance_active.load(Ordering::Acquire);
+
+            if change.package.is_some() && maintenance {
+                let still_owned =
+                    crate::package::query_package_owner(path, &active_config.read().package_manager);
+                if still_owned == change.package {
+                    change.package_update = true;
+                }
+            }
+
+            if let Err(e) = alert_engine.dispatch(&change, maintenance, conn) {
+                log::error!("Alert dispatch error: {}", e);
+            }
+
+            if change.package_update {
+                let cfg_guard = active_config.read();
+                if cfg_guard.package_manager.auto_rebaseline {
+                    drop(cfg_guard);
+                    let cfg_for_rebaseline = active_config.read().clone();
+                    match crate::baseline::add_file(conn, &change.path, &cfg_for_rebaseline) {
+                        Ok(()) => {
+                            log::info!("Auto-rebaselined package-updated file: {}", change.path.display());
+                        }
+                        Err(e) => {
+                            log::warn!("Auto-rebaseline failed for {}: {}", change.path.display(), e);
+                        }
+                    }
+                }
+            }
+
+            *wal_writes += 1;
+            if *wal_writes >= 1000 {
+                let _ = db::wal_checkpoint(conn);
+                *wal_writes = 0;
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            log::debug!("Comparison error for {}: {}", path.display(), e);
+        }
+    }
 }
 
 /// Write the daemon PID file with advisory locking.

@@ -178,7 +178,7 @@ pub fn add_file(conn: &Connection, path: &Path, config: &Config) -> Result<()> {
         .canonicalize()
         .map_err(|e| VigilError::Path(format!("cannot canonicalize {}: {}", path.display(), e)))?;
 
-    let meta = metadata::collect_file_metadata(&canonical, config, None)?;
+    let meta = metadata::collect_file_metadata(&canonical, config, Some(config.scanner.max_file_size))?;
     let now = Utc::now().timestamp();
 
     let pkg = crate::package::query_package_owner(&canonical, &config.package_manager);
@@ -249,7 +249,7 @@ pub fn diff_baseline(
             .map(|(_, gn, sev)| (*sev, gn.as_str()))
             .unwrap_or((crate::types::Severity::Medium, "unknown"));
 
-        match crate::compare::compare_entry(entry, config, severity, group_name) {
+        match crate::compare::compare_entry(entry, config, severity, group_name, false) {
             Ok(Some(change)) => changes.push(change),
             Ok(None) => {} // no change
             Err(e) => {

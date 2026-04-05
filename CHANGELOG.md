@@ -4,6 +4,127 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-05
+
+### Release Summary
+- Resolves all 17 findings from the critical structural audit in one coordinated release.
+- Closes a high-impact file-integrity bypass in the real-time compare path and multiple reliability gaps in daemon event processing.
+- Activates previously dormant security/audit capabilities (HMAC signing, package-update handling, scheduled scans, auto-rebaseline).
+- Preserves CLI and config compatibility; no schema migration required.
+
+### Compatibility Notes
+- No breaking CLI flag or command changes.
+- No `vigil.toml` schema changes required.
+- No SQLite schema migration required.
+- Existing baselines and audit tables remain readable/writable.
+
+### Critical Structural Fixes (Items 1-17)
+
+#### 1) mtime fast-reject security bypass closed (`src/compare.rs`, `src/lib.rs`, `src/scanner.rs`)
+- Added `force_hash: bool` and `skip_unchanged: bool` controls to `compare_file_against_baseline()`.
+- Real-time event path (`compare_event`) now always sets `force_hash = true`, guaranteeing content hash verification after an event.
+- Batch/incremental path (`compare_entry`) uses `force_hash = false` and controlled skip logic.
+- Documented threat model/rationale in function docs.
+
+#### 2) package ownership batch misalignment fixed (`src/package.rs`)
+- Removed unsafe positional `zip(paths, stdout.lines())` mapping for `pacman` and `rpm` batch paths.
+- `batch_query_pacman()` and `batch_query_rpm()` now query per-path to avoid ownership shifts when unowned files are skipped/errored.
+- Kept `dpkg` parsing behavior (path-anchored output) unchanged.
+- Added regression tests for “unowned file in the middle of batch” scenarios.
+
+#### 3) debounce trailing-edge loss fixed (`src/monitor/filter.rs`, `src/lib.rs`)
+- Added `pending_paths: HashSet<PathBuf>` to `EventFilter`.
+- Debounced events are now tracked for deferred re-check.
+- Added `drain_pending()` to emit paths whose debounce window has elapsed.
+- Daemon loop now processes drained pending paths each iteration.
+- `prune_debounce()` now clears related pending entries.
+
+#### 4) WatchGroupIndex complexity docs corrected + lookup scan bounded (`src/watch_index.rs`)
+- Updated docs to describe real complexity: `O(log n)` seek + `O(k)` backward scan.
+- Added early-termination logic in reverse scan when first path component diverges.
+- Preserves matching semantics while reducing worst-case backward traversal.
+
+#### 5) inotify now watches newly created subdirectories (`src/monitor/inotify.rs`)
+- Detects `IN_CREATE | IN_ISDIR` events.
+- Dynamically and recursively adds watches for new directories using existing `add_directory_watches()`.
+- Logs newly added dynamic watch paths.
+
+#### 6) `package_update` is no longer hardcoded false (`src/compare.rs`, `src/lib.rs`)
+- `deletion_result()` and `change_result()` now accept `package_update` explicitly.
+- Daemon path now sets `change.package_update` based on runtime package ownership verification during maintenance state.
+
+#### 7) security context comparison implemented (`src/compare.rs`, `src/types.rs`)
+- Added `ChangeType::SecurityContextChanged`.
+- Compare path now reads SELinux/AppArmor context via fd-based `/proc/self/fd/<fd>` lookup.
+- Security context now participates in both fast/slow comparison paths and emitted metadata.
+
+#### 8) scheduled scanning wired into daemon loop (`src/lib.rs`, `Cargo.toml`)
+- Added cron parser dependency (`croner`).
+- Daemon now parses scanner schedule and executes scheduled scans in housekeeping window.
+- Logs scan start/completion and updates last refresh state.
+- Includes schedule parse failure fallback with clear warning.
+
+#### 9) HMAC signing now applied to audit entries (`src/alert/mod.rs`)
+- Added `hmac_key: Option<Vec<u8>>` to `AlertEngine`.
+- Loads HMAC key at startup when signing is enabled.
+- `dispatch()` now computes audit-entry HMAC data and writes signature to DB.
+- Keeps operation resilient if key load fails (warn + unsigned fallback).
+
+#### 10) `auto_rebaseline` config now active (`src/lib.rs`)
+- After dispatching a qualifying package update, daemon optionally calls `baseline::add_file()` to refresh trusted state.
+- Controlled by `package_manager.auto_rebaseline`.
+- Emits explicit log on successful auto-rebaseline.
+
+#### 11) cooldown refresh now tracks suppressed burst activity (`src/alert/mod.rs`)
+- Cooldown timestamp update moved to occur before suppression return path.
+- Prevents stale re-alerts from firing immediately after initial cooldown expiry during ongoing churn.
+- Rate counter behavior unchanged (still increments only for dispatched alerts).
+
+#### 12) watch index now rebuilt on SIGHUP reload (`src/lib.rs`)
+- `watch_index` made mutable and regenerated from the new config during reload.
+- Added log reporting rebuilt index entry count.
+- Keeps severity/group classification aligned with live config updates.
+
+#### 13) incremental scan TOCTOU reduced (`src/scanner.rs`, `src/compare.rs`)
+- Removed pre-open `metadata(path)` mtime shortcut in scanner loop.
+- Moved unchanged-skip decision into compare path after open + fstat on pinned fd.
+- Preserves optimization intent while avoiding path-stat race window.
+
+#### 14) baseline metadata double-stat path removed (`src/baseline/mod.rs`)
+- `add_file()` now passes `Some(config.scanner.max_file_size)` into `collect_file_metadata()`.
+- Ensures size limit enforcement remains inside open/fstat collection flow.
+
+#### 15) maintenance-window DB lookup no longer per-event (`src/lib.rs`)
+- Added cached maintenance flag using `AtomicBool`.
+- Initialized once at startup and refreshed during housekeeping interval.
+- Event path now reads atomic state instead of issuing a SQLite select each change.
+
+#### 16) panic swallowing removed from daemon event hot path (`src/lib.rs`)
+- Removed `catch_unwind(AssertUnwindSafe(...))`, panic counters, and threshold logic.
+- Event loop now relies on explicit `Result` handling and logging for expected failures.
+- True panics now fail fast instead of continuing with potentially inconsistent shared state.
+
+#### 17) per-event full config clone removed (`src/lib.rs`)
+- Replaced per-event `active_config.read().clone()` with atomic cache for `max_file_size` (`AtomicU64`).
+- Updated value on SIGHUP reload.
+- Housekeeping path now uses config read guards without full-struct clone.
+
+### Tests Added/Updated
+- Added force-hash bypass regression test in compare module:
+  - `force_hash_detects_content_change_despite_matching_metadata`
+- Added debounce trailing-edge test:
+  - `drain_pending_returns_debounced_paths_after_window_expires`
+- Added change-type security-context serde/display coverage:
+  - `security_context_changed_serde_roundtrip`
+  - `change_type_display` extended for `security_context_changed`
+- Added package-owner batch misalignment regressions for pacman/rpm/dpkg parsing behavior.
+- Updated integration/security/benchmark callsites for the new compare API signature.
+
+### Validation
+- `cargo build` passes.
+- `cargo test --all-targets -- --test-threads=4` passes.
+- Benchmark target smoke execution succeeds under current test runner invocation.
+
 ## [0.7.0] - 2026-04-05
 
 ### Release Summary

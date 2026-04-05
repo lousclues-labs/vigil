@@ -73,7 +73,7 @@ fn file_replacement_changes_inode() {
         entry.hash = vigil::baseline::hash::blake3_hash_bytes(b"real sudo binary");
 
         let result =
-            vigil::compare::compare_entry(&entry, &config, vigil::types::Severity::Medium, "test")
+            vigil::compare::compare_entry(&entry, &config, vigil::types::Severity::Medium, "test", false)
                 .unwrap();
         assert!(result.is_some(), "File replacement must be detected");
 

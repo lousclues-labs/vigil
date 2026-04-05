@@ -25,10 +25,27 @@ pub enum CompareOutcome {
 ///
 /// If `max_file_size` is Some, files larger than the limit are skipped
 /// (returns NoChange) to prevent blocking on large file hashing.
+///
+/// # Security parameters
+///
+/// - `force_hash`: When true, always compute the BLAKE3 hash even if metadata
+///   is unchanged. This defeats mtime-spoofing attacks where an attacker modifies
+///   file contents and resets mtime via `touch -t` / `utimensat()` while preserving
+///   file size through padding. Should be `true` for real-time event paths (the
+///   event already fired — something changed) and `false` for batch/incremental
+///   scans where the mtime optimization is an explicitly accepted tradeoff.
+///
+/// - `skip_unchanged`: When true AND all metadata matches the baseline, return
+///   NoChange without hashing. This is the incremental scan mtime optimization,
+///   now performed *inside* the TOCTOU-hardened open-first pattern (fstat on the
+///   pinned fd) rather than via a racy stat-by-path before open. Only effective
+///   when `force_hash` is false.
 fn compare_file_against_baseline(
     path: &Path,
     baseline: &BaselineEntry,
     max_file_size: Option<u64>,
+    force_hash: bool,
+    skip_unchanged: bool,
 ) -> Result<CompareOutcome> {
     // 1. Open file — pin inode. Detect deletions via open error, not exists().
     let file = match File::open(path) {
@@ -55,7 +72,7 @@ fn compare_file_against_baseline(
         }
     }
 
-    // 4. Fast path: if ALL metadata matches baseline, skip expensive hash
+    // 4. Check metadata invariants
     let metadata_unchanged = meta.mtime() == baseline.mtime
         && meta.len() == baseline.size
         && meta.ino() == baseline.inode
@@ -64,13 +81,37 @@ fn compare_file_against_baseline(
         && meta.uid() == baseline.owner_uid
         && meta.gid() == baseline.owner_gid;
 
-    if metadata_unchanged {
-        // Only check xattrs (cheap compared to full file hash)
-        let current_xattrs = read_xattrs_json_fd(&file);
-        if current_xattrs == baseline.xattrs {
+    // Read security context via fd (SELinux/AppArmor)
+    let current_security_context = read_security_context_fd(&file);
+
+    // Read xattrs via fd
+    let current_xattrs = read_xattrs_json_fd(&file);
+
+    // Fast path: if ALL metadata, xattrs, and security context match baseline,
+    // and we are not forced to hash, skip the expensive BLAKE3 computation.
+    // When skip_unchanged is true (incremental scan), this is the mtime
+    // optimization — now using fstat on the pinned fd, not a racy stat-by-path.
+    if metadata_unchanged && !force_hash {
+        let security_context_unchanged = current_security_context == baseline.security_context;
+        let xattrs_unchanged = current_xattrs == baseline.xattrs;
+
+        if skip_unchanged && security_context_unchanged && xattrs_unchanged {
             return Ok(CompareOutcome::NoChange);
         }
-        // xattr changed — build result with baseline hash since content is unchanged
+
+        if security_context_unchanged && xattrs_unchanged {
+            return Ok(CompareOutcome::NoChange);
+        }
+
+        // xattr or security context changed — build result with baseline hash
+        // since content is unchanged
+        let mut change_types = Vec::new();
+        if !xattrs_unchanged {
+            change_types.push(ChangeType::XattrChanged);
+        }
+        if !security_context_unchanged {
+            change_types.push(ChangeType::SecurityContextChanged);
+        }
         let file_meta = FileMetadata {
             path: path.to_path_buf(),
             hash: baseline.hash.clone(),
@@ -82,16 +123,16 @@ fn compare_file_against_baseline(
             inode: meta.ino(),
             device: meta.dev(),
             xattrs: current_xattrs,
-            security_context: String::new(),
+            security_context: current_security_context,
         };
         return Ok(CompareOutcome::Changed(
-            vec![ChangeType::XattrChanged],
+            change_types,
             baseline.hash.clone(),
             file_meta,
         ));
     }
 
-    // Slow path: metadata differs, compute full comparison
+    // Slow path: metadata differs or force_hash is true — compute full comparison
     let mut change_types = Vec::new();
 
     // Inode changed? (file replaced, not modified in place)
@@ -115,10 +156,14 @@ fn compare_file_against_baseline(
         change_types.push(ChangeType::Modified);
     }
 
-    // xattr check via fd (avoids TOCTOU — uses flistxattr/fgetxattr)
-    let current_xattrs = read_xattrs_json_fd(&file);
+    // xattr check (already read above)
     if current_xattrs != baseline.xattrs {
         change_types.push(ChangeType::XattrChanged);
+    }
+
+    // Security context check (already read above)
+    if current_security_context != baseline.security_context {
+        change_types.push(ChangeType::SecurityContextChanged);
     }
 
     // Deduplicate change_types
@@ -140,7 +185,7 @@ fn compare_file_against_baseline(
         inode: meta.ino(),
         device: meta.dev(),
         xattrs: current_xattrs,
-        security_context: String::new(),
+        security_context: current_security_context,
     };
 
     Ok(CompareOutcome::Changed(
@@ -150,12 +195,34 @@ fn compare_file_against_baseline(
     ))
 }
 
+/// Read SELinux or AppArmor security context via /proc/self/fd/<fd>.
+fn read_security_context_fd(file: &File) -> String {
+    let fd = file.as_raw_fd();
+    let fd_path = format!("/proc/self/fd/{}", fd);
+    let fd_path = Path::new(&fd_path);
+
+    if let Ok(Some(val)) = xattr::get(fd_path, "security.selinux") {
+        return String::from_utf8_lossy(&val)
+            .trim_end_matches('\0')
+            .to_string();
+    }
+
+    if let Ok(Some(val)) = xattr::get(fd_path, "security.apparmor") {
+        return String::from_utf8_lossy(&val)
+            .trim_end_matches('\0')
+            .to_string();
+    }
+
+    String::new()
+}
+
 /// Build a deletion ChangeResult.
 fn deletion_result(
     path: &Path,
     baseline: &BaselineEntry,
     severity: Severity,
     group_name: String,
+    package_update: bool,
 ) -> ChangeResult {
     ChangeResult {
         path: path.to_path_buf(),
@@ -174,7 +241,7 @@ fn deletion_result(
         old_mtime: Some(baseline.mtime),
         new_mtime: None,
         package: baseline.package.clone(),
-        package_update: false,
+        package_update,
         monitored_group: group_name,
     }
 }
@@ -188,6 +255,7 @@ fn change_result(
     file_meta: &FileMetadata,
     severity: Severity,
     group_name: String,
+    package_update: bool,
 ) -> ChangeResult {
     ChangeResult {
         path: path.to_path_buf(),
@@ -206,13 +274,17 @@ fn change_result(
         old_mtime: Some(baseline.mtime),
         new_mtime: Some(file_meta.mtime),
         package: baseline.package.clone(),
-        package_update: false,
+        package_update,
         monitored_group: group_name,
     }
 }
 
 /// Compare a baseline entry against the current state of the file on disk.
 /// Uses the open-first TOCTOU-hardened pattern with three-state CompareOutcome.
+///
+/// The `skip_unchanged` parameter enables the incremental scan mtime optimization
+/// *inside* the TOCTOU-hardened open-first pattern (using fstat on the pinned fd)
+/// rather than via a racy stat-by-path before open.
 ///
 /// Returns:
 /// - Ok(Some(change)) if something changed (including deletion)
@@ -223,16 +295,24 @@ pub fn compare_entry(
     _config: &Config,
     severity: Severity,
     group_name: &str,
+    skip_unchanged: bool,
 ) -> Result<Option<ChangeResult>> {
     let path = &baseline.path;
 
-    match compare_file_against_baseline(path, baseline, Some(_config.scanner.max_file_size))? {
+    match compare_file_against_baseline(
+        path,
+        baseline,
+        Some(_config.scanner.max_file_size),
+        false,
+        skip_unchanged,
+    )? {
         CompareOutcome::NoChange => Ok(None),
         CompareOutcome::Deleted => Ok(Some(deletion_result(
             path,
             baseline,
             severity,
             group_name.to_string(),
+            false,
         ))),
         CompareOutcome::Changed(change_types, current_hash, file_meta) => Ok(Some(change_result(
             path,
@@ -242,12 +322,15 @@ pub fn compare_entry(
             &file_meta,
             severity,
             group_name.to_string(),
+            false,
         ))),
     }
 }
 
 /// Compare a filesystem event against the baseline for a specific path.
-/// Used by the real-time monitor.
+/// Used by the real-time monitor. Always forces BLAKE3 hashing because
+/// the event already fired — something changed — so the mtime fast-reject
+/// must be bypassed to prevent attackers from spoofing mtime.
 pub fn compare_event(
     path: &Path,
     baseline: &BaselineEntry,
@@ -255,13 +338,14 @@ pub fn compare_event(
     group_severity: Severity,
     max_file_size: u64,
 ) -> Result<Option<ChangeResult>> {
-    match compare_file_against_baseline(path, baseline, Some(max_file_size))? {
+    match compare_file_against_baseline(path, baseline, Some(max_file_size), true, false)? {
         CompareOutcome::NoChange => Ok(None),
         CompareOutcome::Deleted => Ok(Some(deletion_result(
             path,
             baseline,
             group_severity,
             group_name.to_string(),
+            false,
         ))),
         CompareOutcome::Changed(change_types, current_hash, file_meta) => Ok(Some(change_result(
             path,
@@ -271,6 +355,7 @@ pub fn compare_event(
             &file_meta,
             group_severity,
             group_name.to_string(),
+            false,
         ))),
     }
 }
@@ -333,7 +418,8 @@ mod tests {
 
         let baseline = make_baseline(&file_path);
         // File hasn't changed — should return NoChange via fast-reject
-        let outcome = compare_file_against_baseline(&file_path, &baseline, None).unwrap();
+        let outcome =
+            compare_file_against_baseline(&file_path, &baseline, None, false, false).unwrap();
         assert!(matches!(outcome, CompareOutcome::NoChange));
     }
 
@@ -347,7 +433,37 @@ mod tests {
         // Change content with different length
         fs::write(&file_path, b"much longer content now").unwrap();
 
-        let outcome = compare_file_against_baseline(&file_path, &baseline, None).unwrap();
+        let outcome =
+            compare_file_against_baseline(&file_path, &baseline, None, false, false).unwrap();
         assert!(matches!(outcome, CompareOutcome::Changed(..)));
+    }
+
+    #[test]
+    fn force_hash_detects_content_change_despite_matching_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("sneaky.txt");
+        fs::write(&file_path, b"original text").unwrap();
+
+        let baseline = make_baseline(&file_path);
+
+        // Overwrite with same-length content to keep size unchanged
+        fs::write(&file_path, b"tampered text").unwrap();
+
+        // Restore original mtime via filetime
+        let mtime = filetime::FileTime::from_unix_time(baseline.mtime, 0);
+        filetime::set_file_mtime(&file_path, mtime).unwrap();
+
+        // Without force_hash, fast-reject returns NoChange
+        let outcome =
+            compare_file_against_baseline(&file_path, &baseline, None, false, false).unwrap();
+        assert!(matches!(outcome, CompareOutcome::NoChange));
+
+        // With force_hash, the content change is detected
+        let outcome =
+            compare_file_against_baseline(&file_path, &baseline, None, true, false).unwrap();
+        assert!(matches!(outcome, CompareOutcome::Changed(..)));
+        if let CompareOutcome::Changed(change_types, _, _) = outcome {
+            assert!(change_types.contains(&ChangeType::Modified));
+        }
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "vigil"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 description = "Lightweight file integrity monitor for Linux desktops"
 license = "GPL-3.0-only"
@@ -79,8 +79,12 @@ thiserror = "1"
 # Parallel scanning (optional)
 rayon = { version = "1", optional = true }
 
+# Cron schedule parsing for scheduled scans
+croner = "2"
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+filetime = "0.2"
 insta = { version = "1", features = ["json"] }
 proptest = { version = "1", default-features = false, features = ["std"] }
 tempfile = "3"

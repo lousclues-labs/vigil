@@ -21,7 +21,7 @@ fn detect_permission_escalation() {
     fs::set_permissions(&file, fs::Permissions::from_mode(0o4755)).unwrap();
 
     let result =
-        vigil::compare::compare_entry(&entry, &config, vigil::types::Severity::Medium, "test")
+        vigil::compare::compare_entry(&entry, &config, vigil::types::Severity::Medium, "test", false)
             .unwrap();
     assert!(result.is_some(), "Should detect permission change");
 
@@ -47,7 +47,7 @@ fn detect_world_writable() {
     fs::set_permissions(&file, fs::Permissions::from_mode(0o666)).unwrap();
 
     let result =
-        vigil::compare::compare_entry(&entry, &config, vigil::types::Severity::Medium, "test")
+        vigil::compare::compare_entry(&entry, &config, vigil::types::Severity::Medium, "test", false)
             .unwrap();
     assert!(result.is_some());
     assert!(
@@ -93,7 +93,7 @@ fn detect_ownership_change_to_root() {
     // nix::unistd::chown(&file, Some(nix::unistd::Uid::from_raw(0)), None).unwrap();
 
     let result =
-        vigil::compare::compare_entry(&entry, &config, vigil::types::Severity::Medium, "test")
+        vigil::compare::compare_entry(&entry, &config, vigil::types::Severity::Medium, "test", false)
             .unwrap();
     if let Some(change) = result {
         assert!(change.change_types.contains(&ChangeType::OwnerChanged));
