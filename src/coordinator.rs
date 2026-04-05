@@ -8,6 +8,7 @@ use parking_lot::RwLock;
 
 use crate::config::Config;
 use crate::db;
+use crate::doctor;
 use crate::metrics::Metrics;
 use crate::types::DaemonState;
 use crate::watch_index::WatchGroupIndex;
@@ -72,6 +73,9 @@ pub fn spawn(
                     }
                     if let Err(e) = write_state_snapshot(&cfg.daemon.runtime_dir, &state) {
                         tracing::debug!(error = %e, "failed to write state snapshot");
+                    }
+                    if let Err(e) = doctor::write_health_snapshot(&cfg) {
+                        tracing::debug!(error = %e, "failed to write health snapshot");
                     }
 
                     let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);

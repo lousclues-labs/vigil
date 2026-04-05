@@ -10,6 +10,8 @@ use crate::config::Config;
 use crate::db::{self, audit_ops, baseline_ops};
 use crate::types::PackageBackend;
 
+const HEALTH_SNAPSHOT_MAX_AGE_SECS: i64 = 300;
+
 /// Result of a single diagnostic check.
 #[derive(Debug, Clone, Serialize)]
 pub struct DiagnosticCheck {
@@ -63,6 +65,52 @@ pub struct RuntimeMetrics {
     pub uptime_start: i64,
 }
 
+/// Lightweight health snapshot produced by the privileged daemon.
+/// This lets unprivileged CLI invocations report useful state without direct DB access.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RuntimeHealthSnapshot {
+    #[serde(default)]
+    pub generated_at: i64,
+    #[serde(default)]
+    pub baseline: BaselineHealthSnapshot,
+    #[serde(default)]
+    pub database: DatabaseHealthSnapshot,
+    #[serde(default)]
+    pub audit: AuditHealthSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BaselineHealthSnapshot {
+    #[serde(default)]
+    pub entry_count: Option<i64>,
+    #[serde(default)]
+    pub last_refresh: Option<i64>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DatabaseHealthSnapshot {
+    #[serde(default)]
+    pub baseline_open: bool,
+    #[serde(default)]
+    pub audit_open: bool,
+    #[serde(default)]
+    pub journal_mode: Option<String>,
+    #[serde(default)]
+    pub total_size_bytes: u64,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuditHealthSnapshot {
+    #[serde(default)]
+    pub entry_count: Option<u64>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
 /// Read metrics snapshot from runtime dir.
 pub fn read_metrics(config: &Config) -> Option<RuntimeMetrics> {
     let raw = fs::read_to_string(metrics_path(config)).ok()?;
@@ -73,6 +121,20 @@ pub fn read_metrics(config: &Config) -> Option<RuntimeMetrics> {
 pub fn read_state_json(config: &Config) -> Option<serde_json::Value> {
     let raw = fs::read_to_string(state_path(config)).ok()?;
     serde_json::from_str::<serde_json::Value>(&raw).ok()
+}
+
+/// Read daemon health snapshot from runtime dir.
+pub fn read_health_snapshot(config: &Config) -> Option<RuntimeHealthSnapshot> {
+    let raw = fs::read_to_string(health_path(config)).ok()?;
+    serde_json::from_str::<RuntimeHealthSnapshot>(&raw).ok()
+}
+
+/// Write daemon health snapshot to runtime dir.
+pub fn write_health_snapshot(config: &Config) -> crate::Result<()> {
+    let snapshot = collect_health_snapshot(config);
+    fs::create_dir_all(&config.daemon.runtime_dir)?;
+    fs::write(health_path(config), serde_json::to_vec_pretty(&snapshot)?)?;
+    Ok(())
 }
 
 /// Probe daemon process/systemd status.
@@ -111,6 +173,13 @@ pub fn baseline_count(config: &Config) -> Option<i64> {
     }
     let conn = open_existing_db(&config.daemon.db_path).ok()?;
     baseline_ops::count(&conn).ok()
+}
+
+/// Count baseline entries and fall back to daemon health snapshot when direct DB access is not possible.
+pub fn baseline_count_with_fallback(config: &Config) -> Option<i64> {
+    baseline_count(config).or_else(|| {
+        read_fresh_health_snapshot(config).and_then(|snapshot| snapshot.baseline.entry_count)
+    })
 }
 
 /// Count audit entries newer than `since_unix`.
@@ -322,6 +391,22 @@ fn check_baseline(config: &Config) -> DiagnosticCheck {
         };
     }
 
+    if !has_sqlite_read_access(db_path) {
+        if let Some(check) = baseline_check_from_snapshot(config) {
+            return check;
+        }
+
+        return DiagnosticCheck {
+            name: "Baseline".to_string(),
+            status: CheckStatus::Unknown,
+            detail: format!(
+                "database present at {} (insufficient permissions for current user)",
+                db_path.display()
+            ),
+            fix: Some("Run with elevated privileges: sudo vigil doctor".to_string()),
+        };
+    }
+
     let conn = match open_existing_db(db_path) {
         Ok(conn) => conn,
         Err(e) => {
@@ -419,6 +504,29 @@ fn check_database_integrity(config: &Config) -> DiagnosticCheck {
         };
     }
 
+    let mut unreadable = Vec::new();
+    if !has_sqlite_read_access(baseline_path) {
+        unreadable.push(baseline_path.display().to_string());
+    }
+    if !has_sqlite_read_access(&audit_path) {
+        unreadable.push(audit_path.display().to_string());
+    }
+    if !unreadable.is_empty() {
+        if let Some(check) = database_check_from_snapshot(config) {
+            return check;
+        }
+
+        return DiagnosticCheck {
+            name: "Database".to_string(),
+            status: CheckStatus::Unknown,
+            detail: format!(
+                "integrity check unavailable for current user (cannot read: {})",
+                unreadable.join(", ")
+            ),
+            fix: Some("Run with elevated privileges: sudo vigil doctor".to_string()),
+        };
+    }
+
     let baseline_conn = match open_existing_db(baseline_path) {
         Ok(conn) => conn,
         Err(e) => {
@@ -506,6 +614,22 @@ fn check_audit_log(config: &Config) -> DiagnosticCheck {
             status: CheckStatus::Failed,
             detail: format!("audit database not found at {}", audit_path.display()),
             fix: Some("vigil init".to_string()),
+        };
+    }
+
+    if !has_sqlite_read_access(&audit_path) {
+        if let Some(check) = audit_check_from_snapshot(config) {
+            return check;
+        }
+
+        return DiagnosticCheck {
+            name: "Audit log".to_string(),
+            status: CheckStatus::Unknown,
+            detail: format!(
+                "audit log present at {} (insufficient permissions for current user)",
+                audit_path.display()
+            ),
+            fix: Some("Run with elevated privileges: sudo vigil doctor".to_string()),
         };
     }
 
@@ -855,6 +979,269 @@ fn check_signal_socket(config: &Config) -> DiagnosticCheck {
     }
 }
 
+fn baseline_check_from_snapshot(config: &Config) -> Option<DiagnosticCheck> {
+    let snapshot = read_fresh_health_snapshot(config)?;
+    let baseline = &snapshot.baseline;
+    let snapshot_age = snapshot_age_label(snapshot.generated_at);
+
+    if let Some(err) = baseline.error.as_ref() {
+        return Some(DiagnosticCheck {
+            name: "Baseline".to_string(),
+            status: CheckStatus::Failed,
+            detail: format!(
+                "daemon snapshot reports baseline issue: {} ({})",
+                err, snapshot_age
+            ),
+            fix: Some("sudo vigil doctor".to_string()),
+        });
+    }
+
+    let count = baseline.entry_count?;
+    if count <= 0 {
+        return Some(DiagnosticCheck {
+            name: "Baseline".to_string(),
+            status: CheckStatus::Failed,
+            detail: format!("no baseline found (daemon snapshot {})", snapshot_age),
+            fix: Some("vigil init".to_string()),
+        });
+    }
+
+    let count_label = format_count(count.max(0) as u64);
+    match baseline.last_refresh {
+        Some(ts) => {
+            let age = (Utc::now().timestamp() - ts).max(0);
+            if age > 86_400 {
+                Some(DiagnosticCheck {
+                    name: "Baseline".to_string(),
+                    status: CheckStatus::Warning,
+                    detail: format!(
+                        "{} entries (last refresh: {}; daemon snapshot {})",
+                        count_label,
+                        format_age(age),
+                        snapshot_age
+                    ),
+                    fix: Some("vigil baseline refresh".to_string()),
+                })
+            } else {
+                Some(DiagnosticCheck {
+                    name: "Baseline".to_string(),
+                    status: CheckStatus::Ok,
+                    detail: format!(
+                        "{} entries (last refresh: {}; daemon snapshot {})",
+                        count_label,
+                        format_age(age),
+                        snapshot_age
+                    ),
+                    fix: None,
+                })
+            }
+        }
+        None => Some(DiagnosticCheck {
+            name: "Baseline".to_string(),
+            status: CheckStatus::Ok,
+            detail: format!(
+                "{} entries (last refresh: unknown; daemon snapshot {})",
+                count_label, snapshot_age
+            ),
+            fix: None,
+        }),
+    }
+}
+
+fn database_check_from_snapshot(config: &Config) -> Option<DiagnosticCheck> {
+    let snapshot = read_fresh_health_snapshot(config)?;
+    let database = &snapshot.database;
+    let snapshot_age = snapshot_age_label(snapshot.generated_at);
+
+    if let Some(err) = database.error.as_ref() {
+        return Some(DiagnosticCheck {
+            name: "Database".to_string(),
+            status: CheckStatus::Failed,
+            detail: format!(
+                "daemon snapshot reports database issue: {} ({})",
+                err, snapshot_age
+            ),
+            fix: Some("sudo vigil doctor".to_string()),
+        });
+    }
+
+    if !database.baseline_open || !database.audit_open {
+        let mut unavailable = Vec::new();
+        if !database.baseline_open {
+            unavailable.push("baseline");
+        }
+        if !database.audit_open {
+            unavailable.push("audit");
+        }
+
+        return Some(DiagnosticCheck {
+            name: "Database".to_string(),
+            status: CheckStatus::Failed,
+            detail: format!(
+                "daemon snapshot cannot access {} database(s) ({})",
+                unavailable.join("/"),
+                snapshot_age
+            ),
+            fix: Some("sudo systemctl restart vigild.service && sudo vigil doctor".to_string()),
+        });
+    }
+
+    let wal_mode = database
+        .journal_mode
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_uppercase();
+
+    Some(DiagnosticCheck {
+        name: "Database".to_string(),
+        status: CheckStatus::Warning,
+        detail: format!(
+            "daemon can access baseline/audit databases ({} mode, {}; {})",
+            wal_mode,
+            format_size(database.total_size_bytes),
+            snapshot_age
+        ),
+        fix: Some("Run sudo vigil doctor for full integrity verification".to_string()),
+    })
+}
+
+fn audit_check_from_snapshot(config: &Config) -> Option<DiagnosticCheck> {
+    let snapshot = read_fresh_health_snapshot(config)?;
+    let audit = &snapshot.audit;
+    let snapshot_age = snapshot_age_label(snapshot.generated_at);
+
+    if let Some(err) = audit.error.as_ref() {
+        return Some(DiagnosticCheck {
+            name: "Audit log".to_string(),
+            status: CheckStatus::Failed,
+            detail: format!(
+                "daemon snapshot reports audit issue: {} ({})",
+                err, snapshot_age
+            ),
+            fix: Some("sudo vigil doctor".to_string()),
+        });
+    }
+
+    let total = audit.entry_count?;
+    Some(DiagnosticCheck {
+        name: "Audit log".to_string(),
+        status: CheckStatus::Warning,
+        detail: format!(
+            "daemon reports {} entries ({}; chain verification requires sudo)",
+            format_count(total),
+            snapshot_age
+        ),
+        fix: Some("Run sudo vigil doctor to verify the audit chain".to_string()),
+    })
+}
+
+fn read_fresh_health_snapshot(config: &Config) -> Option<RuntimeHealthSnapshot> {
+    let snapshot = read_health_snapshot(config)?;
+    let age_secs = snapshot_age_seconds(snapshot.generated_at)?;
+    if age_secs > HEALTH_SNAPSHOT_MAX_AGE_SECS {
+        return None;
+    }
+    Some(snapshot)
+}
+
+fn snapshot_age_seconds(generated_at: i64) -> Option<i64> {
+    if generated_at <= 0 {
+        return None;
+    }
+
+    Some((Utc::now().timestamp() - generated_at).max(0))
+}
+
+fn snapshot_age_label(generated_at: i64) -> String {
+    snapshot_age_seconds(generated_at)
+        .map(|age| format!("snapshot {}", format_age(age)))
+        .unwrap_or_else(|| "snapshot age unknown".to_string())
+}
+
+fn collect_health_snapshot(config: &Config) -> RuntimeHealthSnapshot {
+    let mut snapshot = RuntimeHealthSnapshot {
+        generated_at: Utc::now().timestamp(),
+        ..RuntimeHealthSnapshot::default()
+    };
+
+    let baseline_path = &config.daemon.db_path;
+    let audit_path = db::audit_db_path(config);
+
+    let baseline_size = fs::metadata(baseline_path).map(|m| m.len()).unwrap_or(0);
+    let audit_size = fs::metadata(&audit_path).map(|m| m.len()).unwrap_or(0);
+    snapshot.database.total_size_bytes = baseline_size + audit_size;
+
+    if !baseline_path.exists() {
+        snapshot.baseline.error = Some(format!(
+            "baseline database not found at {}",
+            baseline_path.display()
+        ));
+    } else {
+        match open_existing_db(baseline_path) {
+            Ok(conn) => {
+                snapshot.database.baseline_open = true;
+
+                match baseline_ops::count(&conn) {
+                    Ok(count) => snapshot.baseline.entry_count = Some(count),
+                    Err(e) => {
+                        snapshot.baseline.error = Some(format!("cannot read baseline: {}", e))
+                    }
+                }
+
+                snapshot.baseline.last_refresh =
+                    baseline_ops::get_config_state(&conn, "last_baseline_refresh")
+                        .ok()
+                        .flatten()
+                        .and_then(|v| v.parse::<i64>().ok());
+
+                snapshot.database.journal_mode = conn
+                    .pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))
+                    .ok()
+                    .map(|m| m.to_uppercase());
+            }
+            Err(e) => {
+                snapshot.baseline.error = Some(format!("cannot open baseline database: {}", e));
+            }
+        }
+    }
+
+    if !audit_path.exists() {
+        snapshot.audit.error = Some(format!(
+            "audit database not found at {}",
+            audit_path.display()
+        ));
+    } else {
+        match open_existing_db(&audit_path) {
+            Ok(conn) => {
+                snapshot.database.audit_open = true;
+                match conn.query_row("SELECT COUNT(*) FROM audit_log", [], |row| {
+                    row.get::<_, i64>(0)
+                }) {
+                    Ok(total) => snapshot.audit.entry_count = Some(total.max(0) as u64),
+                    Err(e) => {
+                        snapshot.audit.error = Some(format!("cannot read audit log: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                snapshot.audit.error = Some(format!("cannot open audit database: {}", e));
+            }
+        }
+    }
+
+    snapshot.database.error = if !snapshot.database.baseline_open && !snapshot.database.audit_open {
+        Some("cannot open baseline and audit databases".to_string())
+    } else if !snapshot.database.baseline_open {
+        Some("cannot open baseline database".to_string())
+    } else if !snapshot.database.audit_open {
+        Some("cannot open audit database".to_string())
+    } else {
+        None
+    };
+
+    snapshot
+}
+
 fn detect_active_config_path() -> Option<PathBuf> {
     if let Ok(explicit) = std::env::var("VIGIL_CONFIG") {
         let p = PathBuf::from(explicit);
@@ -882,6 +1269,10 @@ fn metrics_path(config: &Config) -> PathBuf {
     config.daemon.runtime_dir.join("metrics.json")
 }
 
+fn health_path(config: &Config) -> PathBuf {
+    config.daemon.runtime_dir.join("health.json")
+}
+
 fn state_path(config: &Config) -> PathBuf {
     config.daemon.runtime_dir.join("state.json")
 }
@@ -891,6 +1282,23 @@ fn open_existing_db(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
+}
+
+fn has_sqlite_read_access(path: &Path) -> bool {
+    if std::fs::File::open(path).is_err() {
+        return false;
+    }
+
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        let sidecar_path = PathBuf::from(sidecar);
+        if sidecar_path.exists() && std::fs::File::open(&sidecar_path).is_err() {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn read_pid(path: &Path) -> Option<i32> {
@@ -1017,6 +1425,8 @@ fn shorten_next_timer(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn diagnostics_returns_expected_number_of_checks() {
@@ -1066,5 +1476,209 @@ mod tests {
             fix: None,
         }];
         assert_eq!(diagnostics_exit_code(&failed), 2);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn sqlite_read_access_checks_respect_permissions() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("baseline.db");
+        std::fs::write(&db, b"not-a-db").expect("write file");
+
+        std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o600))
+            .expect("set readable perms");
+        assert!(has_sqlite_read_access(&db));
+
+        std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o000))
+            .expect("set unreadable perms");
+        assert!(!has_sqlite_read_access(&db));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn baseline_check_reports_permission_limited_access() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("baseline.db");
+        std::fs::write(&db, b"placeholder").expect("write file");
+        std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o000))
+            .expect("set unreadable perms");
+
+        let mut cfg = crate::config::default_config();
+        cfg.daemon.db_path = db;
+
+        let check = check_baseline(&cfg);
+        assert_eq!(check.status, CheckStatus::Unknown);
+        assert!(
+            check.detail.contains("insufficient permissions"),
+            "unexpected detail: {}",
+            check.detail
+        );
+        assert_eq!(
+            check.fix,
+            Some("Run with elevated privileges: sudo vigil doctor".to_string())
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn database_and_audit_checks_report_permission_limited_access() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let baseline_db = dir.path().join("baseline.db");
+        let audit_db = dir.path().join("audit.db");
+
+        std::fs::write(&baseline_db, b"placeholder").expect("write baseline");
+        std::fs::write(&audit_db, b"placeholder").expect("write audit");
+        std::fs::set_permissions(&baseline_db, std::fs::Permissions::from_mode(0o000))
+            .expect("set baseline unreadable perms");
+        std::fs::set_permissions(&audit_db, std::fs::Permissions::from_mode(0o000))
+            .expect("set audit unreadable perms");
+
+        let mut cfg = crate::config::default_config();
+        cfg.daemon.db_path = baseline_db;
+
+        let db_check = check_database_integrity(&cfg);
+        assert_eq!(db_check.status, CheckStatus::Unknown);
+        assert!(
+            db_check.detail.contains("integrity check unavailable"),
+            "unexpected detail: {}",
+            db_check.detail
+        );
+
+        let audit_check = check_audit_log(&cfg);
+        assert_eq!(audit_check.status, CheckStatus::Unknown);
+        assert!(
+            audit_check.detail.contains("insufficient permissions"),
+            "unexpected detail: {}",
+            audit_check.detail
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn baseline_check_uses_fresh_daemon_snapshot_when_unreadable() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("baseline.db");
+        let runtime_dir = dir.path().join("run");
+        std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+
+        std::fs::write(&db, b"placeholder").expect("write baseline file");
+        std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o000))
+            .expect("set unreadable perms");
+
+        let now = Utc::now().timestamp();
+        let snapshot = RuntimeHealthSnapshot {
+            generated_at: now,
+            baseline: BaselineHealthSnapshot {
+                entry_count: Some(42),
+                last_refresh: Some(now - 60),
+                error: None,
+            },
+            ..RuntimeHealthSnapshot::default()
+        };
+        std::fs::write(
+            runtime_dir.join("health.json"),
+            serde_json::to_vec_pretty(&snapshot).expect("serialize health snapshot"),
+        )
+        .expect("write health snapshot");
+
+        let mut cfg = crate::config::default_config();
+        cfg.daemon.db_path = db;
+        cfg.daemon.runtime_dir = runtime_dir;
+
+        let check = check_baseline(&cfg);
+        assert_eq!(check.status, CheckStatus::Ok);
+        assert!(
+            check.detail.contains("daemon snapshot"),
+            "unexpected detail: {}",
+            check.detail
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn database_check_uses_snapshot_warning_when_unreadable() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let baseline_db = dir.path().join("baseline.db");
+        let audit_db = dir.path().join("audit.db");
+        let runtime_dir = dir.path().join("run");
+        std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+
+        std::fs::write(&baseline_db, b"placeholder").expect("write baseline file");
+        std::fs::write(&audit_db, b"placeholder").expect("write audit file");
+        std::fs::set_permissions(&baseline_db, std::fs::Permissions::from_mode(0o000))
+            .expect("set baseline unreadable perms");
+        std::fs::set_permissions(&audit_db, std::fs::Permissions::from_mode(0o000))
+            .expect("set audit unreadable perms");
+
+        let snapshot = RuntimeHealthSnapshot {
+            generated_at: Utc::now().timestamp(),
+            database: DatabaseHealthSnapshot {
+                baseline_open: true,
+                audit_open: true,
+                journal_mode: Some("WAL".to_string()),
+                total_size_bytes: 2_097_152,
+                error: None,
+            },
+            ..RuntimeHealthSnapshot::default()
+        };
+        std::fs::write(
+            runtime_dir.join("health.json"),
+            serde_json::to_vec_pretty(&snapshot).expect("serialize health snapshot"),
+        )
+        .expect("write health snapshot");
+
+        let mut cfg = crate::config::default_config();
+        cfg.daemon.db_path = baseline_db;
+        cfg.daemon.runtime_dir = runtime_dir;
+
+        let check = check_database_integrity(&cfg);
+        assert_eq!(check.status, CheckStatus::Warning);
+        assert!(
+            check
+                .detail
+                .contains("daemon can access baseline/audit databases"),
+            "unexpected detail: {}",
+            check.detail
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stale_health_snapshot_is_not_used_for_permission_fallback() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("baseline.db");
+        let runtime_dir = dir.path().join("run");
+        std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+
+        std::fs::write(&db, b"placeholder").expect("write baseline file");
+        std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o000))
+            .expect("set unreadable perms");
+
+        let snapshot = RuntimeHealthSnapshot {
+            generated_at: Utc::now().timestamp() - (HEALTH_SNAPSHOT_MAX_AGE_SECS + 60),
+            baseline: BaselineHealthSnapshot {
+                entry_count: Some(99),
+                last_refresh: Some(Utc::now().timestamp()),
+                error: None,
+            },
+            ..RuntimeHealthSnapshot::default()
+        };
+        std::fs::write(
+            runtime_dir.join("health.json"),
+            serde_json::to_vec_pretty(&snapshot).expect("serialize health snapshot"),
+        )
+        .expect("write health snapshot");
+
+        let mut cfg = crate::config::default_config();
+        cfg.daemon.db_path = db;
+        cfg.daemon.runtime_dir = runtime_dir;
+
+        let check = check_baseline(&cfg);
+        assert_eq!(check.status, CheckStatus::Unknown);
+        assert!(
+            check.detail.contains("insufficient permissions"),
+            "unexpected detail: {}",
+            check.detail
+        );
     }
 }

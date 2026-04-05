@@ -4,6 +4,42 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+- No entries yet.
+
+## [0.13.1] - 2026-04-05
+
+### Release Summary
+- Hardens diagnostics and status flows for real-world root-owned service deployments where unprivileged users cannot directly read SQLite baseline/audit databases.
+- Adds a structured daemon-authored health snapshot channel so non-root CLI invocations can report meaningful health context without weakening database permissions.
+- Preserves strict operator guidance for full-integrity workflows by explicitly separating reduced-coverage snapshot reads from privileged on-disk verification.
+
+### Problem Context
+- In default systemd deployments, Vigil databases are root-owned (`0600`) for security.
+- When `vigil doctor` and `vigil status` run as an unprivileged user, direct DB opens can fail even though the daemon and data are healthy.
+- Prior behavior could degrade into confusing visibility gaps (`unknown`) or suggest unrelated baseline recovery actions.
+
+### Fixed
+- `vigil doctor` now treats root-owned database visibility limits as an operator-context issue (reported as `Unknown` with `sudo vigil doctor` guidance) instead of misleading baseline corruption/init failures when run as an unprivileged user.
+- Aligned audit diagnostics with the same permission-aware behavior for consistency across baseline, database integrity, and audit checks.
+- Added daemon-authored runtime health snapshots (`/run/vigil/health.json`) so unprivileged `vigil doctor` and `vigil status` can fall back to fresh privileged baseline/database visibility data instead of dropping to `unknown` for baseline counts.
+- Added reduced-coverage snapshot-based fallback messaging for database/audit checks when direct integrity verification is unavailable without elevated privileges.
+
+### Changed
+- `vigil status` now uses baseline count fallback logic that prefers direct DB access and safely falls back to fresh daemon snapshot data when needed.
+- `vigil status --format json` now includes a `health` object containing the runtime health snapshot (when present) for automation and debugging.
+- Coordinator heartbeat now writes health snapshots alongside `metrics.json` and `state.json` in the runtime directory.
+- `vigil update` post-upgrade summary now uses the same resilient baseline-count fallback path.
+
+### Reliability Design Notes
+- Snapshot freshness is bounded (`5m` max age) to avoid reporting stale daemon state as authoritative.
+- If no fresh snapshot is available, doctor/status safely revert to explicit reduced-coverage guidance rather than fabricating health assertions.
+- Snapshot production is best-effort and non-fatal; daemon operation is not interrupted if snapshot writes fail.
+
+### Tests
+- Added regression tests for permission-limited doctor paths (baseline, database integrity, and audit checks).
+- Added regression coverage for fresh runtime health snapshot fallback behavior.
+- Added regression coverage that stale snapshots are rejected and do not mask permission-limited direct checks.
+
 ## [0.13.0] - 2026-04-05
 
 ### Release Summary

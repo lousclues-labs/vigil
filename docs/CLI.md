@@ -291,6 +291,10 @@ Show baseline counts, maintenance state, backend, DB path, and daemon PID if ava
 vigil status
 ```
 
+Notes:
+- `vigil status` now falls back to `/run/vigil/health.json` for baseline counts when the active user cannot read root-owned DB files directly.
+- For automation, `vigil status --format json` includes a `health` object with the raw daemon health snapshot when present.
+
 ---
 
 ## `config`
@@ -331,6 +335,12 @@ Run environment and health diagnostics:
 vigil doctor
 ```
 
+Notes:
+- If Vigil is deployed as a root-owned systemd service (default), baseline DB files are typically root-owned (`0600`).
+- In that mode, running `vigil doctor` as an unprivileged user may show reduced-coverage checks (`○`/`⚠`) when direct integrity visibility is unavailable.
+- If a fresh daemon health snapshot exists, `vigil doctor` uses it to report baseline/database/audit context instead of failing due to local DB permission limits.
+- Run `sudo vigil doctor` for full database-level diagnostics.
+
 ---
 
 ## `version`
@@ -344,7 +354,7 @@ vigil version
 Output:
 
 ```text
-vigil 0.2.1
+vigil 0.13.1
 ```
 
 ---
@@ -355,9 +365,11 @@ vigil 0.2.1
 |------|---------|
 | `0` | command completed successfully |
 | `1` | command failed (runtime/config/DB/validation error) |
+| `2` | `doctor` found one or more failed checks |
 
 Behavior details:
 - `main` exits with `1` on any propagated error.
+- `doctor` uses explicit health exit codes: `0` (all OK), `1` (warnings only), `2` (failures present).
 - `config validate` exits with `1` on validation failure.
 
 ---

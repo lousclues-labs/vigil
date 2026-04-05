@@ -182,13 +182,16 @@ fn cmd_status(config_path: Option<&Path>, format: OutputFormat) -> vigil::Result
 
     let daemon = doctor::probe_daemon(&cfg);
     let backend = doctor::monitor_backend_label(&cfg);
-    let baseline_entries = doctor::baseline_count(&cfg);
+    let baseline_entries = doctor::baseline_count_with_fallback(&cfg);
     let recent_changes = doctor::recent_audit_change_count(&cfg, Utc::now().timestamp() - 86_400);
     let metrics = doctor::read_metrics(&cfg);
     let metrics_json = doctor::read_metrics(&cfg)
         .and_then(|m| serde_json::to_value(m).ok())
         .unwrap_or_else(|| serde_json::json!({}));
     let state_json = doctor::read_state_json(&cfg).unwrap_or_else(|| serde_json::json!({}));
+    let health_json = doctor::read_health_snapshot(&cfg)
+        .and_then(|h| serde_json::to_value(h).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
     let last_scan_at = doctor::metrics_file_timestamp(&cfg);
 
     if format == OutputFormat::Json {
@@ -200,6 +203,7 @@ fn cmd_status(config_path: Option<&Path>, format: OutputFormat) -> vigil::Result
             "last_scan_at": last_scan_at,
             "metrics": metrics_json,
             "state": state_json,
+            "health": health_json,
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
@@ -393,7 +397,7 @@ fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
 
     let baseline_summary = match vigil::config::load_config(None)
         .ok()
-        .and_then(|cfg| doctor::baseline_count(&cfg))
+        .and_then(|cfg| doctor::baseline_count_with_fallback(&cfg))
     {
         Some(count) => format!("preserved ({} entries)", format_count(count.max(0) as u64)),
         None => "preserved".to_string(),
