@@ -109,6 +109,8 @@ mod tests {
             },
         );
         let diffs = diff_config(&old, &new);
-        assert!(diffs.iter().any(|d| d.contains("watch group 'temp' removed")));
+        assert!(diffs
+            .iter()
+            .any(|d| d.contains("watch group 'temp' removed")));
     }
 }

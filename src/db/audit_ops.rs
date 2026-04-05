@@ -254,7 +254,9 @@ pub fn verify_chain(conn: &Connection) -> Result<AuditChainVerifyResult> {
         ))
     })?;
 
-    let genesis = blake3::hash(b"vigil-audit-chain-genesis").to_hex().to_string();
+    let genesis = blake3::hash(b"vigil-audit-chain-genesis")
+        .to_hex()
+        .to_string();
     let mut prev = genesis;
 
     let mut total = 0u64;
@@ -315,7 +317,9 @@ mod tests {
     fn insert_and_retrieve_audit() {
         let conn = test_conn();
         let change = sample_change("/etc/passwd");
-        let genesis = blake3::hash(b"vigil-audit-chain-genesis").to_hex().to_string();
+        let genesis = blake3::hash(b"vigil-audit-chain-genesis")
+            .to_hex()
+            .to_string();
 
         let _hash = insert_audit_entry(&conn, &change, false, false, None, &genesis).unwrap();
         let entries = get_recent(&conn, 10).unwrap();
@@ -329,13 +333,18 @@ mod tests {
     fn chain_verification_detects_break() {
         let conn = test_conn();
         let change = sample_change("/etc/passwd");
-        let genesis = blake3::hash(b"vigil-audit-chain-genesis").to_hex().to_string();
+        let genesis = blake3::hash(b"vigil-audit-chain-genesis")
+            .to_hex()
+            .to_string();
 
         let h1 = insert_audit_entry(&conn, &change, false, false, None, &genesis).unwrap();
         let _h2 = insert_audit_entry(&conn, &change, false, false, None, &h1).unwrap();
 
-        conn.execute("UPDATE audit_log SET chain_hash = 'corrupt' WHERE id = 2", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE audit_log SET chain_hash = 'corrupt' WHERE id = 2",
+            [],
+        )
+        .unwrap();
 
         let (total, valid, breaks, _missing) = verify_chain(&conn).unwrap();
         assert_eq!(total, 2);

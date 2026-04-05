@@ -336,7 +336,13 @@ mod tests {
         snapshot.permissions.mode = 0o600;
         let changes = snapshot.diff(&baseline);
         assert_eq!(changes.len(), 1);
-        assert!(matches!(&changes[0], Change::PermissionsChanged { old: 0o644, new: 0o600 }));
+        assert!(matches!(
+            &changes[0],
+            Change::PermissionsChanged {
+                old: 0o644,
+                new: 0o600
+            }
+        ));
     }
 
     #[test]

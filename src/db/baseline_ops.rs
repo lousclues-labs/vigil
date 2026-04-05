@@ -75,32 +75,16 @@ pub fn get_by_path(conn: &Connection, path: &str) -> Result<Option<BaselineEntry
         let security_json: String = row.get(5)?;
 
         let identity: FileIdentity = serde_json::from_str(&identity_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                2,
-                rusqlite::types::Type::Text,
-                Box::new(e),
-            )
+            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
         })?;
         let content: ContentFingerprint = serde_json::from_str(&content_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                3,
-                rusqlite::types::Type::Text,
-                Box::new(e),
-            )
+            rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
         })?;
         let perms: PermissionState = serde_json::from_str(&perms_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                4,
-                rusqlite::types::Type::Text,
-                Box::new(e),
-            )
+            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
         })?;
         let security: SecurityState = serde_json::from_str(&security_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                5,
-                rusqlite::types::Type::Text,
-                Box::new(e),
-            )
+            rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
         })?;
 
         let source_str: String = row.get(8)?;
@@ -144,32 +128,16 @@ pub fn get_all(conn: &Connection) -> Result<Vec<BaselineEntry>> {
         let security_json: String = row.get(5)?;
 
         let identity: FileIdentity = serde_json::from_str(&identity_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                2,
-                rusqlite::types::Type::Text,
-                Box::new(e),
-            )
+            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
         })?;
         let content: ContentFingerprint = serde_json::from_str(&content_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                3,
-                rusqlite::types::Type::Text,
-                Box::new(e),
-            )
+            rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
         })?;
         let perms: PermissionState = serde_json::from_str(&perms_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                4,
-                rusqlite::types::Type::Text,
-                Box::new(e),
-            )
+            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
         })?;
         let security: SecurityState = serde_json::from_str(&security_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                5,
-                rusqlite::types::Type::Text,
-                Box::new(e),
-            )
+            rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
         })?;
 
         let source_str: String = row.get(8)?;
@@ -267,8 +235,8 @@ mod tests {
     use super::*;
     use crate::db::schema;
     use crate::types::{
-        BaselineEntry, BaselineSource, ContentFingerprint, FileIdentity, FileType,
-        PermissionState, SecurityState,
+        BaselineEntry, BaselineSource, ContentFingerprint, FileIdentity, FileType, PermissionState,
+        SecurityState,
     };
 
     fn test_conn() -> Connection {
@@ -337,7 +305,8 @@ mod tests {
     fn json_blob_backward_compat_default_field() {
         let conn = test_conn();
 
-        let old_identity_json = r#"{"inode":1,"device":1,"file_type":"regular","symlink_target":null}"#;
+        let old_identity_json =
+            r#"{"inode":1,"device":1,"file_type":"regular","symlink_target":null}"#;
         let content_json = r#"{"hash":"h","size":1}"#;
         let perms_json = r#"{"mode":420,"owner_uid":0,"owner_gid":0}"#;
         let security_json = r#"{"xattrs":{},"security_context":""}"#;

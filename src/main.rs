@@ -97,8 +97,10 @@ fn cmd_status(config_path: Option<&std::path::Path>, format: OutputFormat) -> vi
 
     match format {
         OutputFormat::Json => {
-            let metrics_json: serde_json::Value = serde_json::from_str(&metrics).unwrap_or(serde_json::json!({}));
-            let state_json: serde_json::Value = serde_json::from_str(&state).unwrap_or(serde_json::json!({}));
+            let metrics_json: serde_json::Value =
+                serde_json::from_str(&metrics).unwrap_or(serde_json::json!({}));
+            let state_json: serde_json::Value =
+                serde_json::from_str(&state).unwrap_or(serde_json::json!({}));
             let out = serde_json::json!({
                 "metrics": metrics_json,
                 "state": state_json,
@@ -130,7 +132,10 @@ fn cmd_audit(
         AuditAction::Show { last } => {
             let entries = vigil::db::audit_ops::get_recent(&conn, last)?;
             if format == OutputFormat::Json {
-                println!("{}", serde_json::to_string_pretty(&entries_to_json(&entries))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&entries_to_json(&entries))?
+                );
             } else {
                 for e in entries {
                     println!("{} {} {}", e.timestamp, e.severity, e.path);
@@ -180,15 +185,16 @@ fn entries_to_json(entries: &[vigil::db::audit_ops::AuditEntry]) -> serde_json::
     )
 }
 
-fn cmd_config(
-    config_path: Option<&std::path::Path>,
-    action: ConfigAction,
-) -> vigil::Result<()> {
+fn cmd_config(config_path: Option<&std::path::Path>, action: ConfigAction) -> vigil::Result<()> {
     let cfg = vigil::config::load_config(config_path)?;
 
     match action {
         ConfigAction::Show => {
-            println!("{}", toml::to_string_pretty(&cfg).map_err(|e| vigil::VigilError::Config(e.to_string()))?);
+            println!(
+                "{}",
+                toml::to_string_pretty(&cfg)
+                    .map_err(|e| vigil::VigilError::Config(e.to_string()))?
+            );
         }
         ConfigAction::Validate => {
             vigil::config::validate_config(&cfg)?;

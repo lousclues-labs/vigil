@@ -64,7 +64,9 @@ fn process_event_detects_content_change() {
         &conn,
         &event,
         &Arc::new(ArcSwap::from_pointee(cfg2.clone())),
-        &Arc::new(ArcSwap::from_pointee(vigil::watch_index::WatchGroupIndex::from_config(&cfg2))),
+        &Arc::new(ArcSwap::from_pointee(
+            vigil::watch_index::WatchGroupIndex::from_config(&cfg2),
+        )),
         &vigil::metrics::Metrics::new(),
     )
     .unwrap();

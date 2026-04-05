@@ -24,11 +24,10 @@ fn naive_excluded(
 #[test]
 fn exclusion_filter_matches_naive_logic() {
     let mut cfg = vigil::config::default_config();
-    cfg.exclusions.system_exclusions = vec!["/proc/*".into(), "/sys/*".into(), "/tmp/cache/*".into()];
+    cfg.exclusions.system_exclusions =
+        vec!["/proc/*".into(), "/sys/*".into(), "/tmp/cache/*".into()];
 
-    cfg.exclusions.patterns = (0..40)
-        .map(|i| format!("**/*.tmp{}", i))
-        .collect();
+    cfg.exclusions.patterns = (0..40).map(|i| format!("**/*.tmp{}", i)).collect();
     cfg.exclusions.patterns.push("**/*.swp".into());
 
     let filter = ExclusionFilter::new(&cfg);

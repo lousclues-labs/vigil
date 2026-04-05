@@ -74,11 +74,8 @@ impl Daemon {
         write_pid_file(&pid_file)?;
 
         let sigset = setup_signal_mask()?;
-        let _signal_handle = spawn_signal_thread(
-            sigset,
-            self.shutdown.clone(),
-            self.reload_flag.clone(),
-        )?;
+        let _signal_handle =
+            spawn_signal_thread(sigset, self.shutdown.clone(), self.reload_flag.clone())?;
 
         let (event_tx, event_rx) = bounded::<FsEvent>(1024);
         let (alert_tx, alert_rx) = bounded::<AlertPayload>(256);

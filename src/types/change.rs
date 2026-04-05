@@ -9,15 +9,45 @@ use crate::types::{FileType, Severity};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
-    ContentModified { old_hash: String, new_hash: String },
-    PermissionsChanged { old: u32, new: u32 },
-    OwnerChanged { old_uid: u32, new_uid: u32, old_gid: u32, new_gid: u32 },
-    InodeChanged { old: u64, new: u64 },
-    TypeChanged { old: FileType, new: FileType },
-    SymlinkTargetChanged { old: PathBuf, new: PathBuf },
-    CapabilitiesChanged { old: Option<String>, new: Option<String> },
-    XattrChanged { key: String, old: Option<String>, new: Option<String> },
-    SecurityContextChanged { old: String, new: String },
+    ContentModified {
+        old_hash: String,
+        new_hash: String,
+    },
+    PermissionsChanged {
+        old: u32,
+        new: u32,
+    },
+    OwnerChanged {
+        old_uid: u32,
+        new_uid: u32,
+        old_gid: u32,
+        new_gid: u32,
+    },
+    InodeChanged {
+        old: u64,
+        new: u64,
+    },
+    TypeChanged {
+        old: FileType,
+        new: FileType,
+    },
+    SymlinkTargetChanged {
+        old: PathBuf,
+        new: PathBuf,
+    },
+    CapabilitiesChanged {
+        old: Option<String>,
+        new: Option<String>,
+    },
+    XattrChanged {
+        key: String,
+        old: Option<String>,
+        new: Option<String>,
+    },
+    SecurityContextChanged {
+        old: String,
+        new: String,
+    },
     Deleted,
     Created,
 }
@@ -73,19 +103,22 @@ impl ChangeResult {
 
     /// Returns the primary change type for display/logging.
     pub fn primary_change_name(&self) -> &str {
-        self.changes.first().map(|c| match c {
-            Change::ContentModified { .. } => "modified",
-            Change::PermissionsChanged { .. } => "permissions_changed",
-            Change::OwnerChanged { .. } => "owner_changed",
-            Change::InodeChanged { .. } => "inode_changed",
-            Change::TypeChanged { .. } => "type_changed",
-            Change::SymlinkTargetChanged { .. } => "symlink_target_changed",
-            Change::CapabilitiesChanged { .. } => "capabilities_changed",
-            Change::XattrChanged { .. } => "xattr_changed",
-            Change::SecurityContextChanged { .. } => "security_context_changed",
-            Change::Deleted => "deleted",
-            Change::Created => "created",
-        }).unwrap_or("unknown")
+        self.changes
+            .first()
+            .map(|c| match c {
+                Change::ContentModified { .. } => "modified",
+                Change::PermissionsChanged { .. } => "permissions_changed",
+                Change::OwnerChanged { .. } => "owner_changed",
+                Change::InodeChanged { .. } => "inode_changed",
+                Change::TypeChanged { .. } => "type_changed",
+                Change::SymlinkTargetChanged { .. } => "symlink_target_changed",
+                Change::CapabilitiesChanged { .. } => "capabilities_changed",
+                Change::XattrChanged { .. } => "xattr_changed",
+                Change::SecurityContextChanged { .. } => "security_context_changed",
+                Change::Deleted => "deleted",
+                Change::Created => "created",
+            })
+            .unwrap_or("unknown")
     }
 }
 
@@ -122,6 +155,12 @@ mod tests {
         };
         let json = serde_json::to_string(&change).unwrap();
         let parsed: Change = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, Change::PermissionsChanged { old: 0o644, new: 0o600 }));
+        assert!(matches!(
+            parsed,
+            Change::PermissionsChanged {
+                old: 0o644,
+                new: 0o600
+            }
+        ));
     }
 }

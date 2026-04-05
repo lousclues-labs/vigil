@@ -55,13 +55,12 @@ pub fn spawn_workers(
                 while !shutdown.load(Ordering::Acquire) {
                     match event_rx.recv_timeout(Duration::from_millis(500)) {
                         Ok(event) => {
-                            metrics
-                                .events_processed
-                                .fetch_add(1, Ordering::Relaxed);
+                            metrics.events_processed.fetch_add(1, Ordering::Relaxed);
 
-                            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                process_event(&conn, &event, &config, &watch_index, &metrics)
-                            }));
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    process_event(&conn, &event, &config, &watch_index, &metrics)
+                                }));
 
                             match result {
                                 Ok(Ok(Some(change_result))) => {
@@ -80,9 +79,7 @@ pub fn spawn_workers(
                                     tracing::debug!(error = %e, "event processing error");
                                 }
                                 Err(_) => {
-                                    metrics
-                                        .panics_caught
-                                        .fetch_add(1, Ordering::Relaxed);
+                                    metrics.panics_caught.fetch_add(1, Ordering::Relaxed);
                                     tracing::error!("panic caught in worker thread");
                                 }
                             }

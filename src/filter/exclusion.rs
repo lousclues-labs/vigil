@@ -48,7 +48,9 @@ impl ExclusionFilter {
 
         let self_paths = vec![
             config.daemon.db_path.to_string_lossy().to_string(),
-            crate::db::audit_db_path(config).to_string_lossy().to_string(),
+            crate::db::audit_db_path(config)
+                .to_string_lossy()
+                .to_string(),
             config.alerts.log_file.to_string_lossy().to_string(),
             config.daemon.runtime_dir.to_string_lossy().to_string(),
         ];

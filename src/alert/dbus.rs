@@ -55,16 +55,9 @@ impl AlertSink for DbusSink {
         }
 
         let title = format!("Vigil {}", alert.severity.to_string().to_uppercase());
-        let body = format!(
-            "{} ({})",
-            alert.file.path.display(),
-            alert.change_type
-        );
+        let body = format!("{} ({})", alert.file.path.display(), alert.change_type);
 
-        let status = Command::new("notify-send")
-            .arg(title)
-            .arg(body)
-            .status();
+        let status = Command::new("notify-send").arg(title).arg(body).status();
 
         if let Err(e) = status {
             tracing::debug!(error = %e, "notify-send failed");

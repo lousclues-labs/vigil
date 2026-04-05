@@ -71,11 +71,21 @@ fn diff_detects_multiple_dimensions() {
 
     let changes = snapshot.diff(&baseline);
 
-    assert!(changes.iter().any(|c| matches!(c, Change::ContentModified { .. })));
-    assert!(changes.iter().any(|c| matches!(c, Change::PermissionsChanged { .. })));
-    assert!(changes.iter().any(|c| matches!(c, Change::OwnerChanged { .. })));
-    assert!(changes.iter().any(|c| matches!(c, Change::InodeChanged { .. })));
-    assert!(changes.iter().any(|c| matches!(c, Change::XattrChanged { .. })));
+    assert!(changes
+        .iter()
+        .any(|c| matches!(c, Change::ContentModified { .. })));
+    assert!(changes
+        .iter()
+        .any(|c| matches!(c, Change::PermissionsChanged { .. })));
+    assert!(changes
+        .iter()
+        .any(|c| matches!(c, Change::OwnerChanged { .. })));
+    assert!(changes
+        .iter()
+        .any(|c| matches!(c, Change::InodeChanged { .. })));
+    assert!(changes
+        .iter()
+        .any(|c| matches!(c, Change::XattrChanged { .. })));
     assert!(changes
         .iter()
         .any(|c| matches!(c, Change::SecurityContextChanged { .. })));

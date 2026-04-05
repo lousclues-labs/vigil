@@ -85,7 +85,9 @@ impl AlertDispatcher {
         }
 
         if !config.hooks.signal_socket.is_empty() {
-            sinks.push(Box::new(socket::SocketSink::new(&config.hooks.signal_socket)));
+            sinks.push(Box::new(socket::SocketSink::new(
+                &config.hooks.signal_socket,
+            )));
         }
 
         if config.alerts.remote_syslog.enabled {
@@ -136,11 +138,16 @@ impl AlertDispatcher {
         })
     }
 
-    pub fn run(self, alert_rx: Receiver<AlertPayload>, shutdown: Arc<std::sync::atomic::AtomicBool>) {
+    pub fn run(
+        self,
+        alert_rx: Receiver<AlertPayload>,
+        shutdown: Arc<std::sync::atomic::AtomicBool>,
+    ) {
         while !shutdown.load(std::sync::atomic::Ordering::Acquire) {
             match alert_rx.recv_timeout(Duration::from_millis(500)) {
                 Ok(payload) => {
-                    let suppressed = self.is_suppressed(&payload.change, payload.maintenance_window);
+                    let suppressed =
+                        self.is_suppressed(&payload.change, payload.maintenance_window);
 
                     if let Err(e) = self.write_audit_entry(&payload, suppressed) {
                         tracing::error!(error = %e, "audit write failed");
@@ -276,7 +283,8 @@ impl AlertDispatcher {
             change_type,
             file: AlertFileInfo {
                 path: change.path.clone(),
-                changes_json: serde_json::to_string(&change.changes).unwrap_or_else(|_| "[]".to_string()),
+                changes_json: serde_json::to_string(&change.changes)
+                    .unwrap_or_else(|_| "[]".to_string()),
                 package: change.package.clone(),
                 package_update: change.package_update,
                 responsible_pid: change.process.as_ref().map(|p| p.pid),

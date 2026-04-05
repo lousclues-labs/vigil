@@ -34,10 +34,8 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<u64>
 
                 match crate::types::FileSnapshot::from_path(&path, &opts) {
                     Ok(SnapshotOrDeleted::Snapshot(snapshot)) => {
-                        let package = crate::package::query_package_owner(
-                            &path,
-                            &config.package_manager,
-                        );
+                        let package =
+                            crate::package::query_package_owner(&path, &config.package_manager);
 
                         let entry = crate::types::BaselineEntry {
                             id: None,

@@ -97,7 +97,10 @@ fn write_metrics_snapshot(runtime_dir: &std::path::Path, metrics: &Metrics) -> c
     Ok(())
 }
 
-fn write_state_snapshot(runtime_dir: &std::path::Path, state: &RwLock<DaemonState>) -> crate::Result<()> {
+fn write_state_snapshot(
+    runtime_dir: &std::path::Path,
+    state: &RwLock<DaemonState>,
+) -> crate::Result<()> {
     std::fs::create_dir_all(runtime_dir)?;
     let path = runtime_dir.join("state.json");
 

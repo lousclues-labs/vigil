@@ -164,7 +164,12 @@ mod tests {
 
     #[test]
     fn severity_display_roundtrip() {
-        for sev in &[Severity::Low, Severity::Medium, Severity::High, Severity::Critical] {
+        for sev in &[
+            Severity::Low,
+            Severity::Medium,
+            Severity::High,
+            Severity::Critical,
+        ] {
             let s = sev.to_string();
             let parsed: Severity = s.parse().unwrap();
             assert_eq!(*sev, parsed);
@@ -179,7 +184,11 @@ mod tests {
 
     #[test]
     fn baseline_source_display_roundtrip() {
-        for src in &[BaselineSource::PackageManager, BaselineSource::Manual, BaselineSource::AutoScan] {
+        for src in &[
+            BaselineSource::PackageManager,
+            BaselineSource::Manual,
+            BaselineSource::AutoScan,
+        ] {
             let s = src.to_string();
             let parsed: BaselineSource = s.parse().unwrap();
             assert_eq!(*src, parsed);

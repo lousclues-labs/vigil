@@ -13,9 +13,7 @@ fn bench_blake3_hash_bytes(c: &mut Criterion) {
 
 fn bench_exclusion_filter(c: &mut Criterion) {
     let mut cfg = vigil::config::default_config();
-    cfg.exclusions.patterns = (0..200)
-        .map(|i| format!("**/*.tmp{}", i))
-        .collect();
+    cfg.exclusions.patterns = (0..200).map(|i| format!("**/*.tmp{}", i)).collect();
 
     let filter = vigil::filter::exclusion::ExclusionFilter::new(&cfg);
 

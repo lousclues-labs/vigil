@@ -12,7 +12,13 @@ use std::path::Path;
 /// Uses synchronous = NORMAL for performance on the hot path.
 pub fn open_baseline_db(config: &Config) -> Result<Connection> {
     let db_path = &config.daemon.db_path;
-    open_db_internal(db_path, "NORMAL", config.database.wal_mode, config.database.busy_timeout_ms, true)
+    open_db_internal(
+        db_path,
+        "NORMAL",
+        config.database.wal_mode,
+        config.database.busy_timeout_ms,
+        true,
+    )
 }
 
 /// Open baseline DB read-only (for worker threads).
@@ -32,7 +38,13 @@ pub fn open_baseline_db_readonly(path: &Path) -> Result<Connection> {
 /// Uses synchronous = FULL for tamper-evident audit trail.
 pub fn open_audit_db(config: &Config) -> Result<Connection> {
     let audit_path = audit_db_path(config);
-    open_db_internal(&audit_path, "FULL", config.database.wal_mode, config.database.busy_timeout_ms, false)
+    open_db_internal(
+        &audit_path,
+        "FULL",
+        config.database.wal_mode,
+        config.database.busy_timeout_ms,
+        false,
+    )
 }
 
 /// Derive the audit.db path from config (sibling of baseline.db).
@@ -116,9 +128,17 @@ pub fn open_db_at_with_options(
     if wal_mode {
         conn.pragma_update(None, "journal_mode", "WAL")?;
     }
-    conn.pragma_update(None, "synchronous", sync_mode.unwrap_or("NORMAL").to_string())?;
+    conn.pragma_update(
+        None,
+        "synchronous",
+        sync_mode.unwrap_or("NORMAL").to_string(),
+    )?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.pragma_update(None, "busy_timeout", busy_timeout_ms.unwrap_or(5000).to_string())?;
+    conn.pragma_update(
+        None,
+        "busy_timeout",
+        busy_timeout_ms.unwrap_or(5000).to_string(),
+    )?;
     conn.pragma_update(None, "cache_size", "-8000")?;
     conn.pragma_update(None, "mmap_size", "268435456")?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
@@ -132,7 +152,11 @@ fn configure_connection(conn: &Connection, config: &Config) -> Result<()> {
     }
     conn.pragma_update(None, "synchronous", &config.database.sync_mode)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.pragma_update(None, "busy_timeout", config.database.busy_timeout_ms.to_string())?;
+    conn.pragma_update(
+        None,
+        "busy_timeout",
+        config.database.busy_timeout_ms.to_string(),
+    )?;
     conn.pragma_update(None, "cache_size", "-8000")?;
     conn.pragma_update(None, "mmap_size", "268435456")?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;

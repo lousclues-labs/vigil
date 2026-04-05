@@ -23,7 +23,9 @@ impl JsonFileSink {
             .create(true)
             .append(true)
             .open(path)
-            .map_err(|e| VigilError::Alert(format!("cannot open JSON log {}: {}", path.display(), e)))?;
+            .map_err(|e| {
+                VigilError::Alert(format!("cannot open JSON log {}: {}", path.display(), e))
+            })?;
 
         Ok(Self {
             file: Mutex::new(file),
@@ -40,8 +42,13 @@ impl AlertSink for JsonFileSink {
     fn dispatch(&self, alert: &Alert) -> Result<()> {
         let mut file = self.file.lock();
         let line = serde_json::to_string(alert)?;
-        writeln!(file, "{}", line)
-            .map_err(|e| VigilError::Alert(format!("cannot write JSON log {}: {}", self.path.display(), e)))?;
+        writeln!(file, "{}", line).map_err(|e| {
+            VigilError::Alert(format!(
+                "cannot write JSON log {}: {}",
+                self.path.display(),
+                e
+            ))
+        })?;
         Ok(())
     }
 

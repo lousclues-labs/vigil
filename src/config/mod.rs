@@ -416,8 +416,9 @@ pub fn load_config(explicit_path: Option<&Path>) -> Result<Config> {
     for path in &paths {
         if path.exists() {
             tracing::info!(path = %path.display(), "loading config");
-            let content = std::fs::read_to_string(path)
-                .map_err(|e| VigilError::Config(format!("cannot read {}: {}", path.display(), e)))?;
+            let content = std::fs::read_to_string(path).map_err(|e| {
+                VigilError::Config(format!("cannot read {}: {}", path.display(), e))
+            })?;
             let mut config: Config = toml::from_str(&content)?;
             migrate_config(&mut config);
             validate_config(&config)?;
@@ -432,7 +433,11 @@ pub fn load_config(explicit_path: Option<&Path>) -> Result<Config> {
 
 pub fn migrate_config(config: &mut Config) {
     if config.config_version < 2 {
-        tracing::info!(from = config.config_version, to = 2, "migrating config version");
+        tracing::info!(
+            from = config.config_version,
+            to = 2,
+            "migrating config version"
+        );
         config.config_version = 2;
     }
 }
