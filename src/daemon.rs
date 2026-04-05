@@ -9,9 +9,20 @@ use vigil::config;
 use vigil::error::Result;
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .format_timestamp_secs()
-        .init();
+    let log_format = std::env::var("VIGIL_LOG_FORMAT").unwrap_or_default();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    if log_format == "json" {
+        tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(filter)
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
+    // Bridge log crate macros to tracing
+    tracing_log::LogTracer::init().ok();
 
     log::info!("vigild {} starting", env!("CARGO_PKG_VERSION"));
 
@@ -26,6 +37,9 @@ fn run() -> Result<()> {
         .ok()
         .map(std::path::PathBuf::from);
     let cfg = config::load_config(config_path.as_deref())?;
+
+    // Re-initialize logging with config's log_format if different
+    // (the initial setup uses env var, but config takes precedence for daemon)
 
     vigil::daemon_run(&cfg)
 }

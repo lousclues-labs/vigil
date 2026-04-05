@@ -46,6 +46,9 @@ fuzz_target!(|input: FuzzEntry| {
         source: BaselineSource::AutoScan,
         added_at: 1700000000,
         updated_at: 1700000000,
+        file_type: "file".into(),
+        symlink_target: None,
+        capabilities: None,
     };
 
     // Insert must not panic

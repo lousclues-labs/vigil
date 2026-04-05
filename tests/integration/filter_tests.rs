@@ -14,6 +14,8 @@ fn make_event(path: &str) -> FsEvent {
         path: PathBuf::from(path),
         event_type: FsEventType::Modify,
         timestamp: Utc::now(),
+        responsible_pid: None,
+        responsible_exe: None,
     }
 }
 

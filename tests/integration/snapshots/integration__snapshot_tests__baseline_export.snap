@@ -19,6 +19,9 @@ expression: entries
     "package": "base",
     "source": "package_manager",
     "added_at": 1700000000,
-    "updated_at": 1700000000
+    "updated_at": 1700000000,
+    "file_type": "file",
+    "symlink_target": null,
+    "capabilities": null
   }
 ]

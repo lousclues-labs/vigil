@@ -58,6 +58,9 @@ pub fn collect_file_metadata(
     // 5. Security context via fd (SELinux/AppArmor)
     let security_context = read_security_context_fd(&file);
 
+    // 6. Capabilities via security.capability xattr
+    let capabilities = read_capabilities_fd(&file);
+
     Ok(FileMetadata {
         path: path.to_path_buf(),
         hash,
@@ -70,6 +73,9 @@ pub fn collect_file_metadata(
         device: meta.dev(),
         xattrs,
         security_context,
+        file_type: "file".to_string(),
+        symlink_target: None,
+        capabilities,
     })
 }
 
@@ -115,4 +121,15 @@ fn read_security_context_fd(file: &File) -> String {
     }
 
     String::new()
+}
+
+/// Read Linux file capabilities via the security.capability xattr.
+fn read_capabilities_fd(file: &File) -> Option<String> {
+    let fd_path = format!("/proc/self/fd/{}", file.as_raw_fd());
+    let fd_path = Path::new(&fd_path);
+
+    match xattr::get(fd_path, "security.capability") {
+        Ok(Some(val)) => Some(hex::encode(&val)),
+        _ => None,
+    }
 }

@@ -21,7 +21,11 @@ expression: alert
     "inode_changed": false,
     "mtime_changed": true,
     "package": "base",
-    "package_update": false
+    "package_update": false,
+    "responsible_pid": null,
+    "responsible_exe": null,
+    "baseline_capabilities": null,
+    "current_capabilities": null
   },
   "context": {
     "hostname": "test-host",

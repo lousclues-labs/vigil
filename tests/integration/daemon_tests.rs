@@ -121,6 +121,8 @@ fn daemon_lifecycle_create_modify_delete() {
                                     package: None,
                                     package_update: false,
                                     monitored_group: "custom".into(),
+                                    responsible_pid: None,
+                                    responsible_exe: None,
                                 };
                                 let _ = alert_engine.dispatch(&change, false, &conn2);
                             }

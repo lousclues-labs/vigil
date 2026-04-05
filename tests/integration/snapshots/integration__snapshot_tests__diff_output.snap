@@ -23,6 +23,8 @@ expression: "vec![change]"
     "new_mtime": 1700001000,
     "package": "base",
     "package_update": false,
-    "monitored_group": "system_critical"
+    "monitored_group": "system_critical",
+    "responsible_pid": null,
+    "responsible_exe": null
   }
 ]

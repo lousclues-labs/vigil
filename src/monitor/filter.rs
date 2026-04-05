@@ -189,6 +189,7 @@ mod tests {
 
     fn test_config() -> Config {
         Config {
+            config_version: 2,
             daemon: Default::default(),
             scanner: Default::default(),
             alerts: Default::default(),
@@ -209,6 +210,8 @@ mod tests {
             path: PathBuf::from(path),
             event_type: FsEventType::Modify,
             timestamp: Utc::now(),
+            responsible_pid: None,
+            responsible_exe: None,
         }
     }
 

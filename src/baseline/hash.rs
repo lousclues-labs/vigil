@@ -1,28 +1,54 @@
 use std::fs::File;
-use std::io::Seek;
+use std::io::{BufReader, Seek};
 
 use crate::error::{Result, VigilError};
 
 /// Compute BLAKE3 hash of an already-opened file descriptor.
 /// This avoids TOCTOU by never re-opening the path.
+///
+/// If `mmap_threshold` is provided and the file size >= threshold,
+/// uses memory-mapped I/O for better performance on large files (Item 19).
+/// Otherwise uses buffered read with a 128KB buffer.
 pub fn blake3_hash_file(file: &File) -> Result<String> {
+    blake3_hash_file_with_threshold(file, None)
+}
+
+/// Compute BLAKE3 hash with configurable mmap threshold.
+pub fn blake3_hash_file_with_threshold(file: &File, mmap_threshold: Option<u64>) -> Result<String> {
     // Clone the file handle so we can read without consuming the caller's fd
     let mut reader = file
         .try_clone()
         .map_err(|e| VigilError::Hash(format!("cannot clone file handle: {}", e)))?;
 
-    // Seek to the start to ensure we hash the entire file, even if the
-    // file descriptor's cursor was moved by prior reads (e.g., metadata).
+    // Seek to the start to ensure we hash the entire file
     reader
         .seek(std::io::SeekFrom::Start(0))
         .map_err(|e| VigilError::Hash(format!("seek error during hashing: {}", e)))?;
 
-    let mut hasher = blake3::Hasher::new();
-    hasher
-        .update_reader(&mut reader)
-        .map_err(|e| VigilError::Hash(format!("read error during hashing: {}", e)))?;
+    let file_size = reader.metadata().map(|m| m.len()).unwrap_or(0);
 
-    Ok(hasher.finalize().to_hex().to_string())
+    let threshold = mmap_threshold.unwrap_or(u64::MAX);
+
+    if file_size >= threshold && file_size > 0 {
+        // Use memory-mapped I/O for large files
+        // blake3::Hasher::update_mmap takes a path, so we use /proc/self/fd/<fd>
+        // to reference the open fd without re-opening the path (TOCTOU-safe).
+        use std::os::unix::io::AsRawFd;
+        let fd_path = format!("/proc/self/fd/{}", reader.as_raw_fd());
+        let mut hasher = blake3::Hasher::new();
+        hasher
+            .update_mmap(&fd_path)
+            .map_err(|e| VigilError::Hash(format!("mmap hash error: {}", e)))?;
+        Ok(hasher.finalize().to_hex().to_string())
+    } else {
+        // Use buffered read with 128KB buffer (up from default 8KB)
+        let mut hasher = blake3::Hasher::new();
+        let buf_reader = BufReader::with_capacity(131_072, &mut reader);
+        hasher
+            .update_reader(buf_reader)
+            .map_err(|e| VigilError::Hash(format!("read error during hashing: {}", e)))?;
+        Ok(hasher.finalize().to_hex().to_string())
+    }
 }
 
 /// Compute BLAKE3 hash of raw bytes.

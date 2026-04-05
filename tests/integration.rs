@@ -2,6 +2,8 @@
 
 mod common;
 
+#[path = "integration/audit_chain_tests.rs"]
+mod audit_chain_tests;
 #[path = "integration/baseline_tests.rs"]
 mod baseline_tests;
 #[path = "integration/comparison_tests.rs"]

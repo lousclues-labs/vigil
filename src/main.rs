@@ -11,9 +11,10 @@ use vigil::error::Result;
 use vigil::types::{OutputFormat, ScanMode};
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .format_timestamp_secs()
-        .init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+    tracing_log::LogTracer::init().ok();
 
     let cli = Cli::parse();
 
@@ -382,6 +383,34 @@ fn cmd_log(config_path: Option<&std::path::Path>, action: LogAction) -> Result<(
                     invalid
                 );
             }
+
+            // Also verify audit chain (Item 16)
+            println!("\nAudit Chain Verification");
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━");
+            match db::ops::verify_audit_chain(&conn) {
+                Ok((total, chain_valid, broken, chain_missing)) => {
+                    println!("  Total entries:     {}", total);
+                    println!("  Valid chain links:  {}", chain_valid);
+                    println!("  Broken links:      {}", broken.len());
+                    println!("  Missing chain hash: {}", chain_missing);
+
+                    if broken.is_empty() {
+                        println!("\n  Audit chain integrity: VERIFIED");
+                    } else {
+                        for (id, ts) in &broken {
+                            println!(
+                                "  BROKEN at entry {} (timestamp {}) — possible tampering",
+                                id, ts
+                            );
+                        }
+                        println!(
+                            "\n  Audit chain integrity: BROKEN at entry {} — possible tampering",
+                            broken[0].0
+                        );
+                    }
+                }
+                Err(e) => println!("  Chain verification error: {}", e),
+            }
         }
     }
 
@@ -520,6 +549,21 @@ fn cmd_config(config_path: Option<&std::path::Path>, action: ConfigAction) -> Re
                 }
             }
         }
+        ConfigAction::Dump => {
+            let cfg = config::load_config(config_path)?;
+            let toml_string = toml::to_string_pretty(&cfg).map_err(|e| {
+                vigil::error::VigilError::Config(format!("TOML serialization error: {}", e))
+            })?;
+            println!("{}", toml_string);
+        }
+        ConfigAction::Migrate => {
+            let cfg = config::load_config(config_path)?;
+            eprintln!("Config migrated to version {}", cfg.config_version);
+            let toml_string = toml::to_string_pretty(&cfg).map_err(|e| {
+                vigil::error::VigilError::Config(format!("TOML serialization error: {}", e))
+            })?;
+            println!("{}", toml_string);
+        }
     }
 
     Ok(())
@@ -582,6 +626,28 @@ fn cmd_doctor(config_path: Option<&std::path::Path>) -> Result<()> {
                     .flatten()
                     .unwrap_or_else(|| "never".into());
                 println!("  ✓ Baseline: {} entries (last refresh: {})", count, last);
+
+                // Database HMAC verification (Item 17)
+                if cfg.security.hmac_signing {
+                    if let Ok(key) = vigil::hmac::load_hmac_key(&cfg.security.hmac_key_path) {
+                        match db::ops::get_config_state(&conn, "database_hmac") {
+                            Ok(Some(stored)) => match db::ops::compute_baseline_hmac(&conn, &key) {
+                                Ok(computed) => {
+                                    if computed == stored {
+                                        println!("  ✓ Database integrity HMAC valid");
+                                    } else {
+                                        println!("  ✗ Database integrity HMAC mismatch — baseline may have been tampered with");
+                                    }
+                                }
+                                Err(e) => println!("  ✗ Database HMAC computation failed: {}", e),
+                            },
+                            Ok(None) => println!(
+                                "  ⚠ No database HMAC stored (run init/refresh to generate)"
+                            ),
+                            Err(e) => println!("  ✗ Cannot read database HMAC: {}", e),
+                        }
+                    }
+                }
             }
             Err(e) => println!("  ✗ Database error: {}", e),
         }

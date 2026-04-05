@@ -65,6 +65,9 @@ pub enum ChangeType {
     InodeChanged,
     XattrChanged,
     SecurityContextChanged,
+    TypeChanged,
+    SymlinkTargetChanged,
+    CapabilitiesChanged,
 }
 
 impl fmt::Display for ChangeType {
@@ -78,6 +81,9 @@ impl fmt::Display for ChangeType {
             ChangeType::InodeChanged => write!(f, "inode_changed"),
             ChangeType::XattrChanged => write!(f, "xattr_changed"),
             ChangeType::SecurityContextChanged => write!(f, "security_context_changed"),
+            ChangeType::TypeChanged => write!(f, "type_changed"),
+            ChangeType::SymlinkTargetChanged => write!(f, "symlink_target_changed"),
+            ChangeType::CapabilitiesChanged => write!(f, "capabilities_changed"),
         }
     }
 }
@@ -136,6 +142,9 @@ pub struct BaselineEntry {
     pub source: BaselineSource,
     pub added_at: i64,
     pub updated_at: i64,
+    pub file_type: String,
+    pub symlink_target: Option<String>,
+    pub capabilities: Option<String>,
 }
 
 // ── File Metadata ──────────────────────────────────────────
@@ -154,6 +163,9 @@ pub struct FileMetadata {
     pub device: u64,
     pub xattrs: String,
     pub security_context: String,
+    pub file_type: String,
+    pub symlink_target: Option<String>,
+    pub capabilities: Option<String>,
 }
 
 // ── Change Result ──────────────────────────────────────────
@@ -179,6 +191,8 @@ pub struct ChangeResult {
     pub package: Option<String>,
     pub package_update: bool,
     pub monitored_group: String,
+    pub responsible_pid: Option<u32>,
+    pub responsible_exe: Option<String>,
 }
 
 // ── Alert ──────────────────────────────────────────────────
@@ -210,6 +224,10 @@ pub struct AlertFileInfo {
     pub mtime_changed: bool,
     pub package: Option<String>,
     pub package_update: bool,
+    pub responsible_pid: Option<u32>,
+    pub responsible_exe: Option<String>,
+    pub baseline_capabilities: Option<String>,
+    pub current_capabilities: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -246,6 +264,8 @@ pub struct FsEvent {
     pub path: PathBuf,
     pub event_type: FsEventType,
     pub timestamp: DateTime<Utc>,
+    pub responsible_pid: Option<u32>,
+    pub responsible_exe: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -351,6 +371,15 @@ mod tests {
         assert_eq!(
             ChangeType::SecurityContextChanged.to_string(),
             "security_context_changed"
+        );
+        assert_eq!(ChangeType::TypeChanged.to_string(), "type_changed");
+        assert_eq!(
+            ChangeType::SymlinkTargetChanged.to_string(),
+            "symlink_target_changed"
+        );
+        assert_eq!(
+            ChangeType::CapabilitiesChanged.to_string(),
+            "capabilities_changed"
         );
     }
 

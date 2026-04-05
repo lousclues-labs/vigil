@@ -12,8 +12,9 @@ pub fn insert_baseline(conn: &Connection, entry: &BaselineEntry) -> Result<i64> 
         "INSERT INTO baseline (
             path, hash, size, permissions, owner_uid, owner_gid,
             mtime, inode, device, xattrs, security_context,
-            package, source, added_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            package, source, added_at, updated_at,
+            file_type, symlink_target, capabilities
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
     )?
     .execute(params![
         entry.path.to_string_lossy().as_ref(),
@@ -31,6 +32,9 @@ pub fn insert_baseline(conn: &Connection, entry: &BaselineEntry) -> Result<i64> 
         entry.source.to_string(),
         entry.added_at,
         entry.updated_at,
+        entry.file_type,
+        entry.symlink_target,
+        entry.capabilities,
     ])?;
     Ok(conn.last_insert_rowid())
 }
@@ -42,8 +46,9 @@ pub fn update_baseline(conn: &Connection, entry: &BaselineEntry) -> Result<usize
             "UPDATE baseline SET
             hash = ?1, size = ?2, permissions = ?3, owner_uid = ?4, owner_gid = ?5,
             mtime = ?6, inode = ?7, device = ?8, xattrs = ?9, security_context = ?10,
-            package = ?11, source = ?12, updated_at = ?13
-        WHERE path = ?14",
+            package = ?11, source = ?12, updated_at = ?13,
+            file_type = ?14, symlink_target = ?15, capabilities = ?16
+        WHERE path = ?17",
         )?
         .execute(params![
             entry.hash,
@@ -59,6 +64,9 @@ pub fn update_baseline(conn: &Connection, entry: &BaselineEntry) -> Result<usize
             entry.package,
             entry.source.to_string(),
             entry.updated_at,
+            entry.file_type,
+            entry.symlink_target,
+            entry.capabilities,
             entry.path.to_string_lossy().as_ref(),
         ])?;
     Ok(rows)
@@ -70,8 +78,9 @@ pub fn upsert_baseline(conn: &Connection, entry: &BaselineEntry) -> Result<()> {
         "INSERT INTO baseline (
             path, hash, size, permissions, owner_uid, owner_gid,
             mtime, inode, device, xattrs, security_context,
-            package, source, added_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            package, source, added_at, updated_at,
+            file_type, symlink_target, capabilities
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
         ON CONFLICT(path, device, inode) DO UPDATE SET
             hash = excluded.hash,
             size = excluded.size,
@@ -83,7 +92,10 @@ pub fn upsert_baseline(conn: &Connection, entry: &BaselineEntry) -> Result<()> {
             security_context = excluded.security_context,
             package = excluded.package,
             source = excluded.source,
-            updated_at = excluded.updated_at",
+            updated_at = excluded.updated_at,
+            file_type = excluded.file_type,
+            symlink_target = excluded.symlink_target,
+            capabilities = excluded.capabilities",
     )?
     .execute(params![
         entry.path.to_string_lossy().as_ref(),
@@ -101,6 +113,9 @@ pub fn upsert_baseline(conn: &Connection, entry: &BaselineEntry) -> Result<()> {
         entry.source.to_string(),
         entry.added_at,
         entry.updated_at,
+        entry.file_type,
+        entry.symlink_target,
+        entry.capabilities,
     ])?;
     Ok(())
 }
@@ -127,7 +142,8 @@ pub fn get_baseline_by_path(conn: &Connection, path: &str) -> Result<Option<Base
         .prepare_cached(
             "SELECT id, path, hash, size, permissions, owner_uid, owner_gid,
                     mtime, inode, device, xattrs, security_context,
-                    package, source, added_at, updated_at
+                    package, source, added_at, updated_at,
+                    file_type, symlink_target, capabilities
              FROM baseline WHERE path = ?1",
         )?
         .query_row(params![path], |row| {
@@ -151,6 +167,9 @@ pub fn get_baseline_by_path(conn: &Connection, path: &str) -> Result<Option<Base
                     .unwrap_or(BaselineSource::AutoScan),
                 added_at: row.get(14)?,
                 updated_at: row.get(15)?,
+                file_type: row.get::<_, String>(16).unwrap_or_else(|_| "file".into()),
+                symlink_target: row.get(17).ok().flatten(),
+                capabilities: row.get(18).ok().flatten(),
             })
         })
         .optional()?;
@@ -160,10 +179,11 @@ pub fn get_baseline_by_path(conn: &Connection, path: &str) -> Result<Option<Base
 
 /// Get all baseline entries.
 pub fn get_all_baselines(conn: &Connection) -> Result<Vec<BaselineEntry>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT id, path, hash, size, permissions, owner_uid, owner_gid,
                 mtime, inode, device, xattrs, security_context,
-                package, source, added_at, updated_at
+                package, source, added_at, updated_at,
+                file_type, symlink_target, capabilities
          FROM baseline ORDER BY path",
     )?;
 
@@ -189,6 +209,9 @@ pub fn get_all_baselines(conn: &Connection) -> Result<Vec<BaselineEntry>> {
                     .unwrap_or(BaselineSource::AutoScan),
                 added_at: row.get(14)?,
                 updated_at: row.get(15)?,
+                file_type: row.get::<_, String>(16).unwrap_or_else(|_| "file".into()),
+                symlink_target: row.get(17).ok().flatten(),
+                capabilities: row.get(18).ok().flatten(),
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -211,6 +234,7 @@ pub fn baseline_count(conn: &Connection) -> Result<i64> {
 // ── Audit log operations ───────────────────────────────────
 
 /// Write an audit log entry. Always succeeds (audit trail is never suppressed).
+/// Computes chain_hash for tamper-evident audit chain (Item 16).
 pub fn insert_audit_entry(
     conn: &Connection,
     change: &ChangeResult,
@@ -221,16 +245,39 @@ pub fn insert_audit_entry(
 ) -> Result<i64> {
     let now = Utc::now().timestamp();
 
+    // Compute chain hash: BLAKE3(prev_chain_hash || timestamp || path || change_type || severity || old_hash || new_hash)
+    let prev_chain_hash: String = conn
+        .query_row(
+            "SELECT chain_hash FROM audit_log ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .unwrap_or(None)
+        .unwrap_or_else(|| crate::baseline::hash::blake3_hash_bytes(b"vigil-audit-chain-genesis"));
+
+    let chain_data = format!(
+        "{}{}{}{}{}{}{}",
+        prev_chain_hash,
+        now,
+        change.path.to_string_lossy(),
+        primary_change,
+        change.severity,
+        change.old_hash.as_deref().unwrap_or(""),
+        change.new_hash.as_deref().unwrap_or(""),
+    );
+    let chain_hash = crate::baseline::hash::blake3_hash_bytes(chain_data.as_bytes());
+
     conn.prepare_cached(
         "INSERT INTO audit_log (
             timestamp, event_type, path, change_type, severity,
             old_hash, new_hash, old_permissions, new_permissions,
             old_owner_uid, new_owner_uid, old_owner_gid, new_owner_gid,
             old_inode, new_inode, package, package_update,
-            maintenance_window, suppressed, monitored_group, hmac
+            maintenance_window, suppressed, monitored_group, hmac,
+            chain_hash, responsible_pid, responsible_exe
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-            ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
+            ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
         )",
     )?
     .execute(params![
@@ -255,6 +302,9 @@ pub fn insert_audit_entry(
         suppressed as i32,
         change.monitored_group,
         hmac,
+        chain_hash,
+        change.responsible_pid.map(|v| v as i64),
+        change.responsible_exe,
     ])?;
 
     Ok(conn.last_insert_rowid())
@@ -262,101 +312,194 @@ pub fn insert_audit_entry(
 
 /// Get recent audit entries, ordered newest first.
 pub fn get_recent_audit(conn: &Connection, limit: u32) -> Result<Vec<AuditEntry>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT id, timestamp, event_type, path, change_type, severity,
                 old_hash, new_hash, package, package_update,
-                maintenance_window, suppressed, monitored_group
+                maintenance_window, suppressed, monitored_group,
+                chain_hash, responsible_pid, responsible_exe
          FROM audit_log ORDER BY timestamp DESC LIMIT ?1",
     )?;
 
     let entries = stmt
-        .query_map(params![limit], |row| {
-            Ok(AuditEntry {
-                id: row.get(0)?,
-                timestamp: row.get(1)?,
-                event_type: row.get(2)?,
-                path: row.get(3)?,
-                change_type: row.get(4)?,
-                severity: row.get(5)?,
-                old_hash: row.get(6)?,
-                new_hash: row.get(7)?,
-                package: row.get(8)?,
-                package_update: row.get::<_, i32>(9)? != 0,
-                maintenance_window: row.get::<_, i32>(10)? != 0,
-                suppressed: row.get::<_, i32>(11)? != 0,
-                monitored_group: row.get(12)?,
-            })
-        })?
+        .query_map(params![limit], read_audit_row)?
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
     Ok(entries)
 }
 
-/// Search audit entries with optional SQL WHERE clauses for path and severity.
+/// Search audit entries with optional filters for path and severity.
+/// Uses pre-defined cached queries to avoid dynamic SQL (Item 20).
 pub fn search_audit(
     conn: &Connection,
     path_filter: Option<&str>,
     severity_filter: Option<&str>,
     limit: u32,
 ) -> Result<Vec<AuditEntry>> {
-    let mut sql = String::from(
-        "SELECT id, timestamp, event_type, path, change_type, severity,
-                old_hash, new_hash, package, package_update,
-                maintenance_window, suppressed, monitored_group
-         FROM audit_log",
-    );
+    let entries = match (path_filter, severity_filter) {
+        (None, None) => {
+            let mut stmt = conn.prepare_cached(
+                "SELECT id, timestamp, event_type, path, change_type, severity,
+                        old_hash, new_hash, package, package_update,
+                        maintenance_window, suppressed, monitored_group,
+                        chain_hash, responsible_pid, responsible_exe
+                 FROM audit_log ORDER BY timestamp DESC LIMIT ?1",
+            )?;
+            let result = stmt
+                .query_map(params![limit], read_audit_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            result
+        }
+        (Some(path), None) => {
+            let mut stmt = conn.prepare_cached(
+                "SELECT id, timestamp, event_type, path, change_type, severity,
+                        old_hash, new_hash, package, package_update,
+                        maintenance_window, suppressed, monitored_group,
+                        chain_hash, responsible_pid, responsible_exe
+                 FROM audit_log WHERE path LIKE ?1 ORDER BY timestamp DESC LIMIT ?2",
+            )?;
+            let result = stmt
+                .query_map(params![format!("%{}%", path), limit], read_audit_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            result
+        }
+        (None, Some(sev)) => {
+            let mut stmt = conn.prepare_cached(
+                "SELECT id, timestamp, event_type, path, change_type, severity,
+                        old_hash, new_hash, package, package_update,
+                        maintenance_window, suppressed, monitored_group,
+                        chain_hash, responsible_pid, responsible_exe
+                 FROM audit_log WHERE severity = ?1 ORDER BY timestamp DESC LIMIT ?2",
+            )?;
+            let result = stmt
+                .query_map(params![sev, limit], read_audit_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            result
+        }
+        (Some(path), Some(sev)) => {
+            let mut stmt = conn.prepare_cached(
+                "SELECT id, timestamp, event_type, path, change_type, severity,
+                        old_hash, new_hash, package, package_update,
+                        maintenance_window, suppressed, monitored_group,
+                        chain_hash, responsible_pid, responsible_exe
+                 FROM audit_log WHERE path LIKE ?1 AND severity = ?2 ORDER BY timestamp DESC LIMIT ?3",
+            )?;
+            let result = stmt
+                .query_map(params![format!("%{}%", path), sev, limit], read_audit_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            result
+        }
+    };
 
-    let mut conditions = Vec::new();
-    if path_filter.is_some() {
-        conditions.push("path LIKE ?");
-    }
-    if severity_filter.is_some() {
-        conditions.push("severity = ?");
-    }
+    Ok(entries)
+}
 
-    if !conditions.is_empty() {
-        sql.push_str(" WHERE ");
-        sql.push_str(&conditions.join(" AND "));
-    }
+fn read_audit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditEntry> {
+    Ok(AuditEntry {
+        id: row.get(0)?,
+        timestamp: row.get(1)?,
+        event_type: row.get(2)?,
+        path: row.get(3)?,
+        change_type: row.get(4)?,
+        severity: row.get(5)?,
+        old_hash: row.get(6)?,
+        new_hash: row.get(7)?,
+        package: row.get(8)?,
+        package_update: row.get::<_, i32>(9)? != 0,
+        maintenance_window: row.get::<_, i32>(10)? != 0,
+        suppressed: row.get::<_, i32>(11)? != 0,
+        monitored_group: row.get(12)?,
+        chain_hash: row.get(13).ok().flatten(),
+        responsible_pid: row.get(14).ok().flatten(),
+        responsible_exe: row.get(15).ok().flatten(),
+    })
+}
 
-    sql.push_str(" ORDER BY timestamp DESC LIMIT ?");
+/// Verify the audit chain integrity (Item 16).
+/// Returns (total, valid, broken_ids, missing_chain).
+pub fn verify_audit_chain(conn: &Connection) -> Result<AuditChainVerifyResult> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, timestamp, path, change_type, severity, old_hash, new_hash, chain_hash
+         FROM audit_log ORDER BY id ASC",
+    )?;
 
-    let mut stmt = conn.prepare(&sql)?;
-
-    let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
-    if let Some(path) = path_filter {
-        params_vec.push(Box::new(format!("%{}%", path)));
-    }
-    if let Some(sev) = severity_filter {
-        params_vec.push(Box::new(sev.to_string()));
-    }
-    params_vec.push(Box::new(limit));
-
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        params_vec.iter().map(|p| p.as_ref()).collect();
-
-    let entries = stmt
-        .query_map(param_refs.as_slice(), |row| {
-            Ok(AuditEntry {
-                id: row.get(0)?,
-                timestamp: row.get(1)?,
-                event_type: row.get(2)?,
-                path: row.get(3)?,
-                change_type: row.get(4)?,
-                severity: row.get(5)?,
-                old_hash: row.get(6)?,
-                new_hash: row.get(7)?,
-                package: row.get(8)?,
-                package_update: row.get::<_, i32>(9)? != 0,
-                maintenance_window: row.get::<_, i32>(10)? != 0,
-                suppressed: row.get::<_, i32>(11)? != 0,
-                monitored_group: row.get(12)?,
-            })
+    let rows: Vec<AuditChainRow> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+            ))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
-    Ok(entries)
+    let mut total = 0u64;
+    let mut valid = 0u64;
+    let mut broken = Vec::new();
+    let mut missing = 0u64;
+
+    let genesis = crate::baseline::hash::blake3_hash_bytes(b"vigil-audit-chain-genesis");
+    let mut prev_chain_hash = genesis;
+
+    for (id, ts, path, change_type, severity, old_hash, new_hash, stored_chain) in &rows {
+        total += 1;
+
+        let Some(stored) = stored_chain else {
+            missing += 1;
+            continue;
+        };
+
+        let chain_data = format!(
+            "{}{}{}{}{}{}{}",
+            prev_chain_hash,
+            ts,
+            path,
+            change_type,
+            severity,
+            old_hash.as_deref().unwrap_or(""),
+            new_hash.as_deref().unwrap_or(""),
+        );
+        let expected = crate::baseline::hash::blake3_hash_bytes(chain_data.as_bytes());
+
+        if *stored == expected {
+            valid += 1;
+        } else {
+            broken.push((*id, *ts));
+        }
+
+        prev_chain_hash = stored.clone();
+    }
+
+    Ok((total, valid, broken, missing))
+}
+
+/// Compute HMAC over the entire baseline for at-rest protection (Item 17).
+pub fn compute_baseline_hmac(conn: &Connection, key: &[u8]) -> Result<String> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT path, hash, permissions, owner_uid, owner_gid FROM baseline ORDER BY path",
+    )?;
+
+    let mut canonical = String::new();
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+        ))
+    })?;
+
+    for r in rows {
+        let (path, hash, perms, uid, gid) = r?;
+        canonical.push_str(&format!("{}|{}|{}|{}|{}\n", path, hash, perms, uid, gid));
+    }
+
+    Ok(crate::hmac::compute_hmac(key, canonical.as_bytes()))
 }
 
 /// A read-friendly representation of an audit log row.
@@ -375,7 +518,23 @@ pub struct AuditEntry {
     pub maintenance_window: bool,
     pub suppressed: bool,
     pub monitored_group: Option<String>,
+    pub chain_hash: Option<String>,
+    pub responsible_pid: Option<i64>,
+    pub responsible_exe: Option<String>,
 }
+
+pub type AuditChainBreak = (i64, i64);
+pub type AuditChainVerifyResult = (u64, u64, Vec<AuditChainBreak>, u64);
+type AuditChainRow = (
+    i64,
+    i64,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 // ── Config state operations ────────────────────────────────
 
@@ -409,17 +568,16 @@ pub fn get_config_state(conn: &Connection, key: &str) -> Result<Option<String>> 
 /// Returns the number of rows deleted.
 pub fn rotate_audit_log(conn: &Connection, retention_days: u32) -> Result<usize> {
     let cutoff = Utc::now().timestamp() - (retention_days as i64 * 86400);
-    let deleted = conn.execute(
-        "DELETE FROM audit_log WHERE timestamp < ?1",
-        params![cutoff],
-    )?;
+    let deleted = conn
+        .prepare_cached("DELETE FROM audit_log WHERE timestamp < ?1")?
+        .execute(params![cutoff])?;
     Ok(deleted)
 }
 
 /// Get all baseline paths (without loading full entries).
 /// Used for efficient new-file detection during diff.
 pub fn get_all_baseline_paths(conn: &Connection) -> Result<std::collections::HashSet<String>> {
-    let mut stmt = conn.prepare("SELECT path FROM baseline")?;
+    let mut stmt = conn.prepare_cached("SELECT path FROM baseline")?;
     let paths = stmt
         .query_map([], |row| row.get::<_, String>(0))?
         .filter_map(|r| r.ok())
@@ -470,6 +628,9 @@ mod tests {
             source: BaselineSource::AutoScan,
             added_at: 1700000000,
             updated_at: 1700000000,
+            file_type: "file".into(),
+            symlink_target: None,
+            capabilities: None,
         }
     }
 
@@ -603,6 +764,8 @@ mod tests {
             package: None,
             package_update: false,
             monitored_group: "system_critical".into(),
+            responsible_pid: None,
+            responsible_exe: None,
         };
 
         // Write audit entry (suppressed)
@@ -638,6 +801,8 @@ mod tests {
             package: Some("sudo".into()),
             package_update: true,
             monitored_group: "system_critical".into(),
+            responsible_pid: None,
+            responsible_exe: None,
         };
 
         insert_audit_entry(&conn, &change, ChangeType::Modified, true, true, None).unwrap();
@@ -720,6 +885,8 @@ mod tests {
             package: None,
             package_update: false,
             monitored_group: "test".into(),
+            responsible_pid: None,
+            responsible_exe: None,
         };
 
         insert_audit_entry(&conn, &change, ChangeType::Modified, false, false, None).unwrap();

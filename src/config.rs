@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -6,8 +6,10 @@ use crate::error::{Result, VigilError};
 use crate::types::{MonitorBackend, PackageBackend, ScanMode, Severity};
 
 /// Top-level Vigil configuration, deserialized from TOML.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
+    #[serde(default = "default_config_version")]
+    pub config_version: u32,
     #[serde(default = "DaemonConfig::default")]
     pub daemon: DaemonConfig,
     #[serde(default = "ScannerConfig::default")]
@@ -28,9 +30,13 @@ pub struct Config {
     pub watch: HashMap<String, WatchGroup>,
 }
 
+fn default_config_version() -> u32 {
+    2
+}
+
 // ── Daemon ─────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DaemonConfig {
     #[serde(default = "default_pid_file")]
     pub pid_file: PathBuf,
@@ -42,6 +48,10 @@ pub struct DaemonConfig {
     pub monitor_backend: MonitorBackend,
     #[serde(default = "default_worker_threads")]
     pub worker_threads: u32,
+    #[serde(default = "default_log_format")]
+    pub log_format: String,
+    #[serde(default = "default_runtime_dir")]
+    pub runtime_dir: PathBuf,
 }
 
 impl Default for DaemonConfig {
@@ -52,12 +62,22 @@ impl Default for DaemonConfig {
             log_level: default_log_level(),
             monitor_backend: default_monitor_backend(),
             worker_threads: default_worker_threads(),
+            log_format: default_log_format(),
+            runtime_dir: default_runtime_dir(),
         }
     }
 }
 
 fn default_worker_threads() -> u32 {
     2
+}
+
+fn default_log_format() -> String {
+    "text".to_string()
+}
+
+fn default_runtime_dir() -> PathBuf {
+    PathBuf::from("/run/vigil")
 }
 
 fn default_pid_file() -> PathBuf {
@@ -75,7 +95,7 @@ fn default_monitor_backend() -> MonitorBackend {
 
 // ── Scanner ────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ScannerConfig {
     #[serde(default = "default_schedule")]
     pub schedule: String,
@@ -85,6 +105,10 @@ pub struct ScannerConfig {
     pub hash_algorithm: String,
     #[serde(default = "default_max_file_size")]
     pub max_file_size: u64,
+    #[serde(default = "default_mmap_threshold")]
+    pub mmap_threshold: u64,
+    #[serde(default = "default_scan_mode")]
+    pub scheduled_mode: ScanMode,
 }
 
 impl Default for ScannerConfig {
@@ -94,8 +118,14 @@ impl Default for ScannerConfig {
             mode: default_scan_mode(),
             hash_algorithm: default_hash_algorithm(),
             max_file_size: default_max_file_size(),
+            mmap_threshold: default_mmap_threshold(),
+            scheduled_mode: default_scan_mode(),
         }
     }
+}
+
+fn default_mmap_threshold() -> u64 {
+    1_048_576 // 1 MB
 }
 
 fn default_schedule() -> String {
@@ -113,7 +143,7 @@ fn default_max_file_size() -> u64 {
 
 // ── Alerts ─────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AlertsConfig {
     #[serde(default = "default_true")]
     pub desktop_notifications: bool,
@@ -135,6 +165,8 @@ pub struct AlertsConfig {
     /// Rate window for desktop notification batching (seconds).
     #[serde(default = "default_notification_rate_window")]
     pub notification_rate_window_secs: u64,
+    #[serde(default)]
+    pub remote_syslog: RemoteSyslogConfig,
 }
 
 impl Default for AlertsConfig {
@@ -149,6 +181,7 @@ impl Default for AlertsConfig {
             severity_filter: SeverityFilterConfig::default(),
             notification_rate_limit: default_notification_rate_limit(),
             notification_rate_window_secs: default_notification_rate_window(),
+            remote_syslog: RemoteSyslogConfig::default(),
         }
     }
 }
@@ -171,7 +204,7 @@ fn default_cooldown() -> u64 {
     300
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SeverityFilterConfig {
     #[serde(default = "default_dbus_min_severity")]
     pub dbus_min_severity: Severity,
@@ -197,7 +230,7 @@ fn default_log_min_severity() -> Severity {
 
 // ── Exclusions ─────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ExclusionsConfig {
     #[serde(default = "default_exclusion_patterns")]
     pub patterns: Vec<String>,
@@ -230,7 +263,7 @@ fn default_system_exclusions() -> Vec<String> {
 
 // ── Package Manager ────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PackageManagerConfig {
     #[serde(default = "default_true")]
     pub auto_rebaseline: bool,
@@ -253,7 +286,7 @@ fn default_pkg_backend() -> PackageBackend {
 
 // ── Hooks ──────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct HooksConfig {
     #[serde(default)]
     pub signal_socket: String,
@@ -261,7 +294,7 @@ pub struct HooksConfig {
 
 // ── Security ───────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SecurityConfig {
     #[serde(default)]
     pub hmac_signing: bool,
@@ -287,7 +320,7 @@ fn default_hmac_key_path() -> PathBuf {
 
 // ── Database ───────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DatabaseConfig {
     #[serde(default = "default_true")]
     pub wal_mode: bool,
@@ -331,9 +364,47 @@ fn default_audit_retention_days() -> u32 {
     90
 }
 
+// ── Remote Syslog ──────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RemoteSyslogConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub server: String,
+    #[serde(default = "default_syslog_port")]
+    pub port: u16,
+    #[serde(default = "default_syslog_protocol")]
+    pub protocol: String,
+    #[serde(default = "default_syslog_facility")]
+    pub facility: String,
+}
+
+impl Default for RemoteSyslogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            server: String::new(),
+            port: default_syslog_port(),
+            protocol: default_syslog_protocol(),
+            facility: default_syslog_facility(),
+        }
+    }
+}
+
+fn default_syslog_port() -> u16 {
+    514
+}
+fn default_syslog_protocol() -> String {
+    "udp".to_string()
+}
+fn default_syslog_facility() -> String {
+    "authpriv".to_string()
+}
+
 // ── Watch Groups ───────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WatchGroup {
     pub severity: Severity,
     pub paths: Vec<String>,
@@ -368,13 +439,35 @@ pub fn load_config(explicit_path: Option<&Path>) -> Result<Config> {
         }
     }
 
-    let config = base.unwrap_or_else(|| {
+    let mut config = base.unwrap_or_else(|| {
         log::warn!("No config file found, using defaults with built-in watch paths");
         default_config()
     });
 
+    // Config version migration
+    migrate_config(&mut config);
+
     validate_config(&config)?;
     Ok(config)
+}
+
+/// Apply config version migrations.
+/// Version 1 → 2: added scanner.mmap_threshold, scanner.scheduled_mode,
+/// daemon.log_format, daemon.runtime_dir, alerts.remote_syslog, config_version.
+pub fn migrate_config(config: &mut Config) {
+    if config.config_version < 2 {
+        log::info!(
+            "Migrating config from version {} to 2",
+            config.config_version
+        );
+        config.config_version = 2;
+    }
+    if config.config_version > 2 {
+        log::warn!(
+            "Config version {} is newer than this Vigil binary supports (version 2). Some settings may be ignored.",
+            config.config_version
+        );
+    }
 }
 
 fn config_search_paths(explicit_path: Option<&Path>) -> Vec<PathBuf> {
@@ -463,6 +556,17 @@ pub fn validate_config(config: &Config) -> Result<()> {
             "unsupported hash algorithm '{}', only 'blake3' is supported",
             config.scanner.hash_algorithm
         )));
+    }
+
+    // Validate log_format
+    match config.daemon.log_format.to_lowercase().as_str() {
+        "text" | "json" => {}
+        other => {
+            return Err(VigilError::Config(format!(
+                "invalid log_format '{}', must be one of: text, json",
+                other
+            )));
+        }
     }
 
     // Validate cron schedule expression (basic format check)
@@ -691,6 +795,7 @@ fn default_config() -> Config {
     );
 
     Config {
+        config_version: 2,
         daemon: DaemonConfig::default(),
         scanner: ScannerConfig::default(),
         alerts: AlertsConfig::default(),
@@ -948,6 +1053,7 @@ mod tests {
     #[test]
     fn validate_rejects_no_watch_groups() {
         let config = Config {
+            config_version: 2,
             daemon: DaemonConfig::default(),
             scanner: ScannerConfig::default(),
             alerts: AlertsConfig::default(),

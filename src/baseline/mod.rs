@@ -122,6 +122,15 @@ pub fn init_baseline(
     ops::set_config_state(conn, "last_baseline_refresh", &now.to_string())?;
     ops::set_config_state(conn, "daemon_version", env!("CARGO_PKG_VERSION"))?;
 
+    // Update database HMAC (Item 17)
+    if config.security.hmac_signing {
+        if let Ok(key) = crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
+            if let Ok(hmac_val) = ops::compute_baseline_hmac(conn, &key) {
+                let _ = ops::set_config_state(conn, "database_hmac", &hmac_val);
+            }
+        }
+    }
+
     if !quiet {
         log::info!("Baseline initialized: {} entries", count);
     }
@@ -195,6 +204,15 @@ pub fn refresh_baseline(
 
     ops::set_config_state(conn, "last_baseline_refresh", &now.to_string())?;
 
+    // Update database HMAC (Item 17)
+    if config.security.hmac_signing {
+        if let Ok(key) = crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
+            if let Ok(hmac_val) = ops::compute_baseline_hmac(conn, &key) {
+                let _ = ops::set_config_state(conn, "database_hmac", &hmac_val);
+            }
+        }
+    }
+
     if !quiet {
         log::info!("Baseline refreshed: {} entries updated", count);
     }
@@ -231,6 +249,9 @@ pub fn add_file(conn: &Connection, path: &Path, config: &Config) -> Result<()> {
         source: BaselineSource::Manual,
         added_at: now,
         updated_at: now,
+        file_type: meta.file_type,
+        symlink_target: meta.symlink_target,
+        capabilities: meta.capabilities,
     };
 
     ops::upsert_baseline(conn, &entry)?;
@@ -319,6 +340,8 @@ pub fn diff_baseline(
                                 package: None,
                                 package_update: false,
                                 monitored_group: group_name.clone(),
+                                responsible_pid: None,
+                                responsible_exe: None,
                             });
                         }
                     }
@@ -454,6 +477,9 @@ fn scan_single_file(
         source: BaselineSource::AutoScan,
         added_at: now,
         updated_at: now,
+        file_type: file_meta.file_type,
+        symlink_target: file_meta.symlink_target,
+        capabilities: file_meta.capabilities,
     };
 
     ops::upsert_baseline(conn, &entry)?;
@@ -556,6 +582,7 @@ mod tests {
             },
         );
         let config = crate::config::Config {
+            config_version: 2,
             daemon: crate::config::DaemonConfig::default(),
             scanner: crate::config::ScannerConfig::default(),
             alerts: crate::config::AlertsConfig::default(),

@@ -39,6 +39,8 @@ fuzz_target!(|input: FuzzInput| {
         path: std::path::PathBuf::from(&input.path),
         event_type,
         timestamp: chrono::Utc::now(),
+        responsible_pid: None,
+        responsible_exe: None,
     };
 
     // should_process must never panic

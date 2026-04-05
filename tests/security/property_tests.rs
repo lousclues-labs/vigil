@@ -40,6 +40,9 @@ proptest! {
             source: BaselineSource::AutoScan,
             added_at: 1700000000,
             updated_at: 1700000000,
+            file_type: "file".into(),
+            symlink_target: None,
+            capabilities: None,
         };
 
         db::ops::upsert_baseline(&conn, &entry).unwrap();

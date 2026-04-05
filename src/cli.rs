@@ -171,4 +171,10 @@ pub enum ConfigAction {
 
     /// Deep-validate configuration file (checks filesystem access, permissions, etc.)
     Check,
+
+    /// Dump fully-resolved config as TOML (all defaults filled in)
+    Dump,
+
+    /// Migrate config to latest version and print to stdout
+    Migrate,
 }

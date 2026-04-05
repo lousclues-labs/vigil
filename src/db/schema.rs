@@ -22,6 +22,9 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
             source          TEXT NOT NULL DEFAULT 'auto_scan',
             added_at        INTEGER NOT NULL,
             updated_at      INTEGER NOT NULL,
+            file_type       TEXT NOT NULL DEFAULT 'file',
+            symlink_target  TEXT,
+            capabilities    TEXT,
 
             UNIQUE(path, device, inode),
             CHECK(source IN ('package_manager', 'manual', 'auto_scan'))
@@ -54,7 +57,10 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
             maintenance_window INTEGER NOT NULL DEFAULT 0,
             suppressed      INTEGER NOT NULL DEFAULT 0,
             monitored_group TEXT,
-            hmac            TEXT
+            hmac            TEXT,
+            chain_hash      TEXT,
+            responsible_pid INTEGER,
+            responsible_exe TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
@@ -70,5 +76,54 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
         ",
     )?;
 
+    migrate_tables(conn)?;
+
     Ok(())
+}
+
+/// Migrate existing tables by adding new columns if they don't exist.
+/// Each ALTER TABLE is guarded so that it's safe to run on both new and
+/// existing databases.
+pub fn migrate_tables(conn: &Connection) -> Result<()> {
+    // Check which columns exist in baseline
+    let baseline_cols = get_table_columns(conn, "baseline")?;
+
+    if !baseline_cols.contains(&"file_type".to_string()) {
+        conn.execute_batch(
+            "ALTER TABLE baseline ADD COLUMN file_type TEXT NOT NULL DEFAULT 'file'",
+        )?;
+    }
+    if !baseline_cols.contains(&"symlink_target".to_string()) {
+        conn.execute_batch("ALTER TABLE baseline ADD COLUMN symlink_target TEXT")?;
+    }
+    if !baseline_cols.contains(&"capabilities".to_string()) {
+        conn.execute_batch("ALTER TABLE baseline ADD COLUMN capabilities TEXT")?;
+    }
+
+    // Check which columns exist in audit_log
+    let audit_cols = get_table_columns(conn, "audit_log")?;
+
+    if !audit_cols.contains(&"chain_hash".to_string()) {
+        conn.execute_batch("ALTER TABLE audit_log ADD COLUMN chain_hash TEXT")?;
+    }
+    if !audit_cols.contains(&"responsible_pid".to_string()) {
+        conn.execute_batch("ALTER TABLE audit_log ADD COLUMN responsible_pid INTEGER")?;
+    }
+    if !audit_cols.contains(&"responsible_exe".to_string()) {
+        conn.execute_batch("ALTER TABLE audit_log ADD COLUMN responsible_exe TEXT")?;
+    }
+
+    Ok(())
+}
+
+/// Get column names for a table.
+fn get_table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
+    let mut cols = Vec::new();
+    let sql = format!("PRAGMA table_info({})", table);
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for col in rows {
+        cols.push(col?);
+    }
+    Ok(cols)
 }

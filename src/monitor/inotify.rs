@@ -146,6 +146,8 @@ pub fn start(
                                             path: file_path.clone(),
                                             event_type: et,
                                             timestamp: Utc::now(),
+                                            responsible_pid: None,
+                                            responsible_exe: None,
                                         };
                                         match event_tx.send_timeout(fs_event, Duration::from_secs(1)) {
                                             Ok(()) => {}

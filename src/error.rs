@@ -54,6 +54,9 @@ pub enum VigilError {
 
     #[error("path error: {0}")]
     Path(String),
+
+    #[error("syslog error: {0}")]
+    Syslog(String),
 }
 
 pub type Result<T> = std::result::Result<T, VigilError>;
@@ -94,6 +97,7 @@ impl PartialEq for VigilError {
             (VigilError::PermissionDenied(a), VigilError::PermissionDenied(b)) => a == b,
             (VigilError::Daemon(a), VigilError::Daemon(b)) => a == b,
             (VigilError::Path(a), VigilError::Path(b)) => a == b,
+            (VigilError::Syslog(a), VigilError::Syslog(b)) => a == b,
             // TomlParse and Json compare by Display output
             (VigilError::TomlParse(a), VigilError::TomlParse(b)) => a.to_string() == b.to_string(),
             (VigilError::Json(a), VigilError::Json(b)) => a.to_string() == b.to_string(),

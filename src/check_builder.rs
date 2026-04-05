@@ -64,6 +64,7 @@ mod tests {
         // We can't actually run a scan without a real config/db, but
         // we can verify the builder sets defaults correctly.
         let config = crate::config::Config {
+            config_version: 2,
             daemon: Default::default(),
             scanner: Default::default(),
             alerts: Default::default(),
@@ -94,6 +95,7 @@ mod tests {
     #[test]
     fn builder_chaining() {
         let config = crate::config::Config {
+            config_version: 2,
             daemon: Default::default(),
             scanner: Default::default(),
             alerts: Default::default(),

@@ -183,12 +183,36 @@ pub fn start(
                             let is_watched = watch_index.read().is_watched(&path);
 
                             if is_watched {
+                                // Filter out self-generated events
+                                let self_pid = std::process::id() as i32;
+                                if event.pid == self_pid {
+                                    // SAFETY: event.fd is a valid fd from the kernel (checked >= 0).
+                                    unsafe { libc::close(event.fd) };
+                                    offset += event.event_len as usize;
+                                    continue;
+                                }
+
                                 if let Some(event_type) = mask_to_event_type(event.mask) {
                                     metrics.events_received.fetch_add(1, Ordering::Relaxed);
+
+                                    // Process attribution: read exe from /proc/<pid>/exe
+                                    let responsible_pid = if event.pid > 0 {
+                                        Some(event.pid as u32)
+                                    } else {
+                                        None
+                                    };
+                                    let responsible_exe = responsible_pid.and_then(|pid| {
+                                        std::fs::read_link(format!("/proc/{}/exe", pid))
+                                            .ok()
+                                            .map(|p| p.to_string_lossy().into_owned())
+                                    });
+
                                     let fs_event = FsEvent {
                                         path: path.clone(),
                                         event_type,
                                         timestamp: Utc::now(),
+                                        responsible_pid,
+                                        responsible_exe,
                                     };
                                     match event_tx.send_timeout(fs_event, Duration::from_secs(1)) {
                                         Ok(()) => {}

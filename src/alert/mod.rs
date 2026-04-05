@@ -1,6 +1,7 @@
 pub mod dbus;
 pub mod journal;
 pub mod json_log;
+pub mod remote_syslog;
 pub mod socket;
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -31,6 +32,8 @@ pub struct AlertEngine {
     json_logger: Option<json_log::JsonLogger>,
     /// Signal socket writer (optional).
     signal_socket: Option<socket::SignalSocket>,
+    /// Remote syslog sender (optional, Item 30).
+    remote_syslog: Option<remote_syslog::RemoteSyslogSender>,
     /// Cached hostname (read once at startup).
     hostname: String,
     /// Hot-reloadable rate limit (alerts per minute).
@@ -99,6 +102,18 @@ impl AlertEngine {
             None
         };
 
+        let remote_syslog_sender = if config.alerts.remote_syslog.enabled {
+            match remote_syslog::RemoteSyslogSender::new(&config.alerts.remote_syslog) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    log::warn!("Remote syslog unavailable: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
             syslog_enabled: config.alerts.syslog,
             log_min_severity: config.alerts.severity_filter.log_min_severity,
@@ -111,6 +126,7 @@ impl AlertEngine {
             dbus_notifier,
             json_logger,
             signal_socket,
+            remote_syslog: remote_syslog_sender,
             hostname: hostname(),
             rate_limit: AtomicU32::new(config.alerts.rate_limit),
             cooldown_secs: AtomicU64::new(config.alerts.cooldown_seconds),
@@ -225,6 +241,13 @@ impl AlertEngine {
             sock.send_event(change);
         }
 
+        // Remote syslog (Item 30)
+        if let Some(ref syslog) = self.remote_syslog {
+            if let Err(e) = syslog.send(&alert) {
+                log::warn!("Remote syslog send failed: {}", e);
+            }
+        }
+
         // Update rate counter (only for actually-dispatched alerts)
         self.rate_counter.lock().count += 1;
 
@@ -302,6 +325,10 @@ impl AlertEngine {
                 mtime_changed: change.old_mtime != change.new_mtime,
                 package: change.package.clone(),
                 package_update: change.package_update,
+                responsible_pid: change.responsible_pid,
+                responsible_exe: change.responsible_exe.clone(),
+                baseline_capabilities: None,
+                current_capabilities: None,
             },
             context: AlertContext {
                 hostname: self.hostname.clone(),

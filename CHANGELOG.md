@@ -4,6 +4,105 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-04-05
+
+### Release Summary
+- Delivers Vigil Phase 2 security and operational hardening across anti-tamper controls, process hardening, observability, attribution, schema evolution, and alert routing.
+- Keeps backward compatibility through additive SQLite migrations and defaulted config fields.
+- Introduces new modules for remote syslog forwarding and Bloom-filter-based path rejection groundwork.
+
+### Added
+
+#### Anti-Tamper and Integrity
+- Added tamper-evident audit chaining for `audit_log` entries:
+  - New `chain_hash` column with migration support.
+  - Chain hash computation at insert time using BLAKE3 over previous hash plus canonical event fields.
+  - Chain verification utility in `db::ops::verify_audit_chain()`.
+  - `vigil log verify` now reports HMAC validity and chain continuity/break points.
+- Added baseline database at-rest integrity HMAC support:
+  - `db::ops::compute_baseline_hmac()` computes canonical baseline HMAC.
+  - Baseline init/refresh paths update `config_state.database_hmac`.
+  - Daemon startup verifies baseline HMAC when HMAC signing is enabled.
+  - `vigil doctor` reports baseline HMAC validity/mismatch.
+
+#### Process Hardening and Service Supervision
+- Added Linux process hardening at daemon startup:
+  - `prctl(PR_SET_DUMPABLE, 0)`.
+  - `prctl(PR_SET_NO_NEW_PRIVS, 1)`.
+- Added systemd notification lifecycle integration via `sd-notify`:
+  - READY notification on successful daemon startup.
+  - WATCHDOG and STATUS notifications during housekeeping.
+  - STOPPING notification on shutdown.
+- Added deployable service unit at `contrib/vigild.service` with `Type=notify`, watchdog settings, capability bounds, and filesystem protections.
+
+#### Configuration and CLI
+- Added config schema versioning (`config_version`) with migration handling (`v1 -> v2` in-memory migration).
+- Added config fields:
+  - `scanner.mmap_threshold`
+  - `scanner.scheduled_mode`
+  - `daemon.log_format`
+  - `daemon.runtime_dir`
+  - `alerts.remote_syslog.*`
+- Added CLI config actions:
+  - `vigil config dump`
+  - `vigil config migrate`
+
+#### Alert Routing and Telemetry
+- Added remote syslog sender module (`src/alert/remote_syslog.rs`) with RFC 5424 formatting and UDP/TCP transport.
+- Extended `AlertEngine` to optionally dispatch alerts to remote syslog with fail-open behavior.
+- Added `VigilError::Syslog` variant for syslog-specific error surfacing.
+
+#### New Modules and Tests
+- Added Bloom filter module (`src/bloom.rs`) with insertion/membership logic and probabilistic behavior tests.
+- Added integration audit-chain tests (`tests/integration/audit_chain_tests.rs`) covering:
+  - Valid chain traversal.
+  - Mid-log deletion break detection.
+  - Tampered row mismatch detection.
+
+### Changed
+
+#### Logging Stack Migration
+- Replaced `env_logger` initialization paths with `tracing-subscriber` setup.
+- Added `tracing-log` bridge so existing `log::*` call sites continue to emit without mass call-site rewrites.
+
+#### Hashing and Performance Plumbing
+- Enabled `blake3` `mmap` feature in dependencies.
+- Added `blake3_hash_file_with_threshold()` helper:
+  - Supports mmap hashing path for large files.
+  - Uses 128KB buffered read path for non-mmap hashing.
+
+#### SQLite Access Patterns
+- Expanded prepared statement caching usage (`prepare_cached`) for additional baseline/audit operations.
+- Replaced dynamic `search_audit()` SQL assembly with four pre-defined cached statement variants.
+
+#### Domain Model Expansion
+- Extended baseline/file metadata model with:
+  - `file_type`
+  - `symlink_target`
+  - `capabilities`
+- Extended event/change/audit model with process attribution:
+  - `responsible_pid`
+  - `responsible_exe`
+- Added new change types:
+  - `TypeChanged`
+  - `SymlinkTargetChanged`
+  - `CapabilitiesChanged`
+
+#### Monitor Attribution
+- Fanotify events now attempt best-effort process attribution via `/proc/<pid>/exe`.
+- Self-generated fanotify events are filtered (`pid == current process id`).
+- Inotify events explicitly set attribution fields to `None`.
+
+### Database and Config Migration Notes
+- `schema::create_tables()` now calls `schema::migrate_tables()` to apply additive column migrations safely.
+- Existing databases remain readable/writable; new columns are optional/additive.
+- Existing configs without `config_version` are treated as v1 and migrated in-memory to v2 defaults.
+
+### Validation
+- `cargo build --all-targets`
+- `cargo build --all-targets --features parallel`
+- `cargo test --all-targets`
+
 ## [0.9.0] - 2026-04-05
 
 ### Release Summary

@@ -1,0 +1,18 @@
+[Unit]
+Description=Vigil File Integrity Monitor
+After=local-fs.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/vigild
+WatchdogSec=120
+Restart=on-failure
+RestartSec=5
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+ProtectSystem=strict
+ReadWritePaths=/var/lib/vigil /run/vigil
+ProtectHome=read-only
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

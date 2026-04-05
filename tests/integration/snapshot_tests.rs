@@ -26,6 +26,9 @@ fn snapshot_baseline_export() {
         source: BaselineSource::PackageManager,
         added_at: 1700000000,
         updated_at: 1700000000,
+        file_type: "file".into(),
+        symlink_target: None,
+        capabilities: None,
     };
     vigil::db::ops::upsert_baseline(&conn, &entry).unwrap();
 
@@ -54,6 +57,8 @@ fn snapshot_diff_output() {
         package: Some("base".into()),
         package_update: false,
         monitored_group: "system_critical".into(),
+        responsible_pid: None,
+        responsible_exe: None,
     };
 
     assert_json_snapshot!("diff_output", vec![change]);
@@ -83,6 +88,10 @@ fn snapshot_alert_json() {
             mtime_changed: true,
             package: Some("base".into()),
             package_update: false,
+            responsible_pid: None,
+            responsible_exe: None,
+            baseline_capabilities: None,
+            current_capabilities: None,
         },
         context: AlertContext {
             hostname: "test-host".into(),

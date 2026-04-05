@@ -80,6 +80,7 @@ fn bench_compare_entry(c: &mut Criterion) {
     );
 
     let config = Config {
+        config_version: 2,
         daemon: Default::default(),
         scanner: Default::default(),
         alerts: Default::default(),
@@ -110,6 +111,9 @@ fn bench_compare_entry(c: &mut Criterion) {
             source: BaselineSource::Manual,
             added_at: 0,
             updated_at: 0,
+            file_type: "file".into(),
+            symlink_target: None,
+            capabilities: None,
         }
     };
 
@@ -149,6 +153,9 @@ fn bench_compare_entry(c: &mut Criterion) {
             source: BaselineSource::Manual,
             added_at: 0,
             updated_at: 0,
+            file_type: "file".into(),
+            symlink_target: None,
+            capabilities: None,
         }
     };
 
@@ -183,6 +190,9 @@ fn bench_compare_entry(c: &mut Criterion) {
         source: BaselineSource::Manual,
         added_at: 0,
         updated_at: 0,
+        file_type: "file".into(),
+        symlink_target: None,
+        capabilities: None,
     };
 
     c.bench_function("compare_entry_deleted", |b| {
@@ -211,6 +221,7 @@ fn bench_event_filter(c: &mut Criterion) {
     );
 
     let config = Config {
+        config_version: 2,
         daemon: Default::default(),
         scanner: Default::default(),
         alerts: Default::default(),
@@ -230,6 +241,8 @@ fn bench_event_filter(c: &mut Criterion) {
             path: format!("/tmp/bench/file_{}.txt", i).into(),
             event_type: FsEventType::Modify,
             timestamp: chrono::Utc::now(),
+            responsible_pid: None,
+            responsible_exe: None,
         };
         filter.should_process(&event);
     }
@@ -239,6 +252,8 @@ fn bench_event_filter(c: &mut Criterion) {
         path: "/tmp/bench/new_file.txt".into(),
         event_type: FsEventType::Modify,
         timestamp: chrono::Utc::now(),
+        responsible_pid: None,
+        responsible_exe: None,
     };
 
     c.bench_function("event_filter_10k_debounce", |b| {
@@ -264,6 +279,7 @@ fn bench_full_scan(c: &mut Criterion) {
     );
 
     let config = Config {
+        config_version: 2,
         daemon: vigil::config::DaemonConfig {
             db_path: db_path.clone(),
             ..Default::default()

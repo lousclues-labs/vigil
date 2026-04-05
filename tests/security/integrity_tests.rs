@@ -136,6 +136,8 @@ fn audit_log_records_suppressed_entries() {
         package: None,
         package_update: false,
         monitored_group: "system_critical".into(),
+        responsible_pid: None,
+        responsible_exe: None,
     };
 
     // Write as suppressed during maintenance window

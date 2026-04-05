@@ -11,6 +11,7 @@ use crate::types::{BaselineEntry, ChangeResult, ChangeType, FileMetadata, Severi
 /// Three-state outcome from comparing a file against its baseline.
 /// Eliminates the TOCTOU double-open that occurred when the caller had
 /// to re-open the file to distinguish "no changes" from "deleted."
+#[allow(clippy::large_enum_variant)]
 pub enum CompareOutcome {
     /// File exists and matches its baseline — no changes detected.
     NoChange,
@@ -124,6 +125,9 @@ fn compare_file_against_baseline(
             device: meta.dev(),
             xattrs: current_xattrs,
             security_context: current_security_context,
+            file_type: "file".to_string(),
+            symlink_target: None,
+            capabilities: None,
         };
         return Ok(CompareOutcome::Changed(
             change_types,
@@ -186,6 +190,9 @@ fn compare_file_against_baseline(
         device: meta.dev(),
         xattrs: current_xattrs,
         security_context: current_security_context,
+        file_type: "file".to_string(),
+        symlink_target: None,
+        capabilities: None,
     };
 
     Ok(CompareOutcome::Changed(
@@ -243,6 +250,8 @@ fn deletion_result(
         package: baseline.package.clone(),
         package_update,
         monitored_group: group_name,
+        responsible_pid: None,
+        responsible_exe: None,
     }
 }
 
@@ -275,6 +284,8 @@ fn change_result(
         package: baseline.package.clone(),
         package_update,
         monitored_group: group_name,
+        responsible_pid: None,
+        responsible_exe: None,
     }
 }
 
@@ -404,6 +415,9 @@ mod tests {
             source: crate::types::BaselineSource::AutoScan,
             added_at: 0,
             updated_at: 0,
+            file_type: "file".into(),
+            symlink_target: None,
+            capabilities: None,
         }
     }
 

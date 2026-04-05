@@ -96,12 +96,15 @@ pub fn test_config(tmp: &TempDir) -> Config {
     };
 
     Config {
+        config_version: 2,
         daemon: DaemonConfig {
             pid_file: tmp.path.join("test.pid"),
             db_path,
             log_level: "debug".into(),
             monitor_backend: MonitorBackend::Inotify,
             worker_threads: 2,
+            log_format: "text".into(),
+            runtime_dir: tmp.path.join("run"),
         },
         scanner: ScannerConfig::default(),
         alerts: AlertsConfig {
@@ -114,6 +117,7 @@ pub fn test_config(tmp: &TempDir) -> Config {
             severity_filter: SeverityFilterConfig::default(),
             notification_rate_limit: 5,
             notification_rate_window_secs: 10,
+            remote_syslog: RemoteSyslogConfig::default(),
         },
         exclusions,
         package_manager: PackageManagerConfig::default(),
@@ -180,6 +184,9 @@ pub fn baseline_entry_for(path: &Path) -> BaselineEntry {
         source: BaselineSource::AutoScan,
         added_at: chrono::Utc::now().timestamp(),
         updated_at: chrono::Utc::now().timestamp(),
+        file_type: "file".into(),
+        symlink_target: None,
+        capabilities: None,
     }
 }
 
@@ -202,5 +209,8 @@ pub fn synthetic_baseline(path: &str, hash: &str) -> BaselineEntry {
         source: BaselineSource::AutoScan,
         added_at: 1700000000,
         updated_at: 1700000000,
+        file_type: "file".into(),
+        symlink_target: None,
+        capabilities: None,
     }
 }

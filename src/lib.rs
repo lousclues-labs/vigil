@@ -1,5 +1,6 @@
 pub mod alert;
 pub mod baseline;
+pub mod bloom;
 pub mod check_builder;
 pub mod cli;
 pub mod compare;
@@ -60,6 +61,21 @@ use crate::watch_index::WatchGroupIndex;
 /// - `daemon.monitor_backend` — fanotify/inotify backend chosen at startup
 /// - `watch.*` paths — fanotify/inotify marks are set at startup
 pub fn daemon_run(config: &Config) -> Result<()> {
+    // Process hardening (Item 18): prevent ptrace and core dumps
+    // SAFETY: PR_SET_DUMPABLE with arg 0 is a well-defined prctl call that
+    // disables core dumps and ptrace attachment. No memory safety invariants.
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+    }
+    log::info!("Process hardening: PR_SET_DUMPABLE set to 0");
+
+    // SAFETY: PR_SET_NO_NEW_PRIVS with arg 1 prevents privilege escalation
+    // via execve. This is a well-defined, irreversible prctl call.
+    unsafe {
+        libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+    }
+    log::info!("Process hardening: PR_SET_NO_NEW_PRIVS enabled");
+
     let conn = db::open_db(config)?;
 
     let metrics = Arc::new(Metrics::new());
@@ -101,6 +117,26 @@ pub fn daemon_run(config: &Config) -> Result<()> {
         log::warn!("Baseline is empty. Run 'vigil init' to create initial baseline.");
     } else {
         log::info!("Baseline loaded: {} entries", count);
+    }
+
+    // Database at-rest HMAC verification (Item 17)
+    if config.security.hmac_signing {
+        if let Ok(key) = crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
+            if let Ok(Some(stored_hmac)) = ops::get_config_state(&conn, "database_hmac") {
+                match ops::compute_baseline_hmac(&conn, &key) {
+                    Ok(computed) => {
+                        if computed != stored_hmac {
+                            log::error!(
+                                "CRITICAL: Baseline database HMAC mismatch — possible tampering!"
+                            );
+                        } else {
+                            log::info!("Database integrity HMAC verified");
+                        }
+                    }
+                    Err(e) => log::warn!("Cannot verify database HMAC: {}", e),
+                }
+            }
+        }
     }
 
     // Write PID file
@@ -307,6 +343,9 @@ pub fn daemon_run(config: &Config) -> Result<()> {
 
     log::info!("Vigil daemon ready. Monitoring filesystem changes...");
 
+    // Notify systemd that we're ready (Item 18)
+    let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]);
+
     while !shutdown.load(Ordering::Acquire) {
         // Process pending debounced paths on coordinator, then forward to workers
         let pending = event_filter.drain_pending();
@@ -315,6 +354,8 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                 path: pending_path,
                 event_type: FsEventType::Modify,
                 timestamp: chrono::Utc::now(),
+                responsible_pid: None,
+                responsible_exe: None,
             };
 
             match worker_tx.send_timeout(synthetic, Duration::from_millis(100)) {
@@ -483,6 +524,8 @@ pub fn daemon_run(config: &Config) -> Result<()> {
                             package: None,
                             package_update: false,
                             monitored_group: "self_protection".into(),
+                            responsible_pid: None,
+                            responsible_exe: None,
                         };
                         dispatch_change(
                             &change,
@@ -552,6 +595,18 @@ pub fn daemon_run(config: &Config) -> Result<()> {
             if let Err(e) = write_daemon_state_file(&daemon_state) {
                 log::debug!("Cannot write daemon state file: {}", e);
             }
+
+            // systemd watchdog ping (Item 18)
+            let baseline_total = ops::baseline_count(&conn).unwrap_or(0);
+            let changes_total = metrics.changes_detected.load(Ordering::Relaxed);
+            let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+            let _ = sd_notify::notify(
+                false,
+                &[sd_notify::NotifyState::Status(&format!(
+                    "monitoring {} files, {} changes detected",
+                    baseline_total, changes_total
+                ))],
+            );
 
             last_housekeeping = Instant::now();
         }
@@ -627,6 +682,7 @@ pub fn daemon_run(config: &Config) -> Result<()> {
 
     // Cleanup
     log::info!("Shutting down...");
+    let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
     drop(worker_tx);
     for handle in worker_handles {
         let _ = handle.join();
@@ -889,6 +945,8 @@ fn build_created_change(
         package,
         package_update: false,
         monitored_group: group_name,
+        responsible_pid: None,
+        responsible_exe: None,
     }
 }
 
@@ -917,6 +975,8 @@ fn build_deleted_change(
         package: baseline.package.clone(),
         package_update: false,
         monitored_group: group_name,
+        responsible_pid: None,
+        responsible_exe: None,
     }
 }
 

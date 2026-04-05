@@ -83,6 +83,8 @@ fn audit_trail_never_suppressed() {
         package: None,
         package_update: false,
         monitored_group: "system_critical".into(),
+        responsible_pid: None,
+        responsible_exe: None,
     };
 
     // Suppressed entry
