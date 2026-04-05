@@ -3,6 +3,15 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
 
+// ── Daemon State ───────────────────────────────────────────
+
+/// Tracks whether the daemon is operating normally or in a degraded state.
+#[derive(Debug, Clone)]
+pub enum DaemonState {
+    Healthy,
+    Degraded { reason: String, since: DateTime<Utc> },
+}
+
 // ── Severity ────────────────────────────────────────────────
 
 /// Alert severity levels, ordered from lowest to highest.

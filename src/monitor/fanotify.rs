@@ -5,13 +5,17 @@ use std::os::unix::io::RawFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use crossbeam_channel::Sender;
+use parking_lot::RwLock;
 
 use crate::config::Config;
 use crate::error::{Result, VigilError};
+use crate::metrics::Metrics;
 use crate::types::{FsEvent, FsEventType};
+use crate::watch_index::WatchGroupIndex;
 
 // fanotify constants (not all exposed by libc/nix)
 const FAN_CLOEXEC: u32 = 0x0000_0001;
@@ -19,6 +23,7 @@ const FAN_CLASS_NOTIF: u32 = 0x0000_0000;
 const FAN_NONBLOCK: u32 = 0x0000_0002;
 
 const FAN_MARK_ADD: u32 = 0x0000_0001;
+const FAN_MARK_REMOVE: u32 = 0x0000_0002;
 const FAN_MARK_MOUNT: u32 = 0x0000_0010;
 
 const FAN_MODIFY: u64 = 0x0000_0002;
@@ -63,7 +68,9 @@ pub fn start(
     watch_paths: &[PathBuf],
     event_tx: Sender<FsEvent>,
     shutdown: Arc<AtomicBool>,
-) -> Result<()> {
+    watch_index: Arc<RwLock<WatchGroupIndex>>,
+    metrics: Arc<Metrics>,
+) -> Result<crossbeam_channel::Sender<Vec<PathBuf>>> {
     // Initialize fanotify fd
     // SAFETY: fanotify_init is a Linux syscall. We pass valid flags and
     // O_RDONLY for read-only access. The return value is checked below.
@@ -87,38 +94,16 @@ pub fn start(
     // Wrap in OwnedFd so it's cleaned up on early return
     let fan_fd_owned = OwnedFd(fan_fd);
 
+    let (control_tx, control_rx) = crossbeam_channel::unbounded::<Vec<PathBuf>>();
+
     // Determine unique mount points to mark
     let mount_points = resolve_mount_points(watch_paths);
 
     let mask = FAN_MODIFY | FAN_ATTRIB | FAN_CREATE | FAN_DELETE | FAN_MOVED_FROM | FAN_MOVED_TO;
 
     for mount in &mount_points {
-        let c_path = CString::new(mount.as_os_str().as_bytes())
-            .map_err(|_| VigilError::Fanotify(format!("invalid path: {}", mount.display())))?;
-
-        // SAFETY: fanotify_mark is a Linux syscall. fan_fd is a valid fd
-        // from fanotify_init, c_path is a valid NUL-terminated C string.
-        let ret = unsafe {
-            libc::syscall(
-                libc::SYS_fanotify_mark,
-                fan_fd,
-                FAN_MARK_ADD | FAN_MARK_MOUNT,
-                mask,
-                libc::AT_FDCWD,
-                c_path.as_ptr(),
-            )
-        };
-
-        if ret < 0 {
-            let err = std::io::Error::last_os_error();
-            log::warn!("fanotify_mark failed for {}: {}", mount.display(), err);
-        } else {
-            log::info!("fanotify watching mount: {}", mount.display());
-        }
+        let _ = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD);
     }
-
-    // Collect watch paths as a set for fast membership checking
-    let watch_set: HashSet<PathBuf> = watch_paths.iter().cloned().collect();
 
     // Spawn event reader thread — transfer ownership of fan_fd_owned into the closure
     std::thread::Builder::new()
@@ -152,7 +137,22 @@ pub fn start(
 
             let mut events = [libc::epoll_event { events: 0, u64: 0 }; 1];
 
+            let mut current_mounts: HashSet<PathBuf> = mount_points.into_iter().collect();
+
             while !shutdown.load(Ordering::Acquire) {
+                while let Ok(new_paths) = control_rx.try_recv() {
+                    let new_mounts: HashSet<PathBuf> =
+                        resolve_mount_points(&new_paths).into_iter().collect();
+
+                    for mount in new_mounts.difference(&current_mounts) {
+                        let _ = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD);
+                    }
+                    for mount in current_mounts.difference(&new_mounts) {
+                        let _ = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_REMOVE);
+                    }
+                    current_mounts = new_mounts;
+                }
+
                 // SAFETY: epoll_fd_raw is valid, events array has capacity for 1 event.
                 let nfds = unsafe {
                     libc::epoll_wait(epoll_fd_raw, events.as_mut_ptr(), 1, 500) // 500ms timeout
@@ -179,24 +179,24 @@ pub fn start(
                         // Read path from /proc/self/fd/<fd>
                         let fd_link = format!("/proc/self/fd/{}", event.fd);
                         if let Ok(path) = std::fs::read_link(&fd_link) {
-                            // Check if path is in our watch set (or is a child of a watched dir)
-                            let is_watched = watch_set
-                                .iter()
-                                .any(|wp| path.starts_with(wp) || &path == wp);
+                            // Check if path is in our watch set using O(log n) prefix lookup
+                            let is_watched = watch_index.read().is_watched(&path);
 
                             if is_watched {
                                 if let Some(event_type) = mask_to_event_type(event.mask) {
+                                    metrics.events_received.fetch_add(1, Ordering::Relaxed);
                                     let fs_event = FsEvent {
                                         path: path.clone(),
                                         event_type,
                                         timestamp: Utc::now(),
                                     };
-                                    match event_tx.try_send(fs_event) {
+                                    match event_tx.send_timeout(fs_event, Duration::from_secs(1)) {
                                         Ok(()) => {}
-                                        Err(crossbeam_channel::TrySendError::Full(_)) => {
-                                            log::warn!("Event channel full — dropping filesystem event for {}", path.display());
+                                        Err(crossbeam_channel::SendTimeoutError::Timeout(_)) => {
+                                            log::error!("Event channel full for 1s — dropping filesystem event for {}. Scheduling recovery scan.", path.display());
+                                            metrics.events_dropped.fetch_add(1, Ordering::Relaxed);
                                         }
-                                        Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                                        Err(crossbeam_channel::SendTimeoutError::Disconnected(_)) => {
                                             log::error!("Event channel disconnected");
                                             break;
                                         }
@@ -220,6 +220,41 @@ pub fn start(
         })
         .map_err(|e| VigilError::Fanotify(format!("cannot spawn thread: {}", e)))?;
 
+    Ok(control_tx)
+}
+
+fn apply_fanotify_mark(fan_fd: RawFd, mount: &std::path::Path, mask: u64, op: u32) -> Result<()> {
+    let c_path = CString::new(mount.as_os_str().as_bytes())
+        .map_err(|_| VigilError::Fanotify(format!("invalid path: {}", mount.display())))?;
+
+    // SAFETY: fanotify_mark is a Linux syscall. fan_fd is a valid fd from
+    // fanotify_init and c_path is a valid NUL-terminated C string.
+    let ret = unsafe {
+        libc::syscall(
+            libc::SYS_fanotify_mark,
+            fan_fd,
+            op | FAN_MARK_MOUNT,
+            mask,
+            libc::AT_FDCWD,
+            c_path.as_ptr(),
+        )
+    };
+
+    if ret < 0 {
+        let err = std::io::Error::last_os_error();
+        log::warn!("fanotify_mark failed for {}: {}", mount.display(), err);
+        return Err(VigilError::Fanotify(format!(
+            "fanotify_mark failed for {}: {}",
+            mount.display(),
+            err
+        )));
+    }
+
+    if op == FAN_MARK_ADD {
+        log::info!("fanotify watching mount: {}", mount.display());
+    } else {
+        log::info!("fanotify unwatching mount: {}", mount.display());
+    }
     Ok(())
 }
 

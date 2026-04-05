@@ -7,10 +7,18 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use crossbeam_channel::Sender;
+use parking_lot::RwLock;
 
 use crate::config::Config;
 use crate::error::Result;
+use crate::metrics::Metrics;
 use crate::types::{FsEvent, MonitorBackend};
+use crate::watch_index::WatchGroupIndex;
+
+pub struct MonitorHandle {
+    pub backend: MonitorBackend,
+    pub reconfigure_tx: Option<crossbeam_channel::Sender<Vec<PathBuf>>>,
+}
 
 /// Start the real-time filesystem monitor.
 /// Returns a receiver channel that yields filtered filesystem events.
@@ -20,13 +28,27 @@ pub fn start_monitor(
     config: &Config,
     event_tx: Sender<FsEvent>,
     shutdown: Arc<AtomicBool>,
-) -> Result<MonitorBackend> {
+    watch_index: Arc<RwLock<WatchGroupIndex>>,
+    metrics: Arc<Metrics>,
+) -> Result<MonitorHandle> {
     let watch_paths = collect_watch_paths(config);
 
     match config.daemon.monitor_backend {
         MonitorBackend::Fanotify => {
-            match fanotify::start(config, &watch_paths, event_tx.clone(), shutdown.clone()) {
-                Ok(()) => return Ok(MonitorBackend::Fanotify),
+            match fanotify::start(
+                config,
+                &watch_paths,
+                event_tx.clone(),
+                shutdown.clone(),
+                watch_index.clone(),
+                metrics.clone(),
+            ) {
+                Ok(reconfigure_tx) => {
+                    return Ok(MonitorHandle {
+                        backend: MonitorBackend::Fanotify,
+                        reconfigure_tx: Some(reconfigure_tx),
+                    });
+                }
                 Err(e) => {
                     log::warn!(
                         "fanotify unavailable (requires CAP_SYS_ADMIN): {}. Falling back to inotify.",
@@ -45,12 +67,15 @@ pub fn start_monitor(
     }
 
     // Fallback to inotify
-    inotify::start(config, &watch_paths, event_tx, shutdown)?;
-    Ok(MonitorBackend::Inotify)
+    let reconfigure_tx = inotify::start(config, &watch_paths, event_tx, shutdown, metrics)?;
+    Ok(MonitorHandle {
+        backend: MonitorBackend::Inotify,
+        reconfigure_tx: Some(reconfigure_tx),
+    })
 }
 
 /// Collect all expanded watch paths from config.
-fn collect_watch_paths(config: &Config) -> Vec<PathBuf> {
+pub fn collect_watch_paths(config: &Config) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for group in config.watch.values() {
         let expanded = crate::config::expand_user_paths(&group.paths);

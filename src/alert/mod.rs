@@ -49,7 +49,10 @@ struct RateCounter {
 impl AlertEngine {
     pub fn new(config: &Config) -> Result<Self> {
         let dbus_notifier = if config.alerts.desktop_notifications {
-            match dbus::DbusNotifier::new() {
+            match dbus::DbusNotifier::with_rate_config(
+                config.alerts.notification_rate_limit,
+                config.alerts.notification_rate_window_secs,
+            ) {
                 Ok(n) => Some(n),
                 Err(e) => {
                     log::warn!("D-Bus notifications unavailable: {}", e);

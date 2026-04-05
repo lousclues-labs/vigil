@@ -30,6 +30,19 @@ pub fn open_db(config: &Config) -> Result<Connection> {
 
 /// Open the database at an explicit path (used by CLI commands).
 pub fn open_db_at(path: &Path, wal_mode: bool) -> Result<Connection> {
+    open_db_at_with_options(path, wal_mode, None, None)
+}
+
+/// Open the database at an explicit path with optional synchronous/busy settings.
+///
+/// CLI paths default to synchronous=NORMAL and busy_timeout=5000ms unless
+/// overridden through the optional parameters.
+pub fn open_db_at_with_options(
+    path: &Path,
+    wal_mode: bool,
+    sync_mode: Option<&str>,
+    busy_timeout_ms: Option<u32>,
+) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -39,8 +52,17 @@ pub fn open_db_at(path: &Path, wal_mode: bool) -> Result<Connection> {
     if wal_mode {
         conn.pragma_update(None, "journal_mode", "WAL")?;
     }
-    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(
+        None,
+        "synchronous",
+        &sync_mode.unwrap_or("NORMAL").to_string(),
+    )?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.pragma_update(
+        None,
+        "busy_timeout",
+        &busy_timeout_ms.unwrap_or(5000).to_string(),
+    )?;
 
     // Performance pragmas
     conn.pragma_update(None, "cache_size", "-8000")?;
@@ -55,8 +77,9 @@ fn configure_connection(conn: &Connection, config: &Config) -> Result<()> {
     if config.database.wal_mode {
         conn.pragma_update(None, "journal_mode", "WAL")?;
     }
-    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "synchronous", &config.database.sync_mode)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.pragma_update(None, "busy_timeout", &config.database.busy_timeout_ms.to_string())?;
 
     // Performance pragmas
     conn.pragma_update(None, "cache_size", "-8000")?;

@@ -12,6 +12,32 @@ use crate::db::ops;
 use crate::error::{Result, ScanWarning, VigilError, WarningSeverity};
 use crate::types::{BaselineEntry, BaselineSource};
 
+struct TxGuard<'a> {
+    conn: &'a Connection,
+    committed: bool,
+}
+
+impl<'a> TxGuard<'a> {
+    fn new(conn: &'a Connection) -> Self {
+        Self {
+            conn,
+            committed: false,
+        }
+    }
+
+    fn mark_committed(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for TxGuard<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
+    }
+}
+
 /// Pre-compiled exclusion patterns for efficient matching.
 pub struct CompiledExclusions {
     pub patterns: Vec<glob::Pattern>,
@@ -48,7 +74,8 @@ pub fn init_baseline(
     let mut warnings = Vec::new();
     let exclusions = CompiledExclusions::from_config(config);
 
-    conn.execute_batch("BEGIN IMMEDIATE")?;
+    conn.execute_batch("BEGIN DEFERRED")?;
+    let mut tx_guard = TxGuard::new(conn);
     let mut batch_count: u64 = 0;
 
     for (group_name, group) in &config.watch {
@@ -71,7 +98,7 @@ pub fn init_baseline(
                     // Commit every 1,000 inserts to avoid holding the write lock too long
                     if batch_count >= 1000 {
                         conn.execute_batch("COMMIT")?;
-                        conn.execute_batch("BEGIN IMMEDIATE")?;
+                        conn.execute_batch("BEGIN DEFERRED")?;
                         batch_count = 0;
                     }
                 }
@@ -89,6 +116,7 @@ pub fn init_baseline(
     }
 
     conn.execute_batch("COMMIT")?;
+    tx_guard.mark_committed();
 
     // Record baseline generation metadata
     ops::set_config_state(conn, "last_baseline_refresh", &now.to_string())?;
@@ -113,7 +141,8 @@ pub fn refresh_baseline(
     let mut warnings = Vec::new();
     let exclusions = CompiledExclusions::from_config(config);
 
-    conn.execute_batch("BEGIN IMMEDIATE")?;
+    conn.execute_batch("BEGIN DEFERRED")?;
+    let mut tx_guard = TxGuard::new(conn);
     let mut batch_count: u64 = 0;
 
     for (group_name, group) in &config.watch {
@@ -145,7 +174,7 @@ pub fn refresh_baseline(
                     batch_count += n;
                     if batch_count >= 1000 {
                         conn.execute_batch("COMMIT")?;
-                        conn.execute_batch("BEGIN IMMEDIATE")?;
+                        conn.execute_batch("BEGIN DEFERRED")?;
                         batch_count = 0;
                     }
                 }
@@ -162,6 +191,7 @@ pub fn refresh_baseline(
     }
 
     conn.execute_batch("COMMIT")?;
+    tx_guard.mark_committed();
 
     ops::set_config_state(conn, "last_baseline_refresh", &now.to_string())?;
 

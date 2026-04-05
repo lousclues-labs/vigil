@@ -40,6 +40,8 @@ pub struct DaemonConfig {
     pub log_level: String,
     #[serde(default = "default_monitor_backend")]
     pub monitor_backend: MonitorBackend,
+    #[serde(default = "default_worker_threads")]
+    pub worker_threads: u32,
 }
 
 impl Default for DaemonConfig {
@@ -49,8 +51,13 @@ impl Default for DaemonConfig {
             db_path: default_db_path(),
             log_level: default_log_level(),
             monitor_backend: default_monitor_backend(),
+            worker_threads: default_worker_threads(),
         }
     }
+}
+
+fn default_worker_threads() -> u32 {
+    2
 }
 
 fn default_pid_file() -> PathBuf {
@@ -122,6 +129,12 @@ pub struct AlertsConfig {
     pub cooldown_seconds: u64,
     #[serde(default)]
     pub severity_filter: SeverityFilterConfig,
+    /// Maximum number of desktop notifications per rate window.
+    #[serde(default = "default_notification_rate_limit")]
+    pub notification_rate_limit: u32,
+    /// Rate window for desktop notification batching (seconds).
+    #[serde(default = "default_notification_rate_window")]
+    pub notification_rate_window_secs: u64,
 }
 
 impl Default for AlertsConfig {
@@ -134,8 +147,18 @@ impl Default for AlertsConfig {
             rate_limit: default_rate_limit(),
             cooldown_seconds: default_cooldown(),
             severity_filter: SeverityFilterConfig::default(),
+            notification_rate_limit: default_notification_rate_limit(),
+            notification_rate_window_secs: default_notification_rate_window(),
         }
     }
+}
+
+fn default_notification_rate_limit() -> u32 {
+    5
+}
+
+fn default_notification_rate_window() -> u64 {
+    10
 }
 
 fn default_log_file() -> PathBuf {
@@ -272,6 +295,13 @@ pub struct DatabaseConfig {
     pub audit_rotation_size: u64,
     #[serde(default = "default_audit_retention_days")]
     pub audit_retention_days: u32,
+    /// SQLite synchronous pragma: "off", "normal", "full", or "extra".
+    /// Production security deployments should use "full" to survive power
+    /// failures at the cost of ~2x write latency.
+    #[serde(default = "default_sync_mode")]
+    pub sync_mode: String,
+    #[serde(default = "default_busy_timeout_ms")]
+    pub busy_timeout_ms: u32,
 }
 
 impl Default for DatabaseConfig {
@@ -280,8 +310,18 @@ impl Default for DatabaseConfig {
             wal_mode: true,
             audit_rotation_size: default_audit_rotation_size(),
             audit_retention_days: default_audit_retention_days(),
+            sync_mode: default_sync_mode(),
+            busy_timeout_ms: default_busy_timeout_ms(),
         }
     }
+}
+
+fn default_sync_mode() -> String {
+    "normal".to_string()
+}
+
+fn default_busy_timeout_ms() -> u32 {
+    5000
 }
 
 fn default_audit_rotation_size() -> u64 {
@@ -388,6 +428,24 @@ pub fn validate_config(config: &Config) -> Result<()> {
         return Err(VigilError::Config("rate_limit must be > 0".into()));
     }
 
+    // worker_threads must be between 1 and 16
+    if config.daemon.worker_threads == 0 || config.daemon.worker_threads > 16 {
+        return Err(VigilError::Config(
+            "worker_threads must be between 1 and 16".into(),
+        ));
+    }
+
+    // Validate sync_mode
+    match config.database.sync_mode.to_lowercase().as_str() {
+        "off" | "normal" | "full" | "extra" => {}
+        other => {
+            return Err(VigilError::Config(format!(
+                "invalid sync_mode '{}', must be one of: off, normal, full, extra",
+                other
+            )));
+        }
+    }
+
     // Validate log_level is a recognized value
     match config.daemon.log_level.to_lowercase().as_str() {
         "error" | "warn" | "info" | "debug" | "trace" => {}
@@ -453,6 +511,100 @@ pub fn validate_config(config: &Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Deep validation of config beyond basic TOML parsing. Checks filesystem
+/// accessibility, path resolution, and write permissions.
+/// Returns warnings (non-fatal issues) on success, or an error if a critical
+/// issue is found.
+pub fn validate_config_deep(config: &Config) -> Result<Vec<String>> {
+    let mut warnings = Vec::new();
+
+    // Check that alert log file parent directory is writable
+    if let Some(parent) = config.alerts.log_file.parent() {
+        if parent.exists() {
+            let test_path = parent.join(".vigil_write_test");
+            match std::fs::File::create(&test_path) {
+                Ok(_) => {
+                    let _ = std::fs::remove_file(&test_path);
+                }
+                Err(e) => {
+                    return Err(VigilError::Config(format!(
+                        "alert log directory {} is not writable: {}",
+                        parent.display(),
+                        e
+                    )));
+                }
+            }
+        } else {
+            warnings.push(format!(
+                "alert log directory {} does not exist yet",
+                parent.display()
+            ));
+        }
+    }
+
+    // Check that DB path is writable
+    if let Some(parent) = config.daemon.db_path.parent() {
+        if parent.exists() {
+            let test_path = parent.join(".vigil_db_write_test");
+            match std::fs::File::create(&test_path) {
+                Ok(_) => {
+                    let _ = std::fs::remove_file(&test_path);
+                }
+                Err(e) => {
+                    return Err(VigilError::Config(format!(
+                        "database directory {} is not writable: {}",
+                        parent.display(),
+                        e
+                    )));
+                }
+            }
+        } else {
+            warnings.push(format!(
+                "database directory {} does not exist yet",
+                parent.display()
+            ));
+        }
+    }
+
+    // Check that watch paths resolve to at least one existing path
+    let mut any_exists = false;
+    for (group_name, group) in &config.watch {
+        let expanded = expand_user_paths(&group.paths);
+        for p in &expanded {
+            if p.exists() {
+                any_exists = true;
+            } else {
+                warnings.push(format!(
+                    "watch.{}: path {} does not exist yet",
+                    group_name,
+                    p.display()
+                ));
+            }
+        }
+    }
+    if !any_exists && !config.watch.is_empty() {
+        return Err(VigilError::Config(
+            "no watch paths resolve to existing files or directories".into(),
+        ));
+    }
+
+    // Verify HMAC key is loadable if signing is enabled
+    if config.security.hmac_signing {
+        match crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(VigilError::Config(format!(
+                    "HMAC key at {} cannot be loaded: {}",
+                    config.security.hmac_key_path.display(),
+                    e
+                )));
+            }
+        }
+    }
+
+    Ok(warnings)
 }
 
 /// Returns a config with built-in defaults and standard watch paths.
@@ -947,5 +1099,56 @@ mod tests {
         let mut config = default_config();
         config.scanner.schedule = "0 3 * * *".to_string();
         assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_worker_threads() {
+        let mut config = default_config();
+        config.daemon.worker_threads = 0;
+        assert!(validate_config(&config).is_err());
+
+        config.daemon.worker_threads = 17;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_accepts_worker_threads_in_range() {
+        let mut config = default_config();
+        config.daemon.worker_threads = 1;
+        assert!(validate_config(&config).is_ok());
+
+        config.daemon.worker_threads = 16;
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_sync_mode() {
+        let mut config = default_config();
+        config.database.sync_mode = "turbo".to_string();
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn deep_validation_reports_missing_watch_paths_as_warnings() {
+        let mut config = default_config();
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("existing");
+        std::fs::create_dir_all(&existing).unwrap();
+        config.alerts.log_file = dir.path().join("alerts.json");
+        config.daemon.db_path = dir.path().join("baseline.db");
+        config.watch.clear();
+        config.watch.insert(
+            "test".to_string(),
+            WatchGroup {
+                severity: Severity::Low,
+                paths: vec![
+                    existing.to_string_lossy().to_string(),
+                    dir.path().join("missing").to_string_lossy().to_string(),
+                ],
+            },
+        );
+
+        let warnings = validate_config_deep(&config).unwrap();
+        assert!(!warnings.is_empty());
     }
 }

@@ -57,10 +57,15 @@ fn daemon_lifecycle_create_modify_delete() {
     // Set up shutdown flag and event channel
     let shutdown = Arc::new(AtomicBool::new(false));
     let (event_tx, event_rx) = crossbeam_channel::bounded(1024);
+    let watch_index = Arc::new(parking_lot::RwLock::new(
+        vigil::watch_index::WatchGroupIndex::from_config(&cfg),
+    ));
+    let metrics = Arc::new(vigil::metrics::Metrics::new());
 
     // Start inotify monitor in a background thread
     let shutdown_clone = shutdown.clone();
-    vigil::monitor::start_monitor(&cfg, event_tx, shutdown_clone).expect("start monitor");
+    vigil::monitor::start_monitor(&cfg, event_tx, shutdown_clone, watch_index, metrics)
+        .expect("start monitor");
 
     // Build event filter
     let mut event_filter = vigil::monitor::filter::EventFilter::new(&cfg);

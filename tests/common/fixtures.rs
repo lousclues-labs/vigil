@@ -101,6 +101,7 @@ pub fn test_config(tmp: &TempDir) -> Config {
             db_path,
             log_level: "debug".into(),
             monitor_backend: MonitorBackend::Inotify,
+            worker_threads: 2,
         },
         scanner: ScannerConfig::default(),
         alerts: AlertsConfig {
@@ -111,6 +112,8 @@ pub fn test_config(tmp: &TempDir) -> Config {
             rate_limit: 100,
             cooldown_seconds: 0,
             severity_filter: SeverityFilterConfig::default(),
+            notification_rate_limit: 5,
+            notification_rate_window_secs: 10,
         },
         exclusions,
         package_manager: PackageManagerConfig::default(),

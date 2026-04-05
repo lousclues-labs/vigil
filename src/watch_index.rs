@@ -84,6 +84,22 @@ impl WatchGroupIndex {
         self.tree.is_empty()
     }
 
+    /// Replace all entries with a freshly-built index from a new config.
+    pub fn update_from_config(&mut self, config: &Config) {
+        self.tree.clear();
+        for (group_name, group) in &config.watch {
+            let expanded = crate::config::expand_user_paths(&group.paths);
+            for p in expanded {
+                self.tree.insert(p, (group_name.clone(), group.severity));
+            }
+        }
+    }
+
+    /// Check whether a path is under any watched prefix.
+    pub fn is_watched(&self, path: &Path) -> bool {
+        self.lookup(path).is_some()
+    }
+
     /// Return the entries as an iterator of (path, group_name, severity) for
     /// backward compatibility with code that iterates over expanded groups.
     pub fn iter(&self) -> impl Iterator<Item = (&Path, &str, Severity)> {

@@ -4,6 +4,116 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-04-05
+
+### Release Summary
+- Promotes Vigil from MVP-era behavior to production-grade daemon hardening across concurrency, durability, monitoring, and operational safety.
+- Delivers a full 15-item production hardening scope with no intentional CLI breaking changes.
+- Preserves backward compatibility for existing baseline/audit databases and default configurations through additive, defaulted config fields.
+
+### Compatibility Notes
+- No breaking CLI command removals or flag renames.
+- No required SQLite schema migration for existing deployments.
+- Existing watch groups remain valid; dynamic watch updates now apply on SIGHUP.
+- New daemon/database/alert config knobs are additive and have safe defaults.
+
+### Production Hardening Delivery (Items 1-15)
+
+#### 1) Multi-threaded daemon worker pool (`src/lib.rs`, `src/config.rs`)
+- Replaced single-thread event processing with coordinator + worker pool architecture.
+- Added `daemon.worker_threads` (default `2`, validated range `1..=16`).
+- Coordinator thread performs filtering/debounce and forwards accepted events to a bounded internal worker queue.
+- Worker threads are named (`vigil-worker-0`, `vigil-worker-1`, ...) and joined cleanly on shutdown.
+- Panic isolation and accounting were added with shared `panic_count` tracking.
+
+#### 2) Timeout-based monitor channel sends with drop accounting (`src/monitor/fanotify.rs`, `src/monitor/inotify.rs`, `src/lib.rs`)
+- Replaced non-blocking `try_send` patterns with `send_timeout(Duration::from_secs(1))` to apply bounded backpressure.
+- Added explicit dropped-event accounting and ERROR-level logging when monitor->daemon queues saturate.
+- Increased monitor->coordinator channel capacity to `8192` and worker channel to `2048`.
+- Added dropped-event housekeeping checks and recovery scan scheduling logic.
+
+#### 3) O(log n) watched-path lookup in hot paths (`src/watch_index.rs`, `src/monitor/fanotify.rs`)
+- Introduced `WatchGroupIndex` B-tree backed prefix lookup for efficient watch-group classification.
+- Replaced O(n) linear path-prefix scans with indexed lookups in fanotify processing.
+- Added index update and watched-path helper methods to support runtime reuse.
+
+#### 4) Hot-reload watch paths on SIGHUP (`src/lib.rs`, `src/monitor/mod.rs`, `src/monitor/fanotify.rs`, `src/monitor/inotify.rs`)
+- Added monitor reconfiguration channel plumbing via `MonitorHandle`.
+- SIGHUP now deep-validates and applies watch updates dynamically without daemon restart.
+- Fanotify marks are added/removed by mount diffing; inotify watches are rebuilt for the updated path set.
+- Shared watch index is guarded with `Arc<RwLock<...>>` and updated atomically during reload.
+
+#### 5) Transaction batching for baseline and daemon writes (`src/baseline/mod.rs`, `src/db/ops.rs`, `src/lib.rs`)
+- Wrapped baseline init/refresh loops in explicit transactions with periodic commits every ~1000 entries.
+- Added rollback-safe transaction guard behavior for scan failures.
+- Added `batch_upsert_baseline()` for grouped baseline writes.
+- Daemon worker-side change dispatch now flushes in batches with transaction boundaries.
+
+#### 6) Configurable SQLite synchronous mode (`src/config.rs`, `src/db/mod.rs`)
+- Added `database.sync_mode` config field (default `normal`).
+- Validation accepts `off|normal|full|extra` (case-insensitive).
+- Connection setup now respects configured sync mode instead of hardcoded synchronous behavior.
+
+#### 7) SQLite busy timeout controls (`src/config.rs`, `src/db/mod.rs`)
+- Added `database.busy_timeout_ms` config field (default `5000`).
+- Applied busy timeout pragma in daemon and CLI connection open paths.
+- Reduced lock-contention stalls and improved multi-process DB ergonomics.
+
+#### 8) New-file alerting in daemon event path (`src/lib.rs`, `src/types.rs`)
+- Added explicit create/move-in branch for baseline-missing files under watched paths.
+- New files are hashed/metadata-enriched and emitted as `ChangeType::Created`.
+- Group/severity is resolved through watch index; out-of-scope mount noise is skipped.
+- Added race-safe handling for files deleted between event receipt and metadata collection.
+
+#### 9) Explicit deletion alerting (`src/lib.rs`, `src/compare.rs`)
+- Added direct handling for `Delete` and `MovedFrom` events.
+- Deletion results preserve baseline `old_*` metadata/package fields for high-fidelity alerts.
+- Existing compare-layer deleted outcome remains wired and functional for event paths.
+
+#### 10) Rate-limited desktop notification delivery (`src/alert/dbus.rs`, `src/alert/mod.rs`)
+- Added desktop notification rate-window controls and burst batching summaries.
+- Added in-flight notify-send cap to prevent process storms under event floods.
+- Added dedicated child reaper thread to prevent zombie accumulation.
+- Excess notifications are dropped with diagnostics instead of unbounded queuing.
+
+#### 11) Graceful degraded mode on disk-full (`src/lib.rs`, `src/types.rs`)
+- Added daemon health state model (`Healthy`, `Degraded { reason, since }`).
+- Detects disk-full write paths (`ENOSPC`, `SQLITE_FULL`) and transitions to degraded mode.
+- Keeps monitoring active while queuing pending DB writes in bounded memory.
+- Housekeeping attempts recovery and flushes queued writes when storage health returns.
+
+#### 12) Metrics and observability counters (`src/metrics.rs`, `src/lib.rs`, monitor/filter integration)
+- Added daemon-wide `Metrics` counters for event flow, hashing, alerts, DB writes/errors, and panic capture.
+- Counters are shared through `Arc<Metrics>` and incremented at monitor, filter, coordinator, and worker stages.
+- Added runtime snapshot export (`/run/vigil/metrics.json`) with startup uptime timestamp.
+
+#### 13) Self-protection integrity monitoring (`src/lib.rs`)
+- Added startup hashing of daemon binary via `/proc/self/exe`.
+- Added periodic self-hash verification in housekeeping with critical alerting on mismatch.
+- Added periodic integrity checks for HMAC key and config file when enabled by security settings.
+- Self-protection alerts do not terminate daemon monitoring loops.
+
+#### 14) Deep config validation before SIGHUP apply (`src/config.rs`, `src/lib.rs`, `src/cli.rs`)
+- Added `validate_config_deep()` for writable path checks, watch path resolution, and HMAC key loadability.
+- Reload path now validates before mutating active config state; failed reload keeps prior config live.
+- Non-fatal warnings are surfaced without blocking apply.
+- Added `vigil config check` command for explicit operator validation.
+
+#### 15) Signal socket access control hardening (`src/alert/socket.rs`)
+- Enforced owner-only socket file permissions (`0600`) after bind.
+- Added peer credential verification with `SO_PEERCRED` and strict UID allow-listing (root + daemon owner).
+- Added connection cap and write-timeout behavior to prevent daemon blocking on slow clients.
+- Slow/failing clients are disconnected proactively.
+
+### Additional Notable Changes
+- Added `pub mod metrics;` and integrated metrics in daemon/control paths.
+- Expanded config diff/reload behavior and dynamic monitor update hooks.
+- Added/updated tests around daemon behavior, fixtures, and integration pathways for hardening logic.
+
+### Validation
+- `cargo build` passes.
+- `cargo test --all-targets -- --test-threads=4` passes.
+
 ## [0.8.0] - 2026-04-05
 
 ### Release Summary

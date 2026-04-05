@@ -168,4 +168,7 @@ pub enum ConfigAction {
 
     /// Validate configuration file
     Validate,
+
+    /// Deep-validate configuration file (checks filesystem access, permissions, etc.)
+    Check,
 }

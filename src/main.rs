@@ -18,7 +18,17 @@ fn main() {
     let cli = Cli::parse();
 
     if let Err(e) = run(cli) {
-        log::error!("{}", e);
+        if matches!(
+            &e,
+            vigil::error::VigilError::Database(rusqlite::Error::SqliteFailure(db_err, _))
+                if db_err.code == rusqlite::ErrorCode::DatabaseBusy
+        ) {
+            eprintln!(
+                "Database is locked by the vigil daemon. Try again in a moment, or use 'vigil status' to check daemon state."
+            );
+        } else {
+            log::error!("{}", e);
+        }
         process::exit(1);
     }
 }
@@ -34,7 +44,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Check { full } => cmd_check(config_path.as_deref(), full),
         Command::Maintenance { action } => cmd_maintenance(config_path.as_deref(), action),
         Command::Log { action } => cmd_log(config_path.as_deref(), action),
-        Command::Status => cmd_status(config_path.as_deref()),
+        Command::Status => cmd_status(config_path.as_deref(), format),
         Command::Config { action } => cmd_config(config_path.as_deref(), action),
         Command::Doctor => cmd_doctor(config_path.as_deref()),
         Command::Version => {
@@ -378,7 +388,7 @@ fn cmd_log(config_path: Option<&std::path::Path>, action: LogAction) -> Result<(
     Ok(())
 }
 
-fn cmd_status(config_path: Option<&std::path::Path>) -> Result<()> {
+fn cmd_status(config_path: Option<&std::path::Path>, format: OutputFormat) -> Result<()> {
     let cfg = config::load_config(config_path)?;
     let conn = db::open_db(&cfg)?;
 
@@ -387,6 +397,37 @@ fn cmd_status(config_path: Option<&std::path::Path>) -> Result<()> {
     let maint = db::ops::get_config_state(&conn, "maintenance_window_active")?
         .map(|v| v == "1")
         .unwrap_or(false);
+
+    let daemon_state = std::fs::read_to_string("/run/vigil/state.json")
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    let metrics = std::fs::read_to_string("/run/vigil/metrics.json")
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+
+    if matches!(format, OutputFormat::Json) {
+        let pid = if cfg.daemon.pid_file.exists() {
+            std::fs::read_to_string(&cfg.daemon.pid_file)
+                .ok()
+                .map(|s| s.trim().to_string())
+        } else {
+            None
+        };
+
+        let payload = serde_json::json!({
+            "baseline_entries": count,
+            "last_refresh": last_refresh,
+            "maintenance_window": maint,
+            "database": cfg.daemon.db_path,
+            "monitor_backend": cfg.daemon.monitor_backend.to_string(),
+            "daemon_pid": pid,
+            "daemon_state": daemon_state,
+            "metrics": metrics,
+        });
+
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
 
     println!("Vigil Status");
     println!("━━━━━━━━━━━━");
@@ -411,6 +452,31 @@ fn cmd_status(config_path: Option<&std::path::Path>) -> Result<()> {
         println!("  Daemon:              not running");
     }
 
+    if let Some(state) = daemon_state {
+        let state_name = state
+            .get("state")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        println!("  Daemon state:        {}", state_name);
+        if state_name == "degraded" {
+            if let Some(reason) = state.get("reason").and_then(|v| v.as_str()) {
+                println!("  Degraded reason:     {}", reason);
+            }
+        }
+    }
+
+    if let Some(metrics) = metrics {
+        if let Some(events_received) = metrics.get("events_received").and_then(|v| v.as_u64()) {
+            println!("  Events received:     {}", events_received);
+        }
+        if let Some(events_dropped) = metrics.get("events_dropped").and_then(|v| v.as_u64()) {
+            println!("  Events dropped:      {}", events_dropped);
+        }
+        if let Some(changes_detected) = metrics.get("changes_detected").and_then(|v| v.as_u64()) {
+            println!("  Changes detected:    {}", changes_detected);
+        }
+    }
+
     Ok(())
 }
 
@@ -428,6 +494,32 @@ fn cmd_config(config_path: Option<&std::path::Path>, action: ConfigAction) -> Re
                 process::exit(1);
             }
         },
+        ConfigAction::Check => {
+            let cfg = match config::load_config(config_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    println!("Configuration error: {}", e);
+                    process::exit(1);
+                }
+            };
+            println!("Basic validation: OK");
+            match config::validate_config_deep(&cfg) {
+                Ok(warnings) => {
+                    if warnings.is_empty() {
+                        println!("Deep validation: OK (no warnings)");
+                    } else {
+                        println!("Deep validation: OK ({} warnings)", warnings.len());
+                        for w in &warnings {
+                            println!("  WARNING: {}", w);
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Deep validation FAILED: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
     }
 
     Ok(())

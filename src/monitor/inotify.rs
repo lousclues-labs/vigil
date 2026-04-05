@@ -3,6 +3,7 @@ use std::os::unix::io::AsFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use crossbeam_channel::Sender;
@@ -11,6 +12,7 @@ use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify, WatchDescriptor};
 
 use crate::config::Config;
 use crate::error::{Result, VigilError};
+use crate::metrics::Metrics;
 use crate::types::{FsEvent, FsEventType};
 
 /// Start inotify-based filesystem monitoring (fallback when fanotify is unavailable).
@@ -19,9 +21,12 @@ pub fn start(
     watch_paths: &[PathBuf],
     event_tx: Sender<FsEvent>,
     shutdown: Arc<AtomicBool>,
-) -> Result<()> {
+    metrics: Arc<Metrics>,
+) -> Result<crossbeam_channel::Sender<Vec<PathBuf>>> {
     let inotify = Inotify::init(InitFlags::IN_CLOEXEC)
         .map_err(|e| VigilError::Inotify(format!("inotify_init failed: {}", e)))?;
+
+    let (control_tx, control_rx) = crossbeam_channel::unbounded::<Vec<PathBuf>>();
 
     let flags = AddWatchFlags::IN_MODIFY
         | AddWatchFlags::IN_ATTRIB
@@ -81,6 +86,14 @@ pub fn start(
             let poll_fd = PollFd::new(inotify_fd, PollFlags::POLLIN);
 
             while !shutdown.load(Ordering::Acquire) {
+                while let Ok(new_paths) = control_rx.try_recv() {
+                    if let Err(e) = rebuild_watches(&inotify, &mut wd_to_path, &new_paths, flags) {
+                        log::error!("Failed to reconfigure inotify watches: {}", e);
+                    } else {
+                        log::info!("inotify watch set reconfigured ({} paths)", new_paths.len());
+                    }
+                }
+
                 // Poll with 500ms timeout so we can check shutdown flag
                 match poll(&mut [poll_fd], PollTimeout::from(500u16)) {
                     Ok(n) if n > 0 => {
@@ -128,17 +141,19 @@ pub fn start(
 
                                     let event_type = inotify_mask_to_event_type(event.mask);
                                     if let Some(et) = event_type {
+                                        metrics.events_received.fetch_add(1, Ordering::Relaxed);
                                         let fs_event = FsEvent {
                                             path: file_path.clone(),
                                             event_type: et,
                                             timestamp: Utc::now(),
                                         };
-                                        match event_tx.try_send(fs_event) {
+                                        match event_tx.send_timeout(fs_event, Duration::from_secs(1)) {
                                             Ok(()) => {}
-                                            Err(crossbeam_channel::TrySendError::Full(_)) => {
-                                                log::warn!("Event channel full — dropping filesystem event for {}", file_path.display());
+                                            Err(crossbeam_channel::SendTimeoutError::Timeout(_)) => {
+                                                log::error!("Event channel full for 1s — dropping filesystem event for {}. Scheduling recovery scan.", file_path.display());
+                                                metrics.events_dropped.fetch_add(1, Ordering::Relaxed);
                                             }
-                                            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                                            Err(crossbeam_channel::SendTimeoutError::Disconnected(_)) => {
                                                 log::error!("Event channel disconnected");
                                                 break;
                                             }
@@ -164,6 +179,33 @@ pub fn start(
             log::info!("inotify monitor stopped");
         })
         .map_err(|e| VigilError::Inotify(format!("cannot spawn thread: {}", e)))?;
+
+    Ok(control_tx)
+}
+
+fn rebuild_watches(
+    inotify: &Inotify,
+    wd_map: &mut HashMap<WatchDescriptor, PathBuf>,
+    watch_paths: &[PathBuf],
+    flags: AddWatchFlags,
+) -> Result<()> {
+    let existing_wds: Vec<WatchDescriptor> = wd_map.keys().cloned().collect();
+    for wd in existing_wds {
+        let _ = inotify.rm_watch(wd);
+    }
+    wd_map.clear();
+
+    for path in watch_paths {
+        if path.is_dir() {
+            let _ = add_directory_watches(inotify, path, flags, wd_map);
+        } else if path.is_file() {
+            if let Some(parent) = path.parent() {
+                if let Ok(wd) = inotify.add_watch(parent, flags) {
+                    wd_map.insert(wd, parent.to_path_buf());
+                }
+            }
+        }
+    }
 
     Ok(())
 }

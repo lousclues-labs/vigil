@@ -105,6 +105,22 @@ pub fn upsert_baseline(conn: &Connection, entry: &BaselineEntry) -> Result<()> {
     Ok(())
 }
 
+/// Batch upsert multiple baseline entries within a single transaction.
+/// Returns the number of entries written.
+pub fn batch_upsert_baseline(conn: &Connection, entries: &[BaselineEntry]) -> Result<u64> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let mut count = 0u64;
+    for entry in entries {
+        if let Err(e) = upsert_baseline(conn, entry) {
+            conn.execute_batch("ROLLBACK")?;
+            return Err(e);
+        }
+        count += 1;
+    }
+    conn.execute_batch("COMMIT")?;
+    Ok(count)
+}
+
 /// Look up a baseline entry by absolute path.
 pub fn get_baseline_by_path(conn: &Connection, path: &str) -> Result<Option<BaselineEntry>> {
     let entry = conn
@@ -498,6 +514,25 @@ mod tests {
         let r = get_baseline_by_path(&conn, "/etc/passwd").unwrap().unwrap();
         assert_eq!(r.hash, "new_hash_value");
         assert_eq!(r.size, 2048);
+    }
+
+    #[test]
+    fn batch_upsert_baseline_writes_multiple_entries() {
+        let conn = test_conn();
+        let entries = vec![sample_entry("/etc/a"), sample_entry("/etc/b")];
+
+        let written = batch_upsert_baseline(&conn, &entries).unwrap();
+        assert_eq!(written, 2);
+        assert_eq!(baseline_count(&conn).unwrap(), 2);
+
+        let mut updated = entries.clone();
+        updated[0].hash = "changed_hash".to_string();
+        let written2 = batch_upsert_baseline(&conn, &updated).unwrap();
+        assert_eq!(written2, 2);
+        assert_eq!(baseline_count(&conn).unwrap(), 2);
+
+        let a = get_baseline_by_path(&conn, "/etc/a").unwrap().unwrap();
+        assert_eq!(a.hash, "changed_hash");
     }
 
     #[test]

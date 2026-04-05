@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
+use crate::metrics::Metrics;
 use crate::types::FsEvent;
 
 /// Maximum debounce entries before emergency pruning.
@@ -22,10 +24,16 @@ pub struct EventFilter {
     /// Paths whose final event was debounced away and need re-checking
     /// after the debounce window expires.
     pending_paths: HashSet<PathBuf>,
+    /// Optional metrics sink.
+    metrics: Option<Arc<Metrics>>,
 }
 
 impl EventFilter {
     pub fn new(config: &Config) -> Self {
+        Self::with_metrics(config, None)
+    }
+
+    pub fn with_metrics(config: &Config, metrics: Option<Arc<Metrics>>) -> Self {
         let exclusion_patterns = config
             .exclusions
             .patterns
@@ -46,6 +54,7 @@ impl EventFilter {
             exclusion_patterns,
             system_exclusion_prefixes,
             pending_paths: HashSet::new(),
+            metrics,
         }
     }
 
@@ -56,6 +65,11 @@ impl EventFilter {
         // System exclusion (prefix match)
         for prefix in &self.system_exclusion_prefixes {
             if path_str.starts_with(prefix.as_str()) {
+                if let Some(metrics) = &self.metrics {
+                    metrics
+                        .events_filtered
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
                 return false;
             }
         }
@@ -69,6 +83,11 @@ impl EventFilter {
 
         for pattern in &self.exclusion_patterns {
             if pattern.matches(&file_name) || pattern.matches(&path_str) {
+                if let Some(metrics) = &self.metrics {
+                    metrics
+                        .events_filtered
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
                 return false;
             }
         }
@@ -79,6 +98,11 @@ impl EventFilter {
             || path_str.ends_with(".db-wal")
             || path_str.ends_with(".db-shm")
         {
+            if let Some(metrics) = &self.metrics {
+                metrics
+                    .events_filtered
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             return false;
         }
 
@@ -102,6 +126,11 @@ impl EventFilter {
                 // the debounce window expires, ensuring the trailing edge
                 // of a burst is never permanently missed.
                 self.pending_paths.insert(event.path.clone());
+                if let Some(metrics) = &self.metrics {
+                    metrics
+                        .events_debounced
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
                 return false;
             }
         }
