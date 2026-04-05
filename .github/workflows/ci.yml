@@ -64,7 +64,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run unit + integration tests
-        run: cargo test --all-targets ${{ matrix.features }} -- --test-threads=4
+        run: cargo test --lib --bins --tests ${{ matrix.features }} -- --test-threads=4
+      - name: Compile benches
+        run: cargo test --benches ${{ matrix.features }} --no-run
       - name: Run doc-tests
         run: cargo test --doc
       - name: Snapshot test check
