@@ -966,9 +966,9 @@ fn check_signal_socket(config: &Config) -> DiagnosticCheck {
     if !path.exists() {
         return DiagnosticCheck {
             name: "Socket".to_string(),
-            status: CheckStatus::Warning,
-            detail: format!("configured at {} but not present", path.display()),
-            fix: Some(format!("Create or activate socket at {}", path.display())),
+            status: CheckStatus::Unknown,
+            detail: "configured (no listener attached)".to_string(),
+            fix: None,
         };
     }
 
@@ -1576,6 +1576,7 @@ mod tests {
 
         let mut cfg = crate::config::default_config();
         cfg.daemon.db_path = db;
+        cfg.daemon.runtime_dir = dir.path().join("run");
 
         let check = check_baseline(&cfg);
         assert_eq!(check.status, CheckStatus::Unknown);
@@ -1606,6 +1607,7 @@ mod tests {
 
         let mut cfg = crate::config::default_config();
         cfg.daemon.db_path = baseline_db;
+        cfg.daemon.runtime_dir = dir.path().join("run");
 
         let db_check = check_database_integrity(&cfg);
         assert_eq!(db_check.status, CheckStatus::Unknown);

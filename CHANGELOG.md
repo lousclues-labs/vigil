@@ -4,6 +4,36 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-04-06
+
+### Release Summary
+- Bugfix release: eliminates a false-positive warning from `vigil doctor` for the alert socket check, and fixes two unit tests that were environment-dependent.
+
+### Doctor Diagnostics
+
+#### Alert socket check no longer produces false warning when no listener is attached
+- `check_signal_socket()` previously returned `CheckStatus::Warning` with detail "configured at <path> but not present" and a fix suggestion "Create or activate socket at <path>" when the alert socket path was configured but no listener process was bound to it.
+- This was a false positive: the alert socket (`hooks.signal_socket`) is a client-connect sink — Vigil connects to it when dispatching alerts. The socket file only exists on disk when an external listener (e.g. `socat UNIX-LISTEN:/run/vigil/alert.sock -`) is actively bound. When no listener is running, the socket file is absent, and this is normal, expected behavior.
+- `SocketSink::dispatch()` in `src/alert/socket.rs` already handles this gracefully — it logs at debug level and returns `Ok(())` when the connect fails. Alerts still reach all other configured sinks (journal, JSON log, D-Bus).
+- Changed the "configured but absent" branch to return `CheckStatus::Unknown` with detail "configured (no listener attached)" and no fix suggestion (`fix: None`).
+- Doctor output now shows `○ configured (no listener attached)` instead of `⚠ configured at /path but not present`, correctly signaling "informational / not applicable" rather than "something is broken."
+- Aligns with **Principle II** (Silence Is the Default): a warning for normal operation is advisory noise. Aligns with **Principle X** (Fail Open, Fail Loud): this is not a failure — there is no blind spot.
+- File changed: `src/doctor.rs` (`check_signal_socket()`).
+
+### Tests
+
+#### Fixed environment-dependent permission-check tests
+- `baseline_check_reports_permission_limited_access` and `database_and_audit_checks_report_permission_limited_access` were failing when a running Vigil daemon had written `/run/vigil/health.json`.
+- Root cause: both tests used `default_config()` which sets `runtime_dir` to `/run/vigil`. When the test made DB files unreadable (`chmod 0o000`), the snapshot fallback path in `check_baseline()` / `check_database_integrity()` / `check_audit_log()` found the real daemon's health snapshot and returned `CheckStatus::Ok` instead of the expected `CheckStatus::Unknown`.
+- Fixed by setting `cfg.daemon.runtime_dir` to an isolated temp subdirectory (`dir.path().join("run")`) in each test, ensuring no real snapshot file is discovered.
+- File changed: `src/doctor.rs` (test module).
+
+### Validation
+- `cargo fmt --all --check` clean
+- `cargo clippy --all-targets -- -D warnings` clean
+- All 100 unit tests pass (`cargo test --all-targets`)
+- `cargo build --features parallel` clean
+
 ## [0.16.0] - 2026-04-06
 
 ### Release Summary
