@@ -300,7 +300,7 @@ mod tests {
 
     fn sample_change(path: &str) -> ChangeResult {
         ChangeResult {
-            path: PathBuf::from(path),
+            path: std::sync::Arc::new(PathBuf::from(path)),
             changes: vec![Change::Created],
             severity: Severity::High,
             monitored_group: "test".into(),

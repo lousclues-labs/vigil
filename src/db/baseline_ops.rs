@@ -6,25 +6,98 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::Result;
 use crate::types::{
-    BaselineEntry, BaselineSource, ContentFingerprint, FileIdentity, PermissionState, SecurityState,
+    BaselineEntry, BaselineSource, ContentFingerprint, FileIdentity, FileType, PermissionState,
+    SecurityState,
 };
+
+/// Helper to parse a FileType from a string stored in the database.
+fn parse_file_type(s: &str) -> FileType {
+    match s {
+        "symlink" => FileType::Symlink,
+        "directory" => FileType::Directory,
+        _ => FileType::Regular,
+    }
+}
+
+/// Helper to parse a BaselineSource from a string stored in the database.
+fn parse_source(s: &str) -> BaselineSource {
+    match s {
+        "package_manager" => BaselineSource::PackageManager,
+        "manual" => BaselineSource::Manual,
+        _ => BaselineSource::AutoScan,
+    }
+}
+
+/// Helper to parse xattrs JSON into a BTreeMap.
+fn parse_xattrs(json: &str) -> std::collections::BTreeMap<String, String> {
+    serde_json::from_str(json).unwrap_or_default()
+}
+
+/// Construct a BaselineEntry from a v2 native-column row.
+fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<BaselineEntry> {
+    let file_type_str: String = row.get(4)?;
+    let source_str: String = row.get(16)?;
+    let xattrs_json: String = row.get(12)?;
+
+    Ok(BaselineEntry {
+        id: Some(row.get(0)?),
+        path: PathBuf::from(row.get::<_, String>(1)?),
+        identity: FileIdentity {
+            inode: row.get::<_, i64>(2)? as u64,
+            device: row.get::<_, i64>(3)? as u64,
+            file_type: parse_file_type(&file_type_str),
+            symlink_target: row.get::<_, Option<String>>(5)?.map(PathBuf::from),
+        },
+        content: ContentFingerprint {
+            hash: row.get(6)?,
+            size: row.get::<_, i64>(7)? as u64,
+        },
+        permissions: PermissionState {
+            mode: row.get::<_, i64>(8)? as u32,
+            owner_uid: row.get::<_, i64>(9)? as u32,
+            owner_gid: row.get::<_, i64>(10)? as u32,
+            capabilities: row.get(11)?,
+        },
+        security: SecurityState {
+            xattrs: parse_xattrs(&xattrs_json),
+            security_context: row.get(13)?,
+        },
+        mtime: row.get(14)?,
+        package: row.get(15)?,
+        source: parse_source(&source_str),
+        added_at: row.get(17)?,
+        updated_at: row.get(18)?,
+    })
+}
+
+const SELECT_COLS: &str = "id, path, inode, device, file_type, symlink_target,
+     hash, size, mode, owner_uid, owner_gid, capabilities,
+     xattrs_json, security_context, mtime, package,
+     source, added_at, updated_at";
 
 /// Insert or update a baseline entry by path.
 pub fn upsert(conn: &Connection, entry: &BaselineEntry) -> Result<()> {
-    let identity_json = serde_json::to_string(&entry.identity)?;
-    let content_json = serde_json::to_string(&entry.content)?;
-    let perms_json = serde_json::to_string(&entry.permissions)?;
-    let security_json = serde_json::to_string(&entry.security)?;
+    let xattrs_json = serde_json::to_string(&entry.security.xattrs)?;
 
     conn.prepare_cached(
-        "INSERT INTO baseline (path, identity_json, content_json, perms_json, security_json,
-                               mtime, package, source, added_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "INSERT INTO baseline (path, inode, device, file_type, symlink_target,
+                               hash, size, mode, owner_uid, owner_gid, capabilities,
+                               xattrs_json, security_context, mtime, package, source,
+                               added_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
          ON CONFLICT(path) DO UPDATE SET
-             identity_json = excluded.identity_json,
-             content_json = excluded.content_json,
-             perms_json = excluded.perms_json,
-             security_json = excluded.security_json,
+             inode = excluded.inode,
+             device = excluded.device,
+             file_type = excluded.file_type,
+             symlink_target = excluded.symlink_target,
+             hash = excluded.hash,
+             size = excluded.size,
+             mode = excluded.mode,
+             owner_uid = excluded.owner_uid,
+             owner_gid = excluded.owner_gid,
+             capabilities = excluded.capabilities,
+             xattrs_json = excluded.xattrs_json,
+             security_context = excluded.security_context,
              mtime = excluded.mtime,
              package = excluded.package,
              source = excluded.source,
@@ -32,10 +105,22 @@ pub fn upsert(conn: &Connection, entry: &BaselineEntry) -> Result<()> {
     )?
     .execute(params![
         entry.path.to_string_lossy().as_ref(),
-        identity_json,
-        content_json,
-        perms_json,
-        security_json,
+        entry.identity.inode as i64,
+        entry.identity.device as i64,
+        entry.identity.file_type.to_string(),
+        entry
+            .identity
+            .symlink_target
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
+        entry.content.hash,
+        entry.content.size as i64,
+        entry.permissions.mode as i64,
+        entry.permissions.owner_uid as i64,
+        entry.permissions.owner_gid as i64,
+        entry.permissions.capabilities,
+        xattrs_json,
+        entry.security.security_context,
         entry.mtime,
         entry.package,
         entry.source.to_string(),
@@ -63,53 +148,11 @@ pub fn batch_upsert(conn: &Connection, entries: &[BaselineEntry]) -> Result<u64>
 
 /// Get baseline entry by absolute path.
 pub fn get_by_path(conn: &Connection, path: &str) -> Result<Option<BaselineEntry>> {
-    conn.prepare_cached(
-        "SELECT id, path, identity_json, content_json, perms_json, security_json,
-                mtime, package, source, added_at, updated_at
-         FROM baseline WHERE path = ?1",
-    )?
-    .query_row(params![path], |row| {
-        let identity_json: String = row.get(2)?;
-        let content_json: String = row.get(3)?;
-        let perms_json: String = row.get(4)?;
-        let security_json: String = row.get(5)?;
-
-        let identity: FileIdentity = serde_json::from_str(&identity_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-        let content: ContentFingerprint = serde_json::from_str(&content_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-        let perms: PermissionState = serde_json::from_str(&perms_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-        let security: SecurityState = serde_json::from_str(&security_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-
-        let source_str: String = row.get(8)?;
-        let source = match source_str.as_str() {
-            "package_manager" => BaselineSource::PackageManager,
-            "manual" => BaselineSource::Manual,
-            _ => BaselineSource::AutoScan,
-        };
-
-        Ok(BaselineEntry {
-            id: Some(row.get(0)?),
-            path: PathBuf::from(row.get::<_, String>(1)?),
-            identity,
-            content,
-            permissions: perms,
-            security,
-            mtime: row.get(6)?,
-            package: row.get(7)?,
-            source,
-            added_at: row.get(9)?,
-            updated_at: row.get(10)?,
-        })
-    })
-    .optional()
-    .map_err(Into::into)
+    let query = format!("SELECT {} FROM baseline WHERE path = ?1", SELECT_COLS);
+    conn.prepare_cached(&query)?
+        .query_row(params![path], row_to_entry)
+        .optional()
+        .map_err(Into::into)
 }
 
 /// Iterate over all baseline entries, calling the provided closure for each.
@@ -118,52 +161,9 @@ pub fn for_each_entry<F>(conn: &Connection, mut f: F) -> Result<()>
 where
     F: FnMut(BaselineEntry) -> Result<()>,
 {
-    let mut stmt = conn.prepare_cached(
-        "SELECT id, path, identity_json, content_json, perms_json, security_json,
-                mtime, package, source, added_at, updated_at
-         FROM baseline ORDER BY path",
-    )?;
-
-    let rows = stmt.query_map([], |row| {
-        let identity_json: String = row.get(2)?;
-        let content_json: String = row.get(3)?;
-        let perms_json: String = row.get(4)?;
-        let security_json: String = row.get(5)?;
-
-        let identity: FileIdentity = serde_json::from_str(&identity_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-        let content: ContentFingerprint = serde_json::from_str(&content_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-        let perms: PermissionState = serde_json::from_str(&perms_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-        let security: SecurityState = serde_json::from_str(&security_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-
-        let source_str: String = row.get(8)?;
-        let source = match source_str.as_str() {
-            "package_manager" => BaselineSource::PackageManager,
-            "manual" => BaselineSource::Manual,
-            _ => BaselineSource::AutoScan,
-        };
-
-        Ok(BaselineEntry {
-            id: Some(row.get(0)?),
-            path: PathBuf::from(row.get::<_, String>(1)?),
-            identity,
-            content,
-            permissions: perms,
-            security,
-            mtime: row.get(6)?,
-            package: row.get(7)?,
-            source,
-            added_at: row.get(9)?,
-            updated_at: row.get(10)?,
-        })
-    })?;
+    let query = format!("SELECT {} FROM baseline ORDER BY path", SELECT_COLS);
+    let mut stmt = conn.prepare_cached(&query)?;
+    let rows = stmt.query_map([], row_to_entry)?;
 
     for row in rows {
         f(row?)?;
@@ -174,53 +174,10 @@ where
 
 /// Get all baseline entries ordered by path.
 pub fn get_all(conn: &Connection) -> Result<Vec<BaselineEntry>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT id, path, identity_json, content_json, perms_json, security_json,
-                mtime, package, source, added_at, updated_at
-         FROM baseline ORDER BY path",
-    )?;
-
+    let query = format!("SELECT {} FROM baseline ORDER BY path", SELECT_COLS);
+    let mut stmt = conn.prepare_cached(&query)?;
     let mut out = Vec::new();
-    let rows = stmt.query_map([], |row| {
-        let identity_json: String = row.get(2)?;
-        let content_json: String = row.get(3)?;
-        let perms_json: String = row.get(4)?;
-        let security_json: String = row.get(5)?;
-
-        let identity: FileIdentity = serde_json::from_str(&identity_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-        let content: ContentFingerprint = serde_json::from_str(&content_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-        let perms: PermissionState = serde_json::from_str(&perms_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-        let security: SecurityState = serde_json::from_str(&security_json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-
-        let source_str: String = row.get(8)?;
-        let source = match source_str.as_str() {
-            "package_manager" => BaselineSource::PackageManager,
-            "manual" => BaselineSource::Manual,
-            _ => BaselineSource::AutoScan,
-        };
-
-        Ok(BaselineEntry {
-            id: Some(row.get(0)?),
-            path: PathBuf::from(row.get::<_, String>(1)?),
-            identity,
-            content,
-            permissions: perms,
-            security,
-            mtime: row.get(6)?,
-            package: row.get(7)?,
-            source,
-            added_at: row.get(9)?,
-            updated_at: row.get(10)?,
-        })
-    })?;
+    let rows = stmt.query_map([], row_to_entry)?;
 
     for row in rows {
         out.push(row?);
@@ -362,25 +319,25 @@ mod tests {
     }
 
     #[test]
-    fn json_blob_backward_compat_default_field() {
+    fn native_columns_roundtrip() {
         let conn = test_conn();
+        let mut entry = sample_entry("/etc/test");
+        entry.identity.file_type = FileType::Symlink;
+        entry.identity.symlink_target = Some(PathBuf::from("/etc/real"));
+        entry.permissions.capabilities = Some("cap_net_admin".into());
+        entry
+            .security
+            .xattrs
+            .insert("user.test".into(), "val".into());
+        entry.security.security_context = "system_u:object_r:etc_t:s0".into();
 
-        let old_identity_json =
-            r#"{"inode":1,"device":1,"file_type":"regular","symlink_target":null}"#;
-        let content_json = r#"{"hash":"h","size":1}"#;
-        let perms_json = r#"{"mode":420,"owner_uid":0,"owner_gid":0}"#;
-        let security_json = r#"{"xattrs":{},"security_context":""}"#;
-
-        conn.execute(
-            "INSERT INTO baseline (path, identity_json, content_json, perms_json, security_json, mtime, package, source, added_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, 'auto_scan', ?7, ?8)",
-            params!["/old", old_identity_json, content_json, perms_json, security_json, 1i64, 1i64, 1i64],
-        )
-        .unwrap();
-
-        let r = get_by_path(&conn, "/old").unwrap().unwrap();
-        assert_eq!(r.identity.inode, 1);
-        assert_eq!(r.permissions.capabilities, None);
+        upsert(&conn, &entry).unwrap();
+        let r = get_by_path(&conn, "/etc/test").unwrap().unwrap();
+        assert_eq!(r.identity.file_type, FileType::Symlink);
+        assert_eq!(r.identity.symlink_target, Some(PathBuf::from("/etc/real")));
+        assert_eq!(r.permissions.capabilities, Some("cap_net_admin".into()));
+        assert_eq!(r.security.xattrs.get("user.test").unwrap(), "val");
+        assert_eq!(r.security.security_context, "system_u:object_r:etc_t:s0");
     }
 
     #[test]

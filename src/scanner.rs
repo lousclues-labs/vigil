@@ -209,7 +209,7 @@ pub fn run_scan(conn: &Connection, config: &Config, mode: ScanMode) -> Result<Sc
                 let changes = snapshot.diff(&entry);
                 if !changes.is_empty() {
                     result.changes.push(ChangeResult {
-                        path: entry.path.clone(),
+                        path: std::sync::Arc::new(entry.path.clone()),
                         changes,
                         severity: Severity::Medium,
                         monitored_group: "scheduled_scan".into(),
@@ -236,6 +236,119 @@ pub fn run_scan(conn: &Connection, config: &Config, mode: ScanMode) -> Result<Sc
     result.duration_ms = scan_start.elapsed().as_millis() as u64;
 
     Ok(result)
+}
+
+/// Run a parallel baseline comparison scan (requires `parallel` feature).
+#[cfg(feature = "parallel")]
+pub fn run_scan_parallel(conn: &Connection, config: &Config, mode: ScanMode) -> Result<ScanResult> {
+    use rayon::prelude::*;
+
+    let scan_start = std::time::Instant::now();
+
+    // Collect all entries first
+    let entries = baseline_ops::get_all(conn)?;
+
+    // Process in parallel
+    let results: Vec<_> = entries
+        .par_iter()
+        .map(|entry| {
+            let opts = CaptureOpts {
+                force_hash: mode == ScanMode::Full,
+                max_file_size: config.scanner.max_file_size,
+                mmap_threshold: config.scanner.mmap_threshold,
+                baseline_mtime: if mode != ScanMode::Full {
+                    Some(entry.mtime)
+                } else {
+                    None
+                },
+                baseline_hash: if mode != ScanMode::Full {
+                    Some(entry.content.hash.clone())
+                } else {
+                    None
+                },
+            };
+
+            match crate::types::FileSnapshot::from_path(&entry.path, &opts) {
+                Ok(SnapshotOrDeleted::Deleted) => Some((
+                    true,
+                    Some(ChangeResult::deletion(
+                        &entry.path,
+                        entry,
+                        Severity::High,
+                        "scheduled_scan".into(),
+                    )),
+                    None,
+                )),
+                Ok(SnapshotOrDeleted::Snapshot(snapshot)) => {
+                    let changes = snapshot.diff(entry);
+                    if !changes.is_empty() {
+                        Some((
+                            true,
+                            Some(ChangeResult {
+                                path: std::sync::Arc::new(entry.path.clone()),
+                                changes,
+                                severity: Severity::Medium,
+                                monitored_group: "scheduled_scan".into(),
+                                process: None,
+                                package: entry.package.clone(),
+                                package_update: false,
+                            }),
+                            None,
+                        ))
+                    } else {
+                        Some((false, None, None))
+                    }
+                }
+                Err(e) => Some((
+                    false,
+                    None,
+                    Some(ScanWarning {
+                        path: entry.path.clone(),
+                        detail: format!("scan error: {}", e),
+                        severity: WarningSeverity::Error,
+                    }),
+                )),
+            }
+        })
+        .collect();
+
+    let mut result = ScanResult {
+        total_checked: entries.len() as u64,
+        ..ScanResult::default()
+    };
+
+    for item in results.into_iter().flatten() {
+        let (is_change, change, warning) = item;
+        if let Some(cr) = change {
+            result.changes.push(cr);
+            result.changes_found += 1;
+        } else if !is_change {
+            if let Some(w) = warning {
+                result.errors += 1;
+                result.warnings.push(w);
+            }
+        }
+    }
+
+    result.duration_ms = scan_start.elapsed().as_millis() as u64;
+    Ok(result)
+}
+
+/// Collect all file paths from watch groups for parallel processing.
+#[cfg(feature = "parallel")]
+pub fn collect_all_paths(config: &Config) -> Vec<std::path::PathBuf> {
+    let exclusions = crate::filter::exclusion::ExclusionFilter::new(config);
+    let mut all_paths = Vec::new();
+    for group in config.watch.values() {
+        let roots = crate::config::expand_user_paths(&group.paths);
+        for root in roots {
+            let _ = walk_files(&root, &exclusions, &mut |path| {
+                all_paths.push(path.to_path_buf());
+                Ok(())
+            });
+        }
+    }
+    all_paths
 }
 
 fn walk_files<F>(

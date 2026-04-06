@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Permission state of a file — mode bits, ownership, and Linux capabilities.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct PermissionState {
     pub mode: u32,
     pub owner_uid: u32,

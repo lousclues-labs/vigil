@@ -57,6 +57,14 @@ pub fn open_baseline_db(config: &Config) -> Result<Connection> {
 }
 
 /// Open baseline DB read-only (for worker threads).
+/// Open a writable baseline DB at the given path (for baseline writer thread).
+pub fn open_baseline_db_at_path(path: &Path) -> Result<Connection> {
+    let conn = Connection::open(path)?;
+    apply_pragmas(&conn, &PragmaOpts::default())?;
+    Ok(conn)
+}
+
+/// Open baseline DB read-only (for worker threads).
 pub fn open_baseline_db_readonly(path: &Path) -> Result<Connection> {
     let conn = Connection::open_with_flags(
         path,
@@ -125,6 +133,8 @@ fn open_db_internal(
     )?;
 
     if is_baseline {
+        // Run v1→v2 migration if the old JSON blob schema is present
+        migrate::migrate_v1_to_v2(&conn)?;
         schema::create_baseline_tables(&conn)?;
     } else {
         schema::create_audit_tables(&conn)?;

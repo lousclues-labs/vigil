@@ -31,7 +31,7 @@ fn dispatcher_writes_and_verifies_audit_chain() {
 
     tx.send(AlertPayload {
         change: ChangeResult {
-            path: "/tmp/test-alert".into(),
+            path: Arc::new("/tmp/test-alert".into()),
             changes: vec![Change::Created],
             severity: Severity::High,
             monitored_group: "test".into(),

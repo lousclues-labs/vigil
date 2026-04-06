@@ -194,6 +194,10 @@ pub struct DaemonConfig {
     pub log_format: LogFormat,
     #[serde(default = "default_runtime_dir")]
     pub runtime_dir: PathBuf,
+    #[serde(default = "default_control_socket")]
+    pub control_socket: PathBuf,
+    #[serde(default = "default_debounce_ms")]
+    pub debounce_ms: u64,
 }
 
 impl Default for DaemonConfig {
@@ -206,6 +210,8 @@ impl Default for DaemonConfig {
             worker_threads: default_worker_threads(),
             log_format: default_log_format(),
             runtime_dir: default_runtime_dir(),
+            control_socket: default_control_socket(),
+            debounce_ms: default_debounce_ms(),
         }
     }
 }
@@ -234,6 +240,14 @@ fn default_log_level() -> LogLevel {
     LogLevel::Info
 }
 
+fn default_control_socket() -> PathBuf {
+    PathBuf::from("/run/vigil/control.sock")
+}
+
+fn default_debounce_ms() -> u64 {
+    100
+}
+
 fn default_monitor_backend() -> MonitorBackend {
     MonitorBackend::Fanotify
 }
@@ -252,6 +266,8 @@ pub struct ScannerConfig {
     pub mmap_threshold: u64,
     #[serde(default = "default_scan_mode")]
     pub scheduled_mode: ScanMode,
+    #[serde(default)]
+    pub parallel: bool,
 }
 
 impl Default for ScannerConfig {
@@ -263,6 +279,7 @@ impl Default for ScannerConfig {
             max_file_size: default_max_file_size(),
             mmap_threshold: default_mmap_threshold(),
             scheduled_mode: default_scan_mode(),
+            parallel: false,
         }
     }
 }

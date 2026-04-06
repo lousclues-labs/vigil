@@ -6,6 +6,149 @@ All notable changes to Vigil will be documented in this file.
 
 - No entries yet.
 
+## [0.15.0] - 2026-04-06
+
+### Release Summary
+- Foundational scalability and stability release focused on long-term unattended operation.
+- Baseline database schema moved from JSON blob columns to native typed columns, removing the steady-state serde tax from the hot path.
+- Worker pipeline now includes per-thread LRU baseline caching and integrated runtime `EventFilter` debouncing.
+- Fanotify mount handling now resolves real mount targets from `/proc/self/mountinfo` instead of marking `/` unconditionally.
+- Added baseline write-back infrastructure for package-manager-originated updates (auto-rebaseline path).
+- Added Unix domain control socket for live daemon introspection and operational commands.
+- Added optional parallel scan implementation behind the existing `parallel` feature flag.
+- Expanded resilience behavior around audit DB write failures and `/proc`-dependent hashing paths.
+
+### Database & Migration
+
+#### Baseline schema flattened to native columns
+- Replaced baseline JSON blob storage (`identity_json`, `content_json`, `perms_json`, `security_json`) with native columns for frequently-read fields:
+  - identity: `inode`, `device`, `file_type`, `symlink_target`
+  - content: `hash`, `size`
+  - permissions: `mode`, `owner_uid`, `owner_gid`, `capabilities`
+  - security: `xattrs_json`, `security_context` (`xattrs_json` remains JSON due to dynamic keys)
+- This removes repeated serialize/deserialize overhead for baseline reads/writes and enables direct SQL-native filtering over baseline fields.
+- Files changed: `src/db/schema.rs`, `src/db/baseline_ops.rs`.
+
+#### v1 -> v2 schema migration path
+- Added explicit baseline migration logic that detects legacy v1 schema and performs an in-place upgrade:
+  1. creates `baseline_v2`
+  2. copies/expands v1 JSON rows into native columns
+  3. swaps table names (`baseline_v2` -> `baseline`)
+  4. records `schema_version=2` in `config_state`
+- Added migration tests covering data preservation and no-op behavior for already-upgraded schemas.
+- Files changed: `src/db/migrate.rs`, `src/db/mod.rs`, `tests/baseline_json_tests.rs`.
+
+### Worker Hot Path Improvements
+
+#### Per-worker baseline LRU cache
+- Added per-worker in-memory LRU cache (`8192` entries) keyed by absolute path to reduce repeated SQLite lookups for hot files.
+- Cache behavior:
+  - read-through on miss
+  - hit/miss metrics emitted
+  - path invalidation on detected change
+- Files changed: `Cargo.toml`, `src/worker.rs`, `src/metrics.rs`.
+
+#### EventFilter integrated into runtime worker flow
+- `EventFilter` was previously present but not active in the worker runtime pipeline.
+- Workers now apply `should_process()` before expensive snapshot/hash work.
+- Debounce pending paths are periodically drained and revisited.
+- Debounce window is now configurable via `daemon.debounce_ms` (default `100`).
+- Files changed: `src/worker.rs`, `src/filter/mod.rs`, `src/config/mod.rs`.
+
+### Monitor, Mounts, and Event Throughput
+
+#### Real fanotify mount-point resolution
+- Replaced placeholder mount resolution logic with `/proc/self/mountinfo` parsing.
+- Watch paths now map to the actual containing mount points, reducing event load from irrelevant mounts.
+- Added startup logging of resolved mount points.
+- Falls back to `[/]` when `mountinfo` is unreadable.
+- Files changed: `src/monitor/fanotify.rs`.
+
+#### Fanotify fixed-size read buffer
+- Replaced heap `Vec<u8>` read buffer with fixed-size boxed array (`Box<[u8; 262144]>`) to reflect non-growing, long-lived allocation intent.
+- File changed: `src/monitor/fanotify.rs`.
+
+### Baseline Write-Back Channel
+
+#### Package-update baseline update path
+- Added `BaselineUpdate` and `UpdateReason` worker-to-writer message types.
+- Added daemon baseline-writer thread with bounded channel and batched transaction writes.
+- Baseline update metric counter added (`baseline_updates`).
+- Write-back path is wired for package-update-originated changes and auto-rebaseline control flow.
+- Files changed: `src/worker.rs`, `src/lib.rs`, `src/metrics.rs`.
+
+### Resilience & Failure Modes
+
+#### Audit DB failure tracking and recovery attempt
+- Alert dispatcher now tracks consecutive audit write failures.
+- After threshold (`3`) failures, daemon attempts to reopen and reinitialize audit DB connection pragmas.
+- Preserves chain-hash safety: chain state is only advanced on successful writes.
+- Files changed: `src/alert/mod.rs`.
+
+#### `/proc` availability fallback in hashing path
+- `blake3_hash_fd()` mmap path now checks `/proc/self/fd/<fd>` availability and falls back to buffered-reader hashing when unavailable.
+- Improves behavior in constrained container/chroot environments where `/proc` may not be mounted.
+- File changed: `src/hash.rs`.
+
+### Control Plane & Introspection
+
+#### New Unix control socket server
+- Added `vigil-control` thread and `src/control.rs` module.
+- Exposes one-request-per-connection JSON line protocol over Unix socket (default `/run/vigil/control.sock`, mode `0600`).
+- Implemented methods:
+  - `status`: daemon metrics snapshot + daemon state + uptime
+  - `baseline_count`: current baseline row count
+  - `reload`: triggers config reload flag
+- Includes malformed JSON handling and robust accept/read/write error handling.
+- Files changed: `src/control.rs`, `src/lib.rs`, `src/config/mod.rs`, `src/error.rs`.
+
+### Scanner Parallelization
+
+#### Parallel scan path behind feature gate
+- Activated previously dormant `parallel` feature by adding `rayon`-based parallel scan routines behind `#[cfg(feature = "parallel")]`.
+- Added config field `scanner.parallel` (ignored when feature is not compiled).
+- Files changed: `src/scanner.rs`, `src/config/mod.rs`.
+
+### Data Model & Allocation Optimization
+
+#### Shared path ownership in pipeline
+- Changed event/change path ownership from `PathBuf` to `Arc<PathBuf>` across hot event pipeline structures.
+- Reduces path cloning and per-event allocation churn between monitor -> worker -> alert/audit paths.
+- Files changed: `src/types/event.rs`, `src/types/change.rs`, plus pipeline call-sites and tests.
+
+#### Supporting type defaults for new update flows
+- Added default implementations for selected baseline component structs used in write-back/update paths.
+- Files changed: `src/types/identity.rs`, `src/types/content.rs`, `src/types/permissions.rs`.
+
+### Configuration & Metrics
+- Added config fields:
+  - `daemon.control_socket`
+  - `daemon.debounce_ms`
+  - `scanner.parallel`
+- Added metrics:
+  - `cache_hits`, `cache_misses`
+  - `baseline_updates`
+  - `backpressure_events`
+- Files changed: `src/config/mod.rs`, `src/metrics.rs`.
+
+### Dependencies
+- Added `lru = "0.12"` for worker baseline cache.
+- Enabled serde `rc` support (`features = ["derive", "rc"]`) for shared-ownership serialized fields.
+- File changed: `Cargo.toml`.
+
+### Tests & Validation
+- Added/updated tests for:
+  - baseline v1->v2 migration data preservation
+  - baseline native-column round-trip behavior
+  - worker and integration-path `Arc<PathBuf>` compatibility
+  - control socket round-trip requests
+  - updated baseline JSON compatibility/migration expectations
+- Validation run highlights:
+  - `cargo fmt --all --check` clean
+  - `cargo clippy --all-targets --all-features -- -D warnings` clean
+  - integration test suites pass
+  - note: two pre-existing doctor permission-context test failures are unchanged from previous release baseline
+
 ## [0.14.0] - 2026-04-06
 
 ### Release Summary

@@ -69,7 +69,7 @@ fn test_scan_handles_deleted_file_gracefully() {
 
     // Verify a Deleted change was produced
     let has_deletion = result.changes.iter().any(|cr| {
-        cr.path == watched_file && cr.changes.iter().any(|c| matches!(c, Change::Deleted))
+        cr.path.as_ref() == &watched_file && cr.changes.iter().any(|c| matches!(c, Change::Deleted))
     });
     assert!(has_deletion, "should produce a deletion ChangeResult");
 }

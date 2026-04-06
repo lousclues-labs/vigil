@@ -7,21 +7,33 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
+use lru::LruCache;
 use rusqlite::Connection;
 
 use crate::alert::AlertPayload;
 use crate::config::Config;
 use crate::db::{self, baseline_ops};
 use crate::error::{Result, VigilError};
+use crate::filter::EventFilter;
 use crate::metrics::Metrics;
 use crate::types::{
-    CaptureOpts, Change, ChangeResult, FsEvent, FsEventType, Severity, SnapshotOrDeleted,
+    BaselineEntry, CaptureOpts, Change, ChangeResult, FsEvent, FsEventType, Severity,
+    SnapshotOrDeleted,
 };
 use crate::watch_index::WatchGroupIndex;
 
+/// Baseline update sent from workers to the baseline writer thread.
+pub struct BaselineUpdate {
+    pub entry: BaselineEntry,
+    pub reason: UpdateReason,
+}
+
+pub enum UpdateReason {
+    PackageUpdate,
+    AutoRebaseline,
+}
+
 /// Duplicate a raw file descriptor and wrap it in a `File` with RAII ownership.
-/// Combines `dup()` and `from_raw_fd()` to eliminate any gap where a panic
-/// could leak the duplicated descriptor.
 fn dup_to_file(raw_fd: std::os::fd::RawFd) -> std::io::Result<std::fs::File> {
     // SAFETY: dup() creates a new fd referring to the same open file description.
     let dup_fd = unsafe { libc::dup(raw_fd) };
@@ -42,6 +54,8 @@ pub fn spawn_workers(
     watch_index: Arc<ArcSwap<WatchGroupIndex>>,
     metrics: Arc<Metrics>,
     shutdown: Arc<AtomicBool>,
+    baseline_update_tx: Option<Sender<BaselineUpdate>>,
+    backpressure: Arc<AtomicBool>,
 ) -> Vec<JoinHandle<()>> {
     let mut handles = Vec::new();
 
@@ -53,6 +67,8 @@ pub fn spawn_workers(
         let metrics = metrics.clone();
         let shutdown = shutdown.clone();
         let db_path = baseline_db_path.to_path_buf();
+        let update_tx = baseline_update_tx.clone();
+        let backpressure = backpressure.clone();
 
         let handle_result = std::thread::Builder::new()
             .name(format!("vigil-worker-{}", i))
@@ -65,18 +81,83 @@ pub fn spawn_workers(
                     }
                 };
 
+                let cfg = config.load();
+                let mut filter = EventFilter::with_metrics(&cfg, Some(metrics.clone()));
+                let mut cache: LruCache<String, BaselineEntry> =
+                    LruCache::new(std::num::NonZeroUsize::new(8192).unwrap());
+                let mut drain_counter = 0u32;
+
                 while !shutdown.load(Ordering::Acquire) {
+                    // Periodically drain debounced events
+                    drain_counter += 1;
+                    if drain_counter >= 20 {
+                        drain_counter = 0;
+                        let pending = filter.drain_pending();
+                        for path in pending {
+                            let path_str = path.to_string_lossy().to_string();
+                            // Invalidate cache for re-checked paths
+                            cache.pop(&path_str);
+                        }
+                    }
+
                     match event_rx.recv_timeout(Duration::from_millis(500)) {
                         Ok(event) => {
+                            // Clear backpressure flag on successful receive
+                            backpressure.store(false, Ordering::Relaxed);
+
+                            // Apply EventFilter before processing
+                            if !filter.should_process(&event) {
+                                continue;
+                            }
+
                             metrics.events_processed.fetch_add(1, Ordering::Relaxed);
 
                             let result =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    process_event(&conn, &event, &config, &watch_index, &metrics)
+                                    process_event_cached(
+                                        &conn,
+                                        &event,
+                                        &config,
+                                        &watch_index,
+                                        &metrics,
+                                        &mut cache,
+                                    )
                                 }));
 
                             match result {
                                 Ok(Ok(Some(change_result))) => {
+                                    // Invalidate cache for changed paths
+                                    let path_str =
+                                        change_result.path.to_string_lossy().to_string();
+                                    cache.pop(&path_str);
+
+                                    // Auto-rebaseline for package updates
+                                    if change_result.package_update {
+                                        if let Some(ref tx) = update_tx {
+                                            let cfg = config.load();
+                                            if cfg.package_manager.auto_rebaseline {
+                                                // Build updated entry from snapshot
+                                                // (the baseline writer will upsert it)
+                                                let _ = tx.try_send(BaselineUpdate {
+                                                    entry: BaselineEntry {
+                                                        id: None,
+                                                        path: change_result.path.as_ref().clone(),
+                                                        identity: Default::default(),
+                                                        content: Default::default(),
+                                                        permissions: Default::default(),
+                                                        security: Default::default(),
+                                                        mtime: 0,
+                                                        package: change_result.package.clone(),
+                                                        source: crate::types::BaselineSource::PackageManager,
+                                                        added_at: chrono::Utc::now().timestamp(),
+                                                        updated_at: chrono::Utc::now().timestamp(),
+                                                    },
+                                                    reason: UpdateReason::PackageUpdate,
+                                                });
+                                            }
+                                        }
+                                    }
+
                                     if alert_tx
                                         .send(AlertPayload {
                                             change: change_result,
@@ -135,6 +216,60 @@ pub fn process_event(
         }
     };
 
+    process_event_inner(conn, event, &cfg, &idx, metrics, baseline)
+}
+
+/// Process event with LRU cache lookup.
+fn process_event_cached(
+    conn: &Connection,
+    event: &FsEvent,
+    config: &Arc<ArcSwap<Config>>,
+    watch_index: &Arc<ArcSwap<WatchGroupIndex>>,
+    metrics: &Metrics,
+    cache: &mut LruCache<String, BaselineEntry>,
+) -> Result<Option<ChangeResult>> {
+    let cfg = config.load();
+    let idx = watch_index.load();
+
+    let path_str = event.path.to_string_lossy().to_string();
+
+    let baseline = if let Some(cached) = cache.get(&path_str) {
+        metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
+        cached.clone()
+    } else {
+        metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
+        match baseline_ops::get_by_path(conn, &path_str)? {
+            Some(b) => {
+                cache.put(path_str.clone(), b.clone());
+                b
+            }
+            None => {
+                if matches!(event.event_type, FsEventType::Create | FsEventType::MovedTo) {
+                    tracing::info!(path = %event.path.display(), "new file detected (not in baseline)");
+                }
+                return Ok(None);
+            }
+        }
+    };
+
+    let result = process_event_inner(conn, event, &cfg, &idx, metrics, baseline)?;
+
+    // Invalidate cache on detected change
+    if result.is_some() {
+        cache.pop(&path_str);
+    }
+
+    Ok(result)
+}
+
+fn process_event_inner(
+    _conn: &Connection,
+    event: &FsEvent,
+    cfg: &Config,
+    idx: &WatchGroupIndex,
+    metrics: &Metrics,
+    baseline: BaselineEntry,
+) -> Result<Option<ChangeResult>> {
     let (group_name, severity) = idx
         .lookup(&event.path)
         .map(|(g, s)| (g.to_string(), s))
@@ -231,7 +366,7 @@ mod tests {
         let watch = WatchGroupIndex::from_config(&cfg);
 
         let event = FsEvent {
-            path: "/tmp/nonexistent-baseline".into(),
+            path: Arc::new("/tmp/nonexistent-baseline".into()),
             event_type: FsEventType::Create,
             timestamp: Utc::now(),
             event_fd: None,

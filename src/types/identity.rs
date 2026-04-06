@@ -12,6 +12,17 @@ pub struct FileIdentity {
     pub symlink_target: Option<PathBuf>,
 }
 
+impl Default for FileIdentity {
+    fn default() -> Self {
+        Self {
+            inode: 0,
+            device: 0,
+            file_type: FileType::Regular,
+            symlink_target: None,
+        }
+    }
+}
+
 /// Filesystem object type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

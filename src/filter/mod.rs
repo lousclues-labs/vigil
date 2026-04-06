@@ -32,7 +32,7 @@ impl EventFilter {
         Self {
             debounce_timers: HashMap::new(),
             pending_paths: HashSet::new(),
-            debounce_window: Duration::from_millis(100),
+            debounce_window: Duration::from_millis(config.daemon.debounce_ms),
             exclusion: ExclusionFilter::new(config),
             metrics,
             last_prune: Instant::now(),
@@ -57,11 +57,12 @@ impl EventFilter {
             return false;
         }
 
+        let path_key = event.path.as_ref().clone();
         let now = Instant::now();
-        if let Some(last) = self.debounce_timers.get(&event.path) {
+        if let Some(last) = self.debounce_timers.get(&path_key) {
             if now.duration_since(*last) < self.debounce_window {
-                self.debounce_timers.insert(event.path.clone(), now);
-                self.pending_paths.insert(event.path.clone());
+                self.debounce_timers.insert(path_key.clone(), now);
+                self.pending_paths.insert(path_key);
                 if let Some(metrics) = &self.metrics {
                     metrics
                         .events_debounced
@@ -71,8 +72,8 @@ impl EventFilter {
             }
         }
 
-        self.debounce_timers.insert(event.path.clone(), now);
-        self.pending_paths.remove(&event.path);
+        self.debounce_timers.insert(path_key.clone(), now);
+        self.pending_paths.remove(&path_key);
         true
     }
 
@@ -122,7 +123,7 @@ mod tests {
 
     fn event(path: &str) -> FsEvent {
         FsEvent {
-            path: PathBuf::from(path),
+            path: Arc::new(PathBuf::from(path)),
             event_type: crate::types::FsEventType::Modify,
             timestamp: Utc::now(),
             event_fd: None,

@@ -1,8 +1,9 @@
+use std::sync::Arc;
 use vigil::types::{Change, ChangeResult, Severity};
 
 fn sample_change(path: &str) -> ChangeResult {
     ChangeResult {
-        path: path.into(),
+        path: Arc::new(path.into()),
         changes: vec![Change::Created],
         severity: Severity::Medium,
         monitored_group: "test".into(),

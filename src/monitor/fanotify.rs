@@ -117,7 +117,15 @@ pub fn start(
 
     let (control_tx, control_rx) = crossbeam_channel::unbounded::<Vec<PathBuf>>();
 
+    if !std::path::Path::new("/proc/self").exists() {
+        tracing::error!("fanotify requires /proc to be mounted for fd→path resolution");
+        return Err(VigilError::Fanotify(
+            "/proc not available; fanotify cannot resolve event paths".into(),
+        ));
+    }
+
     let mount_points = resolve_mount_points(watch_paths);
+    tracing::info!(mounts = ?mount_points, "fanotify watching mount points");
     let mask = FAN_MODIFY | FAN_ATTRIB | FAN_CREATE | FAN_DELETE | FAN_MOVED_FROM | FAN_MOVED_TO;
 
     for mount in &mount_points {
@@ -129,7 +137,7 @@ pub fn start(
         .spawn(move || {
             let _fan_guard = fan_fd_owned;
             let fan_fd = _fan_guard.0;
-            let mut buf = vec![0u8; 262_144];
+            let mut buf = Box::new([0u8; 262_144]);
             let mut current_bloom = bloom;
 
             let mut current_mounts: HashSet<PathBuf> = mount_points.into_iter().collect();
@@ -206,7 +214,7 @@ pub fn start(
                                     let owned_fd = unsafe { OwnedFd::from_raw_fd(raw) };
 
                                     let fs_event = FsEvent {
-                                        path: path.clone(),
+                                        path: Arc::new(path.clone()),
                                         event_type,
                                         timestamp: Utc::now(),
                                         event_fd: Some(owned_fd),
@@ -294,11 +302,56 @@ fn mask_to_event_type(mask: u64) -> Option<FsEventType> {
 }
 
 fn resolve_mount_points(paths: &[PathBuf]) -> Vec<PathBuf> {
-    let mut mounts = HashSet::new();
-    for path in paths {
-        if path.starts_with("/") {
-            mounts.insert(PathBuf::from("/"));
+    match parse_mountinfo() {
+        Some(mount_points) => {
+            let mut result = HashSet::new();
+            for path in paths {
+                if let Some(mount) = find_mount_for_path(path, &mount_points) {
+                    result.insert(mount);
+                }
+            }
+            if result.is_empty() {
+                vec![PathBuf::from("/")]
+            } else {
+                result.into_iter().collect()
+            }
+        }
+        None => {
+            tracing::warn!("/proc/self/mountinfo unreadable; falling back to root mount");
+            vec![PathBuf::from("/")]
         }
     }
-    mounts.into_iter().collect()
+}
+
+/// Parse /proc/self/mountinfo and return a list of mount points.
+fn parse_mountinfo() -> Option<Vec<PathBuf>> {
+    let content = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    let mut mounts = Vec::new();
+    for line in content.lines() {
+        // Format: mount_id parent_id major:minor root mount_point ...
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() >= 5 {
+            mounts.push(PathBuf::from(fields[4]));
+        }
+    }
+    Some(mounts)
+}
+
+/// Find the mount point that contains the given path.
+fn find_mount_for_path(path: &std::path::Path, mount_points: &[PathBuf]) -> Option<PathBuf> {
+    let mut best: Option<&PathBuf> = None;
+    for mount in mount_points {
+        if path.starts_with(mount) {
+            match best {
+                Some(prev) if mount.as_os_str().len() > prev.as_os_str().len() => {
+                    best = Some(mount);
+                }
+                None => {
+                    best = Some(mount);
+                }
+                _ => {}
+            }
+        }
+    }
+    best.cloned()
 }

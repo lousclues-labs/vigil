@@ -13,6 +13,8 @@ use crate::metrics::Metrics;
 use crate::types::DaemonState;
 use crate::watch_index::WatchGroupIndex;
 
+use chrono::Utc;
+
 pub fn spawn(
     config: Arc<ArcSwap<Config>>,
     metrics: Arc<Metrics>,
@@ -20,6 +22,7 @@ pub fn spawn(
     watch_index: Arc<ArcSwap<WatchGroupIndex>>,
     shutdown: Arc<AtomicBool>,
     reload_flag: Arc<AtomicBool>,
+    backpressure: Arc<AtomicBool>,
 ) -> crate::Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name("vigil-coordinator".into())
@@ -73,6 +76,18 @@ pub fn spawn(
                     if let Err(e) = write_metrics_snapshot(&cfg.daemon.runtime_dir, &metrics) {
                         tracing::debug!(error = %e, "failed to write metrics snapshot");
                     }
+
+                    // Check for backpressure and update daemon state
+                    if backpressure.load(Ordering::Relaxed) {
+                        let mut s = state.write();
+                        if matches!(*s, DaemonState::Healthy) {
+                            *s = DaemonState::Degraded {
+                                reason: "event_backpressure".into(),
+                                since: Utc::now(),
+                            };
+                        }
+                    }
+
                     if let Err(e) = write_state_snapshot(&cfg.daemon.runtime_dir, &state) {
                         tracing::debug!(error = %e, "failed to write state snapshot");
                     }

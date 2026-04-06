@@ -19,6 +19,10 @@ pub struct Metrics {
     pub panics_caught: AtomicU64,
     pub scan_duration_ms: AtomicU64,
     pub last_scan_total: AtomicU64,
+    pub cache_hits: AtomicU64,
+    pub cache_misses: AtomicU64,
+    pub baseline_updates: AtomicU64,
+    pub backpressure_events: AtomicU64,
     /// Unix timestamp set once at daemon startup.
     pub uptime_start: i64,
 }
@@ -40,6 +44,10 @@ impl Metrics {
             panics_caught: AtomicU64::new(0),
             scan_duration_ms: AtomicU64::new(0),
             last_scan_total: AtomicU64::new(0),
+            cache_hits: AtomicU64::new(0),
+            cache_misses: AtomicU64::new(0),
+            baseline_updates: AtomicU64::new(0),
+            backpressure_events: AtomicU64::new(0),
             uptime_start: chrono::Utc::now().timestamp(),
         }
     }
@@ -61,6 +69,10 @@ impl Metrics {
             panics_caught: self.panics_caught.load(Ordering::Relaxed),
             scan_duration_ms: self.scan_duration_ms.load(Ordering::Relaxed),
             last_scan_total: self.last_scan_total.load(Ordering::Relaxed),
+            cache_hits: self.cache_hits.load(Ordering::Relaxed),
+            cache_misses: self.cache_misses.load(Ordering::Relaxed),
+            baseline_updates: self.baseline_updates.load(Ordering::Relaxed),
+            backpressure_events: self.backpressure_events.load(Ordering::Relaxed),
             uptime_start: self.uptime_start,
         }
     }
@@ -89,6 +101,10 @@ pub struct MetricsSnapshot {
     pub panics_caught: u64,
     pub scan_duration_ms: u64,
     pub last_scan_total: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    pub baseline_updates: u64,
+    pub backpressure_events: u64,
     pub uptime_start: i64,
 }
 

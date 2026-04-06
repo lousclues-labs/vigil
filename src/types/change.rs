@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -73,7 +74,7 @@ impl std::fmt::Display for Change {
 /// The result of comparing a file's current state to its baseline.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChangeResult {
-    pub path: PathBuf,
+    pub path: Arc<PathBuf>,
     pub changes: Vec<Change>,
     pub severity: Severity,
     pub monitored_group: String,
@@ -91,7 +92,7 @@ impl ChangeResult {
         group_name: String,
     ) -> Self {
         Self {
-            path: path.to_path_buf(),
+            path: Arc::new(path.to_path_buf()),
             changes: vec![Change::Deleted],
             severity,
             monitored_group: group_name,

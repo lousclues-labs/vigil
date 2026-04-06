@@ -35,7 +35,7 @@ fuzz_target!(|input: FuzzInput| {
     };
 
     let event = FsEvent {
-        path: std::path::PathBuf::from(&input.path),
+        path: std::sync::Arc::new(std::path::PathBuf::from(&input.path)),
         event_type,
         timestamp: chrono::Utc::now(),
         event_fd: None,

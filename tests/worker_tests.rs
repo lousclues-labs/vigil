@@ -55,7 +55,7 @@ fn process_event_detects_content_change() {
     );
 
     let event = FsEvent {
-        path: path.clone(),
+        path: std::sync::Arc::new(path.clone()),
         event_type: FsEventType::Modify,
         timestamp: Utc::now(),
         event_fd: None,

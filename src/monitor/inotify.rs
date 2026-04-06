@@ -93,7 +93,7 @@ pub fn start(
                                     metrics.events_received.fetch_add(1, Ordering::Relaxed);
 
                                     let fs_event = FsEvent {
-                                        path: file_path.clone(),
+                                        path: std::sync::Arc::new(file_path.clone()),
                                         event_type,
                                         timestamp: Utc::now(),
                                         event_fd: None,

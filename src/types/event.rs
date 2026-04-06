@@ -1,12 +1,13 @@
 use chrono::{DateTime, Utc};
 use std::os::unix::io::OwnedFd;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::types::ProcessAttribution;
 
 /// A raw filesystem event from fanotify or inotify.
 pub struct FsEvent {
-    pub path: PathBuf,
+    pub path: Arc<PathBuf>,
     pub event_type: FsEventType,
     pub timestamp: DateTime<Utc>,
     /// Fanotify event fd, transferred to worker. The worker hashes via this fd

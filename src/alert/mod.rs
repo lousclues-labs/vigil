@@ -41,6 +41,7 @@ struct RateLimiter {
 pub struct AlertDispatcher {
     sinks: Vec<Box<dyn AlertSink>>,
     audit_conn: rusqlite::Connection,
+    audit_db_path: std::path::PathBuf,
     rate_limiter: Mutex<RateLimiter>,
     cooldowns: Mutex<HashMap<String, Instant>>,
     cooldown_secs: u64,
@@ -49,6 +50,7 @@ pub struct AlertDispatcher {
     max_alerts_per_minute: u32,
     metrics: Arc<Metrics>,
     hostname: String,
+    consecutive_audit_failures: std::sync::atomic::AtomicU32,
 }
 
 impl AlertDispatcher {
@@ -58,6 +60,7 @@ impl AlertDispatcher {
         }
 
         let audit_conn = rusqlite::Connection::open(audit_db_path)?;
+        let audit_path = audit_db_path.to_path_buf();
         crate::db::apply_pragmas(
             &audit_conn,
             &crate::db::PragmaOpts {
@@ -130,6 +133,7 @@ impl AlertDispatcher {
         Ok(Self {
             sinks,
             audit_conn,
+            audit_db_path: audit_path,
             rate_limiter: Mutex::new(RateLimiter {
                 count: 0,
                 window_start: Instant::now(),
@@ -141,11 +145,12 @@ impl AlertDispatcher {
             max_alerts_per_minute: config.alerts.max_alerts_per_minute,
             metrics,
             hostname,
+            consecutive_audit_failures: std::sync::atomic::AtomicU32::new(0),
         })
     }
 
     pub fn run(
-        self,
+        mut self,
         alert_rx: Receiver<AlertPayload>,
         shutdown: Arc<std::sync::atomic::AtomicBool>,
     ) {
@@ -160,7 +165,41 @@ impl AlertDispatcher {
                         self.metrics
                             .db_errors
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                        let failures = self
+                            .consecutive_audit_failures
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                            + 1;
+
+                        if failures >= 3 {
+                            tracing::warn!(
+                                failures = failures,
+                                "attempting to reopen audit DB after consecutive failures"
+                            );
+                            match rusqlite::Connection::open(&self.audit_db_path) {
+                                Ok(new_conn) => {
+                                    if let Ok(()) = crate::db::apply_pragmas(
+                                        &new_conn,
+                                        &crate::db::PragmaOpts {
+                                            sync_mode: "FULL",
+                                            wal_mode: true,
+                                            ..crate::db::PragmaOpts::default()
+                                        },
+                                    ) {
+                                        self.audit_conn = new_conn;
+                                        self.consecutive_audit_failures
+                                            .store(0, std::sync::atomic::Ordering::Relaxed);
+                                        tracing::info!("audit DB connection reopened");
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!(error = %e, "failed to reopen audit DB");
+                                }
+                            }
+                        }
                     } else {
+                        self.consecutive_audit_failures
+                            .store(0, std::sync::atomic::Ordering::Relaxed);
                         self.metrics
                             .db_writes
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -305,7 +344,7 @@ impl AlertDispatcher {
             severity: change.severity,
             change_type,
             file: AlertFileInfo {
-                path: change.path.clone(),
+                path: change.path.as_ref().clone(),
                 changes_json: serde_json::to_string(&change.changes)
                     .unwrap_or_else(|_| "[]".to_string()),
                 package: change.package.clone(),
@@ -354,7 +393,7 @@ mod tests {
 
         let payload = AlertPayload {
             change: ChangeResult {
-                path: std::path::PathBuf::from("/tmp/test"),
+                path: std::sync::Arc::new(std::path::PathBuf::from("/tmp/test")),
                 changes: vec![Change::Created],
                 severity: Severity::High,
                 monitored_group: "test".into(),
@@ -382,7 +421,7 @@ mod tests {
         let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics).unwrap();
 
         let change = ChangeResult {
-            path: std::path::PathBuf::from("/tmp/cooldown_test"),
+            path: std::sync::Arc::new(std::path::PathBuf::from("/tmp/cooldown_test")),
             changes: vec![Change::Created],
             severity: Severity::High,
             monitored_group: "test".into(),
@@ -424,7 +463,10 @@ mod tests {
 
         for i in 0..5 {
             let change = ChangeResult {
-                path: std::path::PathBuf::from(format!("/tmp/rate_test_{}", i)),
+                path: std::sync::Arc::new(std::path::PathBuf::from(format!(
+                    "/tmp/rate_test_{}",
+                    i
+                ))),
                 changes: vec![Change::Created],
                 severity: Severity::High,
                 monitored_group: "test".into(),
@@ -458,7 +500,7 @@ mod tests {
 
         let payload = AlertPayload {
             change: ChangeResult {
-                path: std::path::PathBuf::from("/tmp/hmac_test"),
+                path: std::sync::Arc::new(std::path::PathBuf::from("/tmp/hmac_test")),
                 changes: vec![Change::ContentModified {
                     old_hash: "abc123".into(),
                     new_hash: "def456".into(),

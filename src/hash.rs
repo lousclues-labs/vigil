@@ -15,9 +15,23 @@ pub fn blake3_hash_fd(file: &File, size: u64, mmap_threshold: u64) -> Result<Str
         // Memory-mapped I/O via /proc/self/fd/<fd> (TOCTOU-safe — no path re-open)
         use std::os::unix::io::AsRawFd;
         let fd_path = format!("/proc/self/fd/{}", file.as_raw_fd());
-        hasher
-            .update_mmap(&fd_path)
-            .map_err(|e| VigilError::Hash(format!("mmap hash error: {}", e)))?;
+        if std::path::Path::new(&fd_path).exists() {
+            hasher
+                .update_mmap(&fd_path)
+                .map_err(|e| VigilError::Hash(format!("mmap hash error: {}", e)))?;
+        } else {
+            // /proc unavailable — fall back to buffered reader
+            let mut reader = file
+                .try_clone()
+                .map_err(|e| VigilError::Hash(format!("cannot clone file handle: {}", e)))?;
+            reader
+                .seek(SeekFrom::Start(0))
+                .map_err(|e| VigilError::Hash(format!("seek error: {}", e)))?;
+            let buf_reader = BufReader::with_capacity(131_072, &mut reader);
+            hasher
+                .update_reader(buf_reader)
+                .map_err(|e| VigilError::Hash(format!("read hash error: {}", e)))?;
+        }
     } else {
         // Buffered reader with 128KB buffer
         let mut reader = file

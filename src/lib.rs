@@ -2,6 +2,7 @@ pub mod alert;
 pub mod bloom;
 pub mod cli;
 pub mod config;
+pub mod control;
 pub mod coordinator;
 pub mod db;
 pub mod doctor;
@@ -85,6 +86,8 @@ impl Daemon {
         let (event_tx, event_rx) = bounded::<FsEvent>(1024);
         let (alert_tx, alert_rx) = bounded::<AlertPayload>(256);
 
+        let backpressure = Arc::new(AtomicBool::new(false));
+
         let _monitor = monitor::start_monitor(
             &cfg,
             event_tx.clone(),
@@ -92,6 +95,9 @@ impl Daemon {
             self.watch_index.clone(),
             self.metrics.clone(),
         )?;
+
+        // Baseline update channel for auto-rebaselining package changes
+        let (baseline_update_tx, baseline_update_rx) = bounded::<worker::BaselineUpdate>(512);
 
         let workers = worker::spawn_workers(
             cfg.daemon.worker_threads,
@@ -102,7 +108,17 @@ impl Daemon {
             self.watch_index.clone(),
             self.metrics.clone(),
             self.shutdown.clone(),
+            Some(baseline_update_tx),
+            backpressure.clone(),
         );
+
+        // Spawn baseline writer thread
+        let baseline_writer = spawn_baseline_writer(
+            baseline_db_path.clone(),
+            baseline_update_rx,
+            self.shutdown.clone(),
+            self.metrics.clone(),
+        )?;
 
         let alert_handle = spawn_alert_thread(
             self.config.clone(),
@@ -119,6 +135,7 @@ impl Daemon {
             self.watch_index.clone(),
             self.shutdown.clone(),
             self.reload_flag.clone(),
+            backpressure.clone(),
         )?;
 
         let (shutdown_tx, shutdown_rx) = crossbeam_channel::bounded::<()>(1);
@@ -134,7 +151,21 @@ impl Daemon {
         let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]);
         tracing::info!("vigil daemon ready");
 
-        // Block until shutdown signal instead of polling every 250ms
+        // Spawn control socket if configured
+        let _control_handle = if !cfg.daemon.control_socket.as_os_str().is_empty() {
+            Some(control::spawn(
+                cfg.daemon.control_socket.clone(),
+                self.metrics.clone(),
+                self.state.clone(),
+                self.shutdown.clone(),
+                self.reload_flag.clone(),
+                &baseline_db_path,
+            )?)
+        } else {
+            None
+        };
+
+        // Block until shutdown signal
         while !self.shutdown.load(Ordering::Acquire) {
             std::thread::sleep(Duration::from_secs(1));
         }
@@ -150,6 +181,7 @@ impl Daemon {
         for worker in workers {
             let _ = worker.join();
         }
+        let _ = baseline_writer.join();
         let _ = alert_handle.join();
         let _ = coordinator_handle.join();
         let _ = scan_handle.join();
@@ -254,6 +286,70 @@ fn spawn_alert_thread(
         .name("vigil-alert".into())
         .spawn(move || dispatcher.run(alert_rx, shutdown))
         .map_err(|e| VigilError::Daemon(format!("cannot spawn alert thread: {}", e)))
+}
+
+fn spawn_baseline_writer(
+    baseline_db_path: std::path::PathBuf,
+    rx: crossbeam_channel::Receiver<worker::BaselineUpdate>,
+    shutdown: Arc<AtomicBool>,
+    metrics: Arc<Metrics>,
+) -> Result<JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("vigil-baseline-writer".into())
+        .spawn(move || {
+            let conn = match db::open_baseline_db_at_path(&baseline_db_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(error = %e, "baseline writer failed to open db");
+                    return;
+                }
+            };
+
+            let mut batch: Vec<worker::BaselineUpdate> = Vec::new();
+
+            while !shutdown.load(Ordering::Acquire) {
+                match rx.recv_timeout(Duration::from_millis(500)) {
+                    Ok(update) => {
+                        batch.push(update);
+                        // Collect more if available
+                        while let Ok(extra) = rx.try_recv() {
+                            batch.push(extra);
+                        }
+
+                        // Write batch in a single transaction
+                        if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
+                            tracing::error!(error = %e, "baseline writer begin failed");
+                            batch.clear();
+                            continue;
+                        }
+
+                        let mut written = 0u64;
+                        for update in batch.drain(..) {
+                            if let Err(e) = baseline_ops::upsert(&conn, &update.entry) {
+                                tracing::warn!(
+                                    path = %update.entry.path.display(),
+                                    error = %e,
+                                    "baseline auto-update failed"
+                                );
+                            } else {
+                                written += 1;
+                            }
+                        }
+
+                        if let Err(e) = conn.execute_batch("COMMIT") {
+                            tracing::error!(error = %e, "baseline writer commit failed");
+                        } else if written > 0 {
+                            metrics
+                                .baseline_updates
+                                .fetch_add(written, Ordering::Relaxed);
+                        }
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        })
+        .map_err(|e| VigilError::Daemon(format!("cannot spawn baseline writer: {}", e)))
 }
 
 fn setup_signal_mask() -> Result<nix::sys::signal::SigSet> {

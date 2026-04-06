@@ -1,8 +1,52 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-/// Create baseline tables (baseline.db).
+/// Create baseline tables (baseline.db) — v2 flattened schema.
 pub fn create_baseline_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS baseline (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            path            TEXT NOT NULL UNIQUE,
+            -- identity (was identity_json)
+            inode           INTEGER NOT NULL,
+            device          INTEGER NOT NULL,
+            file_type       TEXT NOT NULL DEFAULT 'regular',
+            symlink_target  TEXT,
+            -- content (was content_json)
+            hash            TEXT NOT NULL,
+            size            INTEGER NOT NULL,
+            -- permissions (was perms_json)
+            mode            INTEGER NOT NULL,
+            owner_uid       INTEGER NOT NULL,
+            owner_gid       INTEGER NOT NULL,
+            capabilities    TEXT,
+            -- security (was security_json)
+            xattrs_json     TEXT NOT NULL DEFAULT '{}',
+            security_context TEXT NOT NULL DEFAULT '',
+            -- metadata
+            mtime           INTEGER NOT NULL,
+            package         TEXT,
+            source          TEXT NOT NULL DEFAULT 'auto_scan',
+            added_at        INTEGER NOT NULL,
+            updated_at      INTEGER NOT NULL,
+            CHECK(source IN ('package_manager', 'manual', 'auto_scan'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_baseline_path ON baseline(path);
+
+        CREATE TABLE IF NOT EXISTS config_state (
+            key         TEXT PRIMARY KEY,
+            value       TEXT NOT NULL,
+            updated_at  INTEGER NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+/// Create baseline tables with the old v1 JSON blob schema (for migration).
+pub fn create_baseline_v1_tables(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS baseline (

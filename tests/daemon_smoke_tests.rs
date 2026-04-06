@@ -15,6 +15,7 @@ fn daemon_start_and_shutdown_smoke_test() {
     cfg.daemon.pid_file = dir.path().join("vigild.pid");
     cfg.daemon.runtime_dir = dir.path().join("run");
     cfg.daemon.monitor_backend = vigil::types::MonitorBackend::Inotify;
+    cfg.daemon.control_socket = std::path::PathBuf::new(); // disable control socket in tests
     cfg.alerts.log_file = dir.path().join("alerts.json");
     cfg.alerts.desktop_notifications = false;
     cfg.alerts.syslog = false;
