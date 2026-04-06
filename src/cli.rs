@@ -164,10 +164,11 @@ mod tests {
 
     #[test]
     fn setup_hmac_parses_defaults() {
-        let cli = Cli::try_parse_from(["vigil", "setup", "hmac"])
-            .expect("parse setup hmac");
+        let cli = Cli::try_parse_from(["vigil", "setup", "hmac"]).expect("parse setup hmac");
         match cli.command {
-            Command::Setup { action: SetupAction::Hmac { key_path, force } } => {
+            Command::Setup {
+                action: SetupAction::Hmac { key_path, force },
+            } => {
                 assert_eq!(key_path, PathBuf::from("/etc/vigil/hmac.key"));
                 assert!(!force);
             }
@@ -177,10 +178,19 @@ mod tests {
 
     #[test]
     fn setup_hmac_custom_path_and_force() {
-        let cli = Cli::try_parse_from(["vigil", "setup", "hmac", "--key-path", "/custom/key", "--force"])
-            .expect("parse setup hmac with args");
+        let cli = Cli::try_parse_from([
+            "vigil",
+            "setup",
+            "hmac",
+            "--key-path",
+            "/custom/key",
+            "--force",
+        ])
+        .expect("parse setup hmac with args");
         match cli.command {
-            Command::Setup { action: SetupAction::Hmac { key_path, force } } => {
+            Command::Setup {
+                action: SetupAction::Hmac { key_path, force },
+            } => {
                 assert_eq!(key_path, PathBuf::from("/custom/key"));
                 assert!(force);
             }
@@ -190,10 +200,11 @@ mod tests {
 
     #[test]
     fn setup_socket_parses_defaults() {
-        let cli = Cli::try_parse_from(["vigil", "setup", "socket"])
-            .expect("parse setup socket");
+        let cli = Cli::try_parse_from(["vigil", "setup", "socket"]).expect("parse setup socket");
         match cli.command {
-            Command::Setup { action: SetupAction::Socket { path, disable } } => {
+            Command::Setup {
+                action: SetupAction::Socket { path, disable },
+            } => {
                 assert_eq!(path, PathBuf::from("/run/vigil/alert.sock"));
                 assert!(!disable);
             }
@@ -206,7 +217,9 @@ mod tests {
         let cli = Cli::try_parse_from(["vigil", "setup", "socket", "--disable"])
             .expect("parse setup socket --disable");
         match cli.command {
-            Command::Setup { action: SetupAction::Socket { disable, .. } } => {
+            Command::Setup {
+                action: SetupAction::Socket { disable, .. },
+            } => {
                 assert!(disable);
             }
             _ => panic!("expected setup socket command"),

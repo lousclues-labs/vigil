@@ -106,8 +106,6 @@ impl BloomFilter {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;

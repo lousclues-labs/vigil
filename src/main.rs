@@ -536,11 +536,7 @@ fn cmd_setup(config_path: Option<&Path>, action: SetupAction) -> vigil::Result<(
     }
 }
 
-fn cmd_setup_hmac(
-    config_path: Option<&Path>,
-    key_path: &Path,
-    force: bool,
-) -> vigil::Result<()> {
+fn cmd_setup_hmac(config_path: Option<&Path>, key_path: &Path, force: bool) -> vigil::Result<()> {
     // Must be root to write to /etc/vigil
     if !nix::unistd::geteuid().is_root() {
         return Err(vigil::VigilError::Config(
@@ -592,10 +588,17 @@ fn cmd_setup_hmac(
     // Update the config file
     let toml_path = resolve_config_path(config_path);
     if let Some(ref toml_path) = toml_path {
-        update_config_toml(toml_path, &[
-            ("security", "hmac_signing", "true"),
-            ("security", "hmac_key_path", &format!("\"{}\"", key_path.display())),
-        ])?;
+        update_config_toml(
+            toml_path,
+            &[
+                ("security", "hmac_signing", "true"),
+                (
+                    "security",
+                    "hmac_key_path",
+                    &format!("\"{}\"", key_path.display()),
+                ),
+            ],
+        )?;
     }
 
     println!("HMAC key written to {}", key_path.display());
@@ -634,23 +637,21 @@ fn cmd_setup_socket(
     if let Some(ref toml_path) = toml_path {
         update_config_toml(
             toml_path,
-            &[("hooks", "signal_socket", &format!("\"{}\"", socket_path.display()))],
+            &[(
+                "hooks",
+                "signal_socket",
+                &format!("\"{}\"", socket_path.display()),
+            )],
         )?;
     }
 
-    println!(
-        "Socket sink configured: {}",
-        socket_path.display()
-    );
+    println!("Socket sink configured: {}", socket_path.display());
     println!();
     println!("Restart vigild for changes to take effect:");
     println!("  sudo systemctl restart vigild.service");
     println!();
     println!("To listen for alerts:");
-    println!(
-        "  socat UNIX-LISTEN:{} -",
-        socket_path.display()
-    );
+    println!("  socat UNIX-LISTEN:{} -", socket_path.display());
 
     Ok(())
 }
@@ -677,10 +678,7 @@ fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
 }
 
 /// Update specific keys in a TOML config file. Creates the file and sections if needed.
-fn update_config_toml(
-    path: &Path,
-    updates: &[(&str, &str, &str)],
-) -> vigil::Result<()> {
+fn update_config_toml(path: &Path, updates: &[(&str, &str, &str)]) -> vigil::Result<()> {
     let content = if path.exists() {
         std::fs::read_to_string(path)?
     } else {
@@ -698,9 +696,9 @@ fn update_config_toml(
         if doc.get(section).is_none() {
             doc[section] = toml_edit::Item::Table(toml_edit::Table::new());
         }
-        let val: toml_edit::Value = value
-            .parse()
-            .map_err(|e| vigil::VigilError::Config(format!("invalid TOML value '{}': {}", value, e)))?;
+        let val: toml_edit::Value = value.parse().map_err(|e| {
+            vigil::VigilError::Config(format!("invalid TOML value '{}': {}", value, e))
+        })?;
         doc[section][key] = toml_edit::value(val);
     }
 

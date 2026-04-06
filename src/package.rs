@@ -281,7 +281,9 @@ fn build_cache_rpm() -> HashMap<PathBuf, String> {
     // `rpm -qa --queryformat '%{NAME}\t[%{FILENAMES}\n]'` is complex;
     // use `rpm -qa --filesbypkg` which outputs "package  /path" per line
     let timeout = Duration::from_secs(60);
-    if let Some(output) = run_with_timeout(Command::new("rpm").args(["-qa", "--filesbypkg"]), timeout) {
+    if let Some(output) =
+        run_with_timeout(Command::new("rpm").args(["-qa", "--filesbypkg"]), timeout)
+    {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
@@ -397,8 +399,14 @@ mod tests {
                 }
             }
         }
-        assert_eq!(cache.get(&PathBuf::from("/usr/bin/ls")), Some(&"coreutils".to_string()));
-        assert_eq!(cache.get(&PathBuf::from("/usr/bin/cat")), Some(&"coreutils".to_string()));
+        assert_eq!(
+            cache.get(&PathBuf::from("/usr/bin/ls")),
+            Some(&"coreutils".to_string())
+        );
+        assert_eq!(
+            cache.get(&PathBuf::from("/usr/bin/cat")),
+            Some(&"coreutils".to_string())
+        );
         // Directory entries (trailing /) should be skipped
         assert!(!cache.contains_key(&PathBuf::from("/usr/bin/")));
         assert_eq!(cache.len(), 2);
@@ -423,8 +431,14 @@ mod tests {
                 }
             }
         }
-        assert_eq!(cache.get(&PathBuf::from("/usr/bin/ls")), Some(&"coreutils".to_string()));
-        assert_eq!(cache.get(&PathBuf::from("/usr/bin/cat")), Some(&"coreutils".to_string()));
+        assert_eq!(
+            cache.get(&PathBuf::from("/usr/bin/ls")),
+            Some(&"coreutils".to_string())
+        );
+        assert_eq!(
+            cache.get(&PathBuf::from("/usr/bin/cat")),
+            Some(&"coreutils".to_string())
+        );
         // Directory entries should be skipped
         assert!(!cache.contains_key(&PathBuf::from("/usr/lib64/")));
     }

@@ -397,11 +397,17 @@ mod tests {
 
         // Second call within cooldown should be suppressed
         let suppressed = dispatcher.is_suppressed(&change, false);
-        assert!(suppressed, "second alert within cooldown should be suppressed");
+        assert!(
+            suppressed,
+            "second alert within cooldown should be suppressed"
+        );
 
         // Third call should also still be suppressed (timer should NOT have reset)
         let suppressed = dispatcher.is_suppressed(&change, false);
-        assert!(suppressed, "third alert should still be suppressed (timer not reset)");
+        assert!(
+            suppressed,
+            "third alert should still be suppressed (timer not reset)"
+        );
     }
 
     #[test]
