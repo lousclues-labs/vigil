@@ -4,7 +4,8 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
-- No entries yet.
+- Security:
+  - Upgraded `lru` from `0.12.5` to `0.16.3` to resolve RustSec advisory `RUSTSEC-2026-0002` (`IterMut` unsoundness).
 
 ## [0.15.0] - 2026-04-06
 
