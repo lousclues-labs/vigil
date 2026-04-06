@@ -11,7 +11,26 @@ use parking_lot::RwLock;
 use crate::db::baseline_ops;
 use crate::error::{Result, VigilError};
 use crate::metrics::Metrics;
-use crate::types::DaemonState;
+use crate::types::{DaemonState, ScanMode};
+
+/// Request sent through the scan trigger channel.
+#[derive(Debug)]
+pub struct ScanRequest {
+    pub mode: ScanMode,
+    pub response_tx: crossbeam_channel::Sender<ScanResponse>,
+}
+
+/// Response returned after a triggered scan completes.
+#[derive(Debug, serde::Serialize)]
+pub struct ScanResponse {
+    pub ok: bool,
+    pub total_checked: u64,
+    pub changes_found: u64,
+    pub errors: u64,
+    pub duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
 
 /// Spawn the control socket listener thread.
 pub fn spawn(
@@ -20,6 +39,7 @@ pub fn spawn(
     state: Arc<RwLock<DaemonState>>,
     shutdown: Arc<AtomicBool>,
     reload_flag: Arc<AtomicBool>,
+    scan_trigger_tx: crossbeam_channel::Sender<ScanRequest>,
     baseline_db_path: &Path,
 ) -> Result<JoinHandle<()>> {
     let db_path = baseline_db_path.to_path_buf();
@@ -40,7 +60,6 @@ pub fn spawn(
     })?;
 
     // Set socket permissions to 0600
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600));
@@ -64,18 +83,23 @@ pub fn spawn(
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
                         let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
 
-                        if let Err(e) =
-                            handle_connection(stream, &metrics, &state, &reload_flag, &db_path)
-                        {
+                        if let Err(e) = handle_connection(
+                            stream,
+                            &metrics,
+                            &state,
+                            &reload_flag,
+                            &scan_trigger_tx,
+                            &db_path,
+                        ) {
                             tracing::debug!(error = %e, "control socket connection error");
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(100));
+                        std::thread::sleep(Duration::from_millis(200));
                     }
                     Err(e) => {
                         tracing::debug!(error = %e, "control socket accept error");
-                        std::thread::sleep(Duration::from_millis(100));
+                        std::thread::sleep(Duration::from_millis(200));
                     }
                 }
             }
@@ -92,66 +116,152 @@ fn handle_connection(
     metrics: &Metrics,
     state: &RwLock<DaemonState>,
     reload_flag: &AtomicBool,
+    scan_trigger_tx: &crossbeam_channel::Sender<ScanRequest>,
     baseline_db_path: &Path,
 ) -> Result<()> {
-    let reader = BufReader::new(&stream);
-    let mut writer = &stream;
-
-    // Read one JSON line
     let mut line = String::new();
-    let mut reader = reader;
+    let mut reader = BufReader::new(&stream);
     if reader.read_line(&mut line).is_err() {
         return Ok(());
     }
 
-    let line = line.trim();
-    if line.is_empty() {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
         return Ok(());
     }
 
-    let request: serde_json::Value = serde_json::from_str(line)
-        .map_err(|e| VigilError::Control(format!("invalid JSON: {}", e)))?;
-
-    let method = request["method"].as_str().unwrap_or("");
-
-    let response = match method {
-        "status" => {
-            let snap = metrics.snapshot();
-            let state_val = match &*state.read() {
-                DaemonState::Healthy => serde_json::json!("healthy"),
-                DaemonState::Degraded { reason, since } => serde_json::json!({
-                    "degraded": { "reason": reason, "since": since.to_rfc3339() }
-                }),
-            };
-            serde_json::json!({
-                "ok": true,
-                "metrics": snap,
-                "state": state_val,
-                "uptime_secs": chrono::Utc::now().timestamp() - snap.uptime_start,
-            })
+    let response = match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(request) => {
+            let method = request["method"].as_str().unwrap_or("");
+            dispatch(
+                method,
+                &request,
+                metrics,
+                state,
+                reload_flag,
+                scan_trigger_tx,
+                baseline_db_path,
+            )
         }
-        "baseline_count" => match crate::db::open_baseline_db_readonly(baseline_db_path) {
-            Ok(conn) => match baseline_ops::count(&conn) {
-                Ok(count) => serde_json::json!({"ok": true, "count": count}),
-                Err(e) => serde_json::json!({"ok": false, "error": e.to_string()}),
-            },
-            Err(e) => serde_json::json!({"ok": false, "error": e.to_string()}),
-        },
-        "reload" => {
-            reload_flag.store(true, Ordering::Release);
-            serde_json::json!({"ok": true, "message": "reload requested"})
-        }
-        _ => {
-            serde_json::json!({"ok": false, "error": format!("unknown method: {}", method)})
-        }
+        Err(_) => serde_json::json!({"ok": false, "error": "invalid JSON"}),
     };
 
-    let mut response_str = serde_json::to_string(&response).unwrap_or_else(|_| "{}".into());
+    let mut writer = &stream;
+    let mut response_str = serde_json::to_string(&response)
+        .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization error"}"#.into());
     response_str.push('\n');
     let _ = writer.write_all(response_str.as_bytes());
     let _ = writer.flush();
 
     Ok(())
+}
+
+fn dispatch(
+    method: &str,
+    request: &serde_json::Value,
+    metrics: &Metrics,
+    state: &RwLock<DaemonState>,
+    reload_flag: &AtomicBool,
+    scan_trigger_tx: &crossbeam_channel::Sender<ScanRequest>,
+    baseline_db_path: &Path,
+) -> serde_json::Value {
+    match method {
+        "status" => handle_status(metrics, state),
+        "baseline_count" => handle_baseline_count(baseline_db_path),
+        "reload" => handle_reload(reload_flag),
+        "scan" => handle_scan(request, scan_trigger_tx),
+        "metrics_prometheus" => handle_metrics_prometheus(metrics),
+        _ => serde_json::json!({"ok": false, "error": format!("unknown method: {}", method)}),
+    }
+}
+
+fn handle_status(metrics: &Metrics, state: &RwLock<DaemonState>) -> serde_json::Value {
+    let snap = metrics.snapshot();
+    let state_str = match &*state.read() {
+        DaemonState::Healthy => "healthy".to_string(),
+        DaemonState::Degraded { reason, .. } => format!("degraded: {}", reason),
+    };
+    let uptime_seconds = chrono::Utc::now().timestamp() - snap.uptime_start;
+    serde_json::json!({
+        "ok": true,
+        "daemon": {
+            "state": state_str,
+            "uptime_seconds": uptime_seconds,
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+        "metrics": {
+            "events_received": snap.events_received,
+            "events_processed": snap.events_processed,
+            "events_dropped": snap.events_dropped,
+            "events_debounced": snap.events_debounced,
+            "events_filtered": snap.events_filtered,
+            "hashes_computed": snap.hashes_computed,
+            "changes_detected": snap.changes_detected,
+            "alerts_dispatched": snap.alerts_dispatched,
+            "alerts_suppressed": snap.alerts_suppressed,
+            "db_writes": snap.db_writes,
+            "db_errors": snap.db_errors,
+            "panics_caught": snap.panics_caught,
+            "scan_duration_ms": snap.scan_duration_ms,
+            "last_scan_total": snap.last_scan_total,
+        },
+    })
+}
+
+fn handle_baseline_count(baseline_db_path: &Path) -> serde_json::Value {
+    match crate::db::open_baseline_db_readonly(baseline_db_path) {
+        Ok(conn) => match baseline_ops::count(&conn) {
+            Ok(count) => serde_json::json!({"ok": true, "count": count}),
+            Err(e) => serde_json::json!({"ok": false, "error": e.to_string()}),
+        },
+        Err(e) => serde_json::json!({"ok": false, "error": e.to_string()}),
+    }
+}
+
+fn handle_reload(reload_flag: &AtomicBool) -> serde_json::Value {
+    reload_flag.store(true, Ordering::Release);
+    serde_json::json!({"ok": true, "message": "reload signal sent"})
+}
+
+fn handle_scan(
+    request: &serde_json::Value,
+    scan_trigger_tx: &crossbeam_channel::Sender<ScanRequest>,
+) -> serde_json::Value {
+    let mode = request
+        .get("params")
+        .and_then(|p| p.get("mode"))
+        .and_then(|m| m.as_str())
+        .map(|s| match s {
+            "full" => ScanMode::Full,
+            _ => ScanMode::Incremental,
+        })
+        .unwrap_or(ScanMode::Incremental);
+
+    let (resp_tx, resp_rx) = crossbeam_channel::bounded(1);
+
+    if scan_trigger_tx
+        .send(ScanRequest {
+            mode,
+            response_tx: resp_tx,
+        })
+        .is_err()
+    {
+        return serde_json::json!({"ok": false, "error": "scan channel unavailable"});
+    }
+
+    match resp_rx.recv_timeout(Duration::from_secs(600)) {
+        Ok(resp) => serde_json::to_value(&resp)
+            .unwrap_or_else(|_| serde_json::json!({"ok": false, "error": "serialization error"})),
+        Err(_) => serde_json::json!({"ok": false, "error": "scan timed out"}),
+    }
+}
+
+fn handle_metrics_prometheus(metrics: &Metrics) -> serde_json::Value {
+    let snap = metrics.snapshot();
+    serde_json::json!({
+        "ok": true,
+        "text": snap.to_prometheus(),
+    })
 }
 
 #[cfg(test)]
@@ -160,7 +270,7 @@ mod tests {
     use std::os::unix::net::UnixStream;
 
     #[test]
-    fn control_socket_status_roundtrip() {
+    fn control_socket_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("test-control.sock");
         let db_path = dir.path().join("baseline.db");
@@ -174,6 +284,7 @@ mod tests {
         let state = Arc::new(RwLock::new(DaemonState::Healthy));
         let shutdown = Arc::new(AtomicBool::new(false));
         let reload_flag = Arc::new(AtomicBool::new(false));
+        let (scan_tx, _scan_rx) = crossbeam_channel::bounded::<ScanRequest>(1);
 
         let handle = spawn(
             socket_path.clone(),
@@ -181,6 +292,7 @@ mod tests {
             state,
             shutdown.clone(),
             reload_flag,
+            scan_tx,
             &db_path,
         )
         .unwrap();
@@ -188,21 +300,20 @@ mod tests {
         // Give the thread time to bind
         std::thread::sleep(Duration::from_millis(200));
 
-        // Connect and send status command
+        // Test status
         let mut stream = UnixStream::connect(&socket_path).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         writeln!(stream, r#"{{"method":"status"}}"#).unwrap();
         stream.flush().unwrap();
-
         let mut reader = BufReader::new(&stream);
         let mut response = String::new();
         reader.read_line(&mut response).unwrap();
-
         let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
         assert_eq!(parsed["ok"], true);
-        assert!(parsed["metrics"].is_object());
+        assert!(parsed["daemon"]["version"].is_string());
+        assert!(parsed["metrics"]["events_received"].is_number());
 
         // Test baseline_count
         let mut stream = UnixStream::connect(&socket_path).unwrap();
@@ -211,17 +322,93 @@ mod tests {
             .unwrap();
         writeln!(stream, r#"{{"method":"baseline_count"}}"#).unwrap();
         stream.flush().unwrap();
-
         let mut reader = BufReader::new(&stream);
         let mut response = String::new();
         reader.read_line(&mut response).unwrap();
-
         let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
         assert_eq!(parsed["ok"], true);
         assert_eq!(parsed["count"], 0);
 
+        // Test reload
+        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        writeln!(stream, r#"{{"method":"reload"}}"#).unwrap();
+        stream.flush().unwrap();
+        let mut reader = BufReader::new(&stream);
+        let mut response = String::new();
+        reader.read_line(&mut response).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(parsed["ok"], true);
+
+        // Test metrics_prometheus
+        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        writeln!(stream, r#"{{"method":"metrics_prometheus"}}"#).unwrap();
+        stream.flush().unwrap();
+        let mut reader = BufReader::new(&stream);
+        let mut response = String::new();
+        reader.read_line(&mut response).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(parsed["ok"], true);
+        let text = parsed["text"].as_str().unwrap();
+        assert!(text.contains("vigil_events_received_total"));
+
+        // Test unknown method
+        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        writeln!(stream, r#"{{"method":"bogus"}}"#).unwrap();
+        stream.flush().unwrap();
+        let mut reader = BufReader::new(&stream);
+        let mut response = String::new();
+        reader.read_line(&mut response).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(parsed["ok"], false);
+        assert!(parsed["error"].as_str().unwrap().contains("unknown method"));
+
+        // Test malformed JSON
+        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        writeln!(stream, "not json").unwrap();
+        stream.flush().unwrap();
+        let mut reader = BufReader::new(&stream);
+        let mut response = String::new();
+        reader.read_line(&mut response).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(parsed["ok"], false);
+
         // Shutdown
         shutdown.store(true, Ordering::Release);
         let _ = handle.join();
+    }
+
+    #[test]
+    fn dispatch_status_fields() {
+        let metrics = Metrics::new();
+        metrics.events_received.fetch_add(10, Ordering::Relaxed);
+        let state = RwLock::new(DaemonState::Healthy);
+        let reload_flag = AtomicBool::new(false);
+        let (scan_tx, _scan_rx) = crossbeam_channel::bounded::<ScanRequest>(1);
+
+        let result = dispatch(
+            "status",
+            &serde_json::json!({"method": "status"}),
+            &metrics,
+            &state,
+            &reload_flag,
+            &scan_tx,
+            Path::new("/dev/null"),
+        );
+
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["daemon"]["state"], "healthy");
+        assert_eq!(result["metrics"]["events_received"], 10);
     }
 }

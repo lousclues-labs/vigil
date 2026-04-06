@@ -42,8 +42,12 @@ fn run(cli: Cli) -> vigil::Result<i32> {
             cmd_watch(config_path.as_deref())?;
             Ok(0)
         }
-        Command::Check { full } => {
-            cmd_check(config_path.as_deref(), full)?;
+        Command::Check { full, now } => {
+            if now {
+                cmd_check_live(config_path.as_deref(), full)?;
+            } else {
+                cmd_check(config_path.as_deref(), full)?;
+            }
             Ok(0)
         }
         Command::Status => {
@@ -181,9 +185,146 @@ fn cmd_check(config_path: Option<&Path>, full: bool) -> vigil::Result<()> {
     Ok(())
 }
 
+fn cmd_check_live(config_path: Option<&Path>, full: bool) -> vigil::Result<()> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    let cfg = vigil::config::load_config(config_path)?;
+
+    if cfg.daemon.control_socket.as_os_str().is_empty() {
+        return Err(vigil::VigilError::Config(
+            "control_socket not configured".into(),
+        ));
+    }
+
+    let mode = if full { "full" } else { "incremental" };
+    let request = format!(r#"{{"method":"scan","params":{{"mode":"{}"}}}}"#, mode);
+
+    println!("Triggering {} scan on running daemon...", mode);
+
+    let mut stream = UnixStream::connect(&cfg.daemon.control_socket).map_err(|e| {
+        vigil::VigilError::Daemon(format!(
+            "cannot connect to control socket: {} (is vigild running?)",
+            e
+        ))
+    })?;
+    stream.set_read_timeout(Some(Duration::from_secs(600)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+    writeln!(stream, "{}", request)?;
+    stream.flush()?;
+
+    let mut reader = BufReader::new(&stream);
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+
+    let result: serde_json::Value = serde_json::from_str(&response)
+        .map_err(|e| vigil::VigilError::Daemon(format!("invalid response: {}", e)))?;
+
+    if result.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+        let checked = result
+            .get("total_checked")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let changes = result
+            .get("changes_found")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let errors = result.get("errors").and_then(|v| v.as_u64()).unwrap_or(0);
+        let duration = result
+            .get("duration_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        println!("Checked:  {}", format_count(checked));
+        println!("Changes:  {}", changes);
+        println!("Errors:   {}", errors);
+        println!("Duration: {:.1}s", duration as f64 / 1000.0);
+    } else {
+        let err = result
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("unknown");
+        return Err(vigil::VigilError::Daemon(format!("scan failed: {}", err)));
+    }
+
+    Ok(())
+}
+
 fn cmd_status(config_path: Option<&Path>, format: OutputFormat) -> vigil::Result<()> {
     let cfg = vigil::config::load_config(config_path)?;
 
+    // Try live query via control socket first
+    if !cfg.daemon.control_socket.as_os_str().is_empty() {
+        if let Ok(live) = query_control_socket(&cfg.daemon.control_socket, r#"{"method":"status"}"#)
+        {
+            if format == OutputFormat::Json {
+                println!("{}", serde_json::to_string_pretty(&live)?);
+                return Ok(());
+            }
+            if let Some(daemon) = live.get("daemon") {
+                let state = daemon
+                    .get("state")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("unknown");
+                let uptime = daemon
+                    .get("uptime_seconds")
+                    .and_then(|u| u.as_i64())
+                    .unwrap_or(0);
+                let version = daemon
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                println!(
+                    "vigild    ● {} (v{}, uptime {})",
+                    state,
+                    version,
+                    doctor::format_compact_duration(uptime)
+                );
+            }
+            if let Some(metrics) = live.get("metrics") {
+                let received = metrics
+                    .get("events_received")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let changes = metrics
+                    .get("changes_detected")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let dropped = metrics
+                    .get("events_dropped")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                println!(
+                    "events    {} received, {} changes, {} dropped",
+                    format_count(received),
+                    format_count(changes),
+                    format_count(dropped)
+                );
+
+                let scan_ms = metrics
+                    .get("scan_duration_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let scan_total = metrics
+                    .get("last_scan_total")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                if scan_total > 0 {
+                    println!(
+                        "last scan {} files in {:.1}s",
+                        format_count(scan_total),
+                        scan_ms as f64 / 1000.0
+                    );
+                }
+            }
+            println!("source    live (control socket)");
+            return Ok(());
+        }
+    }
+
+    // Fall back to stale file-based status
     let daemon = doctor::probe_daemon(&cfg);
     let backend = doctor::monitor_backend_label(&cfg);
     let baseline_entries = doctor::baseline_count_with_fallback(&cfg);
@@ -831,6 +972,37 @@ fn command_exists(cmd: &str) -> bool {
     std::env::var_os("PATH")
         .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(cmd).is_file()))
         .unwrap_or(false)
+}
+
+fn query_control_socket(
+    socket_path: &Path,
+    request: &str,
+) -> std::result::Result<serde_json::Value, Box<dyn std::error::Error>> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    let mut stream = UnixStream::connect(socket_path)?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+    writeln!(stream, "{}", request)?;
+    stream.flush()?;
+
+    let mut reader = BufReader::new(&stream);
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+
+    let value: serde_json::Value = serde_json::from_str(&response)?;
+    if value.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+        Ok(value)
+    } else {
+        Err(value
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("unknown error")
+            .into())
+    }
 }
 
 fn format_count(value: u64) -> String {

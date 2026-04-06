@@ -6,6 +6,7 @@ pid_file = "/run/vigil/vigild.pid"
 db_path = "/var/lib/vigil/baseline.db"
 log_level = "info"
 monitor_backend = "fanotify"
+control_socket = "/run/vigil/control.sock"
 
 [scanner]
 schedule = "0 3 * * *"

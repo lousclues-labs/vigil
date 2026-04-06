@@ -39,6 +39,10 @@ pub enum Command {
         /// Run full scan instead of incremental
         #[arg(long)]
         full: bool,
+
+        /// Trigger scan on the running daemon via control socket instead of running inline
+        #[arg(long)]
+        now: bool,
     },
 
     /// Show daemon status

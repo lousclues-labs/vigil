@@ -108,6 +108,122 @@ pub struct MetricsSnapshot {
     pub uptime_start: i64,
 }
 
+impl MetricsSnapshot {
+    /// Format metrics in Prometheus text exposition format.
+    pub fn to_prometheus(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::with_capacity(2048);
+
+        write_prom_counter(
+            &mut out,
+            "vigil_events_received_total",
+            "Total filesystem events received",
+            self.events_received,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_events_processed_total",
+            "Total events processed by workers",
+            self.events_processed,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_events_dropped_total",
+            "Events dropped due to backpressure",
+            self.events_dropped,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_events_debounced_total",
+            "Events suppressed by debounce filter",
+            self.events_debounced,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_events_filtered_total",
+            "Events excluded by pattern filter",
+            self.events_filtered,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_hashes_computed_total",
+            "File hashes computed",
+            self.hashes_computed,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_changes_detected_total",
+            "File integrity changes detected",
+            self.changes_detected,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_alerts_dispatched_total",
+            "Alerts sent to sinks",
+            self.alerts_dispatched,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_alerts_suppressed_total",
+            "Alerts suppressed by cooldown or rate limit",
+            self.alerts_suppressed,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_db_writes_total",
+            "Database write operations",
+            self.db_writes,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_db_errors_total",
+            "Database errors",
+            self.db_errors,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_panics_caught_total",
+            "Worker panics caught",
+            self.panics_caught,
+        );
+        write_prom_gauge(
+            &mut out,
+            "vigil_scan_duration_ms",
+            "Duration of last scan in milliseconds",
+            self.scan_duration_ms,
+        );
+        write_prom_gauge(
+            &mut out,
+            "vigil_scan_files_total",
+            "Files checked in last scan",
+            self.last_scan_total,
+        );
+        write_prom_gauge(
+            &mut out,
+            "vigil_uptime_start_timestamp",
+            "Daemon start time (unix timestamp)",
+            self.uptime_start as u64,
+        );
+
+        let _ = writeln!(out);
+        out
+    }
+}
+
+fn write_prom_counter(out: &mut String, name: &str, help: &str, value: u64) {
+    use std::fmt::Write;
+    let _ = writeln!(out, "# HELP {} {}", name, help);
+    let _ = writeln!(out, "# TYPE {} counter", name);
+    let _ = writeln!(out, "{} {}", name, value);
+}
+
+fn write_prom_gauge(out: &mut String, name: &str, help: &str, value: u64) {
+    use std::fmt::Write;
+    let _ = writeln!(out, "# HELP {} {}", name, help);
+    let _ = writeln!(out, "# TYPE {} gauge", name);
+    let _ = writeln!(out, "{} {}", name, value);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +247,22 @@ mod tests {
         assert_eq!(snap.events_received, 42);
         assert_eq!(snap.changes_detected, 3);
         assert_eq!(snap.events_dropped, 0);
+    }
+
+    #[test]
+    fn prometheus_format_contains_expected_metrics() {
+        let m = Metrics::new();
+        m.events_received.fetch_add(100, Ordering::Relaxed);
+        m.changes_detected.fetch_add(5, Ordering::Relaxed);
+        let snap = m.snapshot();
+        let prom = snap.to_prometheus();
+
+        assert!(prom.contains("# TYPE vigil_events_received_total counter"));
+        assert!(prom.contains("vigil_events_received_total 100"));
+        assert!(prom.contains("# TYPE vigil_changes_detected_total counter"));
+        assert!(prom.contains("vigil_changes_detected_total 5"));
+        assert!(prom.contains("# TYPE vigil_scan_duration_ms gauge"));
+        assert!(prom.contains("# TYPE vigil_uptime_start_timestamp gauge"));
+        assert!(prom.contains("# HELP vigil_events_received_total"));
     }
 }

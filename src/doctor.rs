@@ -309,6 +309,7 @@ pub fn run_diagnostics(config: &Config) -> Vec<DiagnosticCheck> {
     checks.push(check_package_hooks());
     checks.push(check_notify_send());
     checks.push(check_signal_socket(config));
+    checks.push(check_control_socket(config));
 
     checks
 }
@@ -979,6 +980,76 @@ fn check_signal_socket(config: &Config) -> DiagnosticCheck {
     }
 }
 
+fn check_control_socket(config: &Config) -> DiagnosticCheck {
+    if config.daemon.control_socket.as_os_str().is_empty() {
+        return DiagnosticCheck {
+            name: "Control".into(),
+            status: CheckStatus::Unknown,
+            detail: "not configured (optional)".into(),
+            fix: None,
+        };
+    }
+
+    let socket_path = &config.daemon.control_socket;
+    if !socket_path.exists() {
+        return DiagnosticCheck {
+            name: "Control".into(),
+            status: CheckStatus::Warning,
+            detail: format!(
+                "{} does not exist (daemon not running?)",
+                socket_path.display()
+            ),
+            fix: Some("Start the daemon: sudo systemctl start vigild".into()),
+        };
+    }
+
+    match query_control_socket_quick(socket_path) {
+        Ok(_) => DiagnosticCheck {
+            name: "Control".into(),
+            status: CheckStatus::Ok,
+            detail: format!("responding ({})", socket_path.display()),
+            fix: None,
+        },
+        Err(e) => DiagnosticCheck {
+            name: "Control".into(),
+            status: CheckStatus::Warning,
+            detail: format!("socket exists but not responding: {}", e),
+            fix: Some("Restart the daemon: sudo systemctl restart vigild".into()),
+        },
+    }
+}
+
+fn query_control_socket_quick(socket_path: &Path) -> std::result::Result<(), String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    let mut stream =
+        UnixStream::connect(socket_path).map_err(|e| format!("connect failed: {}", e))?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .map_err(|e| format!("set timeout: {}", e))?;
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_secs(2)))
+        .map_err(|e| format!("set timeout: {}", e))?;
+
+    writeln!(stream, r#"{{"method":"status"}}"#).map_err(|e| format!("write: {}", e))?;
+    stream.flush().map_err(|e| format!("flush: {}", e))?;
+
+    let mut reader = BufReader::new(&stream);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|e| format!("read: {}", e))?;
+
+    let value: serde_json::Value =
+        serde_json::from_str(&response).map_err(|e| format!("parse: {}", e))?;
+    if value.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+        Ok(())
+    } else {
+        Err("status returned ok=false".into())
+    }
+}
+
 fn baseline_check_from_snapshot(config: &Config) -> Option<DiagnosticCheck> {
     let snapshot = read_fresh_health_snapshot(config)?;
     let baseline = &snapshot.baseline;
@@ -1432,7 +1503,7 @@ mod tests {
     fn diagnostics_returns_expected_number_of_checks() {
         let cfg = crate::config::default_config();
         let checks = run_diagnostics(&cfg);
-        assert_eq!(checks.len(), 11);
+        assert_eq!(checks.len(), 12);
         for check in checks {
             assert!(!check.name.trim().is_empty());
             match check.status {

@@ -4,8 +4,98 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
-- Security:
-  - Upgraded `lru` from `0.12.5` to `0.16.3` to resolve RustSec advisory `RUSTSEC-2026-0002` (`IterMut` unsoundness).
+## [0.16.0] - 2026-04-06
+
+### Release Summary
+- Full control socket implementation with on-demand scan triggering, Prometheus metrics export, and live CLI status queries.
+- The daemon is now queryable and commandable over its Unix domain socket without restarting or reading stale files.
+- CLI `vigil status` transparently queries the running daemon for live data, falling back to file-based status when the daemon is offline.
+- CLI `vigil check --now` triggers a scan on the running daemon and streams back results, avoiding SQLite WAL lock contention.
+- `vigil doctor` now includes a control socket health check in its diagnostic suite.
+
+### Control Socket Enhancements
+
+#### On-demand scan via control socket (`scan` method)
+- Added `ScanRequest` and `ScanResponse` types to `src/control.rs` for structured scan triggering over the control socket.
+- New `scan` method accepts optional `params.mode` (`"full"` or `"incremental"`, default incremental).
+- Scan requests are dispatched through a bounded `crossbeam_channel` to the scan scheduler thread, which executes the scan and returns results synchronously.
+- The control socket blocks up to 10 minutes waiting for scan completion (suitable for large baselines).
+- Detected changes are fed into the alert pipeline identically to scheduled scans.
+- Metrics (`changes_detected`, `scan_duration_ms`, `last_scan_total`) are updated after on-demand scans.
+- Returns `{"ok": false, "error": "scan channel unavailable"}` when the scan channel is full or disconnected.
+- Files changed: `src/control.rs`, `src/scan_scheduler.rs`, `src/lib.rs`.
+
+#### Prometheus metrics export (`metrics_prometheus` method)
+- Added `metrics_prometheus` control socket method that returns all daemon metrics in Prometheus text exposition format.
+- Added `MetricsSnapshot::to_prometheus()` method with proper `# HELP`, `# TYPE counter`/`gauge` annotations for all 15 metric series.
+- Metric names follow Prometheus naming conventions (`vigil_events_received_total`, `vigil_scan_duration_ms`, `vigil_uptime_start_timestamp`, etc.).
+- Output is directly consumable by `node-exporter` textfile collector or any Prometheus-compatible scraper.
+- Files changed: `src/metrics.rs`, `src/control.rs`.
+
+#### Enriched `status` response format
+- Status response now returns structured `daemon` object with `state`, `uptime_seconds`, and `version` fields.
+- Metrics are returned as a flat object with named numeric fields instead of the raw `MetricsSnapshot` serialization.
+- Files changed: `src/control.rs`.
+
+#### Control socket dispatch refactoring
+- Refactored `handle_connection` into a clean `dispatch()` function with per-method handler functions (`handle_status`, `handle_baseline_count`, `handle_reload`, `handle_scan`, `handle_metrics_prometheus`).
+- Malformed JSON now returns `{"ok": false, "error": "invalid JSON"}` instead of propagating an error up the call stack.
+- Accept loop sleep increased from 100ms to 200ms to reduce idle CPU usage.
+- Files changed: `src/control.rs`.
+
+### Scan Scheduler
+
+#### On-demand scan support via trigger channel
+- `scan_scheduler::spawn()` now accepts an additional `scan_trigger_rx: Receiver<ScanRequest>` parameter.
+- On-demand scan requests are serviced at the top of each scheduler loop iteration via `try_recv()`, ensuring prompt execution even when the next cron tick is hours away.
+- Scan results are returned through the request's one-shot response channel.
+- Alert pipeline integration is identical to scheduled scans (changes dispatched, metrics updated).
+- Files changed: `src/scan_scheduler.rs`, `src/lib.rs`.
+
+### CLI Enhancements
+
+#### Live `vigil status` via control socket
+- `cmd_status()` now attempts a live `status` query over the control socket before falling back to file-based metrics.
+- Live output displays daemon state, version, uptime, event counts, change counts, and last scan summary.
+- Prints `source    live (control socket)` to distinguish live data from stale file reads.
+- JSON format mode (`--format json`) returns the full live response when available.
+- Added `query_control_socket()` helper function for CLI-to-daemon communication with 5-second timeout.
+- Files changed: `src/main.rs`.
+
+#### `vigil check --now` for daemon-triggered scans
+- Added `--now` flag to the `Check` CLI command.
+- When `--now` is specified, the scan is triggered on the running daemon via the control socket instead of opening the baseline DB directly.
+- Uses a 10-minute read timeout to accommodate large baselines.
+- Prints human-readable scan results (checked count, changes, errors, duration).
+- Returns a clear error if the daemon is not running or the control socket is not configured.
+- Files changed: `src/cli.rs`, `src/main.rs`.
+
+### Doctor Diagnostics
+
+#### Control socket health check
+- Added `check_control_socket()` diagnostic to `vigil doctor`.
+- Checks:
+  - Whether `control_socket` is configured (reports `Unknown` / "not configured" if empty).
+  - Whether the socket file exists (reports `Warning` with start-daemon fix if missing).
+  - Whether the daemon responds to a quick `status` query (reports `Ok` if responsive, `Warning` with restart fix if not).
+- Added `query_control_socket_quick()` internal helper with 2-second timeout.
+- Diagnostic count increased from 11 to 12.
+- Files changed: `src/doctor.rs`.
+
+### Configuration
+- Added `control_socket = "/run/vigil/control.sock"` to the default config TOML template.
+- File changed: `config/vigil.toml`.
+
+### Tests
+- Control socket tests expanded to cover all 5 methods (`status`, `baseline_count`, `reload`, `metrics_prometheus`, `scan`), unknown method error, and malformed JSON handling.
+- Added `dispatch_status_fields` unit test verifying the structured status response format.
+- Added `prometheus_format_contains_expected_metrics` test verifying Prometheus output contains all expected metric names, correct TYPE annotations, and HELP lines.
+- Diagnostic check count test updated from 11 to 12.
+- Validation:
+  - `cargo fmt --all --check` clean
+  - `cargo clippy --all-targets -- -D warnings` clean
+  - All integration tests pass
+  - `cargo build --features parallel` clean
 
 ## [0.15.0] - 2026-04-06
 

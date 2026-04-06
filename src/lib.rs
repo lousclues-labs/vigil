@@ -140,12 +140,17 @@ impl Daemon {
 
         let (shutdown_tx, shutdown_rx) = crossbeam_channel::bounded::<()>(1);
 
+        // Create scan trigger channel for on-demand scans via control socket
+        let (scan_trigger_tx, scan_trigger_rx) =
+            crossbeam_channel::bounded::<control::ScanRequest>(1);
+
         let scan_handle = scan_scheduler::spawn(
             self.config.clone(),
             self.shutdown.clone(),
             alert_tx.clone(),
             self.metrics.clone(),
             shutdown_rx,
+            scan_trigger_rx,
         )?;
 
         let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]);
@@ -159,6 +164,7 @@ impl Daemon {
                 self.state.clone(),
                 self.shutdown.clone(),
                 self.reload_flag.clone(),
+                scan_trigger_tx,
                 &baseline_db_path,
             )?)
         } else {

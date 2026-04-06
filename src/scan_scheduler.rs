@@ -8,6 +8,7 @@ use crossbeam_channel::Sender;
 
 use crate::alert::AlertPayload;
 use crate::config::Config;
+use crate::control::{ScanRequest, ScanResponse};
 use crate::metrics::Metrics;
 
 pub fn spawn(
@@ -16,11 +17,74 @@ pub fn spawn(
     alert_tx: Sender<AlertPayload>,
     metrics: Arc<Metrics>,
     shutdown_rx: crossbeam_channel::Receiver<()>,
+    scan_trigger_rx: crossbeam_channel::Receiver<ScanRequest>,
 ) -> crate::Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name("vigil-scan-scheduler".into())
         .spawn(move || {
             while !shutdown.load(Ordering::Acquire) {
+                // Service on-demand scan requests first
+                while let Ok(request) = scan_trigger_rx.try_recv() {
+                    let cfg = config.load();
+                    let response = match crate::db::open_baseline_db(&cfg) {
+                        Ok(scan_conn) => {
+                            match crate::scanner::run_scan(&scan_conn, &cfg, request.mode) {
+                                Ok(scan_result) => {
+                                    for change in scan_result.changes {
+                                        let _ = alert_tx.send(AlertPayload {
+                                            change,
+                                            maintenance_window: false,
+                                        });
+                                    }
+                                    metrics.changes_detected.fetch_add(
+                                        scan_result.changes_found,
+                                        Ordering::Relaxed,
+                                    );
+                                    metrics
+                                        .scan_duration_ms
+                                        .store(scan_result.duration_ms, Ordering::Relaxed);
+                                    metrics
+                                        .last_scan_total
+                                        .store(scan_result.total_checked, Ordering::Relaxed);
+
+                                    tracing::info!(
+                                        checked = scan_result.total_checked,
+                                        changes = scan_result.changes_found,
+                                        errors = scan_result.errors,
+                                        "on-demand scan completed"
+                                    );
+
+                                    ScanResponse {
+                                        ok: true,
+                                        total_checked: scan_result.total_checked,
+                                        changes_found: scan_result.changes_found,
+                                        errors: scan_result.errors,
+                                        duration_ms: scan_result.duration_ms,
+                                        error: None,
+                                    }
+                                }
+                                Err(e) => ScanResponse {
+                                    ok: false,
+                                    total_checked: 0,
+                                    changes_found: 0,
+                                    errors: 0,
+                                    duration_ms: 0,
+                                    error: Some(format!("{}", e)),
+                                },
+                            }
+                        }
+                        Err(e) => ScanResponse {
+                            ok: false,
+                            total_checked: 0,
+                            changes_found: 0,
+                            errors: 0,
+                            duration_ms: 0,
+                            error: Some(format!("cannot open baseline DB: {}", e)),
+                        },
+                    };
+                    let _ = request.response_tx.send(response);
+                }
+
                 let cfg = config.load();
                 let schedule = match croner::Cron::new(&cfg.scanner.schedule).parse() {
                     Ok(s) => s,
