@@ -15,6 +15,7 @@ pub fn spawn(
     shutdown: Arc<AtomicBool>,
     alert_tx: Sender<AlertPayload>,
     metrics: Arc<Metrics>,
+    shutdown_rx: crossbeam_channel::Receiver<()>,
 ) -> crate::Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name("vigil-scan-scheduler".into())
@@ -29,7 +30,9 @@ pub fn spawn(
                             error = %e,
                             "invalid cron schedule; retrying in 60s"
                         );
-                        std::thread::sleep(Duration::from_secs(60));
+                        if shutdown_rx.recv_timeout(Duration::from_secs(60)).is_ok() {
+                            return;
+                        }
                         continue;
                     }
                 };
@@ -39,11 +42,10 @@ pub fn spawn(
 
                 if let Ok(next_time) = next {
                     let wait = (next_time.timestamp() - now.timestamp()).max(0) as u64;
-                    for _ in 0..wait {
-                        if shutdown.load(Ordering::Acquire) {
-                            return;
-                        }
-                        std::thread::sleep(Duration::from_secs(1));
+
+                    // Block until shutdown or the wait expires
+                    if shutdown_rx.recv_timeout(Duration::from_secs(wait)).is_ok() {
+                        return;
                     }
 
                     if shutdown.load(Ordering::Acquire) {
@@ -86,8 +88,8 @@ pub fn spawn(
                             tracing::error!(error = %e, "cannot open baseline DB for scheduled scan");
                         }
                     }
-                } else {
-                    std::thread::sleep(Duration::from_secs(60));
+                } else if shutdown_rx.recv_timeout(Duration::from_secs(60)).is_ok() {
+                    return;
                 }
             }
         })

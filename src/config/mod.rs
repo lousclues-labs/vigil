@@ -309,6 +309,8 @@ pub struct AlertsConfig {
     pub notification_rate_window_secs: u64,
     #[serde(default)]
     pub remote_syslog: RemoteSyslogConfig,
+    #[serde(default = "default_max_alerts_per_minute")]
+    pub max_alerts_per_minute: u32,
 }
 
 impl Default for AlertsConfig {
@@ -324,6 +326,7 @@ impl Default for AlertsConfig {
             notification_rate_limit: default_notification_rate_limit(),
             notification_rate_window_secs: default_notification_rate_window(),
             remote_syslog: RemoteSyslogConfig::default(),
+            max_alerts_per_minute: default_max_alerts_per_minute(),
         }
     }
 }
@@ -346,6 +349,10 @@ fn default_rate_limit() -> u32 {
 
 fn default_cooldown() -> u64 {
     300
+}
+
+fn default_max_alerts_per_minute() -> u32 {
+    10_000
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

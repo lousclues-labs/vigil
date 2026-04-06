@@ -121,21 +121,28 @@ impl Daemon {
             self.reload_flag.clone(),
         )?;
 
+        let (shutdown_tx, shutdown_rx) = crossbeam_channel::bounded::<()>(1);
+
         let scan_handle = scan_scheduler::spawn(
             self.config.clone(),
             self.shutdown.clone(),
             alert_tx.clone(),
             self.metrics.clone(),
+            shutdown_rx,
         )?;
 
         let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]);
         tracing::info!("vigil daemon ready");
 
+        // Block until shutdown signal instead of polling every 250ms
         while !self.shutdown.load(Ordering::Acquire) {
-            std::thread::sleep(Duration::from_millis(250));
+            std::thread::sleep(Duration::from_secs(1));
         }
 
         let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
+
+        // Signal the scan scheduler to wake up and exit
+        let _ = shutdown_tx.send(());
 
         drop(event_tx);
         drop(alert_tx);

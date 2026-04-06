@@ -106,10 +106,7 @@ impl BloomFilter {
     }
 }
 
-// BloomFilter is read-only after construction in the fanotify thread
-// SAFETY: The internal Vec<u8> is Send + Sync when accessed read-only.
-unsafe impl Send for BloomFilter {}
-unsafe impl Sync for BloomFilter {}
+
 
 #[cfg(test)]
 mod tests {
@@ -174,5 +171,32 @@ mod tests {
         // Unrelated paths should likely not be found
         // (could be false positive, but unlikely with so few entries)
         assert!(!bloom.might_contain(b"/var/log"));
+    }
+
+    #[test]
+    fn bloom_fast_reject_for_fanotify() {
+        // Simulate the fanotify event loop fast-reject logic
+        let paths = vec![
+            PathBuf::from("/etc/ssh"),
+            PathBuf::from("/usr/bin"),
+            PathBuf::from("/boot"),
+        ];
+        let bloom = BloomFilter::from_watch_paths(&paths);
+
+        // Paths under watched directories should pass the Bloom filter
+        // (the Bloom filter stores prefixes, so /etc and /etc/ssh are inserted)
+        assert!(bloom.might_contain(b"/etc"));
+        assert!(bloom.might_contain(b"/etc/ssh"));
+        assert!(bloom.might_contain(b"/usr/bin"));
+        assert!(bloom.might_contain(b"/boot"));
+
+        // A path like /home/user/file.txt should be rejected
+        // (no prefix path "/home" or "/home/user" was inserted)
+        assert!(!bloom.might_contain(b"/home/user/file.txt"));
+        assert!(!bloom.might_contain(b"/home"));
+
+        // /proc, /sys, /dev should also be rejected since they aren't watched
+        assert!(!bloom.might_contain(b"/proc/1/status"));
+        assert!(!bloom.might_contain(b"/sys/class"));
     }
 }

@@ -46,6 +46,7 @@ pub struct AlertDispatcher {
     cooldown_secs: u64,
     hmac_key: Option<Vec<u8>>,
     last_chain_hash: Mutex<String>,
+    max_alerts_per_minute: u32,
     metrics: Arc<Metrics>,
     hostname: String,
 }
@@ -137,6 +138,7 @@ impl AlertDispatcher {
             cooldown_secs: config.alerts.cooldown_seconds,
             hmac_key,
             last_chain_hash: Mutex::new(last_hash),
+            max_alerts_per_minute: config.alerts.max_alerts_per_minute,
             metrics,
             hostname,
         })
@@ -200,12 +202,13 @@ impl AlertDispatcher {
 
         {
             let mut cooldowns = self.cooldowns.lock();
-            let previous = cooldowns.insert(path, now);
-            if let Some(last) = previous {
-                if now.duration_since(last) < Duration::from_secs(self.cooldown_secs) {
+            if let Some(last) = cooldowns.get(&path) {
+                if now.duration_since(*last) < Duration::from_secs(self.cooldown_secs) {
                     return true;
                 }
             }
+            // Only update timestamp when alert is NOT suppressed by cooldown
+            cooldowns.insert(path, now);
         }
 
         {
@@ -215,7 +218,7 @@ impl AlertDispatcher {
                 rl.window_start = Instant::now();
             }
 
-            if rl.count >= 10_000 {
+            if rl.count >= self.max_alerts_per_minute {
                 return true;
             }
             rl.count += 1;
@@ -235,13 +238,26 @@ impl AlertDispatcher {
                     .first()
                     .map(change_to_name)
                     .unwrap_or("unknown");
+
+                // Extract content hashes from the first ContentModified change, if any
+                let (old_hash, new_hash) = change
+                    .changes
+                    .iter()
+                    .find_map(|c| match c {
+                        Change::ContentModified {
+                            old_hash, new_hash, ..
+                        } => Some((Some(old_hash.as_str()), Some(new_hash.as_str()))),
+                        _ => None,
+                    })
+                    .unwrap_or((None, None));
+
                 let data = crate::hmac::build_audit_hmac_data(
                     ts,
                     &change.path.to_string_lossy(),
                     primary,
                     &change.severity.to_string(),
-                    None,
-                    None,
+                    old_hash,
+                    new_hash,
                 );
                 Some(crate::hmac::compute_hmac(key, &data)?)
             }
@@ -352,5 +368,108 @@ mod tests {
         dispatcher.write_audit_entry(&payload, false).unwrap();
         let entries = audit_ops::get_recent(&dispatcher.audit_conn, 10).unwrap();
         assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn cooldown_does_not_reset_on_suppressed_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit_path = dir.path().join("audit.db");
+
+        let mut cfg = crate::config::default_config();
+        cfg.alerts.cooldown_seconds = 10; // 10 second cooldown
+
+        let metrics = Arc::new(crate::metrics::Metrics::new());
+        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics).unwrap();
+
+        let change = ChangeResult {
+            path: std::path::PathBuf::from("/tmp/cooldown_test"),
+            changes: vec![Change::Created],
+            severity: Severity::High,
+            monitored_group: "test".into(),
+            process: None,
+            package: None,
+            package_update: false,
+        };
+
+        // First call should NOT be suppressed
+        let suppressed = dispatcher.is_suppressed(&change, false);
+        assert!(!suppressed, "first alert should not be suppressed");
+
+        // Second call within cooldown should be suppressed
+        let suppressed = dispatcher.is_suppressed(&change, false);
+        assert!(suppressed, "second alert within cooldown should be suppressed");
+
+        // Third call should also still be suppressed (timer should NOT have reset)
+        let suppressed = dispatcher.is_suppressed(&change, false);
+        assert!(suppressed, "third alert should still be suppressed (timer not reset)");
+    }
+
+    #[test]
+    fn configurable_rate_limit_respected() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit_path = dir.path().join("audit.db");
+
+        let mut cfg = crate::config::default_config();
+        cfg.alerts.max_alerts_per_minute = 3;
+        cfg.alerts.cooldown_seconds = 0; // disable cooldown for this test
+
+        let metrics = Arc::new(crate::metrics::Metrics::new());
+        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics).unwrap();
+
+        for i in 0..5 {
+            let change = ChangeResult {
+                path: std::path::PathBuf::from(format!("/tmp/rate_test_{}", i)),
+                changes: vec![Change::Created],
+                severity: Severity::High,
+                monitored_group: "test".into(),
+                process: None,
+                package: None,
+                package_update: false,
+            };
+            let suppressed = dispatcher.is_suppressed(&change, false);
+            if i < 3 {
+                assert!(!suppressed, "alert {} should not be suppressed", i);
+            } else {
+                assert!(suppressed, "alert {} should be suppressed by rate limit", i);
+            }
+        }
+    }
+
+    #[test]
+    fn hmac_includes_content_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit_path = dir.path().join("audit.db");
+
+        let mut cfg = crate::config::default_config();
+        // Set up HMAC key inline for testing
+        let key_path = dir.path().join("hmac.key");
+        std::fs::write(&key_path, "a".repeat(64)).unwrap();
+        cfg.security.hmac_signing = true;
+        cfg.security.hmac_key_path = key_path;
+
+        let metrics = Arc::new(crate::metrics::Metrics::new());
+        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics).unwrap();
+
+        let payload = AlertPayload {
+            change: ChangeResult {
+                path: std::path::PathBuf::from("/tmp/hmac_test"),
+                changes: vec![Change::ContentModified {
+                    old_hash: "abc123".into(),
+                    new_hash: "def456".into(),
+                }],
+                severity: Severity::High,
+                monitored_group: "test".into(),
+                process: None,
+                package: None,
+                package_update: false,
+            },
+            maintenance_window: false,
+        };
+
+        // Should succeed (HMAC computation includes content hashes)
+        dispatcher.write_audit_entry(&payload, false).unwrap();
+        let entries = audit_ops::get_recent(&dispatcher.audit_conn, 10).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].hmac.is_some(), "HMAC should be present");
     }
 }

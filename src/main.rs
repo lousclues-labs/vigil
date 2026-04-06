@@ -5,7 +5,7 @@ use std::process::{self, Command as ProcessCommand};
 use chrono::Utc;
 use clap::Parser;
 
-use vigil::cli::{AuditAction, Cli, Command, ConfigAction};
+use vigil::cli::{AuditAction, Cli, Command, ConfigAction, SetupAction};
 use vigil::doctor;
 use vigil::types::{OutputFormat, ScanMode};
 
@@ -63,6 +63,10 @@ fn run(cli: Cli) -> vigil::Result<i32> {
         }
         Command::Config { action } => {
             cmd_config(config_path.as_deref(), action)?;
+            Ok(0)
+        }
+        Command::Setup { action } => {
+            cmd_setup(config_path.as_deref(), action)?;
             Ok(0)
         }
         Command::Version => {
@@ -522,6 +526,185 @@ fn cmd_config(config_path: Option<&Path>, action: ConfigAction) -> vigil::Result
         }
     }
 
+    Ok(())
+}
+
+fn cmd_setup(config_path: Option<&Path>, action: SetupAction) -> vigil::Result<()> {
+    match action {
+        SetupAction::Hmac { key_path, force } => cmd_setup_hmac(config_path, &key_path, force),
+        SetupAction::Socket { path, disable } => cmd_setup_socket(config_path, &path, disable),
+    }
+}
+
+fn cmd_setup_hmac(
+    config_path: Option<&Path>,
+    key_path: &Path,
+    force: bool,
+) -> vigil::Result<()> {
+    // Must be root to write to /etc/vigil
+    if !nix::unistd::geteuid().is_root() {
+        return Err(vigil::VigilError::Config(
+            "HMAC key setup requires root. Run with sudo.".into(),
+        ));
+    }
+
+    if key_path.exists() && !force {
+        print!(
+            "HMAC key file {} already exists. Overwrite? [y/N] ",
+            key_path.display()
+        );
+        io::stdout().flush()?;
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            println!("HMAC key setup cancelled.");
+            return Ok(());
+        }
+    }
+
+    // Generate 32 random bytes from /dev/urandom
+    let mut key_bytes = [0u8; 32];
+    {
+        use std::io::Read;
+        let mut urandom = std::fs::File::open("/dev/urandom")?;
+        urandom.read_exact(&mut key_bytes)?;
+    }
+    let hex_key = hex::encode(key_bytes);
+
+    // Write key file
+    if let Some(parent) = key_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(key_path, &hex_key)?;
+
+    // Set permissions to 0400 (owner read-only)
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o400))?;
+
+    // Set ownership to root:root
+    nix::unistd::chown(
+        key_path,
+        Some(nix::unistd::Uid::from_raw(0)),
+        Some(nix::unistd::Gid::from_raw(0)),
+    )
+    .map_err(|e| vigil::VigilError::Config(format!("failed to chown key file: {}", e)))?;
+
+    // Update the config file
+    let toml_path = resolve_config_path(config_path);
+    if let Some(ref toml_path) = toml_path {
+        update_config_toml(toml_path, &[
+            ("security", "hmac_signing", "true"),
+            ("security", "hmac_key_path", &format!("\"{}\"", key_path.display())),
+        ])?;
+    }
+
+    println!("HMAC key written to {}", key_path.display());
+    println!("Config updated: hmac_signing = true");
+    println!();
+    println!("Restart vigild for changes to take effect:");
+    println!("  sudo systemctl restart vigild.service");
+
+    Ok(())
+}
+
+fn cmd_setup_socket(
+    config_path: Option<&Path>,
+    socket_path: &Path,
+    disable: bool,
+) -> vigil::Result<()> {
+    let toml_path = resolve_config_path(config_path);
+
+    if disable {
+        if let Some(ref toml_path) = toml_path {
+            update_config_toml(toml_path, &[("hooks", "signal_socket", "\"\"")])?;
+        }
+        println!("Socket sink disabled in config.");
+        println!("Restart vigild for changes to take effect.");
+        return Ok(());
+    }
+
+    // Ensure parent directory exists
+    if let Some(parent) = socket_path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+            println!("Created directory: {}", parent.display());
+        }
+    }
+
+    if let Some(ref toml_path) = toml_path {
+        update_config_toml(
+            toml_path,
+            &[("hooks", "signal_socket", &format!("\"{}\"", socket_path.display()))],
+        )?;
+    }
+
+    println!(
+        "Socket sink configured: {}",
+        socket_path.display()
+    );
+    println!();
+    println!("Restart vigild for changes to take effect:");
+    println!("  sudo systemctl restart vigild.service");
+    println!();
+    println!("To listen for alerts:");
+    println!(
+        "  socat UNIX-LISTEN:{} -",
+        socket_path.display()
+    );
+
+    Ok(())
+}
+
+/// Resolve the config file path that should be updated.
+fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
+    if let Some(p) = explicit {
+        if p.exists() {
+            return Some(p.to_path_buf());
+        }
+    }
+    if let Ok(env_path) = std::env::var("VIGIL_CONFIG") {
+        let p = PathBuf::from(env_path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let etc = PathBuf::from("/etc/vigil/vigil.toml");
+    if etc.exists() {
+        return Some(etc);
+    }
+    // If no config file exists yet, create in /etc/vigil/
+    Some(etc)
+}
+
+/// Update specific keys in a TOML config file. Creates the file and sections if needed.
+fn update_config_toml(
+    path: &Path,
+    updates: &[(&str, &str, &str)],
+) -> vigil::Result<()> {
+    let content = if path.exists() {
+        std::fs::read_to_string(path)?
+    } else {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        String::new()
+    };
+
+    let mut doc: toml_edit::DocumentMut = content
+        .parse()
+        .map_err(|e| vigil::VigilError::Config(format!("failed to parse TOML: {}", e)))?;
+
+    for &(section, key, value) in updates {
+        if doc.get(section).is_none() {
+            doc[section] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        let val: toml_edit::Value = value
+            .parse()
+            .map_err(|e| vigil::VigilError::Config(format!("invalid TOML value '{}': {}", value, e)))?;
+        doc[section][key] = toml_edit::value(val);
+    }
+
+    std::fs::write(path, doc.to_string())?;
     Ok(())
 }
 

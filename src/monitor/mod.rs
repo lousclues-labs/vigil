@@ -8,6 +8,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use crossbeam_channel::Sender;
 
+use crate::bloom::BloomFilter;
 use crate::config::Config;
 use crate::error::Result;
 use crate::metrics::Metrics;
@@ -28,6 +29,7 @@ pub fn start_monitor(
     metrics: Arc<Metrics>,
 ) -> Result<MonitorHandle> {
     let watch_paths = collect_watch_paths(config);
+    let bloom = Arc::new(BloomFilter::from_watch_paths(&watch_paths));
 
     match config.daemon.monitor_backend {
         MonitorBackend::Fanotify => {
@@ -38,6 +40,7 @@ pub fn start_monitor(
                 shutdown.clone(),
                 watch_index,
                 metrics.clone(),
+                bloom,
             ) {
                 Ok(reconfigure_tx) => {
                     return Ok(MonitorHandle {

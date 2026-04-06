@@ -20,6 +20,8 @@ fn process_event_detects_content_change() {
         force_hash: true,
         max_file_size: cfg.scanner.max_file_size,
         mmap_threshold: cfg.scanner.mmap_threshold,
+        baseline_mtime: None,
+        baseline_hash: None,
     };
 
     let file = std::fs::File::open(&path).unwrap();

@@ -53,6 +53,14 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<Base
 
     conn.execute_batch("BEGIN IMMEDIATE")?;
 
+    // Build package ownership cache upfront (single command)
+    // instead of per-file subprocess calls
+    let package_cache = if !skip_package_owner {
+        Some(crate::package::build_package_cache(&config.package_manager))
+    } else {
+        None
+    };
+
     let result = (|| -> Result<Vec<GroupInitResult>> {
         let mut groups = Vec::with_capacity(config.watch.len());
 
@@ -76,12 +84,16 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<Base
                         force_hash: true,
                         max_file_size: config.scanner.max_file_size,
                         mmap_threshold: config.scanner.mmap_threshold,
+                        baseline_mtime: None,
+                        baseline_hash: None,
                     };
 
                     match crate::types::FileSnapshot::from_path(path, &opts) {
                         Ok(SnapshotOrDeleted::Snapshot(snapshot)) => {
                             let package = if skip_package_owner {
                                 None
+                            } else if let Some(ref cache) = package_cache {
+                                cache.get(path).cloned()
                             } else {
                                 crate::package::query_package_owner(path, &config.package_manager)
                             };
@@ -162,16 +174,25 @@ pub fn refresh_baseline(conn: &Connection, config: &Config) -> Result<BaselineIn
 /// Run a baseline comparison scan.
 pub fn run_scan(conn: &Connection, config: &Config, mode: ScanMode) -> Result<ScanResult> {
     let scan_start = std::time::Instant::now();
-    let entries = baseline_ops::get_all(conn)?;
     let mut result = ScanResult::default();
 
-    for entry in entries {
+    baseline_ops::for_each_entry(conn, |entry| {
         result.total_checked += 1;
 
         let opts = CaptureOpts {
             force_hash: mode == ScanMode::Full,
             max_file_size: config.scanner.max_file_size,
             mmap_threshold: config.scanner.mmap_threshold,
+            baseline_mtime: if mode != ScanMode::Full {
+                Some(entry.mtime)
+            } else {
+                None
+            },
+            baseline_hash: if mode != ScanMode::Full {
+                Some(entry.content.hash.clone())
+            } else {
+                None
+            },
         };
 
         match crate::types::FileSnapshot::from_path(&entry.path, &opts) {
@@ -208,7 +229,9 @@ pub fn run_scan(conn: &Connection, config: &Config, mode: ScanMode) -> Result<Sc
                 });
             }
         }
-    }
+
+        Ok(())
+    })?;
 
     result.duration_ms = scan_start.elapsed().as_millis() as u64;
 

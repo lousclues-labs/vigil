@@ -204,6 +204,108 @@ fn batch_query_rpm(paths: &[String]) -> HashMap<String, String> {
     results
 }
 
+/// Build a complete file→package ownership cache using a single bulk command.
+/// This is dramatically faster than per-file subprocess calls during baseline init.
+pub fn build_package_cache(config: &PackageManagerConfig) -> HashMap<PathBuf, String> {
+    let backend = if config.backend == PackageBackend::Auto {
+        detect_backend()
+    } else {
+        config.backend
+    };
+
+    match backend {
+        PackageBackend::Pacman => build_cache_pacman(),
+        PackageBackend::Dpkg => build_cache_dpkg(),
+        PackageBackend::Rpm => build_cache_rpm(),
+        PackageBackend::Auto => {
+            tracing::warn!("No package manager detected for cache build");
+            HashMap::new()
+        }
+    }
+}
+
+fn build_cache_pacman() -> HashMap<PathBuf, String> {
+    let mut cache = HashMap::new();
+    // `pacman -Ql` outputs "package /path/to/file" per line
+    let timeout = Duration::from_secs(30);
+    if let Some(output) = run_with_timeout(Command::new("pacman").arg("-Ql"), timeout) {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if let Some((pkg, path)) = line.split_once(' ') {
+                    let path = path.trim();
+                    // Skip directory entries (trailing /)
+                    if !path.ends_with('/') && !path.is_empty() {
+                        cache.insert(PathBuf::from(path), pkg.trim().to_string());
+                    }
+                }
+            }
+        }
+    }
+    tracing::info!(entries = cache.len(), "built pacman package cache");
+    cache
+}
+
+fn build_cache_dpkg() -> HashMap<PathBuf, String> {
+    let mut cache = HashMap::new();
+    // Parse /var/lib/dpkg/info/*.list files directly for speed
+    let list_dir = Path::new("/var/lib/dpkg/info");
+    if list_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(list_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if !name_str.ends_with(".list") {
+                    continue;
+                }
+                // Package name is filename without .list suffix
+                // Handle multi-arch: e.g. "libc6:amd64.list" → "libc6:amd64"
+                let pkg = name_str.trim_end_matches(".list");
+                if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                    for line in content.lines() {
+                        let line = line.trim();
+                        if !line.is_empty() && !line.ends_with('/') {
+                            cache.insert(PathBuf::from(line), pkg.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    tracing::info!(entries = cache.len(), "built dpkg package cache");
+    cache
+}
+
+fn build_cache_rpm() -> HashMap<PathBuf, String> {
+    let mut cache = HashMap::new();
+    // `rpm -qa --queryformat '%{NAME}\t[%{FILENAMES}\n]'` is complex;
+    // use `rpm -qa --filesbypkg` which outputs "package  /path" per line
+    let timeout = Duration::from_secs(60);
+    if let Some(output) = run_with_timeout(Command::new("rpm").args(["-qa", "--filesbypkg"]), timeout) {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                // Format: "package-name                    /path/to/file"
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                // Split on whitespace — package name is first token, path is last
+                let parts: Vec<&str> = trimmed.splitn(2, char::is_whitespace).collect();
+                if parts.len() == 2 {
+                    let pkg = parts[0].trim();
+                    let path = parts[1].trim();
+                    if !path.is_empty() && !path.ends_with('/') {
+                        cache.insert(PathBuf::from(path), pkg.to_string());
+                    }
+                }
+            }
+        }
+    }
+    tracing::info!(entries = cache.len(), "built rpm package cache");
+    cache
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,5 +382,50 @@ mod tests {
         let results = batch_query_rpm(&paths);
         // The unowned file must not appear in results
         assert!(!results.contains_key("/tmp/definitely_not_owned_by_any_package_12345"));
+    }
+
+    #[test]
+    fn parse_pacman_ql_output() {
+        // Simulate pacman -Ql output parsing
+        let output = "coreutils /usr/bin/ls\ncoreutils /usr/bin/cat\ncoreutils /usr/bin/\n";
+        let mut cache = HashMap::new();
+        for line in output.lines() {
+            if let Some((pkg, path)) = line.split_once(' ') {
+                let path = path.trim();
+                if !path.ends_with('/') && !path.is_empty() {
+                    cache.insert(PathBuf::from(path), pkg.trim().to_string());
+                }
+            }
+        }
+        assert_eq!(cache.get(&PathBuf::from("/usr/bin/ls")), Some(&"coreutils".to_string()));
+        assert_eq!(cache.get(&PathBuf::from("/usr/bin/cat")), Some(&"coreutils".to_string()));
+        // Directory entries (trailing /) should be skipped
+        assert!(!cache.contains_key(&PathBuf::from("/usr/bin/")));
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn parse_rpm_filesbypkg_output() {
+        // Simulate rpm -qa --filesbypkg output
+        let output = "coreutils                       /usr/bin/ls\ncoreutils                       /usr/bin/cat\nglibc                           /usr/lib64/\n";
+        let mut cache = HashMap::new();
+        for line in output.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let parts: Vec<&str> = trimmed.splitn(2, char::is_whitespace).collect();
+            if parts.len() == 2 {
+                let pkg = parts[0].trim();
+                let path = parts[1].trim();
+                if !path.is_empty() && !path.ends_with('/') {
+                    cache.insert(PathBuf::from(path), pkg.to_string());
+                }
+            }
+        }
+        assert_eq!(cache.get(&PathBuf::from("/usr/bin/ls")), Some(&"coreutils".to_string()));
+        assert_eq!(cache.get(&PathBuf::from("/usr/bin/cat")), Some(&"coreutils".to_string()));
+        // Directory entries should be skipped
+        assert!(!cache.contains_key(&PathBuf::from("/usr/lib64/")));
     }
 }

@@ -144,6 +144,8 @@ pub fn process_event(
         force_hash: true,
         max_file_size: cfg.scanner.max_file_size,
         mmap_threshold: cfg.scanner.mmap_threshold,
+        baseline_mtime: None,
+        baseline_hash: None,
     };
 
     let snapshot = if let Some(ref fd) = event.event_fd {

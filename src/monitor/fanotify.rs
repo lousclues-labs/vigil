@@ -12,6 +12,7 @@ use arc_swap::ArcSwap;
 use chrono::Utc;
 use crossbeam_channel::Sender;
 
+use crate::bloom::BloomFilter;
 use crate::config::Config;
 use crate::error::{Result, VigilError};
 use crate::metrics::Metrics;
@@ -61,6 +62,31 @@ impl Drop for OwnedRawFd {
     }
 }
 
+/// RAII guard for an event fd. Closes the fd on drop unless ownership
+/// is transferred via `take()`. Eliminates fd leak risk in the event loop.
+struct EventFdGuard(RawFd);
+
+impl EventFdGuard {
+    /// Transfer ownership of the fd out of the guard.
+    /// The guard will NOT close the fd on drop after this call.
+    fn take(mut self) -> RawFd {
+        let fd = self.0;
+        self.0 = -1;
+        fd
+    }
+}
+
+impl Drop for EventFdGuard {
+    fn drop(&mut self) {
+        if self.0 >= 0 {
+            // SAFETY: fd is owned by this guard and has not been transferred.
+            unsafe {
+                libc::close(self.0);
+            }
+        }
+    }
+}
+
 pub fn start(
     _config: &Config,
     watch_paths: &[PathBuf],
@@ -68,6 +94,7 @@ pub fn start(
     shutdown: Arc<AtomicBool>,
     watch_index: Arc<ArcSwap<WatchGroupIndex>>,
     metrics: Arc<Metrics>,
+    bloom: Arc<BloomFilter>,
 ) -> Result<crossbeam_channel::Sender<Vec<PathBuf>>> {
     // SAFETY: fanotify_init syscall with valid flags; return value checked.
     let fan_fd = unsafe {
@@ -103,6 +130,7 @@ pub fn start(
             let _fan_guard = fan_fd_owned;
             let fan_fd = _fan_guard.0;
             let mut buf = vec![0u8; 262_144];
+            let mut current_bloom = bloom;
 
             let mut current_mounts: HashSet<PathBuf> = mount_points.into_iter().collect();
 
@@ -118,6 +146,9 @@ pub fn start(
                         let _ = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_REMOVE);
                     }
                     current_mounts = new_mounts;
+
+                    // Rebuild the Bloom filter from the new watch paths
+                    current_bloom = Arc::new(BloomFilter::from_watch_paths(&new_paths));
                 }
 
                 // SAFETY: valid fd + valid buffer pointer.
@@ -129,13 +160,25 @@ pub fn start(
 
                 let mut offset = 0usize;
                 while offset + FAN_EVENT_METADATA_LEN <= n as usize {
-                    let event =
-                        // SAFETY: offset bounds checked and kernel produced this buffer.
-                        unsafe { &*(buf.as_ptr().add(offset) as *const FanotifyEventMetadata) };
+                    // SAFETY: offset bounds checked and kernel produced this buffer.
+                    // Using read_unaligned because the buffer offset may not be aligned.
+                    let event: FanotifyEventMetadata =
+                        unsafe { std::ptr::read_unaligned(buf.as_ptr().add(offset) as *const FanotifyEventMetadata) };
 
                     if event.fd >= 0 {
+                        // Wrap event fd in a guard to prevent leaks on any code path
+                        let fd_guard = EventFdGuard(event.fd);
+
                         let fd_link = format!("/proc/self/fd/{}", event.fd);
                         if let Ok(path) = std::fs::read_link(&fd_link) {
+                            // Bloom filter fast-reject: skip BTreeMap lookup for
+                            // paths that are definitely not watched
+                            if !current_bloom.might_contain(path.to_string_lossy().as_bytes()) {
+                                // fd_guard drops and closes the fd automatically
+                                offset += event.event_len as usize;
+                                continue;
+                            }
+
                             let idx = watch_index.load();
                             let is_watched = idx.is_watched(&path);
 
@@ -157,8 +200,10 @@ pub fn start(
                                         None
                                     };
 
-                                    // SAFETY: event.fd is uniquely owned here and has not been closed.
-                                    let owned_fd = unsafe { OwnedFd::from_raw_fd(event.fd) };
+                                    // Transfer fd ownership into OwnedFd; prevent guard from closing it
+                                    let raw = fd_guard.take();
+                                    // SAFETY: raw fd is uniquely owned here and has not been closed.
+                                    let owned_fd = unsafe { OwnedFd::from_raw_fd(raw) };
 
                                     let fs_event = FsEvent {
                                         path: path.clone(),
@@ -184,24 +229,12 @@ pub fn start(
                                             return;
                                         }
                                     }
-                                } else {
-                                    // SAFETY: fd still owned here and not transferred.
-                                    unsafe {
-                                        libc::close(event.fd);
-                                    }
                                 }
-                            } else {
-                                // SAFETY: fd still owned here and not transferred.
-                                unsafe {
-                                    libc::close(event.fd);
-                                }
+                                // else: unrecognized mask — fd_guard drops and closes
                             }
-                        } else {
-                            // SAFETY: fd still owned here and not transferred.
-                            unsafe {
-                                libc::close(event.fd);
-                            }
+                            // else: not watched — fd_guard drops and closes
                         }
+                        // else: read_link failed — fd_guard drops and closes
                     }
 
                     offset += event.event_len as usize;

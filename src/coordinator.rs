@@ -89,7 +89,7 @@ pub fn spawn(
                     last_tick = std::time::Instant::now();
                 }
 
-                std::thread::sleep(Duration::from_millis(250));
+                std::thread::sleep(Duration::from_millis(1000));
             }
         })
         .map_err(|e| crate::VigilError::Daemon(format!("cannot spawn coordinator thread: {}", e)))

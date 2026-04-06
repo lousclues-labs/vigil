@@ -19,6 +19,12 @@ pub struct CaptureOpts {
     pub max_file_size: u64,
     /// Threshold above which mmap is used for hashing (bytes).
     pub mmap_threshold: u64,
+    /// Baseline mtime for incremental comparison. When `force_hash` is false
+    /// and the file's current mtime matches this value, the hash is reused
+    /// from `baseline_hash` instead of being recomputed.
+    pub baseline_mtime: Option<i64>,
+    /// Baseline hash to reuse when mtime is unchanged and `force_hash` is false.
+    pub baseline_hash: Option<String>,
 }
 
 /// Complete current state of a file, captured at a point in time.
@@ -68,7 +74,14 @@ impl FileSnapshot {
             None
         };
 
-        let hash = crate::hash::blake3_hash_fd(file, meta.len(), opts.mmap_threshold)?;
+        let hash = if !opts.force_hash
+            && opts.baseline_mtime == Some(meta.mtime())
+            && opts.baseline_hash.is_some()
+        {
+            opts.baseline_hash.clone().unwrap()
+        } else {
+            crate::hash::blake3_hash_fd(file, meta.len(), opts.mmap_threshold)?
+        };
 
         let fd_path = format!("/proc/self/fd/{}", file.as_raw_fd());
         let fd_path_ref = Path::new(&fd_path);
@@ -377,5 +390,71 @@ mod tests {
     fn has_dangerous_capabilities_none_is_safe() {
         let snapshot = make_snapshot(&make_baseline());
         assert!(!snapshot.has_dangerous_capabilities());
+    }
+
+    #[test]
+    fn incremental_skips_hash_when_mtime_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_inc.txt");
+        std::fs::write(&path, b"hello world").unwrap();
+
+        // Full-hash capture
+        let opts_full = CaptureOpts {
+            force_hash: true,
+            max_file_size: 1_000_000,
+            mmap_threshold: 1_000_000,
+            baseline_mtime: None,
+            baseline_hash: None,
+        };
+        let snap = match FileSnapshot::from_path(&path, &opts_full).unwrap() {
+            SnapshotOrDeleted::Snapshot(s) => s,
+            _ => panic!("expected snapshot"),
+        };
+        let real_hash = snap.content.hash.clone();
+        let real_mtime = snap.mtime;
+
+        // Incremental capture with matching mtime — should reuse baseline_hash
+        let fake_hash = "fake_baseline_hash_for_test";
+        let opts_inc = CaptureOpts {
+            force_hash: false,
+            max_file_size: 1_000_000,
+            mmap_threshold: 1_000_000,
+            baseline_mtime: Some(real_mtime),
+            baseline_hash: Some(fake_hash.to_string()),
+        };
+        let snap_inc = match FileSnapshot::from_path(&path, &opts_inc).unwrap() {
+            SnapshotOrDeleted::Snapshot(s) => s,
+            _ => panic!("expected snapshot"),
+        };
+        // Should reuse the baseline hash, not recompute
+        assert_eq!(snap_inc.content.hash, fake_hash);
+
+        // Incremental capture with force_hash — should recompute
+        let opts_force = CaptureOpts {
+            force_hash: true,
+            max_file_size: 1_000_000,
+            mmap_threshold: 1_000_000,
+            baseline_mtime: Some(real_mtime),
+            baseline_hash: Some(fake_hash.to_string()),
+        };
+        let snap_force = match FileSnapshot::from_path(&path, &opts_force).unwrap() {
+            SnapshotOrDeleted::Snapshot(s) => s,
+            _ => panic!("expected snapshot"),
+        };
+        assert_eq!(snap_force.content.hash, real_hash);
+
+        // Incremental with different mtime — should recompute
+        let opts_diff_mtime = CaptureOpts {
+            force_hash: false,
+            max_file_size: 1_000_000,
+            mmap_threshold: 1_000_000,
+            baseline_mtime: Some(real_mtime + 100),
+            baseline_hash: Some(fake_hash.to_string()),
+        };
+        let snap_diff = match FileSnapshot::from_path(&path, &opts_diff_mtime).unwrap() {
+            SnapshotOrDeleted::Snapshot(s) => s,
+            _ => panic!("expected snapshot"),
+        };
+        assert_eq!(snap_diff.content.hash, real_hash);
     }
 }

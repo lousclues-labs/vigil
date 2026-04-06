@@ -112,6 +112,66 @@ pub fn get_by_path(conn: &Connection, path: &str) -> Result<Option<BaselineEntry
     .map_err(Into::into)
 }
 
+/// Iterate over all baseline entries, calling the provided closure for each.
+/// This streams rows from SQLite without collecting them into a Vec.
+pub fn for_each_entry<F>(conn: &Connection, mut f: F) -> Result<()>
+where
+    F: FnMut(BaselineEntry) -> Result<()>,
+{
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, path, identity_json, content_json, perms_json, security_json,
+                mtime, package, source, added_at, updated_at
+         FROM baseline ORDER BY path",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        let identity_json: String = row.get(2)?;
+        let content_json: String = row.get(3)?;
+        let perms_json: String = row.get(4)?;
+        let security_json: String = row.get(5)?;
+
+        let identity: FileIdentity = serde_json::from_str(&identity_json).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+        let content: ContentFingerprint = serde_json::from_str(&content_json).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+        let perms: PermissionState = serde_json::from_str(&perms_json).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+        let security: SecurityState = serde_json::from_str(&security_json).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+
+        let source_str: String = row.get(8)?;
+        let source = match source_str.as_str() {
+            "package_manager" => BaselineSource::PackageManager,
+            "manual" => BaselineSource::Manual,
+            _ => BaselineSource::AutoScan,
+        };
+
+        Ok(BaselineEntry {
+            id: Some(row.get(0)?),
+            path: PathBuf::from(row.get::<_, String>(1)?),
+            identity,
+            content,
+            permissions: perms,
+            security,
+            mtime: row.get(6)?,
+            package: row.get(7)?,
+            source,
+            added_at: row.get(9)?,
+            updated_at: row.get(10)?,
+        })
+    })?;
+
+    for row in rows {
+        f(row?)?;
+    }
+
+    Ok(())
+}
+
 /// Get all baseline entries ordered by path.
 pub fn get_all(conn: &Connection) -> Result<Vec<BaselineEntry>> {
     let mut stmt = conn.prepare_cached(
@@ -321,5 +381,31 @@ mod tests {
         let r = get_by_path(&conn, "/old").unwrap().unwrap();
         assert_eq!(r.identity.inode, 1);
         assert_eq!(r.permissions.capabilities, None);
+    }
+
+    #[test]
+    fn for_each_entry_streams_all_rows() {
+        let conn = test_conn();
+
+        // Insert 5 entries
+        for i in 0..5 {
+            let entry = sample_entry(&format!("/test/file_{}", i));
+            upsert(&conn, &entry).unwrap();
+        }
+
+        let mut count = 0u32;
+        let mut paths = Vec::new();
+        for_each_entry(&conn, |entry| {
+            count += 1;
+            paths.push(entry.path.to_string_lossy().to_string());
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(count, 5);
+        // Should be ordered by path
+        let mut sorted = paths.clone();
+        sorted.sort();
+        assert_eq!(paths, sorted);
     }
 }

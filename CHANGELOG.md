@@ -6,6 +6,127 @@ All notable changes to Vigil will be documented in this file.
 
 - No entries yet.
 
+## [0.14.0] - 2026-04-06
+
+### Release Summary
+- Major performance overhaul: Bloom filter fast-reject in the fanotify hot path, incremental scan mtime-skip, bulk package ownership cache, and streaming baseline iteration eliminate per-event BTreeMap lookups, redundant hashing, per-file subprocess forks, and full-table materialization respectively.
+- Security and correctness fixes: HMAC audit entries now include content hashes, the alert cooldown timer no longer resets on suppressed events, and socket alert messages are newline-delimited for parseable NDJSON output.
+- New CLI setup commands for HMAC key generation and socket configuration.
+- Reduced wasteful polling across the scan scheduler, coordinator, and daemon main loop.
+
+### Performance
+
+#### BloomFilter fast-reject in fanotify event loop
+- The `BloomFilter` (previously implemented but unused) is now integrated into the fanotify monitor's hot path.
+- Before every `WatchGroupIndex::is_watched()` BTreeMap lookup, the Bloom filter is checked first. Paths that are *definitely not watched* are rejected immediately with a single BLAKE3 hash check, skipping the expensive BTreeMap traversal entirely.
+- The Bloom filter is rebuilt automatically when watch paths change via the reconfiguration channel.
+- Files changed: `src/monitor/fanotify.rs`, `src/monitor/mod.rs`.
+
+#### Incremental scan now skips hashing for unchanged files
+- `FileSnapshot::from_fd()` previously always computed a full BLAKE3 hash regardless of the `force_hash` flag.
+- `CaptureOpts` now carries optional `baseline_mtime` and `baseline_hash` fields. When `force_hash` is false and the file's current mtime matches the baseline, the stored hash is reused — eliminating redundant I/O and computation for unchanged files.
+- Files changed: `src/types/snapshot.rs`, `src/scanner.rs`, `src/worker.rs`.
+
+#### Bulk package ownership cache
+- `build_initial_baseline()` previously spawned a subprocess (`pacman -Qo` / `dpkg -S` / `rpm -qf`) for every single file — up to 59,000+ fork+exec calls.
+- A new `build_package_cache()` function runs a single bulk command per package manager:
+  - **Pacman**: `pacman -Ql` (one process, full file→package map)
+  - **Dpkg**: Parses `/var/lib/dpkg/info/*.list` files directly (zero subprocesses)
+  - **RPM**: `rpm -qa --filesbypkg` (one process)
+- The baseline init loop now performs HashMap lookups instead of subprocess calls.
+- The per-file `query_package_owner()` remains available for single-file lookups elsewhere.
+- Files changed: `src/package.rs`, `src/scanner.rs`.
+
+#### Streaming baseline row iteration
+- `run_scan()` previously called `baseline_ops::get_all()` which loaded all entries (with 4 JSON deserializations each) into a `Vec` before processing.
+- A new `baseline_ops::for_each_entry()` streams rows directly from the SQLite cursor via a callback, avoiding full materialization.
+- Files changed: `src/db/baseline_ops.rs`, `src/scanner.rs`.
+
+### Reduced Polling
+
+#### Scan scheduler: channel-based wait
+- Replaced the per-second `sleep(1)` loop (up to 25,200 iterations for a 7-hour wait) with a single `crossbeam_channel::recv_timeout()` on a shutdown channel.
+- The daemon now sends on the shutdown channel so the scheduler wakes immediately on SIGTERM/SIGINT instead of potentially sleeping up to 1 second.
+- Files changed: `src/scan_scheduler.rs`, `src/lib.rs`.
+
+#### Coordinator and daemon main loop
+- Coordinator housekeeping sleep increased from 250ms to 1000ms (it only needs per-minute precision).
+- Daemon main loop sleep increased from 250ms to 1000ms.
+- Files changed: `src/coordinator.rs`, `src/lib.rs`.
+
+### Security & Correctness
+
+#### HMAC now includes content hashes
+- The HMAC computation for audit entries previously passed `None` for both `old_hash` and `new_hash`, weakening the tamper-evidence guarantee.
+- Now extracts the actual hashes from the first `Change::ContentModified` variant (when present) and includes them in the HMAC data.
+- File changed: `src/alert/mod.rs`.
+
+#### Alert cooldown timer reset bug fixed
+- `is_suppressed()` previously called `cooldowns.insert(path, now)` *before* checking if the cooldown had elapsed, resetting the timer on every suppressed event. Under sustained modifications this could suppress alerts indefinitely.
+- The timestamp is now updated only when the alert is *not* suppressed.
+- File changed: `src/alert/mod.rs`.
+
+#### Global rate limit now configurable
+- The hardcoded `10,000` alerts-per-minute cap is now controlled by `alerts.max_alerts_per_minute` in the config (default: `10,000`).
+- Files changed: `src/alert/mod.rs`, `src/config/mod.rs`.
+
+#### Removed unnecessary `unsafe impl Send/Sync` on BloomFilter
+- `BloomFilter` contains only `Vec<u8>`, `usize`, and `u32` — all inherently `Send + Sync`. The manual unsafe impls were unnecessary and would mask safety issues if the struct ever gained a non-Sync field.
+- File changed: `src/bloom.rs`.
+
+#### Socket message framing (NDJSON)
+- The socket alert sink previously wrote raw JSON with no delimiter, making back-to-back messages unparseable.
+- Each JSON payload now has a trailing newline (`\n`), matching the JSON log sink's NDJSON format.
+- File changed: `src/alert/socket.rs`.
+
+### Added
+
+#### `vigil setup hmac` command
+- Generates a 32-byte cryptographic key from `/dev/urandom`, hex-encodes it, and writes it to the specified path (default: `/etc/vigil/hmac.key`).
+- Sets file permissions to `0400` and ownership to `root:root`.
+- Updates the config TOML to set `hmac_signing = true` and `hmac_key_path`.
+- Requires root; prints a clear error otherwise.
+- Prompts before overwriting an existing key file unless `--force` is passed.
+- Files changed: `src/cli.rs`, `src/main.rs`.
+
+#### `vigil setup socket` command
+- Configures the alert socket path in the config TOML (default: `/run/vigil/alert.sock`).
+- Creates the parent directory if it doesn't exist.
+- `--disable` flag clears the socket path in the config.
+- Prints a `socat` usage example for consuming alerts.
+- Files changed: `src/cli.rs`, `src/main.rs`.
+
+### Minor
+
+#### fanotify metadata alignment safety
+- Replaced the pointer cast `&*(buf.as_ptr().add(offset) as *const FanotifyEventMetadata)` with `std::ptr::read_unaligned()` for portability on platforms where buffer offsets may not be aligned.
+- File changed: `src/monitor/fanotify.rs`.
+
+#### fanotify fd lifecycle refactor
+- The event loop previously had 3 separate `unsafe { libc::close(event.fd) }` branches for unwatched/unrecognized events, risking fd leaks if a new branch were added without a close call.
+- Introduced an `EventFdGuard` RAII wrapper that closes the fd on drop unless ownership is explicitly transferred via `take()`.
+- File changed: `src/monitor/fanotify.rs`.
+
+#### README version badge
+- Updated from `0.9.0` to match the current release.
+- File changed: `README.md`.
+
+### Dependencies
+- Added `toml_edit = "0.22"` as a direct dependency for config file updates in setup commands (was already a transitive dependency via `toml`).
+
+### Tests
+- Added 13 new tests:
+  - Cooldown timer fix: suppressed events don't reset the cooldown timestamp.
+  - Configurable rate limit: alerts beyond the configured limit are suppressed.
+  - HMAC content hash inclusion: audit entries include content hashes when present.
+  - Socket NDJSON framing: messages end with a newline delimiter and remain valid JSON.
+  - Incremental mtime skip: unchanged files reuse baseline hash; changed files recompute.
+  - Package cache parsing: pacman `-Ql` and rpm `--filesbypkg` output parsed correctly; directory entries skipped.
+  - Streaming baseline iteration: `for_each_entry()` visits all rows in order.
+  - Bloom filter fast-reject: unwatched paths rejected, watched prefixes pass.
+  - CLI setup parsing: `vigil setup hmac` and `vigil setup socket` with all flag combinations.
+- All 93 unit tests and 10 integration tests pass (2 pre-existing doctor test failures unchanged).
+
 ## [0.13.2] - 2026-04-05
 
 ### Release Summary
