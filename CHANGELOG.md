@@ -4,6 +4,124 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-04-06
+
+### Release Summary
+- Complete audit log CLI overhaul: the most critical command in Vigil is now rich in the terminal, complete in JSON, and trivial to pipe into scripts.
+- New `vigil audit show` filters: `--path`, `--severity`, `--group`, `--since`, `--until`, `--maintenance`, `--suppressed`, and `-v`/`--verbose` for full change details.
+- New `vigil audit stats` command with severity, group, and path breakdowns over configurable time periods.
+- Human-readable timestamps replace raw Unix epoch values ("today 14:23:41", "yesterday 03:07:12", day names for the current week).
+- JSON output now emits structured `changes` and `process` objects instead of raw JSON strings, plus ISO 8601 `timestamp_iso` alongside Unix timestamps.
+- Default entry count increased from 20 to 50.
+- New `idx_audit_group` database index for efficient group-based queries.
+
+### New Features
+
+#### `vigil audit show` — full filtering and rich display
+- Added `--path <glob>` filter: matches paths using SQL LIKE with glob-to-LIKE conversion (e.g. `--path '/etc/*'` or `--path '/usr/bin/sudo'`).
+- Added `--severity <level>` filter: restricts output to entries matching `low`, `medium`, `high`, or `critical`.
+- Added `--group <name>` filter: restricts output to entries from a specific watch group (e.g. `--group system_boot`).
+- Added `--since <time>` filter: accepts relative durations (`1h`, `24h`, `7d`, `30d`), keywords (`today`), ISO 8601 dates (`2026-04-07`), ISO 8601 datetimes (`2026-04-07T14:00:00`), and raw Unix timestamps.
+- Added `--until <time>` filter: same format support as `--since`, defines the upper time bound.
+- Added `--maintenance` flag: shows only entries recorded during maintenance windows.
+- Added `--suppressed` flag: shows only entries where alerts were suppressed.
+- Added `-v`/`--verbose` flag: expands each entry to show parsed change details (field-by-field diffs), package name, watch group, maintenance/suppression status.
+- Changed default entry count from 20 to 50 (`-n`/`--last`, default 50).
+- Header now shows active filters and match count (e.g. "Vigil — Audit Log (23 matches)") with filter summary line.
+- Unfiltered header shows entry count vs total (e.g. "Vigil — Audit Log (50 of 9,422 entries)").
+- Footer shows total entry count and hints to add `-v` when change details are available.
+- All filters combine with AND logic for precise incident investigation.
+- Files changed: `src/cli.rs` (`AuditAction::Show` variant), `src/main.rs` (`cmd_audit()` Show handler).
+
+#### `vigil audit stats` — audit log statistics
+- New subcommand providing aggregate statistics over configurable time periods.
+- `--period` flag accepts: `today`, `24h`, `7d` (default), `30d`, `all`.
+- Human output includes:
+  - Total and period entry counts with comma-formatted numbers.
+  - Severity breakdown with markers (`✗` for critical/high, `⚠` for medium, `○` for low).
+  - Watch group breakdown showing entry distribution across monitored groups.
+  - Top 10 most-changed paths ranked by frequency.
+- JSON output (`--format json`) returns structured object with `total_entries`, `period_entries`, `by_severity`, `top_paths`, and `by_group` arrays.
+- Files changed: `src/cli.rs` (`AuditAction::Stats` variant), `src/main.rs` (`cmd_audit()` Stats handler).
+
+#### Human-readable timestamps
+- Added `format_audit_timestamp()` helper that renders Unix timestamps contextually:
+  - Same day: `today 14:23:41`
+  - Previous day: `yesterday 03:07:12`
+  - Within 7 days: `Monday 09:15:30` (day name)
+  - Older: `2026-03-28 14:23:41` (full date)
+- All timestamps use the operator's local timezone.
+- Replaces raw Unix epoch integers that were previously displayed (e.g. `1775444419`).
+- File changed: `src/main.rs`.
+
+#### Time filter parser
+- Added `parse_time_filter()` supporting multiple input formats:
+  - Relative: `1h`, `24h`, `7d`, `30d` (hours/days ago from now).
+  - Keyword: `today` (midnight local time), `all` (returns None, no filter).
+  - ISO 8601 date: `2026-04-07` (midnight local time).
+  - ISO 8601 datetime: `2026-04-07T14:00:00` (local time).
+  - Raw Unix timestamp passthrough.
+- Used by both `--since`/`--until` flags and `--period` flag.
+- File changed: `src/main.rs`.
+
+### Database
+
+#### Dynamic query builder for audit log
+- Added `AuditQuery` struct with fields for all filter dimensions: `path`, `severity`, `group`, `since`, `until`, `maintenance_only`, `suppressed_only`, `limit`.
+- Implements `Default` with `limit: 50`.
+- Added `query()` function that builds SQL dynamically from populated `AuditQuery` fields, using parameterized queries to prevent SQL injection.
+- Conditions combine with AND; empty conditions produce an unfiltered query.
+- Uses `rusqlite::params_from_iter` for dynamic parameter binding.
+- File changed: `src/db/audit_ops.rs`.
+
+#### Aggregate query functions
+- `count()`: returns total audit log entry count.
+- `count_since(timestamp)`: returns entry count after a given timestamp.
+- `get_severity_counts(since)`: returns `Vec<(severity, count)>` grouped by severity, ordered by count descending.
+- `get_top_paths(since, limit)`: returns `Vec<(path, count)>` for the most frequently changed paths.
+- `get_group_counts(since)`: returns `Vec<(group, count)>` grouped by `monitored_group` (with COALESCE for NULL values).
+- All accept optional `since_timestamp` for period-scoped queries.
+- File changed: `src/db/audit_ops.rs`.
+
+#### New index for group queries
+- Added `CREATE INDEX IF NOT EXISTS idx_audit_group ON audit_log(monitored_group)` in `create_audit_tables()`.
+- Accelerates `--group` filter and `get_group_counts()` aggregate queries.
+- Index is created idempotently; existing databases gain the index on next schema initialization.
+- File changed: `src/db/schema.rs`.
+
+### JSON Output Fixes
+
+#### Structured JSON for changes and process attribution
+- `entries_to_json()` now parses `changes_json` from a raw JSON string into a structured array. Previously, `vigil audit show --format json | jq '.[0].changes'` returned a JSON string requiring double-parsing; now it returns a structured array directly.
+- `process_json` is similarly parsed into a structured object (or `null`).
+- Added `timestamp_iso` field with RFC 3339 formatted timestamp alongside the raw Unix `timestamp`.
+- Renamed JSON field from `changes_json` to `changes` and `process_json` to `process` for cleaner consumer API.
+- File changed: `src/main.rs` (`entries_to_json()`).
+
+### Backward Compatibility
+- Existing `get_recent()` and `search()` functions in `src/db/audit_ops.rs` are preserved — other modules (`src/alert/mod.rs`, `tests/alert_dispatcher_tests.rs`) call them directly.
+- `AuditAction::Verify` handler unchanged.
+- The `Cargo.lock` version bump is the only dependency-adjacent change.
+
+### Tests
+- Added `audit_show_with_filters_parses` in `src/cli.rs`: verifies combined `--path`, `--severity`, `--since`, `-v`, `-n` flag parsing.
+- Added `audit_show_defaults_parses` in `src/cli.rs`: verifies default values (last=50, all filters None, verbose=false).
+- Added `audit_stats_parses` in `src/cli.rs`: verifies `--period 30d` parsing.
+- Added `audit_stats_default_period` in `src/cli.rs`: verifies default period is `7d`.
+- Added `count_returns_total` in `src/db/audit_ops.rs`: verifies `count()` returns correct total.
+- Added `query_filters_by_severity` in `src/db/audit_ops.rs`: verifies severity filter matches/excludes correctly.
+- Added `query_filters_by_path` in `src/db/audit_ops.rs`: verifies path glob filter.
+- Added `query_filters_by_group` in `src/db/audit_ops.rs`: verifies group filter.
+- Added `get_severity_counts_works` in `src/db/audit_ops.rs`: verifies severity aggregation.
+- Added `get_top_paths_works` in `src/db/audit_ops.rs`: verifies path ranking.
+- Added `get_group_counts_works` in `src/db/audit_ops.rs`: verifies group aggregation.
+
+### Validation
+- `cargo check` clean
+- `cargo clippy --all-targets -- -D warnings` clean
+- `cargo fmt --all --check` clean
+- `cargo test --all-targets` clean (all unit and integration tests pass)
+
 ## [0.17.0] - 2026-04-06
 
 ### Release Summary

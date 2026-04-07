@@ -285,6 +285,225 @@ pub fn verify_chain(conn: &Connection) -> Result<AuditChainVerifyResult> {
     Ok((total, valid, breaks, missing))
 }
 
+#[derive(Debug, Clone)]
+pub struct AuditQuery {
+    pub path: Option<String>,
+    pub severity: Option<String>,
+    pub group: Option<String>,
+    pub since: Option<i64>,
+    pub until: Option<i64>,
+    pub maintenance_only: bool,
+    pub suppressed_only: bool,
+    pub limit: u32,
+}
+
+impl Default for AuditQuery {
+    fn default() -> Self {
+        Self {
+            path: None,
+            severity: None,
+            group: None,
+            since: None,
+            until: None,
+            maintenance_only: false,
+            suppressed_only: false,
+            limit: 50,
+        }
+    }
+}
+
+pub fn query(conn: &Connection, q: &AuditQuery) -> Result<Vec<AuditEntry>> {
+    let mut conditions = Vec::new();
+    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+    if let Some(ref path) = q.path {
+        conditions.push("path LIKE ?");
+        let pattern = path.replace('*', "%");
+        param_values.push(Box::new(if pattern.contains('%') {
+            pattern
+        } else {
+            format!("%{}%", path)
+        }));
+    }
+    if let Some(ref severity) = q.severity {
+        conditions.push("severity = ?");
+        param_values.push(Box::new(severity.to_lowercase()));
+    }
+    if let Some(ref group) = q.group {
+        conditions.push("monitored_group = ?");
+        param_values.push(Box::new(group.clone()));
+    }
+    if let Some(since) = q.since {
+        conditions.push("timestamp >= ?");
+        param_values.push(Box::new(since));
+    }
+    if let Some(until) = q.until {
+        conditions.push("timestamp <= ?");
+        param_values.push(Box::new(until));
+    }
+    if q.maintenance_only {
+        conditions.push("maintenance = 1");
+    }
+    if q.suppressed_only {
+        conditions.push("suppressed = 1");
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    let sql = format!(
+        "SELECT id, timestamp, path, changes_json, severity,
+                monitored_group, process_json, package,
+                maintenance, suppressed, hmac, chain_hash
+         FROM audit_log {} ORDER BY timestamp DESC LIMIT ?",
+        where_clause
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+
+    let mut params_ref: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
+    let limit_val = q.limit as i64;
+    params_ref.push(&limit_val);
+
+    let rows = stmt.query_map(rusqlite::params_from_iter(params_ref), |row| {
+        Ok(AuditEntry {
+            id: row.get(0)?,
+            timestamp: row.get(1)?,
+            path: row.get(2)?,
+            changes_json: row.get(3)?,
+            severity: row.get(4)?,
+            monitored_group: row.get(5)?,
+            process_json: row.get(6)?,
+            package: row.get(7)?,
+            maintenance: row.get::<_, i32>(8)? != 0,
+            suppressed: row.get::<_, i32>(9)? != 0,
+            hmac: row.get(10)?,
+            chain_hash: row.get(11)?,
+        })
+    })?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+pub fn count(conn: &Connection) -> Result<u64> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?;
+    Ok(count.max(0) as u64)
+}
+
+pub fn count_since(conn: &Connection, since_timestamp: i64) -> Result<u64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE timestamp >= ?1",
+        params![since_timestamp],
+        |row| row.get(0),
+    )?;
+    Ok(count.max(0) as u64)
+}
+
+pub fn get_severity_counts(
+    conn: &Connection,
+    since_timestamp: Option<i64>,
+) -> Result<Vec<(String, u64)>> {
+    let mut out = Vec::new();
+    match since_timestamp {
+        Some(ts) => {
+            let mut stmt = conn.prepare_cached(
+                "SELECT severity, COUNT(*) FROM audit_log WHERE timestamp >= ?1 GROUP BY severity ORDER BY COUNT(*) DESC",
+            )?;
+            let rows = stmt.query_map(params![ts], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            })?;
+            for row in rows {
+                out.push(row?);
+            }
+        }
+        None => {
+            let mut stmt = conn.prepare_cached(
+                "SELECT severity, COUNT(*) FROM audit_log GROUP BY severity ORDER BY COUNT(*) DESC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            })?;
+            for row in rows {
+                out.push(row?);
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub fn get_top_paths(
+    conn: &Connection,
+    since_timestamp: Option<i64>,
+    limit: u32,
+) -> Result<Vec<(String, u64)>> {
+    let mut out = Vec::new();
+    match since_timestamp {
+        Some(ts) => {
+            let mut stmt = conn.prepare_cached(
+                "SELECT path, COUNT(*) as cnt FROM audit_log WHERE timestamp >= ?1 GROUP BY path ORDER BY cnt DESC LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(params![ts, limit], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            })?;
+            for row in rows {
+                out.push(row?);
+            }
+        }
+        None => {
+            let mut stmt = conn.prepare_cached(
+                "SELECT path, COUNT(*) as cnt FROM audit_log GROUP BY path ORDER BY cnt DESC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(params![limit], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            })?;
+            for row in rows {
+                out.push(row?);
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub fn get_group_counts(
+    conn: &Connection,
+    since_timestamp: Option<i64>,
+) -> Result<Vec<(String, u64)>> {
+    let mut out = Vec::new();
+    match since_timestamp {
+        Some(ts) => {
+            let mut stmt = conn.prepare_cached(
+                "SELECT COALESCE(monitored_group, 'unknown'), COUNT(*) FROM audit_log WHERE timestamp >= ?1 GROUP BY monitored_group ORDER BY COUNT(*) DESC",
+            )?;
+            let rows = stmt.query_map(params![ts], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            })?;
+            for row in rows {
+                out.push(row?);
+            }
+        }
+        None => {
+            let mut stmt = conn.prepare_cached(
+                "SELECT COALESCE(monitored_group, 'unknown'), COUNT(*) FROM audit_log GROUP BY monitored_group ORDER BY COUNT(*) DESC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            })?;
+            for row in rows {
+                out.push(row?);
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,5 +569,146 @@ mod tests {
         assert_eq!(total, 2);
         assert_eq!(valid, 1);
         assert_eq!(breaks.len(), 1);
+    }
+
+    #[test]
+    fn count_returns_total() {
+        let conn = test_conn();
+        let genesis = blake3::hash(b"vigil-audit-chain-genesis")
+            .to_hex()
+            .to_string();
+        let change = sample_change("/etc/passwd");
+        let h = insert_audit_entry(&conn, &change, false, false, None, &genesis).unwrap();
+        let _ = insert_audit_entry(&conn, &change, false, false, None, &h).unwrap();
+        assert_eq!(count(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn query_filters_by_severity() {
+        let conn = test_conn();
+        let genesis = blake3::hash(b"vigil-audit-chain-genesis")
+            .to_hex()
+            .to_string();
+        let change = sample_change("/etc/passwd");
+        let _ = insert_audit_entry(&conn, &change, false, false, None, &genesis).unwrap();
+
+        let results = query(
+            &conn,
+            &AuditQuery {
+                severity: Some("high".to_string()),
+                ..AuditQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+
+        let results = query(
+            &conn,
+            &AuditQuery {
+                severity: Some("low".to_string()),
+                ..AuditQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn query_filters_by_path() {
+        let conn = test_conn();
+        let genesis = blake3::hash(b"vigil-audit-chain-genesis")
+            .to_hex()
+            .to_string();
+        let change = sample_change("/etc/passwd");
+        let h = insert_audit_entry(&conn, &change, false, false, None, &genesis).unwrap();
+        let change2 = sample_change("/usr/bin/test");
+        let _ = insert_audit_entry(&conn, &change2, false, false, None, &h).unwrap();
+
+        let results = query(
+            &conn,
+            &AuditQuery {
+                path: Some("/etc/*".to_string()),
+                ..AuditQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, "/etc/passwd");
+    }
+
+    #[test]
+    fn query_filters_by_group() {
+        let conn = test_conn();
+        let genesis = blake3::hash(b"vigil-audit-chain-genesis")
+            .to_hex()
+            .to_string();
+        let change = sample_change("/etc/passwd");
+        let _ = insert_audit_entry(&conn, &change, false, false, None, &genesis).unwrap();
+
+        let results = query(
+            &conn,
+            &AuditQuery {
+                group: Some("test".to_string()),
+                ..AuditQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+
+        let results = query(
+            &conn,
+            &AuditQuery {
+                group: Some("nonexistent".to_string()),
+                ..AuditQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn get_severity_counts_works() {
+        let conn = test_conn();
+        let genesis = blake3::hash(b"vigil-audit-chain-genesis")
+            .to_hex()
+            .to_string();
+        let change = sample_change("/etc/passwd");
+        let h = insert_audit_entry(&conn, &change, false, false, None, &genesis).unwrap();
+        let _ = insert_audit_entry(&conn, &change, false, false, None, &h).unwrap();
+
+        let counts = get_severity_counts(&conn, None).unwrap();
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts[0].0, "high");
+        assert_eq!(counts[0].1, 2);
+    }
+
+    #[test]
+    fn get_top_paths_works() {
+        let conn = test_conn();
+        let genesis = blake3::hash(b"vigil-audit-chain-genesis")
+            .to_hex()
+            .to_string();
+        let change = sample_change("/etc/passwd");
+        let h = insert_audit_entry(&conn, &change, false, false, None, &genesis).unwrap();
+        let change2 = sample_change("/usr/bin/test");
+        let _ = insert_audit_entry(&conn, &change2, false, false, None, &h).unwrap();
+
+        let paths = get_top_paths(&conn, None, 10).unwrap();
+        assert_eq!(paths.len(), 2);
+    }
+
+    #[test]
+    fn get_group_counts_works() {
+        let conn = test_conn();
+        let genesis = blake3::hash(b"vigil-audit-chain-genesis")
+            .to_hex()
+            .to_string();
+        let change = sample_change("/etc/passwd");
+        let _ = insert_audit_entry(&conn, &change, false, false, None, &genesis).unwrap();
+
+        let groups = get_group_counts(&conn, None).unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, "test");
+        assert_eq!(groups[0].1, 1);
     }
 }

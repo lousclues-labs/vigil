@@ -100,11 +100,50 @@ pub enum Command {
 
 #[derive(Subcommand)]
 pub enum AuditAction {
-    /// Show recent audit entries
+    /// Show audit log entries
     Show {
-        /// Number of entries to show
-        #[arg(long, default_value = "20")]
+        /// Number of entries to show (default: 50)
+        #[arg(long, short = 'n', default_value = "50")]
         last: u32,
+
+        /// Filter by path (glob pattern, e.g. '/etc/*' or '/usr/bin/sudo')
+        #[arg(long)]
+        path: Option<String>,
+
+        /// Filter by minimum severity: low, medium, high, critical
+        #[arg(long)]
+        severity: Option<String>,
+
+        /// Filter by watch group name
+        #[arg(long)]
+        group: Option<String>,
+
+        /// Show only entries after this time (ISO 8601, e.g. '2026-04-07' or '2026-04-07T14:00:00')
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Show only entries before this time (ISO 8601)
+        #[arg(long)]
+        until: Option<String>,
+
+        /// Show only changes during maintenance windows
+        #[arg(long)]
+        maintenance: bool,
+
+        /// Show only suppressed changes
+        #[arg(long)]
+        suppressed: bool,
+
+        /// Show full change details for each entry (what specifically changed)
+        #[arg(long, short = 'v')]
+        verbose: bool,
+    },
+
+    /// Show audit log statistics
+    Stats {
+        /// Time period: today, 24h, 7d, 30d, all (default: 7d)
+        #[arg(long, default_value = "7d")]
+        period: String,
     },
 
     /// Verify audit chain integrity
@@ -302,6 +341,104 @@ mod tests {
                 assert_eq!(path, Some("/usr/bin/vigil*".to_string()));
             }
             _ => panic!("expected check command"),
+        }
+    }
+
+    #[test]
+    fn audit_show_with_filters_parses() {
+        let cli = Cli::try_parse_from([
+            "vigil",
+            "audit",
+            "show",
+            "--path",
+            "/etc/*",
+            "--severity",
+            "high",
+            "--since",
+            "24h",
+            "-v",
+            "-n",
+            "100",
+        ])
+        .expect("parse");
+        match cli.command {
+            Command::Audit {
+                action:
+                    AuditAction::Show {
+                        last,
+                        path,
+                        severity,
+                        since,
+                        verbose,
+                        ..
+                    },
+            } => {
+                assert_eq!(last, 100);
+                assert_eq!(path, Some("/etc/*".to_string()));
+                assert_eq!(severity, Some("high".to_string()));
+                assert_eq!(since, Some("24h".to_string()));
+                assert!(verbose);
+            }
+            _ => panic!("expected audit show"),
+        }
+    }
+
+    #[test]
+    fn audit_show_defaults_parses() {
+        let cli = Cli::try_parse_from(["vigil", "audit", "show"]).expect("parse");
+        match cli.command {
+            Command::Audit {
+                action:
+                    AuditAction::Show {
+                        last,
+                        path,
+                        severity,
+                        group,
+                        since,
+                        until,
+                        maintenance,
+                        suppressed,
+                        verbose,
+                    },
+            } => {
+                assert_eq!(last, 50);
+                assert!(path.is_none());
+                assert!(severity.is_none());
+                assert!(group.is_none());
+                assert!(since.is_none());
+                assert!(until.is_none());
+                assert!(!maintenance);
+                assert!(!suppressed);
+                assert!(!verbose);
+            }
+            _ => panic!("expected audit show"),
+        }
+    }
+
+    #[test]
+    fn audit_stats_parses() {
+        let cli =
+            Cli::try_parse_from(["vigil", "audit", "stats", "--period", "30d"]).expect("parse");
+        match cli.command {
+            Command::Audit {
+                action: AuditAction::Stats { period },
+            } => {
+                assert_eq!(period, "30d");
+            }
+            _ => panic!("expected audit stats"),
+        }
+    }
+
+    #[test]
+    fn audit_stats_default_period() {
+        let cli = Cli::try_parse_from(["vigil", "audit", "stats"]).expect("parse");
+        match cli.command {
+            Command::Audit {
+                action: AuditAction::Stats { period },
+            } => {
+                assert_eq!(period, "7d");
+            }
+            _ => panic!("expected audit stats"),
         }
     }
 }

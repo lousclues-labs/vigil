@@ -98,6 +98,7 @@ pub fn create_audit_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(timestamp);
         CREATE INDEX IF NOT EXISTS idx_audit_path ON audit_log(path);
         CREATE INDEX IF NOT EXISTS idx_audit_severity ON audit_log(severity);
+        CREATE INDEX IF NOT EXISTS idx_audit_group ON audit_log(monitored_group);
         ",
     )?;
     Ok(())
