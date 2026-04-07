@@ -1,266 +1,107 @@
 # Testing
 
-Vigil tests deterministic behavior, not vibes.
-If a security claim cannot be tested, it is not a claim.
+Vigil tests deterministic behavior. Claims need runnable checks.
 
 ---
 
-## Test Categories
+## Test Layout
 
-| Category | Count | Location | Purpose |
-|----------|-------|----------|---------|
-| Unit | 43 | inline in `src/**/*.rs` | validate isolated functions/types |
-| Integration | 37 | `tests/integration/` | cross-module behavior |
-| Snapshot | 3 | `tests/integration/snapshot_tests.rs` | pin critical output formats (baseline export, diff, alert JSON) |
-| Security | 15 + 1 ignored privileged | `tests/security/` | security properties and race resilience |
-| Property-based | 4 | `tests/security/property_tests.rs` | invariant validation via proptest (roundtrip, determinism, reflexivity, ordering) |
-| Fuzz | 7 targets | `fuzz/fuzz_targets/` | panic/crash resistance under arbitrary input |
+Integration-style tests live as flat files under `tests/`.
 
-Reference: `tests/README.md` is the canonical test-layout guide.
+```
+tests/
+|-- alert_dispatcher_tests.rs
+|-- audit_chain_tests.rs
+|-- baseline_json_tests.rs
+|-- daemon_smoke_tests.rs
+|-- exclusion_filter_tests.rs
+|-- filter_self_paths_tests.rs
+|-- hmac_chain_tamper_tests.rs
+|-- scan_deleted_file_tests.rs
+|-- snapshot_diff_tests.rs
+`-- worker_tests.rs
+```
+
+There is no `tests/common/`, `tests/integration/`, `tests/security/`, or `tests/README.md` in this repository.
 
 ---
 
 ## Quick Commands
 
+Run the full suite:
+
 ```bash
-# Full suite helper
-./scripts/test-all.sh
-
-# Standard test run
-cargo test
-
-# Unit tests only
-cargo test --bins
-
-# Integration tests only
-cargo test --test integration
-
-# Security tests (non-privileged)
-cargo test --test security
-
-# Privileged ignored tests
-sudo -E cargo test --test security -- --ignored
+cargo test --all-targets
 ```
 
----
+Run one test file:
 
-## Detailed Commands
+```bash
+cargo test --test audit_chain_tests
+cargo test --test hmac_chain_tamper_tests
+cargo test --test snapshot_diff_tests
+cargo test --test worker_tests
+```
 
-### Formatting and Linting
+Format and lint gates:
 
 ```bash
 cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-### Rustdoc checks
+---
 
-```bash
-RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features
-cargo test --doc
-```
+## Snapshot Coverage
 
-### Targeted filtering
+Snapshot and diff behavior is tested in:
+- `tests/snapshot_diff_tests.rs`
 
-```bash
-cargo test baseline
-cargo test compare
-cargo test filter
-cargo test race
-```
+Use that file as the source of truth for snapshot-related behavior.
 
 ---
 
-## Fuzz Testing
+## Fuzz Targets
 
-Vigil includes seven fuzz targets:
+Current fuzz targets in `fuzz/fuzz_targets/`:
+- `fuzz_config_parse`
+- `fuzz_baseline_compare`
+- `fuzz_scanner`
+- `fuzz_toml_config`
+- `fuzz_event_filter`
+- `fuzz_db_roundtrip`
+- `fuzz_xattr_parsing`
 
-| Target | File | Property Tested |
-|--------|------|-----------------|
-| `fuzz_config_parse` | `fuzz/fuzz_targets/fuzz_config_parse.rs` | TOML config parsing does not panic on arbitrary input |
-| `fuzz_baseline_compare` | `fuzz/fuzz_targets/fuzz_baseline_compare.rs` | baseline compare pipeline handles arbitrary metadata safely |
-| `fuzz_scanner` | `fuzz/fuzz_targets/fuzz_scanner.rs` | scanner path handles malformed/edge file states without crashes |
-| `fuzz_toml_config` | `fuzz/fuzz_targets/fuzz_toml_config.rs` | TOML parse + validate_config does not panic |
-| `fuzz_event_filter` | `fuzz/fuzz_targets/fuzz_event_filter.rs` | EventFilter.should_process() does not panic on arbitrary events |
-| `fuzz_db_roundtrip` | `fuzz/fuzz_targets/fuzz_db_roundtrip.rs` | DB insert + read back never panics or loses data |
-| `fuzz_xattr_parsing` | `fuzz/fuzz_targets/fuzz_xattr_parsing.rs` | xattr JSON parsing does not panic on arbitrary bytes |
-
-Setup:
+Run them from the `fuzz/` workspace:
 
 ```bash
-rustup toolchain install nightly
-cargo install cargo-fuzz --locked
-```
-
-Run all targets quickly:
-
-```bash
+cd fuzz
 cargo +nightly fuzz build
-for t in $(cargo +nightly fuzz list); do
-  cargo +nightly fuzz run "$t" -- -max_total_time=60 -max_len=65536
-done
-```
-
-Run one target longer:
-
-```bash
-cargo +nightly fuzz run fuzz_baseline_compare -- \
-  -max_total_time=1800 \
-  -print_final_stats=1 \
-  -use_value_profile=1
+cargo +nightly fuzz list
 ```
 
 ---
 
-## Snapshot Testing
+## scripts/test-all.sh Notes
 
-Vigil uses [insta](https://insta.rs/) to snapshot critical output formats. Snapshot tests pin the exact JSON structure of baseline exports, diff outputs, and alert payloads so that format changes are caught automatically.
+`./scripts/test-all.sh` currently runs these stages:
+1. `cargo fmt -- --check`
+2. `cargo clippy --all-targets -- -D warnings`
+3. `cargo test --bins`
+4. `cargo test --test integration`
+5. `cargo test --test security`
 
-Location: `tests/integration/snapshot_tests.rs`
-
-| Snapshot | What It Pins |
-|----------|-------------|
-| `baseline_export` | JSON output of `vigil baseline export` |
-| `diff_output` | Serialized `ChangeResult` vec from `diff_baseline()` |
-| `alert_json` | Full `Alert` struct serialized as JSON |
-
-Commands:
-
-```bash
-# Run snapshot tests
-cargo insta test
-
-# Review and accept/reject changes interactively
-cargo insta review
-
-# Check in CI (fails if snapshots are out of date)
-cargo insta test --check
-```
+Stages 4 and 5 do not match the current flat `tests/` layout.
+Use `cargo test --all-targets` or explicit `--test <file_name>` commands for reliable local verification.
 
 ---
 
-## Property-Based Testing
+## Where to Add New Tests
 
-Vigil uses [proptest](https://proptest-rs.github.io/proptest/) for property-based testing of comparison engine invariants.
+Use this rule of thumb:
 
-Location: `tests/security/property_tests.rs`
+- single function behavior: unit test in the same `src/*` module
+- cross-module behavior: new file in `tests/` named for behavior
+- integrity and tamper behavior: new file in `tests/` with explicit scope in the filename
 
-| Property | What It Validates |
-|----------|-------------------|
-| Roundtrip | `BaselineEntry` written to DB then read back has identical fields |
-| Determinism | `blake3_hash_bytes` on same content always returns same hash |
-| File-bytes equivalence | `blake3_hash_file` matches `blake3_hash_bytes` for same content |
-| Severity ordering | Distinct `Severity` values have distinct `Display` output |
-
-Run property tests:
-
-```bash
-cargo test --test security property
-```
-
----
-
-## CI Pipeline Mapping
-
-### Primary CI (`.github/workflows/ci.yml`)
-
-| Job | Purpose | Command Class |
-|-----|---------|---------------|
-| `check` | format/lint/docs gate | `fmt`, `clippy`, `cargo doc` |
-| `audit` | dependency risk gate | `cargo audit`, `cargo deny` |
-| `test` | unit/integration/doc tests | `cargo test --all-targets`, doc tests |
-| `coverage` | coverage generation + upload | `cargo tarpaulin`, Codecov |
-| `msrv` | minimum supported Rust check | `cargo check --all-features` on 1.85 |
-
-### Scheduled CI (`.github/workflows/scheduled.yml`)
-
-| Job | Purpose |
-|-----|---------|
-| `security-audit` | weekly `cargo audit` + `cargo deny` |
-| `coverage` | weekly coverage artifacts |
-
-### Fuzz CI
-
-| Workflow | Purpose |
-|----------|---------|
-| `fuzz-smoke.yml` | 60-second per-target smoke fuzz on push/PR |
-| `weekly-fuzz.yml` | scheduled weekly fuzz run |
-| `fuzz-moab.yml` | manual long fuzz shards across all targets |
-
----
-
-## Coverage
-
-Coverage is generated with `cargo-tarpaulin` in CI.
-
-Local run:
-
-```bash
-cargo install cargo-tarpaulin --locked
-mkdir -p coverage
-cargo tarpaulin \
-  --all-features \
-  --skip-clean \
-  --out xml --out html \
-  --output-dir coverage \
-  --timeout 240 \
-  --jobs 1 \
-  -- --test-threads=2
-```
-
-Outputs:
-- `coverage/cobertura.xml`
-- `coverage/tarpaulin-report.html` (and related files)
-
-In CI:
-- uploaded to Codecov
-- stored as workflow artifact (`coverage` or `scheduled-coverage`)
-
----
-
-## Adding New Tests
-
-Decision rule (expanded from `tests/README.md`):
-
-```
-Does it test one function/type in isolation?
-|- yes -> unit test in src module
-`- no
-   Does it cross module boundaries?
-   |- yes -> integration test in tests/integration/
-   `- no
-      Is it a security property or adversarial behavior?
-      |- yes -> tests/security/
-      `- no -> usually integration unless benchmark/fuzz-specific
-```
-
-Placement guidance:
-- baseline lifecycle behavior -> `tests/integration/baseline_tests.rs`
-- compare/TOCTOU behavior -> `tests/integration/comparison_tests.rs`
-- filter/exclusion/debounce -> `tests/integration/filter_tests.rs`
-- permission/race/integrity guarantees -> `tests/security/*`
-
-When adding new behavior:
-1. add positive path tests
-2. add failure path tests
-3. add regression test for bug fixed
-4. update docs if behavior changed
-
----
-
-## Privileged Tests
-
-Some security scenarios require root capabilities (ownership changes, certain monitor conditions).
-Mark these `#[ignore]` and run explicitly under sudo in controlled environments.
-
-Do not make privileged paths mandatory for default CI.
-
----
-
-## Testing Philosophy
-
-- Determinism over heuristics
-- Reproducible failures over flaky checks
-- Security claims backed by runnable tests
-
-*If a test flakes, fix the test or the design. Do not normalize noise.*
+Prefer descriptive names like `audit_chain_tests.rs` over generic buckets.

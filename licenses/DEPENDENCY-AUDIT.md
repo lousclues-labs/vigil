@@ -4,9 +4,9 @@
 
 ## Purpose
 
-Vigil is licensed under GPL-3.0-only. Every dependency must be compatible with this license. This document provides a framework for evaluating dependencies and maintaining license compliance.
+Vigil is dual-licensed under GPL-3.0-only for open-source use and a [Commercial License](LICENSE-COMMERCIAL.md) for proprietary use. Every dependency must be compatible with both licenses. This document provides a framework for evaluating dependencies and maintaining license compliance.
 
-> **Note on commercial license compatibility:** Vigil is currently single-licensed under GPL-3.0-only. The "Commercial License Compatible?" column in the tables below is maintained for forward compatibility — should Vigil adopt a dual-licensing model in the future, this audit framework will already track the necessary information. See [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) for more information.
+> **Note on commercial license compatibility:** The "Commercial License Compatible?" column in the tables below tracks whether each dependency can be redistributed under Vigil's Commercial License. See [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) for full terms.
 
 ## License Compatibility Reference
 
@@ -21,13 +21,13 @@ Vigil is licensed under GPL-3.0-only. Every dependency must be compatible with t
 | **Zlib** | Yes | Yes | **Yes** |
 | **CC0-1.0** | Yes | Yes | **Yes** |
 | **MIT OR Apache-2.0** | Yes | Yes | **Yes** (choose Apache-2.0 or MIT) |
-| **LGPL-2.1+** | Yes | Conditional — dynamic linking only | **Caution** |
-| **LGPL-3.0+** | Yes | Conditional — dynamic linking only | **Caution** |
-| **MPL-2.0** | Yes (file-level copyleft) | Conditional — MPL files must remain open | **Caution** |
+| **LGPL-2.1+** | Yes | Conditional -- dynamic linking only | **Caution** |
+| **LGPL-3.0+** | Yes | Conditional -- dynamic linking only | **Caution** |
+| **MPL-2.0** | Yes (file-level copyleft) | Conditional -- MPL files must remain open | **Caution** |
 | **GPL-2.0-only** | No (incompatible with GPL-3.0+) | No | **No** |
-| **GPL-2.0-or-later** | Yes | No | **Caution** (blocks future commercial) |
-| **GPL-3.0-only** | Yes | No | **Caution** (blocks future commercial) |
-| **GPL-3.0-or-later** | Yes | No | **Caution** (blocks future commercial) |
+| **GPL-2.0-or-later** | Yes | No | **Caution** (blocks commercial license) |
+| **GPL-3.0-only** | Yes | No | **Caution** (blocks commercial license) |
+| **GPL-3.0-or-later** | Yes | No | **Caution** (blocks commercial license) |
 | **AGPL-3.0** | Compatible but viral | No | **Caution** |
 | **SSPL** | No | No | **No** |
 | **BSL (Business Source)** | No | Depends on terms | **No** (generally) |
@@ -35,13 +35,13 @@ Vigil is licensed under GPL-3.0-only. Every dependency must be compatible with t
 
 ### Key Rules
 
-1. **Permissive licenses (MIT, Apache-2.0, BSD, ISC, etc.) are always safe.** They impose minimal obligations and are compatible with GPL-3.0 licensing. They also preserve forward compatibility with potential future commercial licensing.
+1. **Permissive licenses (MIT, Apache-2.0, BSD, ISC, etc.) are always safe.** They impose minimal obligations and are compatible with both the GPL-3.0 and Commercial licenses.
 
-2. **Copyleft licenses (GPL, LGPL, AGPL) are GPL-compatible but limit future licensing flexibility.** If a dependency is GPL-licensed, it cannot be redistributed under a commercial license in the future. Vigil currently avoids copyleft dependencies to maintain maximum flexibility.
+2. **Copyleft licenses (GPL, LGPL, AGPL) are GPL-compatible but block commercial licensing.** If a dependency is GPL-licensed, it cannot be redistributed under the Commercial License. Vigil avoids copyleft dependencies to maintain compatibility with both licenses.
 
-3. **Weak copyleft (LGPL, MPL) requires care.** These can work with commercial licensing if the dependency is dynamically linked (LGPL) or if the copyleft is file-scoped (MPL). Since Rust links statically by default, LGPL dependencies are generally **not compatible** with future commercial licensing in a Rust project without careful structuring.
+3. **Weak copyleft (LGPL, MPL) requires care.** These can work with commercial licensing if the dependency is dynamically linked (LGPL) or if the copyleft is file-scoped (MPL). Since Rust links statically by default, LGPL dependencies are generally **not compatible** with the Commercial License without careful structuring.
 
-4. **Dual-licensed dependencies** — When a dependency offers a choice (e.g., "MIT OR Apache-2.0"), we choose the most permissive option for each use case.
+4. **Dual-licensed dependencies.** When a dependency offers a choice (e.g., "MIT OR Apache-2.0"), we choose the most permissive option for each use case.
 
 ---
 
@@ -49,7 +49,7 @@ Vigil is licensed under GPL-3.0-only. Every dependency must be compatible with t
 
 All current direct dependencies have been audited and are compliant:
 
-| Dependency | License | GPL-3.0 Compatible? | Future Commercial Compatible? |
+| Dependency | License | GPL-3.0 Compatible? | Commercial License Compatible? |
 |-----------|---------|---------------------|-------------------------------|
 | blake3 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception | Yes | Yes |
 | chrono | MIT OR Apache-2.0 | Yes | Yes |
@@ -72,7 +72,7 @@ All current direct dependencies have been audited and are compliant:
 | uuid | Apache-2.0 OR MIT | Yes | Yes |
 | xattr | MIT OR Apache-2.0 | Yes | Yes |
 
-**Status: All clear.** All direct dependencies use permissive licenses compatible with GPL-3.0-only. All dependencies also preserve forward compatibility with potential future commercial licensing.
+**Status: All clear.** All direct dependencies use permissive licenses compatible with both the GPL-3.0-only and Commercial licenses.
 
 ---
 
@@ -95,8 +95,8 @@ cargo license -d | grep <crate-name>
 Use the compatibility table above. If the license is:
 
 - **Green (MIT, Apache-2.0, BSD, etc.):** Proceed without concern.
-- **Yellow (LGPL, MPL):** Stop and evaluate. In most cases, LGPL is incompatible with future commercial licensing due to Rust's static linking. Consult this document's compatibility table and consider alternatives.
-- **Red (GPL, AGPL, SSPL, proprietary):** Evaluate carefully. GPL dependencies are compatible with Vigil's current GPL-3.0-only license but would block future dual-licensing. Find a permissive alternative if possible.
+- **Yellow (LGPL, MPL):** Stop and evaluate. In most cases, LGPL is incompatible with the Commercial License due to Rust's static linking. Consult this document's compatibility table and consider alternatives.
+- **Red (GPL, AGPL, SSPL, proprietary):** Evaluate carefully. GPL dependencies are compatible with Vigil's GPL-3.0-only license but block distribution under the Commercial License. Find a permissive alternative if possible.
 
 ### 3. Check Transitive Dependencies
 
@@ -115,7 +115,7 @@ cargo about generate -o html > license-report.html
 If the dependency is approved, add it to [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES) using this format:
 
 ```
-  <crate-name> (https://crates.io/crates/<crate-name>) — <SPDX-ID>
+  <crate-name> (https://crates.io/crates/<crate-name>) -- <SPDX-ID>
 ```
 
 ### 5. Periodic Re-Audit
@@ -140,13 +140,13 @@ cargo about generate
 When adding a new dependency, add an entry to [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES) in this format:
 
 ```
-  <crate-name> (https://crates.io/crates/<crate-name>) — <SPDX-License-Identifier>
+  <crate-name> (https://crates.io/crates/<crate-name>) -- <SPDX-License-Identifier>
 ```
 
 For dependencies with notable license conditions:
 
 ```
-  <crate-name> (https://crates.io/crates/<crate-name>) — <SPDX-License-Identifier>
+  <crate-name> (https://crates.io/crates/<crate-name>) -- <SPDX-License-Identifier>
     Note: <any relevant notes about license conditions>
 ```
 
@@ -191,4 +191,4 @@ See [deny.toml](../deny.toml) for the complete policy configuration.
 
 ## Questions
 
-For questions about dependency licensing, open an issue in the [Vigil repository](https://github.com/DigiNotar/vigil) or contact Louis Nelson Jr. ([@loujr](https://github.com/loujr)).
+For questions about dependency licensing, open an issue in the [Vigil repository](https://github.com/loujr/vigil) or contact Louis Nelson Jr. ([@loujr](https://github.com/loujr)).

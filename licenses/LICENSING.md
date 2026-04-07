@@ -14,14 +14,10 @@ See the [NOTICE](../NOTICE) file for the full identity mapping (Louis Nelson Jr.
 
 | License | SPDX Identifier | Applies To | Full Text |
 |---------|-----------------|------------|-----------|
-| GNU GPL v3.0 only | `GPL-3.0-only` | Source code, scripts, build files, tests, configs | [LICENSE](../LICENSE) |
+| GNU GPL v3.0 only **or** Commercial License | `GPL-3.0-only` | Source code, scripts, build files, tests, configs | [LICENSE](../LICENSE), [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) |
 | CC BY 4.0 | `CC-BY-4.0` | Documentation | [LICENSE-DOCS.md](LICENSE-DOCS.md) |
 
-Vigil is licensed exclusively under GPL-3.0-only. There is no dual-licensing or commercial license alternative at this time. For commercial licensing inquiries, see [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md).
-
-## Commercial Licensing Note
-
-Vigil is currently single-licensed under GPL-3.0-only. The licensing framework is structured to support potential future dual-licensing, but no commercial license is currently available. See [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) for the inquiry pathway if your use case requires alternative licensing terms.
+Vigil is dual-licensed. A Commercial License is available for organizations whose use cases are incompatible with the GPL. See [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) for full terms.
 
 ---
 
@@ -72,14 +68,13 @@ Vigil is currently single-licensed under GPL-3.0-only. The licensing framework i
 | `CONTRIBUTING.md` | CC-BY-4.0 | No | Contribution guide |
 | `CHANGELOG.md` | CC-BY-4.0 | No | Release history |
 | `VERSIONING.md` | CC-BY-4.0 | No | Version policy |
-| `tests/README.md` | CC-BY-4.0 | No | Test documentation |
 
 ### Legal & Administrative Documents
 
 | File Pattern | License | Notes |
 |-------------|---------|-------|
 | `LICENSE` | N/A (is the license) | GPL-3.0 full text |
-| `licenses/LICENSE-COMMERCIAL.md` | N/A (is the inquiry document) | Commercial licensing inquiry |
+| `licenses/LICENSE-COMMERCIAL.md` | N/A (is the license) | Commercial license terms |
 | `licenses/LICENSE-DOCS.md` | N/A (is the license) | Documentation license terms |
 | `licenses/LICENSING.md` | N/A (this file) | License coverage guide |
 | `licenses/CONTRIBUTOR-LICENSE.md` | N/A (is the CLA) | Contributor license agreement |
@@ -137,7 +132,7 @@ Place the SPDX header immediately after the shebang line.
 
 ### Markdown Documentation (`.md` in `docs/`)
 
-Markdown documentation files are covered by CC-BY-4.0 as declared in [LICENSE-DOCS.md](LICENSE-DOCS.md). No per-file header is required — the repository-level license declaration covers all documentation files.
+Markdown documentation files are covered by CC-BY-4.0 as declared in [LICENSE-DOCS.md](LICENSE-DOCS.md). No per-file header is required. The repository-level license declaration covers all documentation files.
 
 If a per-file header is desired (e.g., for standalone distribution), use an HTML comment:
 
@@ -171,7 +166,7 @@ A CI step can enforce header compliance:
 
 ```bash
 #!/bin/bash
-# check-headers.sh — Verify SPDX headers in source files
+# check-headers.sh -- Verify SPDX headers in source files
 set -euo pipefail
 
 ERRORS=0

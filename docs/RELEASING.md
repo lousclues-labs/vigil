@@ -10,9 +10,9 @@ Keep it boring, repeatable, and verifiable.
 Vigil uses Semantic Versioning (`MAJOR.MINOR.PATCH`).
 
 Examples:
-- `0.2.1`
-- `0.2.2`
-- `0.3.0`
+- `0.18.0`
+- `0.18.1`
+- `0.19.0`
 
 While major version is `0`, minor bumps may include breaking changes.
 See [VERSIONING.md](../VERSIONING.md).
@@ -124,7 +124,7 @@ Use conventional commits throughout release cycle:
 Examples:
 
 ```text
-chore: release v0.3.0
+chore: release v0.19.0
 docs: add migration notes for baseline schema update
 fix: preserve audit write on suppression path
 ```

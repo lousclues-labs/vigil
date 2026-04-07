@@ -4,6 +4,131 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-04-07
+
+### Release Summary
+- Full documentation overhaul: every `.md` file in the repository rewritten for accuracy, consistency, and voice compliance.
+- Purged stale CLI references (`vigil baseline`, `vigil maintenance`, `vigil log`, `--format table`) that no longer exist in `src/cli.rs`.
+- Fixed licensing contradiction in `licenses/DEPENDENCY-AUDIT.md` that claimed Vigil was single-licensed. All licensing documents now consistently state dual-licensed (GPL-3.0-only or Commercial License).
+- Removed all em dashes (U+2014) from non-exempt files. Zero tolerance.
+- Removed dead `tests/README.md` references from license coverage files.
+- Replaced DigiNotar org references with correct `loujr` owner in all URLs.
+- Version badge in README updated from 0.14.0 to 0.18.0.
+
+### Documentation
+
+#### README.md -- full rewrite
+- Replaced stale CLI examples: removed `vigil baseline init/refresh/add/remove/stats/export/diff`, `vigil maintenance enter/exit/status`, `vigil log show/search/stats/verify`.
+- Added current CLI examples: `vigil check --accept`, `vigil check --accept --path`, `vigil diff`, `vigil audit show/stats/verify`, `vigil config show/validate`, `vigil setup hmac/socket`.
+- Added `[security]` section to inline config example with `hmac_signing` and `hmac_key_path`.
+- Added `control_socket`, `schedule`, `mode` fields to inline config example.
+- Updated license section: replaced "single-licensed" / "no commercial license is currently active" language with active dual-licensing terms pointing to `LICENSE-COMMERCIAL.md`.
+- Updated documentation table: `LICENSE-COMMERCIAL.md` description changed from "inquiry pathway" to "Commercial license terms".
+- Version badge updated from 0.14.0 to 0.18.0.
+
+#### docs/CLI.md -- rewritten from `src/cli.rs`
+- Every command, subcommand, flag, default value, and exit code verified against `src/cli.rs` clap definitions.
+- Replaced all stale command documentation with the actual CLI tree: `init`, `watch`, `check`, `diff`, `status`, `doctor`, `update`, `audit` (show/stats/verify), `config` (show/validate), `setup` (hmac/socket), `version`.
+- Documented global `--format human|json` and `-c`/`--config` options.
+- Added output format examples for human and JSON modes.
+- Version in output example set to 0.18.0.
+
+#### docs/ARCHITECTURE.md -- rewritten from source
+- Module tree updated to match actual `src/` contents: every `.rs` file listed, every directory accounted for.
+- Removed references to phantom files: `src/compare.rs`, `src/db/ops.rs`, `src/baseline/` directory.
+- Database schema tables (`baseline`, `audit_log`, `config_state`) documented column-by-column from `src/db/schema.rs`.
+- Runtime thread model documented: monitor, worker pool, alert dispatcher, coordinator, scan scheduler, control socket.
+- Data flow diagrams added for baseline creation, real-time event pipeline, scheduled scan pipeline, and control socket pipeline.
+- Component notes section explains coordinator, bloom filter, watch index, metrics, HMAC, and migration modules.
+- Design decisions section covers globset, croner, lru, arc-swap, parking_lot, crossbeam-channel.
+
+#### docs/CONFIGURATION.md -- rewritten from `src/config/mod.rs`
+- Full annotated TOML example with every config section and field.
+- Option reference tables for all sections: `[daemon]`, `[scanner]`, `[alerts]`, `[alerts.severity_filter]`, `[alerts.remote_syslog]`, `[exclusions]`, `[package_manager]`, `[hooks]`, `[security]`, `[database]`, `[watch.<group>]`.
+- Every field cross-referenced against struct definitions in `src/config/mod.rs`.
+- SIGHUP reload behavior documented: which fields apply without restart vs. which require daemon restart, with rationale.
+- Validation rules documented from `validate_config()` and `validate_config_deep()`.
+- Config load order documented from `config_search_paths()`.
+
+#### docs/SECURITY.md -- rewritten
+- Dependency justification table updated to match actual `Cargo.toml` dependencies.
+- Removed phantom crates: `log`, `env_logger`, `uuid`, `glob`.
+- Added missing crates: `toml_edit`, `arc-swap`, `parking_lot`, `sd-notify`, `lru`, `croner`, `rayon`, `globset`, `crossbeam-channel`, `tracing`, `tracing-subscriber`.
+- Crates organized by purpose: hashing/integrity, database/data model, CLI/logging, Linux integration, matching/concurrency/runtime state, utility.
+- Security model, threat scope, audit chain verification, HMAC key lifecycle, and socket security sections preserved with clarified language.
+
+#### docs/TESTING.md -- rewritten from test layout
+- Test layout matches actual flat `tests/*.rs` files (10 test files listed).
+- Explicitly states `tests/common/`, `tests/integration/`, `tests/security/`, and `tests/README.md` do not exist.
+- Documents `scripts/test-all.sh` stages 4-5 mismatch with current layout and recommends `cargo test --all-targets`.
+- Fuzz targets listed (7 targets matching `fuzz/Cargo.toml` `[[bin]]` entries).
+
+#### docs/DEVELOPMENT.md -- rewritten
+- Project structure tree matches actual `src/`, `tests/`, and `fuzz/` contents.
+- Build, lint, test, and fuzz commands verified.
+- PR checklist documented.
+
+#### docs/TROUBLESHOOTING.md -- rewritten
+- All CLI references use actual commands (`vigil doctor`, `vigil status`, `vigil check --accept`, `vigil audit show`, `vigil config show/validate`).
+- Recovery procedures for fanotify fallback, database corruption, package hook failure, alert noise, inotify limits, socket issues, and systemd failures.
+
+#### docs/FAQ.md -- cleaned
+- All CLI references verified against `src/cli.rs`.
+- No stale commands.
+
+#### docs/RESILIENCE.md -- cleaned
+- Recovery procedures reference actual CLI commands only.
+
+#### docs/INSTALL.md, docs/README.md, docs/RELEASING.md -- minor fixes
+- Link corrections and formatting consistency.
+
+#### CONTRIBUTING.md -- cleaned
+- CLI references verified. Testing section points to `docs/TESTING.md`.
+
+#### GOVERNANCE.md -- minor formatting
+- Formatting consistency fixes.
+
+### Licensing
+
+#### licenses/DEPENDENCY-AUDIT.md -- licensing contradiction fixed (BLOCKING)
+- Replaced "Vigil is currently single-licensed under GPL-3.0-only" with present-tense dual-licensing language.
+- Replaced "should Vigil adopt a dual-licensing model in the future" and all "future commercial" / "forward compatibility" phrasing with current-state language.
+- Column header changed from "Future Commercial Compatible?" to "Commercial License Compatible?".
+- All key rules updated to reference both GPL-3.0 and Commercial License.
+- Status line updated to reference both licenses.
+
+#### licenses/LICENSING.md
+- Removed dead `tests/README.md` line from documentation file coverage table.
+- Removed em dashes (2 instances).
+
+#### licenses/LICENSE-DOCS.md
+- Removed `tests/README.md` from scope list (file does not exist).
+- Removed em dashes (5 instances).
+
+#### licenses/LICENSE-COMMERCIAL.md -- full rewrite
+- Replaced inquiry-pathway stub with complete commercial license terms (10 sections).
+- Sections: Grant of License, Restrictions, Fees, Support and Maintenance, Warranty Disclaimer, Limitation of Liability, Termination, Audit Rights, Governing Law, Entire Agreement.
+
+#### licenses/README.md
+- `LICENSE-COMMERCIAL.md` description changed to "Commercial License -- alternative to GPL for proprietary use".
+- Removed em dashes (4 instances).
+
+#### licenses/CONTRIBUTOR-LICENSE.md
+- Removed em dash (1 instance).
+
+#### NOTICE
+- Repository URL corrected from DigiNotar org to `loujr/vigil`.
+- Commercial license description updated from "no commercial license available" to active commercial license reference.
+
+#### TRADEMARKS.md
+- Removed em dashes (4 instances).
+
+### Voice
+
+- Zero em dashes (U+2014) remain in any `.md` file outside `docs/PRINCIPLES.md` and `CHANGELOG.md`.
+- Zero marketing words, hedge phrases, or passive voice patterns in documentation files.
+- All documentation uses direct, present-tense language.
+
 ## [0.18.0] - 2026-04-06
 
 ### Release Summary

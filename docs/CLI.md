@@ -1,7 +1,7 @@
 # CLI Reference
 
-This is the complete CLI surface for `vigil`.
-Everything here comes from the current clap command tree.
+Every command that exists in `vigil`. Nothing fictional, nothing aspirational.
+If it's here, it's in `src/cli.rs` and it works.
 
 ---
 
@@ -14,11 +14,7 @@ vigil [GLOBAL_OPTIONS] <COMMAND> [COMMAND_OPTIONS]
 | Global Option | Type | Default | Description |
 |---------------|------|---------|-------------|
 | `-c`, `--config <PATH>` | path | layered search | explicit config file path override |
-| `--format <human|json|table>` | enum | `human` | output format selector |
-
-Notes:
-- `--format` is accepted globally and parsed for all commands.
-- Current command handlers primarily emit human-readable output.
+| `--format <human\|json>` | enum | `human` | output format selector |
 
 ---
 
@@ -26,15 +22,16 @@ Notes:
 
 | Command | Description |
 |---------|-------------|
-| `init` | initialize baseline database (first run) |
-| `baseline <ACTION>` | baseline lifecycle operations |
+| `init` | initialize baseline database |
 | `watch` | start real-time monitoring daemon in foreground |
-| `check [--full]` | run one-shot integrity check |
-| `maintenance <ACTION>` | maintenance window controls |
-| `log <ACTION>` | alert history and statistics |
+| `check` | run one-shot integrity check |
+| `diff` | compare a single file against its baseline |
 | `status` | daemon and baseline health summary |
-| `config <ACTION>` | show or validate config |
-| `doctor` | self-diagnostics |
+| `doctor` | system health diagnostics |
+| `update` | build and install from local git repo |
+| `audit` | audit log operations (show, stats, verify) |
+| `config` | show or validate config |
+| `setup` | HMAC key and socket configuration |
 | `version` | print version string |
 
 ---
@@ -44,101 +41,19 @@ Notes:
 Create baseline entries for all configured watch groups.
 
 ```bash
-vigil init
-```
-
-Examples:
-
-```bash
-vigil init
-vigil --config /etc/vigil/vigil.toml init
-```
-
----
-
-## `baseline`
-
-Manage baseline entries.
-
-### `baseline init`
-
-Alias for top-level `init`.
-
-```bash
-vigil baseline init
-```
-
-### `baseline refresh`
-
-Re-scan configured paths and update baseline rows.
-
-```bash
-vigil baseline refresh [--paths <DIR>] [--quiet]
+vigil init [--force]
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--paths <DIR>` | refresh only paths dominated by this directory |
-| `--quiet` | suppress non-error output |
+| `--force` | skip confirmation when overwriting existing baseline |
 
 Examples:
 
 ```bash
-vigil baseline refresh
-vigil baseline refresh --paths /etc
-vigil baseline refresh --quiet
-```
-
-### `baseline diff`
-
-Compare current filesystem state against baseline.
-
-```bash
-vigil baseline diff
-```
-
-### `baseline add`
-
-Add one file to baseline.
-
-```bash
-vigil baseline add <PATH>
-```
-
-Example:
-
-```bash
-vigil baseline add /etc/ssh/sshd_config
-```
-
-### `baseline remove`
-
-Remove one file from baseline.
-
-```bash
-vigil baseline remove <PATH>
-```
-
-Example:
-
-```bash
-vigil baseline remove /etc/ssh/sshd_config
-```
-
-### `baseline stats`
-
-Show baseline entry counts and source breakdown.
-
-```bash
-vigil baseline stats
-```
-
-### `baseline export`
-
-Export baseline entries as JSON.
-
-```bash
-vigil baseline export
+vigil init
+vigil init --force
+vigil --config /etc/vigil/vigil.toml init
 ```
 
 ---
@@ -151,9 +66,8 @@ Start Vigil monitor in foreground mode.
 vigil watch
 ```
 
-Notes:
-- This runs the daemon loop inline and blocks until interrupted.
-- For systemd-managed background operation, use `vigild` with the provided service unit.
+This runs the daemon loop inline and blocks until interrupted.
+For systemd-managed background operation, use `vigild` with the provided service unit.
 
 ---
 
@@ -162,138 +76,165 @@ Notes:
 Run one-shot integrity check.
 
 ```bash
-vigil check [--full]
+vigil check [--full] [--now] [--accept] [--path <GLOB>]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--full` | full scan instead of incremental mtime-based scan |
+| `--now` | trigger scan on running daemon via control socket |
+| `--accept` | after showing changes, update baseline to accept current state |
+| `--path <GLOB>` | only accept changes matching this glob pattern (requires `--accept`) |
 
 Examples:
 
 ```bash
 vigil check
 vigil check --full
+vigil check --now
+vigil check --accept
+vigil check --accept --path '/etc/*'
 ```
 
 ---
 
-## `maintenance`
+## `diff`
 
-Maintenance windows suppress notifications for package-managed paths.
-Audit logging still records all events.
-
-### `maintenance enter`
+Compare a single file against its baseline entry.
 
 ```bash
-vigil maintenance enter [--quiet]
+vigil diff <PATH>
 ```
 
-### `maintenance exit`
+Example:
 
 ```bash
-vigil maintenance exit [--quiet]
+vigil diff /etc/passwd
+vigil diff /usr/bin/sudo
 ```
-
-### `maintenance status`
-
-```bash
-vigil maintenance status
-```
-
-| Option | Commands | Description |
-|--------|----------|-------------|
-| `--quiet` | `enter`, `exit` | suppress non-error output |
-
-Examples:
-
-```bash
-vigil maintenance enter
-vigil maintenance enter --quiet
-vigil maintenance status
-vigil maintenance exit
-```
-
----
-
-## `log`
-
-Audit log inspection.
-
-### `log show`
-
-Show recent events.
-
-```bash
-vigil log show [--severity <SEVERITY>] [--last <N>]
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--severity <SEVERITY>` | none | severity equality filter (string match) |
-| `--last <N>` | `20` | number of most recent entries |
-
-Examples:
-
-```bash
-vigil log show
-vigil log show --severity critical
-vigil log show --last 100
-```
-
-### `log search`
-
-Search recent audit entries.
-
-```bash
-vigil log search [--path <SUBSTRING>] [--severity <SEVERITY>]
-```
-
-| Option | Description |
-|--------|-------------|
-| `--path <SUBSTRING>` | path substring filter |
-| `--severity <SEVERITY>` | severity equality filter |
-
-Examples:
-
-```bash
-vigil log search --path /etc/passwd
-vigil log search --severity high
-vigil log search --path /usr/bin --severity critical
-```
-
-### `log stats`
-
-Show severity and suppression breakdown.
-
-```bash
-vigil log stats
-```
-
-### `log verify`
-
-Verify HMAC integrity for audit log entries.
-
-```bash
-vigil log verify
-```
-
-Note:
-- Current CLI prints a not-yet-implemented message unless HMAC workflow is fully wired.
 
 ---
 
 ## `status`
 
-Show baseline counts, maintenance state, backend, DB path, and daemon PID if available.
+Show baseline counts, daemon state, backend, DB path, and daemon PID if available.
 
 ```bash
 vigil status
 ```
 
-Notes:
-- `vigil status` now falls back to `/run/vigil/health.json` for baseline counts when the active user cannot read root-owned DB files directly.
-- For automation, `vigil status --format json` includes a `health` object with the raw daemon health snapshot when present.
+Falls back to `/run/vigil/health.json` for baseline counts when the active user cannot read root-owned DB files directly. For automation, `vigil status --format json` includes a `health` object with the raw daemon health snapshot when present.
+
+---
+
+## `doctor`
+
+Run environment and health diagnostics.
+
+```bash
+vigil doctor [--format <human|json>]
+```
+
+What it checks:
+- fanotify availability
+- privilege context
+- config validity
+- database access and integrity
+- baseline entry count
+- HMAC key presence (if enabled)
+- notify-send availability
+- package backend detection
+- signal socket configuration
+- control socket configuration
+
+If Vigil runs as a root-owned systemd service (default), running `vigil doctor` as an unprivileged user may show reduced-coverage checks. Run `sudo vigil doctor` for full database-level diagnostics.
+
+---
+
+## `update`
+
+Build and install Vigil from a local git repository.
+
+```bash
+vigil update [--repo <PATH>]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--repo <PATH>` | path to the Vigil git repository (defaults to current directory) |
+
+Example:
+
+```bash
+vigil update
+vigil update --repo /opt/vigil
+```
+
+---
+
+## `audit`
+
+Audit log inspection and verification.
+
+### `audit show`
+
+Show recent audit entries.
+
+```bash
+vigil audit show [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-n`, `--last <N>` | `50` | number of most recent entries to show |
+| `--path <GLOB>` | none | filter by path glob (e.g. `/etc/*` or `/usr/bin/sudo`) |
+| `--severity <LEVEL>` | none | filter by minimum severity: low, medium, high, critical |
+| `--group <NAME>` | none | filter by watch group name |
+| `--since <ISO8601>` | none | entries after this time (e.g. `2026-04-07` or `2026-04-07T14:00:00`) |
+| `--until <ISO8601>` | none | entries before this time |
+| `--maintenance` | false | show only changes during maintenance windows |
+| `--suppressed` | false | show only suppressed changes |
+| `-v`, `--verbose` | false | show full change details for each entry |
+
+Examples:
+
+```bash
+vigil audit show
+vigil audit show -n 100
+vigil audit show --severity critical
+vigil audit show --path '/etc/passwd'
+vigil audit show --since 2026-04-01 --until 2026-04-07
+vigil audit show --group system_critical -v
+vigil audit show --maintenance
+```
+
+### `audit stats`
+
+Show severity and suppression breakdown.
+
+```bash
+vigil audit stats [--period <PERIOD>]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--period <PERIOD>` | `7d` | time period: today, 24h, 7d, 30d, all |
+
+Examples:
+
+```bash
+vigil audit stats
+vigil audit stats --period 30d
+vigil audit stats --period all
+```
+
+### `audit verify`
+
+Verify BLAKE3 hash chain integrity of the audit log. If HMAC signing is enabled, also verifies HMAC signatures.
+
+```bash
+vigil audit verify
+```
 
 ---
 
@@ -307,39 +248,62 @@ Configuration inspection and validation.
 vigil config show
 ```
 
+Prints the active configuration as TOML.
+
 ### `config validate`
 
 ```bash
 vigil config validate
 ```
 
-- Valid config prints: `Configuration is valid.`
-- Invalid config prints error and exits non-zero.
+Valid config prints `Configuration is valid.` and exits 0.
+Invalid config prints the error and exits 1.
 
 ---
 
-## `doctor`
+## `setup`
 
-Run environment and health diagnostics:
-- fanotify availability
-- privilege context
-- config validity
-- database access and integrity
-- baseline entry count
-- HMAC key presence (if enabled)
-- notify-send availability
-- package backend detection
-- signal socket setting
+Setup operations for HMAC signing and alert socket.
+
+### `setup hmac`
+
+Generate and configure HMAC signing key.
 
 ```bash
-vigil doctor
+vigil setup hmac [--key-path <PATH>] [--force]
 ```
 
-Notes:
-- If Vigil is deployed as a root-owned systemd service (default), baseline DB files are typically root-owned (`0600`).
-- In that mode, running `vigil doctor` as an unprivileged user may show reduced-coverage checks (`○`/`⚠`) when direct integrity visibility is unavailable.
-- If a fresh daemon health snapshot exists, `vigil doctor` uses it to report baseline/database/audit context instead of failing due to local DB permission limits.
-- Run `sudo vigil doctor` for full database-level diagnostics.
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--key-path <PATH>` | `/etc/vigil/hmac.key` | path to write the HMAC key file |
+| `--force` | false | overwrite existing key file without prompting |
+
+Examples:
+
+```bash
+vigil setup hmac
+vigil setup hmac --key-path /custom/path/hmac.key --force
+```
+
+### `setup socket`
+
+Configure the alert socket path.
+
+```bash
+vigil setup socket [--path <PATH>] [--disable]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--path <PATH>` | `/run/vigil/alert.sock` | path for the Unix domain socket |
+| `--disable` | false | disable the socket sink |
+
+Examples:
+
+```bash
+vigil setup socket --path /run/vigil/alert.sock
+vigil setup socket --disable
+```
 
 ---
 
@@ -354,7 +318,7 @@ vigil version
 Output:
 
 ```text
-vigil 0.13.2
+vigil 0.18.1
 ```
 
 ---
@@ -367,7 +331,7 @@ vigil 0.13.2
 | `1` | command failed (runtime/config/DB/validation error) |
 | `2` | `doctor` found one or more failed checks |
 
-Behavior details:
+Details:
 - `main` exits with `1` on any propagated error.
 - `doctor` uses explicit health exit codes: `0` (all OK), `1` (warnings only), `2` (failures present).
 - `config validate` exits with `1` on validation failure.
@@ -376,7 +340,7 @@ Behavior details:
 
 ## Output Format Examples
 
-Vigil accepts `--format human|json|table` globally.
+Vigil accepts `--format human|json` globally.
 
 ### Human
 
@@ -384,13 +348,12 @@ Vigil accepts `--format human|json|table` globally.
 vigil --format human status
 ```
 
-Example shape:
+Example:
 
 ```text
 Vigil Status
   Baseline entries:    1234
   Last refresh:        1712039200
-  Maintenance window:  inactive
   Database:            /var/lib/vigil/baseline.db
   Monitor backend:     fanotify
 ```
@@ -398,36 +361,18 @@ Vigil Status
 ### JSON
 
 ```bash
-vigil --format json baseline export
+vigil --format json status
 ```
 
-Example shape:
+Example:
 
 ```json
-[
-  {
-    "path": "/etc/passwd",
-    "hash": "...",
-    "inode": 12345,
-    "device": 2050
-  }
-]
-```
-
-### Table
-
-```bash
-vigil --format table baseline stats
-```
-
-Example shape:
-
-```text
-Baseline Statistics
-  Total entries: 1234
-  auto_scan: 1200
-  manual: 20
-  package_manager: 14
+{
+  "baseline_entries": 1234,
+  "last_refresh": 1712039200,
+  "db_path": "/var/lib/vigil/baseline.db",
+  "monitor_backend": "fanotify"
+}
 ```
 
 ---

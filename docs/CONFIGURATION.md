@@ -1,124 +1,101 @@
 # Configuration
 
-Vigil config is TOML, layered, and explicit.
-No hidden defaults beyond what is documented here.
+Vigil configuration is TOML. Fields map directly to `src/config/mod.rs`.
 
 ---
 
-## Config File Locations
+## Load Order
 
-Vigil loads from lowest priority to highest priority, then validates the result.
+Vigil loads from lowest priority to highest priority.
 
-| Priority | Location | Notes |
-|----------|----------|-------|
-| 1 (lowest) | `/etc/vigil/vigil.toml` | system-wide base config |
-| 2 | `~/.config/vigil/vigil.toml` | user override |
-| 3 | `$VIGIL_CONFIG` | environment override |
-| 4 (highest) | `--config <PATH>` | explicit CLI override |
+| Priority | Source |
+|----------|--------|
+| 1 | `/etc/vigil/vigil.toml` |
+| 2 | `~/.config/vigil/vigil.toml` |
+| 3 | `$VIGIL_CONFIG` |
+| 4 | `--config <PATH>` |
 
-Precedence rule: higher priority wins.
-
-```
-+-------------------------------+
-| --config /path/custom.toml    |
-+-------------------------------+
-| $VIGIL_CONFIG                 |
-+-------------------------------+
-| ~/.config/vigil/vigil.toml    |
-+-------------------------------+
-| /etc/vigil/vigil.toml         |
-+-------------------------------+
-```
-
-If no file is found, Vigil uses built-in defaults including built-in watch groups.
+If no file exists, Vigil uses built-in defaults.
 
 ---
 
 ## Full Annotated Example
 
 ```toml
+config_version = 2
+
 [daemon]
-pid_file = "/run/vigil/vigild.pid"        # PID file path
-db_path = "/var/lib/vigil/baseline.db"    # SQLite database path
-log_level = "info"                         # runtime log level
-monitor_backend = "fanotify"              # fanotify or inotify
+pid_file = "/run/vigil/vigild.pid"
+db_path = "/var/lib/vigil/baseline.db"
+log_level = "info"              # error, warn, info, debug, trace
+monitor_backend = "fanotify"    # fanotify, inotify
+worker_threads = 2               # 1..16
+log_format = "text"             # text, json
+runtime_dir = "/run/vigil"
+control_socket = "/run/vigil/control.sock"
+debounce_ms = 100
 
 [scanner]
-schedule = "0 3 * * *"                     # cron-like schedule metadata
-mode = "incremental"                       # incremental or full
-hash_algorithm = "blake3"                  # hashing algorithm string
-max_file_size = 2147483648                  # bytes (2 GiB)
+schedule = "0 3 * * *"
+mode = "incremental"            # incremental, full
+hash_algorithm = "blake3"
+max_file_size = 2147483648
+mmap_threshold = 1048576
+scheduled_mode = "incremental"  # incremental, full
+parallel = false
 
 [alerts]
-desktop_notifications = true                # notify-send desktop alerts
-syslog = true                               # journald/syslog logging
-log_file = "/var/log/vigil/alerts.json"    # JSON alert file
-webhook_url = ""                            # reserved; empty by default
-rate_limit = 10                             # max alerts/minute
-cooldown_seconds = 300                      # per-path cooldown
+desktop_notifications = true
+syslog = true
+log_file = "/var/log/vigil/alerts.json"
+webhook_url = ""
+rate_limit = 10
+cooldown_seconds = 300
+notification_rate_limit = 5
+notification_rate_window_secs = 10
+max_alerts_per_minute = 10000
 
 [alerts.severity_filter]
-dbus_min_severity = "medium"               # low/medium/high/critical
-log_min_severity = "low"                   # low/medium/high/critical
+dbus_min_severity = "medium"    # low, medium, high, critical
+log_min_severity = "low"
+
+[alerts.remote_syslog]
+enabled = false
+server = ""
+port = 514
+protocol = "udp"                # tcp, udp
+facility = "authpriv"           # auth, authpriv, daemon, local0..local7
 
 [exclusions]
 patterns = [
   "*.swp", "*.swx", "*~", "*.tmp", "*.log", "*.cache",
   ".git/*", "__pycache__/*"
 ]
-
-system_exclusions = [
-  "/proc/*", "/sys/*", "/dev/*", "/run/*", "/tmp/*"
-]
+system_exclusions = ["/proc/*", "/sys/*", "/dev/*", "/run/*", "/tmp/*"]
 
 [package_manager]
-auto_rebaseline = true                      # intended behavior flag
-backend = "auto"                           # auto/dpkg/rpm/pacman
+auto_rebaseline = true
+backend = "auto"                # auto, dpkg, rpm, pacman
 
 [hooks]
-signal_socket = ""                         # optional Unix socket path
+signal_socket = ""
 
 [security]
-hmac_signing = false                        # baseline/audit signing gate
-hmac_key_path = "/etc/vigil/hmac.key"      # key path when enabled
-verify_config_integrity = true              # integrity-related guardrail
+hmac_signing = false
+hmac_key_path = "/etc/vigil/hmac.key"
+verify_config_integrity = true
 
 [database]
-wal_mode = true                             # SQLite WAL mode
-audit_rotation_size = 104857600             # bytes (100 MiB)
-audit_retention_days = 90                   # retention metadata
+wal_mode = true
+audit_rotation_size = 104857600
+audit_retention_days = 90
+sync_mode = "normal"            # off, normal, full, extra
+busy_timeout_ms = 5000
 
 [watch.system_critical]
 severity = "critical"
 paths = [
-  "/etc/passwd", "/etc/shadow", "/etc/group", "/etc/gshadow",
-  "/etc/sudoers", "/etc/sudoers.d/", "/etc/pam.d/",
-  "/etc/ssh/sshd_config", "/etc/ld.so.preload",
-  "/etc/ld.so.conf", "/etc/ld.so.conf.d/", "/boot/",
-  "/usr/bin/", "/usr/sbin/", "/usr/lib/systemd/system/", "/lib/modules/"
-]
-
-[watch.persistence]
-severity = "high"
-paths = [
-  "/etc/crontab", "/etc/cron.d/", "/etc/cron.daily/", "/etc/cron.hourly/",
-  "/var/spool/cron/", "/etc/systemd/system/", "/etc/xdg/autostart/",
-  "/etc/init.d/", "/etc/rc.local", "/etc/profile", "/etc/profile.d/",
-  "/etc/bash.bashrc", "/etc/environment"
-]
-
-[watch.user_space]
-severity = "high"
-paths = [
-  "~/.bashrc", "~/.bash_profile", "~/.profile", "~/.zshrc",
-  "~/.ssh/", "~/.gnupg/", "~/.config/autostart/", "~/.local/share/applications/"
-]
-
-[watch.network]
-severity = "medium"
-paths = [
-  "/etc/hosts", "/etc/resolv.conf", "/etc/nsswitch.conf",
-  "/etc/NetworkManager/", "/etc/iptables/", "/etc/nftables.conf"
+  "/etc/passwd", "/etc/shadow", "/etc/sudoers", "/boot/", "/usr/bin/", "/usr/sbin/"
 ]
 ```
 
@@ -126,224 +103,161 @@ paths = [
 
 ## Option Reference
 
+### Top-level
+
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `config_version` | integer | `2` | schema version for config migration logic |
+
 ### `[daemon]`
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `pid_file` | string(path) | `/run/vigil/vigild.pid` | daemon PID file location |
-| `db_path` | string(path) | `/var/lib/vigil/baseline.db` | SQLite database path |
-| `log_level` | string | `info` | runtime log level |
-| `monitor_backend` | enum | `fanotify` | preferred backend (`fanotify` or `inotify`) |
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `pid_file` | path | `/run/vigil/vigild.pid` | daemon pid file |
+| `db_path` | path | `/var/lib/vigil/baseline.db` | baseline DB path |
+| `log_level` | enum | `info` | `error`, `warn`, `info`, `debug`, `trace` |
+| `monitor_backend` | enum | `fanotify` | preferred backend |
+| `worker_threads` | integer | `2` | valid range is 1 to 16 |
+| `log_format` | enum | `text` | `text` or `json` |
+| `runtime_dir` | path | `/run/vigil` | runtime snapshots and daemon files |
+| `control_socket` | path | `/run/vigil/control.sock` | daemon control socket |
+| `debounce_ms` | integer | `100` | per-path debounce window |
 
 ### `[scanner]`
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `schedule` | string | `0 3 * * *` | scan schedule metadata |
-| `mode` | enum | `incremental` | default scan mode |
-| `hash_algorithm` | string | `blake3` | hash algorithm label |
-| `max_file_size` | integer | `2147483648` | max file size in bytes |
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `schedule` | string | `0 3 * * *` | cron expression |
+| `mode` | enum | `incremental` | CLI default mode |
+| `hash_algorithm` | enum | `blake3` | currently only `blake3` |
+| `max_file_size` | integer | `2147483648` | bytes |
+| `mmap_threshold` | integer | `1048576` | bytes |
+| `scheduled_mode` | enum | `incremental` | mode used by scheduler |
+| `parallel` | bool | `false` | enables optional parallel scanning paths |
 
 ### `[alerts]`
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `desktop_notifications` | bool | `true` | enable notify-send desktop notifications |
-| `syslog` | bool | `true` | emit alert summaries to journald/syslog |
-| `log_file` | string(path) | `/var/log/vigil/alerts.json` | JSON log target |
-| `webhook_url` | string | empty | reserved webhook field |
-| `rate_limit` | integer | `10` | max alerts per minute |
-| `cooldown_seconds` | integer | `300` | per-path suppression cooldown |
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `desktop_notifications` | bool | `true` | enables `notify-send` sink |
+| `syslog` | bool | `true` | enables journald/syslog sink |
+| `log_file` | path | `/var/log/vigil/alerts.json` | JSON alert sink path |
+| `webhook_url` | string | empty | reserved field |
+| `rate_limit` | integer | `10` | global alert rate gate |
+| `cooldown_seconds` | integer | `300` | per-path cooldown |
+| `notification_rate_limit` | integer | `5` | desktop sink limit |
+| `notification_rate_window_secs` | integer | `10` | desktop sink window |
+| `max_alerts_per_minute` | integer | `10000` | hard ceiling in alert dispatcher |
 
 ### `[alerts.severity_filter]`
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `dbus_min_severity` | enum | `medium` | minimum severity for desktop notify |
-| `log_min_severity` | enum | `low` | minimum severity for JSON logging |
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `dbus_min_severity` | enum | `medium` | desktop minimum severity |
+| `log_min_severity` | enum | `low` | JSON log minimum severity |
+
+### `[alerts.remote_syslog]`
+
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `enabled` | bool | `false` | enable remote syslog sink |
+| `server` | string | empty | hostname or IP |
+| `port` | integer | `514` | remote syslog port |
+| `protocol` | enum | `udp` | `udp` or `tcp` |
+| `facility` | enum | `authpriv` | `auth`, `authpriv`, `daemon`, `local0..local7` |
 
 ### `[exclusions]`
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `patterns` | string[] | editor/temp defaults | glob patterns ignored by event filter |
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `patterns` | string[] | built-in list | globset pattern list |
 | `system_exclusions` | string[] | `/proc/*`, `/sys/*`, `/dev/*`, `/run/*`, `/tmp/*` | system path exclusions |
 
 ### `[package_manager]`
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `auto_rebaseline` | bool | `true` | package update workflow intent flag |
-| `backend` | enum | `auto` | ownership backend: `auto|dpkg|rpm|pacman` |
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `auto_rebaseline` | bool | `true` | update baseline after package updates |
+| `backend` | enum | `auto` | `auto`, `dpkg`, `rpm`, `pacman` |
 
 ### `[hooks]`
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `signal_socket` | string(path) | empty | optional Unix socket for alert events |
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `signal_socket` | path string | empty | optional local alert socket path |
 
 ### `[security]`
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `hmac_signing` | bool | `false` | require HMAC signing workflow |
-| `hmac_key_path` | string(path) | `/etc/vigil/hmac.key` | HMAC key file |
-| `verify_config_integrity` | bool | `true` | integrity validation toggle |
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `hmac_signing` | bool | `false` | enables HMAC audit signing |
+| `hmac_key_path` | path | `/etc/vigil/hmac.key` | HMAC key file |
+| `verify_config_integrity` | bool | `true` | integrity check toggle |
 
 ### `[database]`
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `wal_mode` | bool | `true` | use SQLite WAL journal mode |
-| `audit_rotation_size` | integer | `104857600` | audit rotation size metadata |
-| `audit_retention_days` | integer | `90` | retention metadata |
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `wal_mode` | bool | `true` | enables SQLite WAL |
+| `audit_rotation_size` | integer | `104857600` | bytes |
+| `audit_retention_days` | integer | `90` | rotation retention window |
+| `sync_mode` | enum | `normal` | `off`, `normal`, `full`, `extra` |
+| `busy_timeout_ms` | integer | `5000` | SQLite busy timeout |
 
 ### `[watch.<group>]`
 
-| Option | Type | Required | Description |
-|--------|------|----------|-------------|
-| `severity` | enum | yes | group severity (`low|medium|high|critical`) |
-| `paths` | string[] | yes | path list (file or directory) |
-
----
-
-## Watch Groups
-
-A watch group is a named path set with one severity.
-
-Built-in defaults:
-- `system_critical`
-- `persistence`
-- `user_space`
-- `network`
-
-Example custom group:
-
-```toml
-[watch.custom]
-severity = "high"
-paths = [
-  "/opt/custom-app/bin/",
-  "/etc/custom-app/config.toml"
-]
-```
-
-Guidelines:
-- Use one group per risk domain.
-- Keep paths explicit.
-- Prefer directories for whole surfaces, files for strict critical points.
-
----
-
-## Exclusion Patterns
-
-Vigil uses glob matching for exclusions.
-
-| Pattern | Meaning |
-|---------|---------|
-| `*.swp` | editor swap files |
-| `*~` | backup files |
-| `.git/*` | git metadata subtree |
-| `/proc/*` | pseudo filesystem |
-
-Rules:
-- Pattern globs are validated at startup.
-- Invalid glob -> config validation failure.
-- System exclusions are prefix-filtered in monitor filter stage.
-
----
-
-## Alert Configuration
-
-Three control points shape notification behavior:
-
-| Control | Effect |
-|---------|--------|
-| `cooldown_seconds` | suppresses repeated alerts for same path within window |
-| `rate_limit` | caps total notifications/minute |
-| maintenance window | suppresses notifications for package-managed paths |
-
-Audit truth rule:
-- Suppression never drops audit rows.
-- All detected changes are written to `audit_log`.
-
----
-
-## HMAC Signing
-
-When `security.hmac_signing = true`:
-- Vigil expects `security.hmac_key_path` to exist.
-- Config validation fails if key file is missing.
-- `vigil doctor` reports key presence/absence, permissions, and ownership.
-- At runtime, Vigil warns if the key file is more permissive than mode `0600`.
-
-For detailed guidance on key generation, storage, rotation, and threat
-model, see [SECURITY.md — HMAC Key Lifecycle](SECURITY.md#hmac-key-lifecycle).
-
-Key management baseline:
-
-```bash
-sudo install -d -m 700 /etc/vigil
-sudo sh -c 'head -c 32 /dev/urandom > /etc/vigil/hmac.key'
-sudo chmod 600 /etc/vigil/hmac.key
-```
-
-Do:
-- keep key root-owned
-- mode `0600`
-- rotate with controlled re-baseline process
-
-Do not:
-- commit key material
-- reuse keys across unrelated hosts
-
----
-
-## Live Reload (SIGHUP)
-
-Sending `SIGHUP` to the daemon (`systemctl reload vigild` or `kill -HUP <pid>`)
-triggers a config reload. Not all fields can be applied without a restart.
-
-### Fields that take effect immediately on SIGHUP
-
-| Field | Effect |
-|-------|--------|
-| `exclusions.patterns` | event filter rebuilt |
-| `exclusions.system_exclusions` | event filter rebuilt |
-| `alerts.rate_limit` | rate limiter reset with new limit |
-| `alerts.cooldown_seconds` | per-path cooldown updated |
-| `scanner.max_file_size` | used on next event comparison |
-| `database.audit_retention_days` | used on next rotation cycle |
-
-### Fields that require a full daemon restart
-
-| Field | Why |
-|-------|-----|
-| `daemon.pid_file` | bound at startup |
-| `daemon.db_path` | database opened at startup |
-| `daemon.monitor_backend` | fanotify/inotify backend chosen at startup |
-| `watch.*` paths | monitor marks set at startup |
-
-Changes to restart-only fields are logged as warnings on SIGHUP.
+| Option | Type | Required | Notes |
+|--------|------|----------|-------|
+| `severity` | enum | yes | `low`, `medium`, `high`, `critical` |
+| `paths` | string[] | yes | watched file or directory paths |
 
 ---
 
 ## Validation Rules
 
-Vigil rejects config when:
+Vigil rejects config when these rules fail.
 
-| Rule | Why |
-|------|-----|
-| no watch groups defined | no monitoring surface |
-| exclusion glob invalid | ambiguous filtering behavior |
-| `max_file_size == 0` | impossible scanner policy |
-| `rate_limit == 0` | impossible alert policy |
-| HMAC enabled but key missing | false integrity assurance |
+- no watch groups are defined
+- exclusion pattern is not a valid glob
+- `scanner.max_file_size` is `0`
+- `alerts.rate_limit` is `0`
+- `daemon.worker_threads` is outside `1..16`
+- `scanner.schedule` is not a valid cron expression
+- `security.hmac_signing = true` and key file is missing
 
-Vigil warns (but does not reject) when:
-- watch path does not currently exist
-- log directory metadata checks suggest access issues
+Deep validation warns when directories or watch paths do not exist yet.
 
 ---
 
-*Configuration should tune scope, not redefine purpose.*
+## Reload Behavior (SIGHUP)
+
+`SIGHUP` reload swaps `Config` in memory and logs field differences.
+It does not restart all initialized components.
+
+### Changes that currently apply without daemon restart
+
+| Field | Why |
+|-------|-----|
+| `scanner.schedule` | scheduler reads config each loop |
+| `scanner.scheduled_mode` | scheduler reads config each run |
+| `scanner.max_file_size` | worker snapshot options read config per event |
+| `scanner.mmap_threshold` | worker snapshot options read config per event |
+| `database.audit_retention_days` | coordinator uses current value each housekeeping tick |
+
+### Changes that require restart to be fully applied
+
+| Field group | Why |
+|-------------|-----|
+| `daemon.control_socket` | socket bind happens at startup |
+| `daemon.runtime_dir` | runtime paths are initialized at startup paths and tooling expects stable location |
+| `daemon.monitor_backend` | backend thread starts at startup |
+| `daemon.worker_threads` | worker pool size is fixed at startup |
+| `daemon.debounce_ms` | worker event filter is built at startup |
+| `alerts.*` including `notification_rate_limit`, `notification_rate_window_secs`, `max_alerts_per_minute` | alert dispatcher and sinks are built at startup |
+| `exclusions.*` | worker exclusion filter is built at startup |
+| `watch.*` path coverage | monitor watch registration happens at startup |
+| `database.sync_mode`, `database.busy_timeout_ms`, `database.wal_mode` | DB connection pragmas are applied at open time |
+
+---
+
+Configuration should narrow scope and tune behavior. It should not hide runtime truth.

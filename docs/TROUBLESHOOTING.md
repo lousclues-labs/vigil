@@ -1,17 +1,17 @@
 # Troubleshooting
 
-When Vigil is noisy or broken, use this page first.
+Use this page when Vigil behavior is unclear or degraded.
 
 ---
 
 ## Fast Triage
 
-Run these first:
+Run these first.
 
 ```bash
 vigil doctor
 vigil status
-vigil log stats
+vigil audit stats
 ```
 
 If daemon is systemd-managed:
@@ -28,24 +28,24 @@ journalctl -u vigild.service -n 100 --no-pager
 ### Symptoms
 
 - `vigil doctor` reports fanotify unavailable
-- logs mention fallback to inotify
+- daemon logs mention fallback to inotify
 
 ### Cause
 
-fanotify usually needs `CAP_SYS_ADMIN` (or root context).
+fanotify usually needs elevated capability.
 
 ### Fix
 
-1. Run daemon with service capabilities (preferred via provided unit).
-2. Verify service capabilities are not overridden.
-3. Confirm backend in status output.
+1. Run daemon with required service capabilities.
+2. Confirm service override did not remove capabilities.
+3. Verify backend in status output.
 
 ```bash
 vigil doctor
 vigil status
 ```
 
-If you cannot grant capability, inotify fallback is expected.
+If capabilities cannot be granted, inotify fallback is expected.
 
 ---
 
@@ -53,110 +53,84 @@ If you cannot grant capability, inotify fallback is expected.
 
 ### Symptoms
 
-- flood of modified-file alerts after `pacman -Syu` or `apt upgrade`
+- large burst of file modification alerts after package upgrades
 
 ### Cause
 
-Maintenance hooks missing or failed.
+Package hooks were missing or failed.
 
-### Fix
-
-1. Install package hooks.
-2. Manually wrap update in maintenance window.
-3. Refresh baseline after update.
+### Recovery
 
 ```bash
-vigil maintenance enter
-# run package update
-vigil baseline refresh
-vigil maintenance exit
+# After a package update that triggered many alerts:
+vigil check --accept
+
+# Or if you want a full baseline rebuild:
+vigil init --force
 ```
 
-For pacman/apt automation, install files from `hooks/`.
+Then install the hook files from `hooks/apt/` or `hooks/pacman/`.
 
 ---
 
-## Database Locked or Corruption Errors
+## Package Manager Hook Failure
+
+If hooks fail and package operations already ran, use this recovery path.
+
+```bash
+# After package update with missing hooks:
+vigil check --accept
+
+# Or full baseline rebuild:
+vigil init --force
+```
+
+Then install hooks from `hooks/` so this does not repeat.
+
+---
+
+## Database Locked or Corrupt
 
 ### Symptoms
 
-- sqlite "database is locked"
-- integrity check failures
-- daemon start fails on DB checks
+- SQLite reports database locked
+- integrity checks fail
+- daemon refuses startup
 
-### Cause
-
-- concurrent tooling against same DB
-- abrupt shutdowns
-- filesystem/storage issues
-
-### Fix
-
-1. Stop daemon.
-2. Run doctor/integrity checks.
-3. Backup DB.
-4. Rebuild baseline if needed.
+### Recovery
 
 ```bash
 sudo systemctl stop vigild.service
 vigil doctor
 cp /var/lib/vigil/baseline.db /var/lib/vigil/baseline.db.bak
-vigil init
+vigil init --force
 sudo systemctl start vigild.service
 ```
 
-Note: rebuild resets trusted baseline to current disk state. Do this only on known-good system state.
+Rebuild only on known-good host state.
 
 ---
 
-## Understanding `vigil doctor` Output
-
-`vigil doctor` lines are grouped by checks.
-
-| Marker | Meaning |
-|--------|---------|
-| `OK`/check mark | capability available and passed |
-| warning marker | degraded mode, optional missing component |
-| fail marker | broken prerequisite that needs action |
-
-Typical warnings that are acceptable:
-- not running as root in local CLI context
-- notify-send unavailable on headless host
-- signal socket unset (optional)
-
-Typical failures that need action:
-- config invalid
-- DB integrity check failed
-- HMAC key missing while signing enabled
-
----
-
-## Alerts For Files You Expect To Change
-
-### Symptoms
-
-- recurring alerts for temp/cache/generated files
+## Repeated Alerts for Expected Temporary Files
 
 ### Cause
 
-Path is monitored but should be excluded.
+A noisy path is in watch scope and not excluded.
 
 ### Fix
 
-Add explicit exclusions:
+Add exclusions and validate.
 
 ```toml
 [exclusions]
 patterns = ["*.tmp", "*.cache", "*.log"]
 ```
 
-Or scope watch groups tighter to high-value paths.
-
-Then refresh baseline:
+Then run:
 
 ```bash
 vigil config validate
-vigil baseline refresh
+vigil check --accept
 ```
 
 ---
@@ -165,69 +139,43 @@ vigil baseline refresh
 
 ### Symptoms
 
-- warnings about unable to watch directories
-- partial monitoring under inotify fallback
-
-### Cause
-
-Kernel inotify watch limit too low for current tree size.
+- warnings about missing recursive watches
+- degraded visibility with inotify fallback
 
 ### Fix
-
-Increase watch limits:
 
 ```bash
 sudo sysctl fs.inotify.max_user_watches=524288
 sudo sysctl fs.inotify.max_user_instances=1024
 ```
 
-Persist via `/etc/sysctl.d/` if needed.
-
-Long-term fix: prefer fanotify mode where possible.
+Persist values in `/etc/sysctl.d/` for reboot durability.
 
 ---
 
-## Signal Socket Not Responding
-
-### Symptoms
-
-- downstream listener sees no events
-- no hard errors in CLI/daemon
+## Signal Socket Not Receiving Events
 
 ### Cause
 
-Signal socket channel is best-effort and optional.
-If listener is down or path permissions are wrong, Vigil drops this channel silently.
+Socket channel is optional and best effort.
 
 ### Fix
 
-1. Verify `hooks.signal_socket` value.
+1. Check `hooks.signal_socket` path.
 2. Confirm listener process is running.
-3. Validate directory/socket permissions.
-4. Use JSON log/journald as fallback truth source.
+3. Check directory and socket permissions.
+4. Use audit and JSON log as source of truth.
 
 ```bash
 vigil config show
-vigil log show --last 20
+vigil audit show -n 20
 ```
 
 ---
 
-## systemd Service Failing
+## systemd Service Fails to Stay Up
 
-### Symptoms
-
-- `vigild.service` repeatedly restarts or exits
-
-### Cause
-
-Common causes:
-- binary path mismatch (`/usr/bin/vigild` missing)
-- invalid config
-- DB path permissions
-- capability restrictions from overridden unit
-
-### Fix Checklist
+Run this checklist.
 
 ```bash
 systemctl cat vigild.service
@@ -237,12 +185,12 @@ vigil config validate
 vigil doctor
 ```
 
-Verify these paths exist and are writable where required:
+Confirm these paths exist and have correct permissions:
 - `/var/lib/vigil`
 - `/var/log/vigil`
 - `/run/vigil`
 
-If unit file changed:
+Apply updated units with:
 
 ```bash
 sudo systemctl daemon-reload
@@ -251,15 +199,11 @@ sudo systemctl restart vigild.service
 
 ---
 
-## Still Stuck?
+## Still Stuck
 
-Capture these and include in issue report:
+Include these artifacts in your issue:
 - `vigil doctor` output
 - `vigil status` output
-- relevant `journalctl -u vigild` lines
+- recent `journalctl -u vigild` lines
 - sanitized config excerpt
-- exact command sequence to reproduce
-
----
-
-*Troubleshooting should reduce uncertainty, not add guesswork.*
+- exact command sequence

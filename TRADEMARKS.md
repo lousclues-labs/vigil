@@ -1,6 +1,6 @@
 # Trademark Policy
 
-*Version 1.0 — April 2026*
+*Version 1.0 -- April 2026*
 
 ## Trademark Ownership
 
@@ -44,7 +44,7 @@ You may (and should) credit "Vigil" by name when attributing the origin of code 
 
 You may use the name "Vigil" when linking to the official repository:
 
-- https://github.com/DigiNotar/vigil
+- https://github.com/loujr/vigil
 
 ### 4. Academic and Research Use
 
@@ -86,16 +86,16 @@ The GPL explicitly permits forking and creating derivative works from Vigil's so
 
 1. **Use a different name** for your fork. Do not call it "Vigil" or any confusingly similar name. Acceptable patterns: "MyProject (based on Vigil)" or an entirely new name.
 
-2. **Remove Vigil branding** from your fork's user-facing interfaces, marketing materials, and distribution metadata. (Currently, Vigil has no logos or visual brand assets — this applies to the name itself and any future brand assets.)
+2. **Remove Vigil branding** from your fork's user-facing interfaces, marketing materials, and distribution metadata. (Currently, Vigil has no logos or visual brand assets. This applies to the name itself and any future brand assets.)
 
 3. **Clearly indicate** that your fork is a derivative work and not the official Vigil project. A notice in your README is sufficient:
-   > "This project is a fork of [Vigil](https://github.com/DigiNotar/vigil), originally created by Louis Nelson Jr."
+   > "This project is a fork of [Vigil](https://github.com/loujr/vigil), originally created by Louis Nelson Jr."
 
 4. **Preserve attribution** as required by the GPL and CC BY 4.0 licenses. This includes copyright notices, SPDX headers, and the NOTICE file.
 
 ### Permitted
 
-- You may state that your fork is "based on Vigil" or "derived from Vigil" — this is descriptive fair use.
+- You may state that your fork is "based on Vigil" or "derived from Vigil". This is descriptive fair use.
 - You may include the original Vigil copyright notices and attribution (you must, under the GPL).
 - You may link to the original Vigil repository for reference.
 
@@ -112,8 +112,8 @@ Vigil does not currently have logos, icons, or other visual brand assets. If suc
 
 If you believe someone is using the Vigil or lousclues trademarks in violation of this policy, please report it:
 
-- **GitHub:** Open an issue at [DigiNotar/vigil](https://github.com/DigiNotar/vigil)
-- **Contact:** Louis Nelson Jr. ([@loujr](https://github.com/loujr)) — see GitHub profile for current contact information
+- **GitHub:** Open an issue at [loujr/vigil](https://github.com/loujr/vigil)
+- **Contact:** Louis Nelson Jr. ([@loujr](https://github.com/loujr)). See GitHub profile for current contact information.
 
 ## Trademark Licensing
 

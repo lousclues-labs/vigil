@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/badge/CI-GitHub_Actions-success)](.github/workflows/ci.yml)
 [![Security Audit](https://img.shields.io/badge/Security-Audit-success)](.github/workflows/scheduled.yml)
-[![Version](https://img.shields.io/badge/version-0.14.0-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.18.1-blue)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange.svg)](https://www.rust-lang.org/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
 
@@ -18,7 +18,7 @@ Most security tools want to be smart. They scan your files, apply heuristics,
 consult cloud databases, compute risk scores, and then tell you something
 is "potentially suspicious." You nod. You ignore it. You move on.
 
-Vigil doesn't do any of that.
+Vigil doesn't do any of that. I built it specifically to not do any of that.
 
 **We watch, we don't act.** Vigil compares hashes. Hashes match or they
 don't. Permissions changed or they didn't. The inode is the same or it was
@@ -34,7 +34,7 @@ works identically.
 
 **We don't quarantine. We don't execute. We don't remediate.** Vigil is a
 witness, not a guard. When something changes that shouldn't have, Vigil
-tells you -- immediately, clearly, and only once. What you do about it is
+tells you. Immediately, clearly, and only once. What you do about it is
 your decision.
 
 Read the full [Principles](docs/PRINCIPLES.md) if you want to understand
@@ -99,10 +99,11 @@ You're protected.
 
 ## The Basics
 
-### Initialization
+### Setup
 
 ```bash
 vigil init                         # Create baseline from configured watch paths
+vigil init --force                 # Overwrite existing baseline without asking
 vigil status                       # Show baseline stats and daemon health
 vigil doctor                       # Run self-diagnostics
 ```
@@ -119,49 +120,50 @@ sudo systemctl start vigild        # Start as systemd daemon
 ```bash
 vigil check                        # Incremental check (mtime-changed files only)
 vigil check --full                 # Full scan (re-hash everything)
-vigil baseline diff                # Show changes since last baseline
+vigil check --now                  # Trigger scan on running daemon via control socket
+vigil diff /etc/passwd             # Compare a single file against its baseline
 ```
 
-### Baseline Management
+### Accepting Changes
 
 ```bash
-vigil baseline init                # Create initial baseline
-vigil baseline refresh             # Re-scan and update all entries
-vigil baseline refresh --paths /etc # Refresh only paths under /etc
-vigil baseline add /path/to/file   # Add a single file
-vigil baseline remove /path/to/file # Remove a single file
-vigil baseline stats               # Show entry counts by source
-vigil baseline export              # Export baseline as JSON
+vigil check --accept               # Show changes, then update baseline to current state
+vigil check --accept --path '/etc/*'  # Accept only changes matching a glob
 ```
 
-### Maintenance Windows
+After package updates, `vigil check --accept` is the way to tell Vigil
+"yes, I know these files changed, that's fine." The pacman/apt hooks in
+`hooks/` do this automatically.
+
+### Audit Log
 
 ```bash
-vigil maintenance enter            # Suppress alerts for package-managed paths
-vigil maintenance exit             # Resume normal alerting
-vigil maintenance status           # Check maintenance window state
-```
-
-Package manager hooks handle this automatically during `pacman -Syu` and
-`apt upgrade`.
-
-### Alert History
-
-```bash
-vigil log show                     # Show recent alerts
-vigil log show --severity critical # Filter by severity
-vigil log show --last 50           # Show last 50 entries
-vigil log search --path /etc/passwd # Search by path
-vigil log search --severity high   # Search by severity
-vigil log stats                    # Alert count breakdown
-vigil log verify                   # Verify HMAC integrity of audit log
+vigil audit show                   # Show recent audit entries (default: last 50)
+vigil audit show -n 100            # Show last 100 entries
+vigil audit show --severity high   # Filter by severity
+vigil audit show --path '/etc/*'   # Filter by path glob
+vigil audit show --since 2026-04-01  # Filter by date
+vigil audit show --group system_critical  # Filter by watch group
+vigil audit show -v                # Show full change details
+vigil audit stats                  # Severity and count breakdown
+vigil audit stats --period 30d     # Stats for last 30 days
+vigil audit verify                 # Verify audit chain integrity
 ```
 
 ### Configuration
 
 ```bash
-vigil config show                  # Display active configuration
+vigil config show                  # Display active configuration as TOML
 vigil config validate              # Validate configuration file
+```
+
+### HMAC and Socket Setup
+
+```bash
+vigil setup hmac                   # Generate HMAC signing key at default path
+vigil setup hmac --key-path /custom/path --force  # Custom path, overwrite existing
+vigil setup socket --path /run/vigil/alert.sock   # Configure alert socket
+vigil setup socket --disable       # Disable alert socket
 ```
 
 ---
@@ -174,15 +176,23 @@ Vigil keeps its config in `/etc/vigil/vigil.toml` (system) or
 ```toml
 [daemon]
 monitor_backend = "fanotify"       # "fanotify" or "inotify"
+log_level = "info"                 # error/warn/info/debug/trace
+control_socket = "/run/vigil/control.sock"
 
 [scanner]
-hash_algorithm = "blake3"          # The only option that makes sense
+schedule = "0 3 * * *"             # cron schedule for scheduled scans
+mode = "incremental"               # incremental or full
+hash_algorithm = "blake3"          # the only option that makes sense
 max_file_size = 2147483648         # 2 GB -- skip larger files
 
 [alerts]
 desktop_notifications = true       # D-Bus via notify-send
-cooldown_seconds = 300             # Per-path alert cooldown (5 min)
-rate_limit = 10                    # Max alerts per minute
+cooldown_seconds = 300             # per-path alert cooldown (5 min)
+rate_limit = 10                    # max alerts per minute
+
+[security]
+hmac_signing = false               # enable HMAC signing for audit entries
+hmac_key_path = "/etc/vigil/hmac.key"
 
 [watch.system_critical]
 severity = "critical"
@@ -224,7 +234,7 @@ See [Configuration](docs/CONFIGURATION.md) for the full reference.
 | [Dependency Audit](licenses/DEPENDENCY-AUDIT.md) | Dependency license compatibility framework |
 | [Third-Party Licenses](licenses/THIRD-PARTY-LICENSES) | Direct dependency attributions |
 | [Documentation License](licenses/LICENSE-DOCS.md) | License terms for project docs |
-| [Commercial Licensing](licenses/LICENSE-COMMERCIAL.md) | Commercial licensing inquiry pathway |
+| [Commercial Licensing](licenses/LICENSE-COMMERCIAL.md) | Commercial license terms |
 | [NOTICE](NOTICE) | Project identity and attribution |
 | [Trademarks](TRADEMARKS.md) | Trademark usage policy |
 | [Contributing](CONTRIBUTING.md) | How to help |
@@ -254,13 +264,13 @@ Vigil is dual-licensed:
 | Documentation | Creative Commons Attribution 4.0 (CC BY 4.0) | [LICENSE-DOCS.md](licenses/LICENSE-DOCS.md) |
 | Third-Party Dependencies | MIT, Apache-2.0, and other permissive licenses | [THIRD-PARTY-LICENSES](licenses/THIRD-PARTY-LICENSES) |
 
-**For most users:** The GPL covers you fully. Use Vigil, monitor your files, run the daemon. No restrictions beyond the GPL.
+**For most users:** The GPL covers you completely. Use Vigil, monitor your files, run the daemon. No restrictions beyond the GPL.
 
-**For proprietary/commercial use:** If you need to embed Vigil in closed-source products or redistribute without GPL obligations, a [commercial license](licenses/LICENSE-COMMERCIAL.md) is available for inquiry. No commercial license is currently active — Vigil is single-licensed under GPL-3.0-only at this time.
+**For proprietary/commercial use:** If you need to embed Vigil in closed-source products or redistribute without GPL obligations, a [commercial license](licenses/LICENSE-COMMERCIAL.md) is available. Contact [@loujr](https://github.com/loujr) for terms.
 
-**For contributors:** By submitting a pull request, you agree to the [Contributor License Agreement](licenses/CONTRIBUTOR-LICENSE.md). You keep your copyright; you grant the project permission to include your contribution under the current and any future licenses.
+**For contributors:** By submitting a pull request, you agree to the [Contributor License Agreement](licenses/CONTRIBUTOR-LICENSE.md). You keep your copyright. You grant the project permission to use your contribution under both licenses.
 
-**Trademarks:** "Vigil" and "lousclues" are trademarks of Louis Nelson Jr. See [TRADEMARKS.md](TRADEMARKS.md) for usage guidelines. The GPL does not grant trademark rights.
+**Trademarks:** "Vigil" and "lousclues" are trademarks of Louis Nelson Jr. See [TRADEMARKS.md](TRADEMARKS.md). The GPL does not grant trademark rights.
 
 For the complete licensing framework, see [LICENSING.md](licenses/LICENSING.md). For project governance and succession planning, see [GOVERNANCE.md](GOVERNANCE.md).
 

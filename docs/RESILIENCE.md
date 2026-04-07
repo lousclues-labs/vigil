@@ -77,7 +77,7 @@ Important:
 
 | Failure | Behavior | Recovery |
 |---------|----------|----------|
-| transient race (event arrives, file gone by compare) | comparison returns transient error/deleted change path | monitor loop continues; next events still processed |
+| transient race (event arrives, file gone by compare) | comparison returns transient error/deleted change path | monitor loop continues. Next events still process normally |
 
 This is expected in real systems with high churn.
 
@@ -102,15 +102,16 @@ If stale PID file remains, restart unit and validate status.
 
 | Failure | Behavior | Recovery |
 |---------|----------|----------|
-| pre/post hooks not installed or fail | package updates may create noisy alerts | manual maintenance + baseline refresh |
+| pre/post hooks not installed or fail | package updates may create noisy alerts | re-accept drift or rebuild baseline |
 
 Manual recovery:
 
 ```bash
-vigil maintenance enter
-# run package update
-vigil baseline refresh --quiet
-vigil maintenance exit
+# After package update with missing hooks:
+vigil check --accept
+
+# Or full baseline rebuild:
+vigil init --force
 ```
 
 Then install correct hooks from `hooks/`.

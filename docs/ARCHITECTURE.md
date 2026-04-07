@@ -1,74 +1,69 @@
 # Architecture
 
-How Vigil is built. The actual structure, not the marketing version.
+Vigil has one job. Detect filesystem boundary changes and record them.
 
 ---
 
 ## Big Picture
 
 ```
-+------------------------------------------------------------------------+
-|                                  VIGIL                                 |
-|                                                                        |
-|  +-------------------+                    +--------------------------+  |
-|  |   vigil (CLI)     |                    |     vigild (daemon)      |  |
-|  | one-shot commands |                    | long-running event loop  |  |
-|  +---------+---------+                    +-------------+------------+  |
-|            |                                              |             |
-|            | init/check/baseline/log/config               | watch       |
-|            v                                              v             |
-|  +----------------------+                      +---------------------+  |
-|  |   Baseline Engine    |<-------------------->|   Monitor Backend   |  |
-|  | hash + metadata      |                      | fanotify / inotify  |  |
-|  +----------+-----------+                      +----------+----------+  |
-|             |                                             |             |
-|             v                                             v             |
-|  +----------------------+                      +---------------------+  |
-|  |  SQLite (WAL mode)   |<-------------------->| Comparison Engine   |  |
-|  | baseline/audit/state |                      | open->fstat->hash   |  |
-|  +----------+-----------+                      +----------+----------+  |
-|             ^                                             |             |
-|             |                                             v             |
-|             |                                  +---------------------+  |
-|             |                                  |   Alert Pipeline    |  |
-|             |                                  | cooldown/rate-limit |  |
-|             |                                  +----+----+----+-----+  |
-|             |                                       |    |    |        |
-|             |                                       |    |    +------> Unix signal socket
-|             |                                       |    +-----------> JSON alert log
-|             |                                       +---------------> journald/syslog
-|             |                                                      -> desktop notification (notify-send)
-+------------------------------------------------------------------------+
++--------------------------------------------------------------------------------+
+|                                    VIGIL                                       |
+|                                                                                |
+|  +-----------------------------+          +----------------------------------+ |
+|  | CLI process: vigil          |          | Daemon process: vigild           | |
+|  | init, check, diff, status   |          | long-running monitor             | |
+|  +-------------+---------------+          +----------------+-----------------+ |
+|                |                                         |                    |
+|                | one-shot commands                       | event loop          |
+|                v                                         v                    |
+|      +----------------------+                 +----------------------------+   |
+|      | scanner.rs           |                 | monitor backend            |   |
+|      | baseline scans       |                 | fanotify or inotify        |   |
+|      +----------+-----------+                 +-------------+--------------+   |
+|                 |                                           |                  |
+|                 |                                           v                  |
+|                 |                              +----------------------------+   |
+|                 |                              | worker pool                |   |
+|                 |                              | filter + compare + classify|   |
+|                 |                              +-------------+--------------+   |
+|                 |                                            |                  |
+|                 v                                            v                  |
+|      +----------------------+                 +----------------------------+   |
+|      | baseline.db          |                 | alert dispatcher           |   |
+|      | trusted file state   |                 | audit write + sinks        |   |
+|      +----------+-----------+                 +------+------+------+-------+   |
+|                 |                                     |      |      |          |
+|                 |                                     |      |      +--> socket |
+|                 |                                     |      +---------> JSON   |
+|                 |                                     +---------------> journal |
+|                 v                                                        + DBus |
+|      +----------------------+                                                     |
+|      | audit.db             |                                                     |
+|      | append-only changes  |                                                     |
+|      +----------------------+                                                     |
+|                                                                                |
+|  +------------------------------ control plane --------------------------------+ |
+|  | control.rs listens on daemon.control_socket (default /run/vigil/control.sock) |
+|  | methods: status, baseline_count, reload, scan, metrics_prometheus            |
+|  +-------------------------------------------------------------------------------+ |
++--------------------------------------------------------------------------------+
 ```
-
-Vigil has one purpose: detect structural filesystem changes and report them.
-This is Principle I (Watch, Don't Act) and Principle VII (Boundaries, Not Intelligence).
 
 ---
 
-## Two Binaries, One Purpose
+## Runtime Threads
 
-```
-+-----------------------------------------------------------------------+
-| $ vigil <command>                     $ vigild                         |
-| one-shot CLI                          daemon entrypoint               |
-|                                                                       |
-| +----------------------+             +------------------------------+  |
-| | Parse args (clap)    |             | Load config + open DB        |  |
-| | Execute command      |             | Start monitor backend         |  |
-| | Exit                 |             | Event loop until signal       |  |
-| +----------+-----------+             +---------------+--------------+  |
-|            |                                         |                 |
-|            +------------- both use same core library +                 |
-|                               (src/lib.rs)                             |
-+-----------------------------------------------------------------------+
-```
+`vigild` runs a small fixed set of threads.
 
-- `vigil` is the operator-facing CLI for init, checks, baseline updates, log queries, diagnostics.
-- `vigild` is the daemon entrypoint used by systemd for real-time monitoring.
-- Both use the same modules and same database schema.
+- monitor thread in `src/monitor/fanotify.rs` or `src/monitor/inotify.rs`
+- worker thread pool in `src/worker.rs`
+- alert dispatcher thread in `src/alert/mod.rs`
+- coordinator thread in `src/coordinator.rs`
+- scan scheduler thread in `src/scan_scheduler.rs`
+- control socket thread in `src/control.rs`
 
-This is Principle VIII (Vigil Stands Alone): small pieces, explicit behavior.
+The coordinator owns lifecycle coordination and periodic housekeeping.
 
 ---
 
@@ -76,402 +71,277 @@ This is Principle VIII (Vigil Stands Alone): small pieces, explicit behavior.
 
 ```
 src/
-|-- main.rs                  # CLI entrypoint, command dispatch
-|-- daemon.rs                # Daemon binary entrypoint (vigild)
-|-- lib.rs                   # Daemon runtime loop and orchestration
-|-- cli.rs                   # clap command tree and flags
-|-- config.rs                # TOML config types, defaults, loading, validation
-|-- types.rs                 # Domain types: severity, change, baseline, alert
-|-- error.rs                 # Central error type (thiserror)
-|-- compare.rs               # TOCTOU-hardened compare pipeline
-|-- scanner.rs               # Scheduled scans (incremental/full)
-|-- package.rs               # Package manager detection and ownership query
+|-- alert/
+|   |-- mod.rs              # Alert engine. Suppression and channel dispatch.
+|   |-- dbus.rs             # notify-send desktop notifications.
+|   |-- journal.rs          # journald/syslog logging.
+|   |-- json_log.rs         # Append-only JSON alert file.
+|   |-- remote_syslog.rs    # Remote syslog forwarding over TCP or UDP.
+|   `-- socket.rs           # Unix signal socket event writer.
 |
-|-- baseline/
-|   |-- mod.rs               # Baseline lifecycle: init/refresh/diff/add/remove/stats
-|   |-- hash.rs              # BLAKE3 hashing helpers
-|   `-- metadata.rs          # File metadata + xattr collection
+|-- config/
+|   |-- mod.rs              # Config model, loading, validation, defaults.
+|   `-- diff.rs             # Config diff for SIGHUP reload logging.
 |
 |-- db/
-|   |-- mod.rs               # SQLite open/configure/checkpoint/integrity
-|   |-- schema.rs            # Schema creation (baseline, audit_log, config_state)
-|   `-- ops.rs               # Baseline/audit/config_state CRUD ops
+|   |-- mod.rs              # SQLite open, pragma setup, integrity, checkpoint.
+|   |-- schema.rs           # Schema creation: baseline, audit_log, config_state.
+|   |-- baseline_ops.rs     # Baseline CRUD operations.
+|   |-- audit_ops.rs        # Audit queries, chain verification, statistics.
+|   `-- migrate.rs          # Baseline migration v1 JSON blobs to v2 flat columns.
+|
+|-- filter/
+|   |-- mod.rs              # Event filter: debounce, self-exclusion, path matching.
+|   `-- exclusion.rs        # globset-based exclusion engine.
 |
 |-- monitor/
-|   |-- mod.rs               # Backend selection + fallback logic
-|   |-- fanotify.rs          # fanotify monitor thread and event decoding
-|   |-- inotify.rs           # inotify fallback monitor and recursive watches
-|   `-- filter.rs            # Exclusions, self-filtering, per-path debounce
+|   |-- mod.rs              # Backend selection and fallback logic.
+|   |-- fanotify.rs         # fanotify monitor thread and event decoding.
+|   `-- inotify.rs          # inotify fallback monitor and recursive watches.
 |
-`-- alert/
-    |-- mod.rs               # Alert engine: suppression + channel dispatch
-    |-- dbus.rs              # notify-send desktop notifications
-    |-- journal.rs           # journald/syslog logging
-    |-- json_log.rs          # append-only JSON alert file
-    `-- socket.rs            # Unix signal socket event writer
+|-- types/
+|   |-- mod.rs              # Re-exports.
+|   |-- alert.rs            # Alert struct.
+|   |-- baseline.rs         # BaselineEntry and BaselineSource.
+|   |-- change.rs           # Change enum.
+|   |-- config_types.rs     # OutputFormat, ScanMode, MonitorBackend, and others.
+|   |-- content.rs          # ContentInfo.
+|   |-- event.rs            # File event structs.
+|   |-- identity.rs         # FileIdentity.
+|   |-- permissions.rs      # PermissionInfo.
+|   |-- security.rs         # SecurityInfo.
+|   `-- snapshot.rs         # FileSnapshot capture and diff logic.
+|
+|-- bloom.rs                # Bloom filter for fast path membership reject.
+|-- cli.rs                  # clap command tree and flags.
+|-- control.rs              # Unix control socket command server.
+|-- coordinator.rs          # Thread lifecycle and periodic coordinator loop.
+|-- daemon.rs               # vigild binary entrypoint.
+|-- doctor.rs               # System health diagnostics and health snapshot.
+|-- error.rs                # Central error type.
+|-- hash.rs                 # BLAKE3 hashing helpers.
+|-- hmac.rs                 # HMAC signing and verification helpers.
+|-- lib.rs                  # Daemon runtime orchestration.
+|-- main.rs                 # CLI entrypoint and command dispatch.
+|-- metrics.rs              # Runtime counters and snapshot serialization.
+|-- package.rs              # Package manager detection and ownership query.
+|-- scan_scheduler.rs       # Cron-based scan scheduling with croner.
+|-- scanner.rs              # Scheduled scans and baseline refresh work.
+|-- watch_index.rs          # Path to watch-group lookup index.
+`-- worker.rs               # Event processing worker pipeline.
 ```
+
+---
+
+## Component Notes
+
+These modules are easy to miss. They are core to the runtime.
+
+- `src/control.rs` handles daemon RPC over Unix socket for `status`, `scan`, and reload actions.
+- `src/coordinator.rs` coordinates reload, snapshot writing, retention rotation, and watchdog heartbeats.
+- `src/scan_scheduler.rs` parses cron strings with `croner` and executes scheduled scans.
+- `src/worker.rs` processes monitor events and runs snapshot comparison.
+- `src/bloom.rs` provides fast probabilistic reject for unrelated paths.
+- `src/watch_index.rs` maps a path to the most specific watch group.
+- `src/metrics.rs` stores counters. Coordinator writes `metrics.json`. Doctor writes `health.json`.
+- `src/hmac.rs` signs and verifies audit entries with HMAC-SHA256.
+- `src/config/diff.rs` reports config changes on SIGHUP reload.
+- `src/db/migrate.rs` migrates baseline schema from v1 blobs to v2 flattened columns.
+- `src/alert/remote_syslog.rs` sends RFC5424 alerts to remote syslog.
 
 ---
 
 ## Data Flow
 
-### 1) `vigil init` Baseline Creation
+### 1) Baseline Creation (`vigil init`)
 
 ```
-operator runs: vigil init
-        |
-        v
-+------------------------+
-| load config layers     |
-+-----------+------------+
-            |
-            v
-+------------------------+
-| open SQLite (WAL)      |
-| create schema if needed|
-+-----------+------------+
-            |
-            v
-+------------------------+
-| expand watch groups    |
-| walk files             |
-+-----------+------------+
-            |
-            v
-+------------------------+
-| open file descriptor   |
-| fstat(fd)              |
-| blake3 hash(fd)        |
-| read xattrs/context    |
-+-----------+------------+
-            |
-            v
-+------------------------+
-| upsert baseline rows   |
-| record refresh state   |
-+------------------------+
+vigil init
+  -> load config
+  -> open baseline.db and create schema
+  -> walk watched paths
+  -> FileSnapshot::from_path()
+  -> baseline_ops::upsert()
 ```
 
-### 2) Real-Time Monitoring
+Result: `baseline` table is populated with trusted file state.
+
+### 2) Real-time Event Pipeline (`vigild`)
 
 ```
 filesystem event
-      |
-      v
-+------------------------+
-| fanotify or inotify    |
-+-----------+------------+
-            |
-            v
-+------------------------+
-| event filter           |
-| - exclusions           |
-| - self-exclusion       |
-| - per-path debounce    |
-+-----------+------------+
-            |
-            v
-+------------------------+
-| baseline lookup        |
-| path -> baseline row   |
-+-----------+------------+
-            |
-            v
-+------------------------+
-| compare_event()        |
-| open -> fstat -> hash  |
-| classify change types  |
-+-----------+------------+
-            |
-            v
-+------------------------+
-| alert engine           |
-| audit log ALWAYS write |
-| suppression for notify |
-+----+----+----+----+----+
-     |    |    |    |
-     |    |    |    +--> signal socket
-     |    |    +-------> JSON log
-     |    +------------> desktop notify
-     +-----------------> journald/syslog
+  -> monitor backend (fanotify or inotify)
+  -> worker::process_event()
+  -> worker::process_event_inner()
+  -> FileSnapshot::from_fd() or FileSnapshot::from_path()
+  -> FileSnapshot::diff(&baseline_entry)
+  -> alert dispatcher
+  -> audit write always
+  -> notification sinks if not suppressed
 ```
 
-### 3) Scheduled Scan (`vigil check`)
+Comparison and classification run in `src/worker.rs` and `src/types/snapshot.rs`.
+
+### 3) Scheduled Scan Pipeline
 
 ```
-operator/systemd timer
-        |
-        v
-+------------------------+
-| choose mode            |
-| incremental or full    |
-+-----------+------------+
-            |
-            v
-+------------------------+
-| lower process priority |
-| ioprio=idle, nice=19   |
-+-----------+------------+
-            |
-            v
-+------------------------+
-| iterate baseline rows  |
-| if incremental: mtime  |
-| unchanged -> skip hash |
-+-----------+------------+
-            |
-            v
-+------------------------+
-| compare_entry()        |
-| dispatch alerts        |
-| collect scan counters  |
-+------------------------+
+scan_scheduler::spawn()
+  -> parse scanner.schedule with croner
+  -> scanner::run_scan()
+  -> diff against baseline
+  -> enqueue alert payloads
 ```
+
+Scheduled scans use `scanner.scheduled_mode`.
+
+### 4) Control Socket Pipeline
+
+```
+control socket request
+  -> control::dispatch()
+  -> status | baseline_count | reload | scan | metrics_prometheus
+  -> JSON response
+```
+
+`vigil check --now` and status queries use this path when daemon mode is active.
 
 ---
 
-## Comparison Model (TOCTOU-Hardened)
+## Comparison Model
 
-Vigil compares files with an open-first pipeline:
-
-```
-1) open(path)            -> pins inode/device for this fd
-2) fstat(fd)             -> metadata from pinned object
-3) blake3_hash_file(fd)  -> hash from same pinned object
-4) compare with baseline -> classify changed fields
-```
-
-Why this matters:
-- Path-based reopen introduces race windows.
-- fd-based stat+hash keeps metadata and content tied to the same object.
-- Inode/device changes are explicit first-class signals.
-
-This is Principle III (Determinism Over Heuristics) and Principle XII (The Baseline Is Sacred).
-
----
-
-## Monitor Backends
-
-| Backend | Strengths | Limits | When Used |
-|---------|-----------|--------|-----------|
-| `fanotify` | mount-wide visibility, broad coverage | requires `CAP_SYS_ADMIN` | default backend |
-| `inotify` | works without `CAP_SYS_ADMIN`, widely available | limited by watch count, reduced cross-user visibility, recursive watch complexity | automatic fallback |
-
-Fallback logic:
-1. Start selected backend from config (`fanotify` by default).
-2. If fanotify init/mark fails, log warning and fall back to inotify.
-3. Continue monitoring with explicit warnings about blind spots.
-
-Blind spots during fallback are surfaced intentionally. That is Principle X (Fail Open, Fail Loud).
-
----
-
-## Alert Pipeline
+Vigil compares current state to baseline with a file-descriptor-first pipeline.
 
 ```
-change result
-   |
-   v
-+-----------------------------+
-| is_suppressed()?            |
-| - maintenance window        |
-| - per-path cooldown         |
-| - per-minute rate limit     |
-+---------------+-------------+
-                |
-                v
-+-----------------------------+
-| insert_audit_entry() ALWAYS |
-| (suppressed or not)         |
-+---------------+-------------+
-                |
-         +------+------+
-         | not suppressed?
-         v
-+-----------------------------+
-| dispatch channels           |
-| journald, JSON, desktop,    |
-| signal socket               |
-+-----------------------------+
+open(path)
+  -> fstat(fd)
+  -> hash(fd)
+  -> collect xattrs and security context
+  -> diff snapshot against baseline
 ```
 
-Important invariant: suppression affects notifications, not truth.
-Audit rows are always written. This is Principle XIII (The Audit Trail Never Lies).
+This lives in `FileSnapshot::from_fd`, `FileSnapshot::from_path`, and `FileSnapshot::diff`.
+`worker::process_event_inner` drives the call sequence.
+
+This model reduces TOCTOU exposure because metadata and hash come from the same opened object.
 
 ---
 
 ## Database Schema
 
-Vigil uses SQLite with WAL mode (`journal_mode=WAL`) and three tables.
+Vigil uses two SQLite files in practice.
 
-### `baseline`
+- baseline data in `baseline.db`
+- audit data in `audit.db`
 
-Stores trusted state per file.
+### `baseline` table (v2 flattened)
 
 | Column | Type | Notes |
 |--------|------|-------|
 | `id` | INTEGER PK | autoincrement |
-| `path` | TEXT NOT NULL | absolute path |
+| `path` | TEXT NOT NULL UNIQUE | absolute path |
+| `inode` | INTEGER NOT NULL | inode number |
+| `device` | INTEGER NOT NULL | device number |
+| `file_type` | TEXT NOT NULL | default `regular` |
+| `symlink_target` | TEXT | nullable |
 | `hash` | TEXT NOT NULL | BLAKE3 hex |
 | `size` | INTEGER NOT NULL | bytes |
-| `permissions` | INTEGER NOT NULL | mode bits |
-| `owner_uid`/`owner_gid` | INTEGER NOT NULL | ownership |
+| `mode` | INTEGER NOT NULL | permission bits |
+| `owner_uid` | INTEGER NOT NULL | owner uid |
+| `owner_gid` | INTEGER NOT NULL | owner gid |
+| `capabilities` | TEXT | nullable |
+| `xattrs_json` | TEXT NOT NULL | default `{}` |
+| `security_context` | TEXT NOT NULL | default empty string |
 | `mtime` | INTEGER NOT NULL | unix timestamp |
-| `inode`/`device` | INTEGER NOT NULL | replacement detection |
-| `xattrs` | TEXT NOT NULL | serialized xattrs |
-| `security_context` | TEXT NOT NULL | SELinux/AppArmor context |
-| `package` | TEXT | package owner if known |
-| `source` | TEXT NOT NULL | `package_manager|manual|auto_scan` |
-| `added_at`/`updated_at` | INTEGER NOT NULL | timestamps |
+| `package` | TEXT | nullable owning package |
+| `source` | TEXT NOT NULL | `package_manager`, `manual`, `auto_scan` |
+| `added_at` | INTEGER NOT NULL | unix timestamp |
+| `updated_at` | INTEGER NOT NULL | unix timestamp |
 
 Constraints and indexes:
-- `UNIQUE(path, device, inode)`
-- `CHECK(source IN ('package_manager','manual','auto_scan'))`
-- indexes on `path`, `hash`, `package`, `(device,inode)`
+- `UNIQUE(path)`
+- `CHECK(source IN ('package_manager', 'manual', 'auto_scan'))`
+- index `idx_baseline_path` on `path`
 
-### `audit_log`
+### `audit_log` table
 
-Append-only change history.
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | autoincrement |
+| `timestamp` | INTEGER NOT NULL | unix epoch |
+| `path` | TEXT NOT NULL | changed path |
+| `changes_json` | TEXT NOT NULL | serialized change array |
+| `severity` | TEXT NOT NULL | low, medium, high, critical |
+| `monitored_group` | TEXT | nullable watch group name |
+| `process_json` | TEXT | nullable process metadata |
+| `package` | TEXT | nullable package metadata |
+| `maintenance` | INTEGER NOT NULL | boolean, default 0 |
+| `suppressed` | INTEGER NOT NULL | boolean, default 0 |
+| `hmac` | TEXT | nullable HMAC signature |
+| `chain_hash` | TEXT NOT NULL | BLAKE3 chain hash |
 
-| Column | Purpose |
-|--------|---------|
-| `timestamp`, `event_type`, `path`, `change_type`, `severity` | core event identity |
-| old/new hash, perms, owner, inode | forensic diff fields |
-| `package`, `package_update` | package context |
-| `maintenance_window`, `suppressed` | suppression metadata |
-| `monitored_group` | watch group source |
-| `hmac` | optional integrity tag |
+Indexes:
+- `idx_audit_ts` on `timestamp`
+- `idx_audit_path` on `path`
+- `idx_audit_severity` on `severity`
+- `idx_audit_group` on `monitored_group`
 
-### `config_state`
+### `config_state` table
 
-Small state KV store (`key`, `value`, `updated_at`) for runtime markers:
-- `last_baseline_refresh`
-- `maintenance_window_active`
-- `maintenance_window_started`
-- daemon metadata
-
----
-
-## Config Loading Order
-
-Layered precedence (highest wins):
-
-```
-+-------------------------------+
-| CLI --config /path/file.toml  |  highest
-+-------------------------------+
-| $VIGIL_CONFIG                 |
-+-------------------------------+
-| ~/.config/vigil/vigil.toml    |
-+-------------------------------+
-| /etc/vigil/vigil.toml         |  lowest
-+-------------------------------+
-```
-
-Load order in code is lowest-to-highest so later files override earlier ones.
-This is Principle IX (No Configuration Required for Correct Operation): if no file exists,
-Vigil uses built-in defaults with default watch groups.
+`config_state` is a small key value table.
+Columns are `key`, `value`, and `updated_at`.
 
 ---
 
 ## Design Decisions
 
-These are not accidents. They are choices.
+### 1) `globset` for exclusions
 
-### 1) BLAKE3 over SHA-256
+`globset` compiles glob patterns once and matches fast at runtime.
+This avoids repeated parse cost in hot paths.
 
-Why:
-- Faster hashing for large tree scans.
-- Strong cryptographic properties for integrity use.
-- Smaller runtime cost for frequent compare operations.
+### 2) `croner` for schedules
 
-Why not SHA-256:
-- Slower for this workload.
-- No practical gain for Vigil's change-detection model.
+`croner` parses cron expressions used by scheduled scans.
+This keeps scheduling simple and explicit.
 
-Principle reference: Principle XI (Complexity Is a Vulnerability), Principle III.
+### 3) `lru` for baseline cache
 
-### 2) SQLite over flat files
+Workers use an LRU cache for baseline lookups.
+This reduces repeated DB reads on noisy paths.
 
-Why:
-- Atomic updates, constraints, indexed queries, WAL durability.
-- Reliable audit trail and state management.
+### 4) `arc-swap` for config
 
-Why not flat JSON/TOML files:
-- No constraints, brittle concurrent writes, poor query performance.
-- Harder integrity and recovery behavior.
+`ArcSwap<Config>` provides lock-free reads in hot paths.
+Reload swaps the whole config atomically.
 
-Principle reference: Principle XIII (Audit Trail), Principle X.
+### 5) `parking_lot` for mutex and rwlock
 
-### 3) fanotify with inotify fallback
+`parking_lot` gives lower overhead locks for high-frequency paths.
+It is used in alert suppression state and daemon state.
 
-Why:
-- fanotify gives better coverage when privileges allow.
-- inotify keeps Vigil usable without elevated capabilities.
+### 6) `crossbeam-channel` for thread boundaries
 
-Why not fanotify-only:
-- Hard failure on systems without `CAP_SYS_ADMIN` violates usability.
-
-Why not inotify-only:
-- Reduced coverage where fanotify is available.
-
-Principle reference: Principle X (Fail Open, Fail Loud).
-
-### 4) `notify-send` wrapper over direct D-Bus library
-
-Why:
-- Simpler desktop integration with less moving parts.
-- Easy runtime availability check.
-
-Why not direct D-Bus crate now:
-- More complexity in threaded daemon path for little functional gain.
-
-Principle reference: Principle XI.
-
-### 5) crossbeam-channel over async runtime
-
-Why:
-- Synchronous event pipeline is straightforward and explicit.
-- Low overhead for bounded producer/consumer queue.
-
-Why not full async runtime:
-- Added runtime complexity for a workload that does not need it yet.
-
-Principle reference: Principle XI, Principle III.
-
-### 6) Per-path debounce over global debounce
-
-Why:
-- Noisy path gets suppressed without hiding unrelated paths.
-- Preserves signal quality in busy systems.
-
-Why not global debounce:
-- A single noisy file could suppress critical events elsewhere.
-
-Principle reference: Principle V (alerts must be rare, clear, actionable).
+Channels carry events and scan triggers between threads.
+The flow stays explicit and easy to trace.
 
 ---
 
 ## File Locations
 
-| Purpose | Path |
-|---------|------|
+| Purpose | Default Path |
+|---------|--------------|
 | System config | `/etc/vigil/vigil.toml` |
 | User config | `~/.config/vigil/vigil.toml` |
-| Database | `/var/lib/vigil/baseline.db` |
-| JSON alerts log | `/var/log/vigil/alerts.json` |
+| Baseline database | `/var/lib/vigil/baseline.db` |
+| Audit database | `/var/lib/vigil/audit.db` |
+| Runtime dir | `/run/vigil` |
 | PID file | `/run/vigil/vigild.pid` |
-| Signal socket (optional) | configured via `hooks.signal_socket` |
-| systemd daemon unit | `systemd/vigild.service` |
-| systemd scan timer | `systemd/vigil-scan.timer` |
+| Control socket | `/run/vigil/control.sock` |
+| Health snapshot | `/run/vigil/health.json` |
+| Metrics snapshot | `/run/vigil/metrics.json` |
+| State snapshot | `/run/vigil/state.json` |
+| JSON alert log | `/var/log/vigil/alerts.json` |
 
 ---
 
-## Philosophy
-
-Architecture should be boring. Predictable. Explainable.
-
-If you cannot trace an alert from source event to audit row, architecture failed.
-If you cannot explain a fallback in one sentence, architecture got too clever.
-
-*Vigil is small on purpose. Trust follows from clarity.*
+Vigil architecture is intentionally small. You should be able to trace any alert from event source to audit row.

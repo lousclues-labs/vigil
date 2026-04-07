@@ -1,13 +1,13 @@
 # Development Setup
 
-How to build, run, and test Vigil locally.
+This page covers local build, run, test, and fuzz workflows.
 
 ---
 
 ## Prerequisites
 
-- Linux environment
-- Rust toolchain (stable)
+- Linux
+- Rust stable toolchain
 - build tools (`gcc`, `make`, `pkg-config`)
 
 ### Arch
@@ -16,7 +16,7 @@ How to build, run, and test Vigil locally.
 sudo pacman -S --needed rust base-devel pkgconf
 ```
 
-### Debian / Ubuntu
+### Debian or Ubuntu
 
 ```bash
 sudo apt update
@@ -29,22 +29,18 @@ sudo apt install -y rustc cargo build-essential pkg-config
 sudo dnf install -y rust cargo gcc make pkgconf-pkg-config
 ```
 
-Optional local runtime tooling:
-- `notify-send` (`libnotify-bin` / `libnotify`)
-- systemd for service/timer tests
+Optional runtime tools:
+- `notify-send`
+- systemd for service and timer tests
 
 ---
 
 ## Clone and Build
 
 ```bash
-git clone https://github.com/<org>/vigil.git
+git clone https://github.com/loujr/vigil.git
 cd vigil
-
-# debug build
 cargo build
-
-# release build
 cargo build --release
 ```
 
@@ -54,41 +50,41 @@ Binaries:
 
 ---
 
-## Core Dev Commands
+## Core Commands
 
 | Task | Command |
 |------|---------|
 | format | `cargo fmt --all` |
 | lint | `cargo clippy --all-targets --all-features -- -D warnings` |
-| unit+integration+security | `cargo test --all-targets` |
+| tests | `cargo test --all-targets` |
 | docs | `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features` |
-| full local gate | `./scripts/test-all.sh` |
 
 ---
 
-## Running Locally
+## Run Locally
 
-### One-shot CLI checks
+### One-shot CLI
 
 ```bash
 cargo run -- init
 cargo run -- status
 cargo run -- check
+cargo run -- audit stats
 ```
 
-### Daemon in foreground
+### Watch mode
 
 ```bash
 RUST_LOG=debug cargo run -- watch
 ```
 
-Or run daemon binary directly:
+### Daemon binary
 
 ```bash
 RUST_LOG=debug cargo run --bin vigild
 ```
 
-Use explicit config when needed:
+### Explicit config
 
 ```bash
 RUST_LOG=debug cargo run -- --config ./config/vigil.toml watch
@@ -96,62 +92,111 @@ RUST_LOG=debug cargo run -- --config ./config/vigil.toml watch
 
 ---
 
-## Project Structure Walkthrough
+## Project Structure
 
 ```
 src/
-|-- main.rs             # CLI dispatch
-|-- daemon.rs           # vigild entrypoint
-|-- lib.rs              # daemon loop orchestration
-|-- cli.rs              # clap surface
-|-- config.rs           # config model + validation
-|-- compare.rs          # TOCTOU compare
-|-- scanner.rs          # incremental/full scans
-|-- package.rs          # package ownership backends
-|-- types.rs            # shared domain types
-|-- error.rs            # error taxonomy
-|-- baseline/           # baseline lifecycle
-|-- db/                 # sqlite schema + ops
-|-- monitor/            # fanotify/inotify + filter
-`-- alert/              # notify channels + suppression
+|-- alert/
+|   |-- mod.rs
+|   |-- dbus.rs
+|   |-- journal.rs
+|   |-- json_log.rs
+|   |-- remote_syslog.rs
+|   `-- socket.rs
+|-- config/
+|   |-- mod.rs
+|   `-- diff.rs
+|-- db/
+|   |-- mod.rs
+|   |-- schema.rs
+|   |-- baseline_ops.rs
+|   |-- audit_ops.rs
+|   `-- migrate.rs
+|-- filter/
+|   |-- mod.rs
+|   `-- exclusion.rs
+|-- monitor/
+|   |-- mod.rs
+|   |-- fanotify.rs
+|   `-- inotify.rs
+|-- types/
+|   |-- mod.rs
+|   |-- alert.rs
+|   |-- baseline.rs
+|   |-- change.rs
+|   |-- config_types.rs
+|   |-- content.rs
+|   |-- event.rs
+|   |-- identity.rs
+|   |-- permissions.rs
+|   |-- security.rs
+|   `-- snapshot.rs
+|-- bloom.rs
+|-- cli.rs
+|-- control.rs
+|-- coordinator.rs
+|-- daemon.rs
+|-- doctor.rs
+|-- error.rs
+|-- hash.rs
+|-- hmac.rs
+|-- lib.rs
+|-- main.rs
+|-- metrics.rs
+|-- package.rs
+|-- scan_scheduler.rs
+|-- scanner.rs
+|-- watch_index.rs
+`-- worker.rs
 
 tests/
-|-- common/             # fixtures + assertions
-|-- integration/        # cross-module behavior
-`-- security/           # security property tests
+|-- alert_dispatcher_tests.rs
+|-- audit_chain_tests.rs
+|-- baseline_json_tests.rs
+|-- daemon_smoke_tests.rs
+|-- exclusion_filter_tests.rs
+|-- filter_self_paths_tests.rs
+|-- hmac_chain_tamper_tests.rs
+|-- scan_deleted_file_tests.rs
+|-- snapshot_diff_tests.rs
+`-- worker_tests.rs
 
 fuzz/
-`-- fuzz_targets/       # three libfuzzer targets
+`-- fuzz_targets/
+    |-- fuzz_config_parse.rs
+    |-- fuzz_baseline_compare.rs
+    |-- fuzz_scanner.rs
+    |-- fuzz_toml_config.rs
+    |-- fuzz_event_filter.rs
+    |-- fuzz_db_roundtrip.rs
+    `-- fuzz_xattr_parsing.rs
 ```
 
 ---
 
-## Test Infrastructure
+## Test Flow
 
-Primary local script:
+Primary commands:
 
 ```bash
-./scripts/test-all.sh
+cargo fmt --all --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets
 ```
 
-Stages in script:
-1. `cargo fmt -- --check`
-2. `cargo clippy --all-targets -- -D warnings`
-3. `cargo test --bins`
-4. `cargo test --test integration`
-5. `cargo test --test security`
-
-Privileged security tests:
+Run specific integration files:
 
 ```bash
-sudo -E cargo test --test security -- --ignored
+cargo test --test audit_chain_tests
+cargo test --test hmac_chain_tamper_tests
+cargo test --test snapshot_diff_tests
 ```
 
 ---
 
-## Fuzz Development
+## Fuzzing
 
-Install tooling:
+Install toolchain and cargo-fuzz:
 
 ```bash
 rustup toolchain install nightly
@@ -161,96 +206,40 @@ cargo install cargo-fuzz --locked
 Build and list targets:
 
 ```bash
+cd fuzz
 cargo +nightly fuzz build
 cargo +nightly fuzz list
 ```
 
-Run targets:
+This workspace has seven fuzz targets:
+- `fuzz_config_parse`
+- `fuzz_baseline_compare`
+- `fuzz_scanner`
+- `fuzz_toml_config`
+- `fuzz_event_filter`
+- `fuzz_db_roundtrip`
+- `fuzz_xattr_parsing`
+
+Run one target:
 
 ```bash
+cd fuzz
 cargo +nightly fuzz run fuzz_config_parse -- -max_total_time=120
-cargo +nightly fuzz run fuzz_baseline_compare -- -max_total_time=120
-cargo +nightly fuzz run fuzz_scanner -- -max_total_time=120
 ```
-
-Artifacts:
-- crashes: `fuzz/artifacts/<target>/`
-- corpus: `fuzz/corpus/<target>/`
-
----
-
-## Logging and Diagnostics
-
-Useful commands while developing:
-
-```bash
-RUST_LOG=debug cargo run -- doctor
-cargo run -- status
-cargo run -- log stats
-```
-
-What `doctor` checks:
-- fanotify availability
-- privilege context
-- config validity
-- DB write + integrity
-- baseline count
-- HMAC key presence (if enabled)
-- notify-send availability
-- package backend detection
-- signal socket config
-
----
-
-## Commit Message Convention
-
-Use conventional commits.
-
-Format:
-
-```text
-type: short summary
-
-optional body with what/why
-```
-
-Types:
-- `feat` new feature
-- `fix` bug fix
-- `docs` documentation
-- `refactor` code restructuring
-- `test` test additions/changes
-- `chore` tooling/build/ci
-
-Examples:
-
-```text
-fix: preserve inode/device checks in compare path
-docs: expand security model and threat boundaries
-test: add regression for debounce suppression edge case
-```
-
----
-
-## Development Rules That Matter
-
-- no `unwrap()` in production paths unless failure is impossible and justified
-- propagate errors with context
-- prefer deterministic behavior over heuristic behavior
-- keep dependencies minimal and justified
-- update docs when behavior changes
 
 ---
 
 ## Before Opening a PR
 
+Run the full gate:
+
 ```bash
-cargo fmt --all
+cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets
 ```
 
-Recommended:
+Optional dependency checks:
 
 ```bash
 cargo install cargo-audit --locked
@@ -258,7 +247,3 @@ cargo audit --deny warnings
 cargo install cargo-deny --locked
 cargo deny check
 ```
-
----
-
-*Small codebase. Sharp boundaries. No hidden magic.*

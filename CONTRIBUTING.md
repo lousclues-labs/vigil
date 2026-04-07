@@ -54,7 +54,7 @@ See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for full details.
 Quick start:
 
 ```bash
-git clone https://github.com/<org>/vigil.git
+git clone https://github.com/loujr/vigil.git
 cd vigil
 cargo build
 cargo test
@@ -188,7 +188,7 @@ test: add race regression for delete-between-open-and-hash
 
 ## Testing Requirements
 
-Reference: [tests/README.md](tests/README.md) and [docs/TESTING.md](docs/TESTING.md).
+Reference: [docs/TESTING.md](docs/TESTING.md).
 
 Decision guide:
 
@@ -197,11 +197,11 @@ Single function behavior?
 |- yes -> unit test in src module
 `- no
    Cross-module behavior?
-   |- yes -> tests/integration/
+   |- yes -> tests/<behavior>_tests.rs
    `- no
       Security property/race?
-      |- yes -> tests/security/
-      `- no -> integration by default
+      |- yes -> tests/<security_scope>_tests.rs
+      `- no -> tests/<feature_scope>_tests.rs
 ```
 
 If behavior changes, add tests in same PR.
@@ -216,7 +216,8 @@ cargo insta test       # Run tests and capture new snapshots
 cargo insta review     # Interactively review and accept/reject changes
 ```
 
-Snapshot files live in `tests/integration/snapshots/`. Review changes carefully — they indicate a change in alert, baseline export, or diff output format.
+Snapshot behavior coverage currently lives in `tests/snapshot_diff_tests.rs`.
+Review snapshot changes carefully. They indicate a change in alert, baseline export, or diff output format.
 
 ---
 

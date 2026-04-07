@@ -67,15 +67,12 @@ Faster hashing means less monitoring overhead and tighter scan windows.
 
 ## How is the audit trail tamper-evident?
 
-Today:
-- audit rows are always written, even when notifications are suppressed
-- optional HMAC config keys and schema fields exist
-- key existence is validated when signing is enabled
+Audit rows are always written, even when notifications are suppressed.
 
-Current caveat:
-- `vigil log verify` exists in CLI, but verification flow is still marked not fully implemented in current command path
+Use `vigil audit verify` to validate the audit chain.
+It checks that each entry `chain_hash` links to the previous entry.
 
-So audit durability is present now; full verification workflow is still maturing.
+If HMAC signing is enabled, signatures add another integrity layer.
 
 ---
 

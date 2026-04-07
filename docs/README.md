@@ -58,7 +58,7 @@ Use this index when you need answers fast.
 | [Dependency Audit](../licenses/DEPENDENCY-AUDIT.md) | Dependency license compatibility framework |
 | [Third-Party Licenses](../licenses/THIRD-PARTY-LICENSES) | Direct dependency attribution list |
 | [Docs License](../licenses/LICENSE-DOCS.md) | Documentation license scope and terms |
-| [Commercial Licensing](../licenses/LICENSE-COMMERCIAL.md) | Commercial licensing inquiry pathway |
+| [Commercial Licensing](../licenses/LICENSE-COMMERCIAL.md) | Commercial license terms for proprietary use |
 | [Contributor Terms](../licenses/CONTRIBUTOR-LICENSE.md) | Contribution license grant and submission terms |
 
 ---

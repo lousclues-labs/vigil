@@ -90,6 +90,9 @@ Vigil source code is GPL-3.0-only.
 Published GPL grants remain in force for released versions.
 No future governance change can revoke already-granted GPL rights for existing releases.
 
+Vigil is dual-licensed at the project level.
+Commercial licensing terms are defined separately in `licenses/LICENSE-COMMERCIAL.md`.
+
 ---
 
 ## Consistency With Other Documents
@@ -103,6 +106,7 @@ This file stays consistent with:
 - [NOTICE](NOTICE)
 - [TRADEMARKS.md](TRADEMARKS.md)
 - [licenses/LICENSING.md](licenses/LICENSING.md)
+- [licenses/LICENSE-COMMERCIAL.md](licenses/LICENSE-COMMERCIAL.md)
 
 If governance changes, update those documents in the same change set.
 

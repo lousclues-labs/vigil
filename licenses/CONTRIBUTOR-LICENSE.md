@@ -1,6 +1,6 @@
 # Contributor License Agreement (CLA)
 
-*Version 1.0 — April 2026*
+*Version 1.0 -- April 2026*
 
 ## Purpose
 
@@ -26,7 +26,7 @@ Here's what you're agreeing to, in plain English:
 
 - **"Contribution"** means any original work of authorship, including modifications to existing work, that you intentionally submit to the Vigil project for inclusion. This includes code, documentation, configuration files, and related materials submitted via pull request, patch, issue, email, or any other method of communication with the project.
 - **"Submit"** means any form of electronic or written communication sent to the project, including pull requests on GitHub, patches, commits, issues, and messages on project forums or mailing lists.
-- **"Project"** means the Vigil software project, maintained at https://github.com/DigiNotar/vigil.
+- **"Project"** means the Vigil software project, maintained at https://github.com/loujr/vigil.
 
 ### 2. Grant of Copyright License
 
@@ -101,7 +101,7 @@ This CLA shall be governed by and construed in accordance with the laws of the C
 
 If you have questions about this CLA before submitting a contribution, please:
 
-- Open an issue in the [Vigil repository](https://github.com/DigiNotar/vigil)
+- Open an issue in the [Vigil repository](https://github.com/loujr/vigil)
 - Contact Louis Nelson Jr. via GitHub ([@loujr](https://github.com/loujr))
 
 We're happy to clarify any terms before you contribute.

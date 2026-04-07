@@ -1,323 +1,231 @@
 # Security Policy
 
-You found a vulnerability. Thank you. Here is how to report it and what security model Vigil actually claims.
+This document defines how to report issues and what security guarantees Vigil does and does not make.
 
 ---
 
 ## Reporting
 
-Do not open a public issue for security bugs.
+Do not open a public issue for a vulnerability.
 
-### Preferred: GitHub Security Advisories
+Preferred path:
+1. Open the GitHub Security tab.
+2. Select Report a vulnerability.
+3. Include exact reproduction steps and impact.
 
-1. Open the repository Security tab.
-2. Click "Report a vulnerability".
-3. Include reproduction details and impact.
-
-### Fallback: Maintainer Contact
-
-If advisories are unavailable, contact the maintainer through GitHub directly.
+Fallback path:
+- Contact the maintainer on GitHub if Security Advisories are unavailable.
 
 ---
 
-## What To Include
+## Report Checklist
 
-| Field | Why It Matters |
-|-------|----------------|
-| Description | what is wrong |
-| Impact | what attacker can do |
-| Reproduction | exact steps and environment |
-| Affected versions | release range |
-| Mitigation ideas | short-term safety options |
+Include these items.
+
+| Item | Why |
+|------|-----|
+| issue description | states what failed |
+| impact | states attacker outcome |
+| reproduction | makes triage fast |
+| affected versions | scopes patch effort |
+| mitigation ideas | reduces risk before patch |
 
 ---
 
-## Response Timeline
+## Response Targets
 
 | Step | Target |
 |------|--------|
-| Acknowledge report | 72 hours |
-| Initial triage | 7 days |
-| Fix or mitigation plan | 14 days |
-| Public disclosure | after patch or clear mitigation |
+| acknowledgement | 72 hours |
+| first triage pass | 7 days |
+| fix or mitigation plan | 14 days |
+| public disclosure | after patch or clear mitigation |
 
-This timeline is a goal, not a legal SLA.
+These are targets. They are not an SLA.
 
 ---
 
 ## Supported Versions
 
-Security fixes are provided for the latest released version only.
-
-If you run an older version, update first.
+Security fixes target the latest release.
 
 ---
 
 ## Dependency Justification
 
-Every dependency is a liability.
-These are the direct dependencies from `Cargo.toml`, why they exist, and compromise impact.
+This list matches direct dependencies in `Cargo.toml`.
 
 ### Hashing and Integrity
 
-| Crate | What It Does In Vigil | Why It Is Here | Compromise Impact |
-|-------|------------------------|----------------|-------------------|
-| `blake3` | content hashing for baseline and compare pipeline | fast deterministic hashing for large scans | forged or mismatched hash outcomes; high integrity risk |
-| `hmac` | integrity plumbing for signed audit/baseline workflows | keyed tamper-evidence primitive | signature bypass or false verification; high integrity risk |
-| `sha2` | SHA-2 backend for HMAC workflows | standard digest primitive paired with HMAC | same as above when signing enabled |
-| `hex` | hex encoding of hashes/xattrs | stable text serialization for logs/db | data representation corruption; low-to-medium risk |
+| Crate | Purpose in Vigil |
+|-------|------------------|
+| `blake3` | baseline and chain hash computation |
+| `hmac` | keyed signing of audit records |
+| `sha2` | SHA-256 backend used by HMAC |
+| `hex` | stable hex encoding for hashes |
 
-### Database
+### Database and Data Model
 
-| Crate | What It Does In Vigil | Why It Is Here | Compromise Impact |
-|-------|------------------------|----------------|-------------------|
-| `rusqlite` | baseline/audit/config_state persistence | safe SQLite access with WAL support | tampered reads/writes, audit loss, state corruption; high risk |
+| Crate | Purpose in Vigil |
+|-------|------------------|
+| `rusqlite` | baseline and audit persistence |
+| `serde` | typed serialization and deserialization |
+| `serde_json` | JSON alerts and payloads |
+| `toml` | parse configuration files |
+| `toml_edit` | update and render TOML in config commands |
 
-### Config and Serialization
+### CLI and Logging
 
-| Crate | What It Does In Vigil | Why It Is Here | Compromise Impact |
-|-------|------------------------|----------------|-------------------|
-| `serde` | (de)serialize config and domain structs | standard typed serialization framework | malformed config/object parsing; medium-to-high risk |
-| `serde_json` | JSON alert output and baseline export | machine-readable output format | forged/invalid JSON logs or exports; medium risk |
-| `toml` | parse Vigil config files | native parser for declared config format | malicious parse behavior or silent coercion; medium-to-high risk |
+| Crate | Purpose in Vigil |
+|-------|------------------|
+| `clap` | command parsing and help output |
+| `tracing` | structured logging facade |
+| `tracing-subscriber` | log backend with env filtering and JSON output |
 
-### CLI
+### Linux Integration
 
-| Crate | What It Does In Vigil | Why It Is Here | Compromise Impact |
-|-------|------------------------|----------------|-------------------|
-| `clap` | command tree, flags, help/version handling | robust argument parsing and validation | incorrect command parsing or flag handling; medium risk |
+| Crate | Purpose in Vigil |
+|-------|------------------|
+| `nix` | fanotify and inotify wrappers and signal helpers |
+| `libc` | low-level syscalls |
+| `xattr` | extended attribute reads |
+| `sd-notify` | systemd readiness and watchdog notifications |
 
-### Linux and Filesystem Integration
+### Matching, Concurrency, and Runtime State
 
-| Crate | What It Does In Vigil | Why It Is Here | Compromise Impact |
-|-------|------------------------|----------------|-------------------|
-| `nix` | inotify/fanotify helpers, signal/setuid wrappers | idiomatic bindings for Linux primitives | monitor/signal misbehavior; high risk |
-| `libc` | raw syscalls (fanotify, ioprio, setpriority) | required for low-level kernel interfaces | full syscall surface compromise; critical risk |
-| `xattr` | read extended attributes/security labels | xattr change detection and context capture | hidden metadata tampering; medium risk |
-| `glob` | exclusion pattern parsing/matching | predictable path filtering semantics | bypass or over-filtering of monitored paths; medium risk |
+| Crate | Purpose in Vigil |
+|-------|------------------|
+| `globset` | compiled glob matching for exclusions |
+| `crossbeam-channel` | thread communication |
+| `parking_lot` | low-overhead mutex and rwlock |
+| `arc-swap` | lock-free config pointer swap on reload |
+| `lru` | baseline lookup cache in workers |
+| `croner` | cron expression parsing for scheduled scans |
+| `rayon` | optional parallel scanning feature |
 
-### Concurrency and Flow Control
+### Utility
 
-| Crate | What It Does In Vigil | Why It Is Here | Compromise Impact |
-|-------|------------------------|----------------|-------------------|
-| `crossbeam-channel` | event transport between monitor and daemon loop | bounded channel with simple semantics | dropped/reordered/blocked events; high detection risk |
+| Crate | Purpose in Vigil |
+|-------|------------------|
+| `chrono` | timestamps and UTC handling |
+| `thiserror` | typed error definitions |
 
-### Logging, Time, Identity, Errors
-
-| Crate | What It Does In Vigil | Why It Is Here | Compromise Impact |
-|-------|------------------------|----------------|-------------------|
-| `log` | structured severity logging | common log facade for daemon + CLI | hidden or falsified operational logs; medium risk |
-| `env_logger` | log backend and `RUST_LOG` filtering | runtime log control without heavy stack | log visibility degradation; low-to-medium risk |
-| `chrono` | timestamps for alerts/audit records | consistent UTC timestamp handling | timeline distortion in forensic records; medium risk |
-| `uuid` | event IDs for alerts | stable unique event correlation | ID collisions/spoofing in downstream systems; low-to-medium risk |
-| `thiserror` | error type derives | explicit error taxonomy with less boilerplate | mostly compile-time; low runtime risk |
+Removed from this table because they are not direct dependencies:
+- `log`
+- `env_logger`
+- `uuid`
+- `glob`
 
 ---
 
 ## Security Model
 
-Vigil is a local integrity observer. It does not claim host hardening, malware removal, or runtime behavior analysis.
+Vigil is a local integrity monitor.
 
-### Trust / Do Not Trust
+It does:
+- detect filesystem state changes against baseline
+- record changes in append-only audit history
+- expose explicit degraded states
 
-| Trust | Do Not Trust |
-|-------|--------------|
-| local filesystem metadata APIs | file contents before hashing |
-| configured watch boundaries | paths not in watch scope |
-| package manager ownership metadata (`pacman -Qo`, `dpkg -S`, `rpm -qf`) | network-fed intelligence sources |
-| SQLite transactional guarantees | unvalidated config input |
-| kernel-enforced file permissions | desktop notification delivery success |
-
-Principle alignment:
-- Principle VI: Filesystem is source of truth.
-- Principle XIV: No network I/O.
+It does not:
+- block processes
+- quarantine files
+- perform malware classification
+- provide kernel attestation
 
 ---
 
-## Threat Model (Security Scope)
+## Threat Scope
 
-### In Scope
+### In scope
 
-| Threat | Covered By |
-|--------|------------|
-| unauthorized file modification | hash + metadata compare against baseline |
-| persistence mechanism tampering | default watch groups (`persistence`, `system_critical`) |
-| inode replacement attacks | inode/device comparison |
-| TOCTOU race conditions during compare | open -> fstat(fd) -> hash(fd) pipeline |
-| alert suppression visibility | audit log writes even when notification suppressed |
-| audit trail tampering attempts | append-only audit strategy + optional HMAC fields |
+| Threat | Coverage |
+|--------|----------|
+| unauthorized file modification | baseline comparison |
+| inode replacement attacks | inode and device checks |
+| race between event and read | fd-first snapshot pipeline |
+| notification suppression hiding evidence | audit rows still written |
+| audit tamper attempts | chain hash verification and optional HMAC |
 
-### Out Of Scope
+### Out of scope
 
-| Threat | Why Out Of Scope |
+| Threat | Why out of scope |
 |--------|------------------|
-| kernel compromise / rootkit in kernel space | if kernel lies, user-space observer loses trust base |
-| physical device access attacks | not a physical security control |
-| in-memory process behavior monitoring | Vigil is structural, not behavioral (Principle IV) |
-| exploit prevention / process containment | Vigil does not block, quarantine, or kill (Principle I) |
+| kernel compromise | user-space observer loses trust base |
+| physical device compromise | not a physical control |
+| process behavior analytics | Vigil tracks structure, not behavior |
+| exploit prevention | Vigil reports, it does not block |
+
+---
+
+## Audit Chain Verification
+
+Audit verification is implemented.
+
+Use:
+
+```bash
+vigil audit verify
+```
+
+What it checks:
+- each `chain_hash` links to the previous entry
+- chain ordering and continuity across the audit log
+
+When HMAC is enabled, signatures add a second integrity layer.
 
 ---
 
 ## HMAC Key Lifecycle
 
-The optional HMAC signing feature (`security.hmac_signing = true`) provides
-tamper-evidence for audit log entries. Its value depends entirely on proper
-key management. If an attacker who can modify monitored files can also read
-the HMAC key, the signed audit trail offers no additional protection.
+If `security.hmac_signing = true`, key management quality defines integrity quality.
 
-### Key Generation
-
-Generate a 32-byte (256-bit) random key:
-
-```bash
-head -c 32 /dev/urandom | xxd -p -c 64 > /etc/vigil/hmac.key
-```
-
-Or equivalently:
+Generate a 32-byte key:
 
 ```bash
 openssl rand -hex 32 > /etc/vigil/hmac.key
 ```
 
-### File Permissions
-
-The key file **must** be readable only by root:
+Set strict ownership and mode:
 
 ```bash
 sudo chown root:root /etc/vigil/hmac.key
 sudo chmod 0400 /etc/vigil/hmac.key
 ```
 
-Acceptable modes are `0400` (read-only) or `0600` (read-write for rotation).
-Vigil warns at runtime if the key file is more permissive than `0600`, and
-`vigil doctor` flags both permission and ownership issues.
+Recommended rotation flow:
+1. create new key
+2. archive current audit context and key
+3. restart daemon
+4. verify new audit chain
 
-### Rotation Procedure
-
-1. Generate a new key file (see above).
-2. Existing audit entries signed with the old key remain verifiable only
-   with the old key. You have two options:
-   - **New audit epoch**: archive the current audit log and database,
-     start fresh with `vigil init`. Previous entries can be verified
-     offline using the archived key.
-   - **Re-sign**: export audit entries, re-compute HMACs with the new key,
-     and re-import. This is not yet automated.
-3. Restart the daemon (`systemctl restart vigild`) to pick up the new key.
-
-### Threat Model
-
-The HMAC key **must** reside on a different trust boundary than the files
-being monitored:
-
-| Placement | Tamper-Evidence |
-|-----------|-----------------|
-| Root-owned file on the same partition | protects against non-root attackers |
-| Separate partition mounted read-only | protects against root-level file writes (attacker must remount) |
-| External/HSM-backed key (future) | protects against full disk compromise |
-
-If an attacker has root access **and** can read the key, they can forge
-audit entries. In that scenario, the HMAC provides no additional guarantee
-beyond what the filesystem permissions already offer.
+If attacker can read the key and edit the audit database, HMAC cannot protect integrity.
 
 ---
 
-## HMAC Baseline Integrity
+## Socket Security
 
-Current state:
-- config supports `security.hmac_signing` and `security.hmac_key_path`
-- config validation enforces key existence when signing is enabled
-- schema includes `audit_log.hmac`
-- `vigil log verify` CLI entry exists, with current command path not fully implemented
+`hooks.signal_socket` uses Unix domain sockets.
 
-What this protects (when fully enabled in your deployment path):
-- tamper-evident integrity metadata for baseline/audit records
+- keep socket directory private
+- use restrictive permissions
+- treat this channel as local host only
 
-What this does not protect:
-- root attacker who can replace binary, key, and database together
-- kernel-level attacker that can forge filesystem/system call behavior
+If socket delivery fails, other channels keep working.
 
 ---
 
-## Signal Socket Security
+## Operational Checks
 
-Vigil can send JSON alert events to an optional Unix socket path (`hooks.signal_socket`).
-
-Security boundary:
-- local host only (Unix domain socket)
-- access control is determined by socket path ownership and permissions
-
-Behavior details:
-- if no listener is present, events are dropped silently for this channel
-- other channels (journald/JSON log/desktop) still operate
-- no extra encryption layer is added at this boundary
-
-Operational guidance:
-- place socket in a directory owned by the intended consumer
-- use restrictive permissions (`0700` directory, `0600` socket)
-- avoid world-writable directories
-
----
-
-## Database Security
-
-Vigil database defaults to `/var/lib/vigil/baseline.db` with WAL enabled.
-
-Controls in code:
-- schema constraints (`UNIQUE(path, device, inode)`, source `CHECK`)
-- `PRAGMA foreign_keys=ON`
-- startup integrity check (`integrity_check`)
-- periodic WAL checkpointing
-
-Operational controls you should enforce:
-- root-owned DB and parent directory
-- least-write access (daemon user only)
-- backup baseline/audit data before major upgrades
-
-Quick checks:
+Run these commands during hardening and incident response.
 
 ```bash
 vigil doctor
 vigil status
+vigil audit stats
+vigil audit verify
 ```
 
 ---
 
-## Privilege Model
-
-### fanotify path
-
-- fanotify monitoring typically needs `CAP_SYS_ADMIN`
-- systemd unit grants bounded capabilities (`CAP_SYS_ADMIN`, `CAP_DAC_READ_SEARCH`)
-
-### fallback path
-
-- if fanotify initialization fails, Vigil falls back to inotify
-- fallback reduces coverage but keeps monitor alive
-- warnings are explicit (Principle X: Fail Open, Fail Loud)
-
-Systemd hardening defaults include:
-- `NoNewPrivileges=yes`
-- `ProtectSystem=strict`
-- bounded writable paths
-- memory limits
-
----
-
-## Local Attacker Limitations
-
-A same-user attacker can often:
-- modify user-owned config files
-- read user-owned logs
-- disable user-level processes
-
-Vigil is designed for boundary change visibility, not local account isolation.
-If attacker already owns your user session, incident response scope is broader than a file monitor.
-
----
-
-## Disclosure Philosophy
-
-Security through clarity beats security theater.
-Small, deterministic, auditable behavior is safer than opaque "smart" detection claims.
-
-*If Vigil speaks, it should be because something real changed.*
+Security claims must map to code paths. If a claim cannot be tested, remove it.

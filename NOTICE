@@ -24,7 +24,7 @@ individual.
 
   Project Name:   Vigil
   Description:    Lightweight file integrity monitor for Linux desktops
-  Repository:     https://github.com/DigiNotar/vigil
+  Repository:     https://github.com/loujr/vigil
   Brand Website:  https://lousclues.com
   Maintainer:     Louis Nelson Jr. (GitHub: @loujr)
 
@@ -40,10 +40,8 @@ individual.
                    Terms: licenses/LICENSE-DOCS.md
                    Full text: https://creativecommons.org/licenses/by/4.0/legalcode
 
-  Commercial:      Vigil is currently licensed exclusively under GPL-3.0-only.
-                   There is no commercial license available at this time.
-                   For commercial licensing inquiries, see:
-                   licenses/LICENSE-COMMERCIAL.md
+  Commercial:      Commercial License (alternative to GPL for proprietary use)
+                   Full terms: licenses/LICENSE-COMMERCIAL.md
 
 ================================================================================
 
