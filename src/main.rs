@@ -1,13 +1,15 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command as ProcessCommand};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use chrono::Utc;
 use clap::Parser;
 
 use vigil::cli::{AuditAction, Cli, Command, ConfigAction, SetupAction};
 use vigil::doctor;
-use vigil::types::{OutputFormat, ScanMode};
+use vigil::types::{Change, OutputFormat, ScanMode};
 
 fn main() {
     init_tracing();
@@ -42,11 +44,15 @@ fn run(cli: Cli) -> vigil::Result<i32> {
             cmd_watch(config_path.as_deref())?;
             Ok(0)
         }
-        Command::Check { full, now } => {
+        Command::Check { full, now, accept } => {
+            if now && accept {
+                eprintln!("error: --accept cannot be used with --now (baseline updates require direct database access)");
+                return Ok(1);
+            }
             if now {
                 cmd_check_live(config_path.as_deref(), full)?;
             } else {
-                cmd_check(config_path.as_deref(), full)?;
+                cmd_check(config_path.as_deref(), full, accept)?;
             }
             Ok(0)
         }
@@ -103,10 +109,13 @@ fn cmd_init(config_path: Option<&Path>, force: bool) -> vigil::Result<()> {
         }
     }
 
+    eprintln!("  Scanning watch paths...");
     let result = vigil::scanner::build_initial_baseline(&conn, &cfg)?;
 
+    print_header("Vigil — Baseline Initialized");
+
     println!(
-        "Building baseline from {} watch groups...",
+        "  Building baseline from {} watch groups...",
         result.groups.len()
     );
     println!();
@@ -118,16 +127,16 @@ fn cmd_init(config_path: Option<&Path>, force: bool) -> vigil::Result<()> {
             group.paths.join(", ")
         };
 
-        println!("  {:<16} {}", group.name, paths);
+        println!("    {:<16} {}", group.name, paths);
         if group.errors > 0 {
             println!(
-                "                   {} files baselined ({} capture errors)",
+                "                     {} files baselined ({} capture errors)",
                 format_count(group.file_count),
                 group.errors
             );
         } else {
             println!(
-                "                   {} files baselined",
+                "                     {} files baselined",
                 format_count(group.file_count)
             );
         }
@@ -135,17 +144,17 @@ fn cmd_init(config_path: Option<&Path>, force: bool) -> vigil::Result<()> {
     }
 
     println!(
-        "Total: {} files in {:.1}s",
+        "  Total: {} files in {:.1}s",
         format_count(result.total_count),
         result.duration.as_secs_f64()
     );
     println!(
-        "Database: {} ({})",
+        "  Database: {} ({})",
         cfg.daemon.db_path.display(),
         format_size(result.db_size_bytes)
     );
     println!();
-    println!("Your filesystem has a witness now.");
+    println!("  Your filesystem has a witness now.");
 
     Ok(())
 }
@@ -156,7 +165,7 @@ fn cmd_watch(config_path: Option<&Path>) -> vigil::Result<()> {
     vigil::Daemon::from_config(cfg)?.run()
 }
 
-fn cmd_check(config_path: Option<&Path>, full: bool) -> vigil::Result<()> {
+fn cmd_check(config_path: Option<&Path>, full: bool, accept: bool) -> vigil::Result<()> {
     let cfg = vigil::config::load_config(config_path)?;
     let conn = vigil::db::open_baseline_db(&cfg)?;
 
@@ -166,21 +175,138 @@ fn cmd_check(config_path: Option<&Path>, full: bool) -> vigil::Result<()> {
         ScanMode::Incremental
     };
 
-    println!("Running {} scan...", mode);
-    let result = vigil::scanner::run_scan(&conn, &cfg, mode)?;
+    let mode_label = if full { "Full" } else { "Incremental" };
 
-    println!("Checked: {}", result.total_checked);
-    println!("Changes: {}", result.changes_found);
-    println!("Errors: {}", result.errors);
+    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
 
-    for change in result.changes.iter().take(20) {
-        println!(
-            "  [{}] {} ({})",
-            change.severity,
-            change.path.display(),
-            change.primary_change_name()
-        );
+    let result = vigil::scanner::run_scan_with_progress(&conn, &cfg, mode, |checked, total| {
+        if is_tty && total > 0 {
+            let pct = (checked as f64 / total as f64 * 100.0).min(100.0);
+            eprint!(
+                "\r  Scanning... {}/{} files ({:.0}%)",
+                format_count(checked),
+                format_count(total),
+                pct
+            );
+            let _ = std::io::stderr().flush();
+        }
+    })?;
+
+    if is_tty {
+        eprint!("\r\x1b[2K");
+        let _ = std::io::stderr().flush();
     }
+
+    print_header(&format!("Vigil — {} Integrity Check", mode_label));
+
+    println!("  Files checked   {}", format_count(result.total_checked));
+    println!(
+        "  Duration        {:.1}s",
+        result.duration_ms as f64 / 1000.0
+    );
+    println!("  Errors          {}", result.errors);
+    println!();
+
+    if result.changes.is_empty() {
+        println!("  ● No changes detected. Boundaries intact.");
+    } else {
+        let (marker, _) = severity_display_for_count(&result.changes);
+        println!(
+            "  {} {} change{} detected:",
+            marker,
+            result.changes_found,
+            if result.changes_found == 1 { "" } else { "s" }
+        );
+
+        for change in &result.changes {
+            println!();
+            let (marker, label) = severity_display(&change.severity);
+            println!("  {} {} {}", marker, label, change.path.display());
+            for c in &change.changes {
+                print_change_detail(c);
+            }
+            if let Some(ref pkg) = change.package {
+                println!("    package: {}", pkg);
+            }
+        }
+
+        if result.changes.len() > 100 {
+            println!();
+            println!("  Run vigil audit show for full history.");
+        }
+    }
+
+    if accept && !result.changes.is_empty() {
+        println!();
+        println!(
+            "  Accepting {} change{} into baseline...",
+            result.changes_found,
+            if result.changes_found == 1 { "" } else { "s" }
+        );
+
+        let now = chrono::Utc::now().timestamp();
+        let mut accepted = 0u64;
+        let mut failed = 0u64;
+
+        for change in &result.changes {
+            let opts = vigil::types::CaptureOpts {
+                force_hash: true,
+                max_file_size: cfg.scanner.max_file_size,
+                mmap_threshold: cfg.scanner.mmap_threshold,
+                baseline_mtime: None,
+                baseline_hash: None,
+            };
+
+            match vigil::types::FileSnapshot::from_path(&change.path, &opts) {
+                Ok(vigil::types::SnapshotOrDeleted::Snapshot(snapshot)) => {
+                    let entry = vigil::types::BaselineEntry {
+                        id: None,
+                        path: change.path.as_ref().clone(),
+                        identity: snapshot.identity,
+                        content: snapshot.content,
+                        permissions: snapshot.permissions,
+                        security: snapshot.security,
+                        mtime: snapshot.mtime,
+                        package: change.package.clone(),
+                        source: vigil::types::BaselineSource::Manual,
+                        added_at: now,
+                        updated_at: now,
+                    };
+                    match vigil::db::baseline_ops::upsert(&conn, &entry) {
+                        Ok(()) => accepted += 1,
+                        Err(e) => {
+                            eprintln!("    failed to accept {}: {}", change.path.display(), e);
+                            failed += 1;
+                        }
+                    }
+                }
+                Ok(vigil::types::SnapshotOrDeleted::Deleted) => {
+                    match vigil::db::baseline_ops::remove_by_path(
+                        &conn,
+                        &change.path.to_string_lossy(),
+                    ) {
+                        Ok(_) => accepted += 1,
+                        Err(e) => {
+                            eprintln!("    failed to remove {}: {}", change.path.display(), e);
+                            failed += 1;
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("    failed to snapshot {}: {}", change.path.display(), e);
+                    failed += 1;
+                }
+            }
+        }
+
+        println!();
+        println!("  ● {} accepted, {} failed", accepted, failed);
+        println!();
+        println!("  Baseline updated. Next scan will treat current state as expected.");
+        println!("  Audit log preserved — the original detection is permanent.");
+    }
+
+    println!();
 
     Ok(())
 }
@@ -199,9 +325,8 @@ fn cmd_check_live(config_path: Option<&Path>, full: bool) -> vigil::Result<()> {
     }
 
     let mode = if full { "full" } else { "incremental" };
+    let mode_label = if full { "Full" } else { "Incremental" };
     let request = format!(r#"{{"method":"scan","params":{{"mode":"{}"}}}}"#, mode);
-
-    println!("Triggering {} scan on running daemon...", mode);
 
     let mut stream = UnixStream::connect(&cfg.daemon.control_socket).map_err(|e| {
         vigil::VigilError::Daemon(format!(
@@ -215,9 +340,38 @@ fn cmd_check_live(config_path: Option<&Path>, full: bool) -> vigil::Result<()> {
     writeln!(stream, "{}", request)?;
     stream.flush()?;
 
+    let spinner_shutdown = Arc::new(AtomicBool::new(false));
+    let spinner_flag = spinner_shutdown.clone();
+    let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
+
+    let spinner_handle = if is_tty {
+        Some(std::thread::spawn(move || {
+            let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let mut i = 0;
+            while !spinner_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                eprint!(
+                    "\r  {} Waiting for daemon scan...",
+                    frames[i % frames.len()]
+                );
+                let _ = std::io::stderr().flush();
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                i += 1;
+            }
+            eprint!("\r\x1b[2K");
+            let _ = std::io::stderr().flush();
+        }))
+    } else {
+        None
+    };
+
     let mut reader = BufReader::new(&stream);
     let mut response = String::new();
     reader.read_line(&mut response)?;
+
+    spinner_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Some(h) = spinner_handle {
+        let _ = h.join();
+    }
 
     let result: serde_json::Value = serde_json::from_str(&response)
         .map_err(|e| vigil::VigilError::Daemon(format!("invalid response: {}", e)))?;
@@ -237,10 +391,25 @@ fn cmd_check_live(config_path: Option<&Path>, full: bool) -> vigil::Result<()> {
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
 
-        println!("Checked:  {}", format_count(checked));
-        println!("Changes:  {}", changes);
-        println!("Errors:   {}", errors);
-        println!("Duration: {:.1}s", duration as f64 / 1000.0);
+        print_header(&format!("Vigil — {} Integrity Check (live)", mode_label));
+
+        println!("  Files checked   {}", format_count(checked));
+        println!("  Duration        {:.1}s", duration as f64 / 1000.0);
+        println!("  Errors          {}", errors);
+        println!();
+
+        if changes == 0 {
+            println!("  ● No changes detected. Boundaries intact.");
+        } else {
+            println!(
+                "  ⚠ {} change{} detected.",
+                changes,
+                if changes == 1 { "" } else { "s" }
+            );
+            println!();
+            println!("  Run vigil check for per-file details.");
+        }
+        println!();
     } else {
         let err = result
             .get("error")
@@ -263,6 +432,12 @@ fn cmd_status(config_path: Option<&Path>, format: OutputFormat) -> vigil::Result
                 println!("{}", serde_json::to_string_pretty(&live)?);
                 return Ok(());
             }
+
+            print_header("Vigil — Daemon Status (live)");
+
+            // ── Daemon ──
+            println!("  Daemon");
+            println!("  ──────");
             if let Some(daemon) = live.get("daemon") {
                 let state = daemon
                     .get("state")
@@ -276,33 +451,67 @@ fn cmd_status(config_path: Option<&Path>, format: OutputFormat) -> vigil::Result
                     .get("version")
                     .and_then(|v| v.as_str())
                     .unwrap_or("?");
+
+                println!("    State          ● {}", state);
+                println!("    Version        v{}", version);
                 println!(
-                    "vigild    ● {} (v{}, uptime {})",
-                    state,
-                    version,
+                    "    Uptime         {}",
                     doctor::format_compact_duration(uptime)
                 );
+
+                // Try to get PID from daemon probe
+                let probe = doctor::probe_daemon(&cfg);
+                if let Some(pid) = probe.pid {
+                    println!("    PID            {}", pid);
+                }
             }
+
+            // ── Events ──
             if let Some(metrics) = live.get("metrics") {
                 let received = metrics
                     .get("events_received")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
-                let changes = metrics
-                    .get("changes_detected")
+                let processed = metrics
+                    .get("events_processed")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
                 let dropped = metrics
                     .get("events_dropped")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
-                println!(
-                    "events    {} received, {} changes, {} dropped",
-                    format_count(received),
-                    format_count(changes),
-                    format_count(dropped)
-                );
+                let debounced = metrics
+                    .get("events_debounced")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let filtered = metrics
+                    .get("events_filtered")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let backpressure = metrics
+                    .get("backpressure_events")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
 
+                println!();
+                println!("  Events");
+                println!("  ──────");
+                println!("    Received       {}", format_count(received));
+                println!("    Processed      {}", format_count(processed));
+                println!("    Dropped        {}", format_count(dropped));
+                println!("    Debounced      {}", format_count(debounced));
+                println!("    Filtered       {}", format_count(filtered));
+                println!("    Backpressure   {}", format_count(backpressure));
+
+                // ── Integrity ──
+                let hashes = metrics
+                    .get("hashes_computed")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let changes = metrics
+                    .get("changes_detected")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 let scan_ms = metrics
                     .get("scan_duration_ms")
                     .and_then(|v| v.as_u64())
@@ -311,15 +520,88 @@ fn cmd_status(config_path: Option<&Path>, format: OutputFormat) -> vigil::Result
                     .get("last_scan_total")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
+
+                println!();
+                println!("  Integrity");
+                println!("  ─────────");
+                println!("    Hashes         {}", format_count(hashes));
+                println!("    Changes        {}", format_count(changes));
                 if scan_total > 0 {
                     println!(
-                        "last scan {} files in {:.1}s",
+                        "    Last scan      {} files in {:.1}s",
                         format_count(scan_total),
                         scan_ms as f64 / 1000.0
                     );
                 }
+
+                // ── Alerts ──
+                let dispatched = metrics
+                    .get("alerts_dispatched")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let suppressed = metrics
+                    .get("alerts_suppressed")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+
+                println!();
+                println!("  Alerts");
+                println!("  ──────");
+                println!("    Dispatched     {}", format_count(dispatched));
+                println!("    Suppressed     {}", format_count(suppressed));
+
+                // ── Database ──
+                let db_writes = metrics
+                    .get("db_writes")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let db_errors = metrics
+                    .get("db_errors")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let cache_hits = metrics
+                    .get("cache_hits")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let cache_misses = metrics
+                    .get("cache_misses")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let baseline_updates = metrics
+                    .get("baseline_updates")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+
+                println!();
+                println!("  Database");
+                println!("  ────────");
+                println!("    Writes         {}", format_count(db_writes));
+                println!("    Errors         {}", format_count(db_errors));
+                println!(
+                    "    Cache          {} hits / {} misses",
+                    format_count(cache_hits),
+                    format_count(cache_misses)
+                );
+                println!(
+                    "    Baseline       {} updates",
+                    format_count(baseline_updates)
+                );
+
+                // ── Internal ──
+                let panics = metrics
+                    .get("panics_caught")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+
+                println!();
+                println!("  Internal");
+                println!("  ────────");
+                println!("    Panics         {}", format_count(panics));
             }
-            println!("source    live (control socket)");
+
+            println!();
+            println!("  source: control socket");
+            println!();
             return Ok(());
         }
     }
@@ -354,31 +636,41 @@ fn cmd_status(config_path: Option<&Path>, format: OutputFormat) -> vigil::Result
         return Ok(());
     }
 
+    print_header("Vigil — Daemon Status");
+
+    // ── Daemon ──
+    println!("  Daemon");
+    println!("  ──────");
     if daemon.running {
         let uptime = daemon
             .uptime_seconds
             .map(doctor::format_compact_duration)
             .unwrap_or_else(|| "unknown".to_string());
-        println!("vigild    ● running ({})", uptime);
-        println!("backend   {}", backend);
+        println!("    State          ● running (uptime {})", uptime);
+        println!("    Backend        {}", backend);
     } else {
-        println!("vigild    ✗ not running");
+        println!("    State          ✗ not running");
     }
 
+    // ── Data ──
+    println!();
+    println!("  Data");
+    println!("  ────");
     match baseline_entries {
-        Some(count) => println!("baseline  {} entries", format_count(count.max(0) as u64)),
-        None => println!("baseline  unknown"),
+        Some(count) => println!(
+            "    Baseline       {} entries",
+            format_count(count.max(0) as u64)
+        ),
+        None => println!("    Baseline       unknown"),
     }
 
     if daemon.running {
-        println!(
-            "changes   {} detected (last 24h)",
-            recent_changes.unwrap_or(0)
-        );
+        println!("    Changes (24h)  {}", recent_changes.unwrap_or(0));
     } else {
-        println!("changes   unknown (daemon offline)");
+        println!("    Changes (24h)  unknown (daemon offline)");
     }
 
+    // ── Last Scan ──
     let last_scan_label = last_scan_at
         .map(doctor::format_relative_timestamp)
         .unwrap_or_else(|| "unknown".to_string());
@@ -389,11 +681,17 @@ fn cmd_status(config_path: Option<&Path>, format: OutputFormat) -> vigil::Result
         format!("{} changes", recent_changes.unwrap_or(0))
     };
 
+    println!();
+    println!("  Last Scan");
+    println!("  ─────────");
+    println!("    Completed      {}", last_scan_label);
     if metrics.is_some() {
-        println!("last scan {} — {}", last_scan_label, cleanliness);
-    } else {
-        println!("last scan {}", last_scan_label);
+        println!("    Result         {}", cleanliness);
     }
+
+    println!();
+    println!("  source: file snapshot (may be up to 60s stale)");
+    println!();
 
     Ok(())
 }
@@ -407,29 +705,112 @@ fn cmd_doctor(config_path: Option<&Path>, format: OutputFormat) -> vigil::Result
         return Ok(doctor::diagnostics_exit_code(&checks));
     }
 
+    println!();
     println!("Vigil v{} — System Health Check", env!("CARGO_PKG_VERSION"));
     println!("════════════════════════════════════");
-    println!();
 
-    for check in &checks {
-        println!(
-            "  {:<12} {} {}",
-            check.name,
-            check.status.marker(),
-            check.detail
-        );
-        if (check.status == doctor::CheckStatus::Warning
-            || check.status == doctor::CheckStatus::Failed)
-            && check.fix.is_some()
-        {
-            println!("               → {}", check.fix.as_deref().unwrap_or(""));
+    // ── Runtime ──
+    println!();
+    println!("  Runtime");
+    println!("  ───────");
+    for check in checks
+        .iter()
+        .filter(|c| matches!(c.name.as_str(), "Daemon" | "Backend" | "Control"))
+    {
+        print_check(check);
+    }
+
+    // ── Data ──
+    println!();
+    println!("  Data");
+    println!("  ────");
+    for check in checks
+        .iter()
+        .filter(|c| matches!(c.name.as_str(), "Baseline" | "Database" | "Audit log"))
+    {
+        print_check(check);
+    }
+
+    // ── Configuration ──
+    println!();
+    println!("  Configuration");
+    println!("  ─────────────");
+    for check in checks
+        .iter()
+        .filter(|c| matches!(c.name.as_str(), "Config" | "HMAC key" | "Scan timer"))
+    {
+        print_check(check);
+    }
+
+    // If config has warnings, inline them here
+    if let Some(config_check) = checks.iter().find(|c| c.name == "Config") {
+        if config_check.status == doctor::CheckStatus::Warning {
+            if let Ok(warnings) = vigil::config::validate_config_deep(&cfg) {
+                if !warnings.is_empty() {
+                    println!();
+                    println!("  Config warnings:");
+                    for w in &warnings {
+                        println!("    ─ {}", w);
+                    }
+                }
+            }
         }
     }
 
+    // ── Integrations ──
     println!();
-    println!("  {}", doctor::diagnostics_verdict(&checks));
+    println!("  Integrations");
+    println!("  ────────────");
+    for check in checks
+        .iter()
+        .filter(|c| matches!(c.name.as_str(), "Hooks" | "Notify" | "Socket"))
+    {
+        print_check(check);
+    }
+
+    // ── Verdict ──
+    println!();
+
+    let failures = checks
+        .iter()
+        .filter(|c| c.status == doctor::CheckStatus::Failed)
+        .count();
+    let warnings = checks
+        .iter()
+        .filter(|c| c.status == doctor::CheckStatus::Warning)
+        .count();
+    let ok_count = checks
+        .iter()
+        .filter(|c| c.status == doctor::CheckStatus::Ok)
+        .count();
+
+    if failures == 0 && warnings == 0 {
+        println!(
+            "  {}/{} checks passed. Vigil is watching.",
+            ok_count,
+            checks.len()
+        );
+    } else {
+        println!("  {}", doctor::diagnostics_verdict(&checks));
+    }
+
+    println!();
 
     Ok(doctor::diagnostics_exit_code(&checks))
+}
+
+fn print_check(check: &doctor::DiagnosticCheck) {
+    println!(
+        "    {:<14} {} {}",
+        check.name,
+        check.status.marker(),
+        check.detail
+    );
+    if (check.status == doctor::CheckStatus::Warning || check.status == doctor::CheckStatus::Failed)
+        && check.fix.is_some()
+    {
+        println!("    {:<14}   → {}", "", check.fix.as_deref().unwrap_or(""));
+    }
 }
 
 fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
@@ -548,7 +929,9 @@ fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
         None => "preserved".to_string(),
     };
 
-    println!("✓ Vigil updated: {} → {}", current_version, new_version);
+    print_header("Vigil — Update Complete");
+
+    println!("  ✓ {} → {}", current_version, new_version);
     println!(
         "  Daemon:   {}",
         if daemon_started {
@@ -595,23 +978,67 @@ fn cmd_audit(
                     serde_json::to_string_pretty(&entries_to_json(&entries))?
                 );
             } else {
-                for e in entries {
-                    println!("{} {} {}", e.timestamp, e.severity, e.path);
+                print_header(&format!("Vigil — Audit Log (last {})", last));
+                if entries.is_empty() {
+                    println!("  No audit entries found.");
+                } else {
+                    for e in &entries {
+                        let sev_marker = match e.severity.as_str() {
+                            "critical" => "✗",
+                            "high" => "✗",
+                            "medium" => "⚠",
+                            _ => "○",
+                        };
+                        println!(
+                            "  {} {} {} {}",
+                            e.timestamp,
+                            sev_marker,
+                            e.severity.to_uppercase(),
+                            e.path
+                        );
+                    }
+                    println!();
+                    println!(
+                        "  {} entr{} shown.",
+                        entries.len(),
+                        if entries.len() == 1 { "y" } else { "ies" }
+                    );
                 }
             }
         }
         AuditAction::Verify => {
             let (total, valid, breaks, missing) = vigil::db::audit_ops::verify_chain(&conn)?;
-            println!("Audit Chain Verification");
-            println!("------------------------");
-            println!("Total entries: {}", total);
-            println!("Valid links:   {}", valid);
-            println!("Missing hash:  {}", missing);
-            println!("Breaks:        {}", breaks.len());
+
+            print_header("Vigil — Audit Chain Verification");
+
+            println!("  Total entries    {}", format_count(total));
+            println!("  Valid links      {}", format_count(valid));
+            println!("  Missing hashes   {}", missing);
+            println!("  Chain breaks     {}", breaks.len());
+
             if !breaks.is_empty() {
-                for (id, ts) in breaks {
-                    println!("  break at id={} timestamp={}", id, ts);
+                println!();
+                println!("  Break locations:");
+                for (id, ts) in &breaks {
+                    println!("    id={} timestamp={}", id, ts);
                 }
+            }
+
+            println!();
+            if breaks.is_empty() && missing == 0 {
+                println!("  ● Audit chain intact. No tampering detected.");
+            } else if !breaks.is_empty() {
+                println!(
+                    "  ✗ Audit chain broken. {} break{} detected.",
+                    breaks.len(),
+                    if breaks.len() == 1 { "" } else { "s" }
+                );
+            } else {
+                println!(
+                    "  ⚠ Audit chain intact but {} entr{} missing HMAC hashes.",
+                    missing,
+                    if missing == 1 { "y" } else { "ies" }
+                );
             }
         }
     }
@@ -657,13 +1084,26 @@ fn cmd_config(config_path: Option<&Path>, action: ConfigAction) -> vigil::Result
         ConfigAction::Validate => {
             vigil::config::validate_config(&cfg)?;
             let warnings = vigil::config::validate_config_deep(&cfg)?;
-            println!("Configuration is valid.");
+
+            println!();
+            println!("  ● Configuration is valid.");
+
             if !warnings.is_empty() {
-                println!("Warnings:");
-                for w in warnings {
-                    println!("  - {}", w);
+                println!();
+                println!(
+                    "  {} {}:",
+                    warnings.len(),
+                    if warnings.len() == 1 {
+                        "warning"
+                    } else {
+                        "warnings"
+                    }
+                );
+                for w in &warnings {
+                    println!("    ─ {}", w);
                 }
             }
+            println!();
         }
     }
 
@@ -742,11 +1182,14 @@ fn cmd_setup_hmac(config_path: Option<&Path>, key_path: &Path, force: bool) -> v
         )?;
     }
 
-    println!("HMAC key written to {}", key_path.display());
-    println!("Config updated: hmac_signing = true");
     println!();
-    println!("Restart vigild for changes to take effect:");
-    println!("  sudo systemctl restart vigild.service");
+    println!("  ● HMAC key written to {}", key_path.display());
+    println!("    Permissions: 0400 (owner read-only)");
+    println!("    Owner: root:root");
+    println!("    Config updated: hmac_signing = true");
+    println!();
+    println!("  Restart vigild for changes to take effect:");
+    println!("    sudo systemctl restart vigild.service");
 
     Ok(())
 }
@@ -786,13 +1229,14 @@ fn cmd_setup_socket(
         )?;
     }
 
-    println!("Socket sink configured: {}", socket_path.display());
     println!();
-    println!("Restart vigild for changes to take effect:");
-    println!("  sudo systemctl restart vigild.service");
+    println!("  ● Socket sink configured: {}", socket_path.display());
     println!();
-    println!("To listen for alerts:");
-    println!("  socat UNIX-LISTEN:{} -", socket_path.display());
+    println!("  Restart vigild for changes to take effect:");
+    println!("    sudo systemctl restart vigild.service");
+    println!();
+    println!("  To listen for alerts:");
+    println!("    socat UNIX-LISTEN:{} -", socket_path.display());
 
     Ok(())
 }
@@ -1021,6 +1465,105 @@ fn format_count(value: u64) -> String {
 
 fn format_size(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+}
+
+/// Print a section header with Unicode box-drawing separator.
+fn print_header(title: &str) {
+    println!();
+    println!("{}", title);
+    println!("{}", "═".repeat(title.len()));
+    println!();
+}
+
+/// Truncate a hash to 16 hex chars for display.
+fn truncate_hash(hash: &str) -> &str {
+    if hash.len() > 16 {
+        &hash[..16]
+    } else {
+        hash
+    }
+}
+
+/// Format a severity for display: returns (marker, label).
+fn severity_display(severity: &vigil::types::Severity) -> (&'static str, &'static str) {
+    match severity {
+        vigil::types::Severity::Critical => ("✗", "CRITICAL"),
+        vigil::types::Severity::High => ("✗", "HIGH"),
+        vigil::types::Severity::Medium => ("⚠", "MEDIUM"),
+        vigil::types::Severity::Low => ("○", "LOW"),
+    }
+}
+
+/// Pick the highest-severity marker for a set of changes.
+fn severity_display_for_count(
+    changes: &[vigil::types::ChangeResult],
+) -> (&'static str, &'static str) {
+    let max_severity = changes
+        .iter()
+        .map(|c| c.severity)
+        .max()
+        .unwrap_or(vigil::types::Severity::Medium);
+    severity_display(&max_severity)
+}
+
+/// Print detail lines for a single Change variant.
+fn print_change_detail(change: &Change) {
+    match change {
+        Change::ContentModified { old_hash, new_hash } => {
+            println!(
+                "    content: {} → {}",
+                truncate_hash(old_hash),
+                truncate_hash(new_hash)
+            );
+        }
+        Change::PermissionsChanged { old, new } => {
+            println!("    permissions: {:04o} → {:04o}", old, new);
+        }
+        Change::OwnerChanged {
+            old_uid,
+            new_uid,
+            old_gid,
+            new_gid,
+        } => {
+            println!(
+                "    owner: {}:{} → {}:{}",
+                old_uid, old_gid, new_uid, new_gid
+            );
+        }
+        Change::InodeChanged { old, new } => {
+            println!("    inode: {} → {}", old, new);
+        }
+        Change::TypeChanged { old, new } => {
+            println!("    type: {} → {}", old, new);
+        }
+        Change::SymlinkTargetChanged { old, new } => {
+            println!("    symlink: {} → {}", old.display(), new.display());
+        }
+        Change::CapabilitiesChanged { old, new } => {
+            println!(
+                "    capabilities: {} → {}",
+                old.as_deref().unwrap_or("none"),
+                new.as_deref().unwrap_or("none")
+            );
+        }
+        Change::XattrChanged { key, old, new } => {
+            println!(
+                "    xattr {}: {} → {}",
+                key,
+                old.as_deref().unwrap_or("none"),
+                new.as_deref().unwrap_or("none")
+            );
+        }
+        Change::SecurityContextChanged { old, new } => {
+            println!("    security context: {} → {}", old, new);
+        }
+        Change::Deleted => {
+            println!("    file deleted from filesystem");
+        }
+        Change::Created => {
+            println!("    new file not in baseline");
+        }
+    }
 }
 
 #[cfg(test)]

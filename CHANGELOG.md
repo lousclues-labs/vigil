@@ -4,6 +4,169 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.16.2] - 2026-04-06
+
+### Release Summary
+- Terminal UX overhaul focused on operator-first clarity: richer hierarchy, denser actionable detail, and zero ambiguity for interactive command output.
+- Added real progress feedback for long-running checks, including TTY-safe progress lines and a live daemon spinner.
+- Redesigned `vigil check`, `vigil status`, and `vigil doctor` output structure to surface high-value context first while preserving machine-readable JSON behavior.
+- Added explicit operator acknowledgement flow with `vigil check --accept`, enabling deliberate baseline updates without mutating audit history.
+
+### Core UX Infrastructure
+
+#### Shared formatting helpers for consistent command output
+- Added reusable helpers in `src/main.rs`:
+  - `print_header(title)` for section headers with box-drawing separators.
+  - `truncate_hash(hash)` to render content hashes compactly in terminal output.
+  - `severity_display(severity)` for consistent marker/label rendering.
+  - `print_change_detail(change)` for per-variant diff detail lines.
+- Applied header formatting across high-structure commands:
+  - `vigil check`
+  - `vigil check --now`
+  - `vigil status` (live and fallback)
+  - `vigil update`
+  - `vigil audit verify`
+  - `vigil audit show`
+
+### Scan Progress and Responsiveness
+
+#### Progress callback API added without breaking existing call sites
+- Added `run_scan_with_progress(conn, config, mode, progress)` in `src/scanner.rs`.
+- Preserved existing `run_scan(conn, config, mode)` signature; it now delegates to the new API with a no-op callback.
+- Progress callback behavior:
+  - pre-computes total baseline entries once
+  - emits progress every 1,000 checked entries
+  - emits final completion callback after scan finishes
+- This preserves compatibility for scheduler/control callers while enabling interactive UX for CLI flows.
+
+#### `vigil check` now shows TTY-only progress on stderr
+- `cmd_check()` now uses `run_scan_with_progress()`.
+- Progress line behavior:
+  - rendered with carriage-return updates on `stderr`
+  - shown only when `stderr` is a terminal (`IsTerminal`)
+  - fully cleared after completion
+- This keeps `stdout` clean for piping and avoids escape/control noise in non-TTY contexts.
+
+#### `vigil check --now` now shows an interactive wait spinner
+- Added a spinner thread while waiting for control-socket scan completion.
+- Spinner behavior:
+  - writes only to `stderr`
+  - runs only for TTY sessions
+  - is explicitly shutdown/joined after response read
+  - clears its terminal line on completion
+
+### Integrity Check Experience (`vigil check`)
+
+#### Rich summary block and full per-change detail output
+- Replaced compact/truncated change listing with structured output:
+  - files checked
+  - duration
+  - error count
+  - high-visibility clean-state sentence when no changes are present
+- Removed `take(20)` truncation; all detected changes are now shown.
+- Added >100-change guidance note to direct operators toward audit history review.
+
+#### Per-variant change detail rendering
+- Added explicit detail lines for all change variants:
+  - content hash changes (truncated old/new)
+  - permissions
+  - owner/group
+  - inode
+  - file type
+  - symlink target
+  - capabilities
+  - xattrs
+  - security context
+  - deleted/created markers
+- Package attribution is now printed per change when available.
+
+### Baseline Acceptance Workflow (`--accept`)
+
+#### New deliberate baseline update flag
+- Added `--accept` to `vigil check` in `src/cli.rs`.
+- CLI parsing tests added for:
+  - `vigil check --accept`
+  - `vigil check --accept --full`
+
+#### Safety rules for acceptance mode
+- `--accept` is rejected with `--now` (live daemon trigger), because baseline updates require direct DB access.
+- Acceptance is explicit and operator-driven; no hidden baseline mutation.
+
+#### Acceptance execution semantics
+- After displaying detected changes, `cmd_check()` can update baseline entries in place:
+  - captures fresh snapshots for existing files
+  - removes baseline entries for deleted files
+  - records accepted updates with `BaselineSource::Manual`
+  - prints accepted/failed counters and completion summary
+- Audit semantics preserved: acceptance updates baseline state only; historical detection remains in the append-only audit trail.
+
+### Doctor Output Redesign (`vigil doctor`)
+
+#### Grouped diagnostics for operator scanning speed
+- Reworked human output into named sections:
+  - Runtime
+  - Data
+  - Configuration
+  - Integrations
+  - Verdict
+- Added `print_check()` helper with widened alignment and fix-line formatting.
+
+#### Config warning visibility improved
+- When config check is warning-level, deep validation warnings are now inlined directly in doctor output.
+- Removes the need for a second command to discover warning details.
+
+#### Verdict grammar and messaging polished
+- Updated `diagnostics_verdict()` in `src/doctor.rs` for singular/plural correctness.
+- Added tests for:
+  - singular warning text (`1 warning`)
+  - singular failure text (`1 issue`)
+
+### Daemon Status Redesign (`vigil status`)
+
+#### Live status now surfaces full runtime metrics
+- Live control-socket status output is now grouped by domain:
+  - Daemon
+  - Events
+  - Integrity
+  - Alerts
+  - Database
+  - Internal
+- Surfaces all available `MetricsSnapshot` fields in human output, including cache/backpressure/baseline-update/panic counters.
+- Includes PID when available from daemon probe.
+
+#### Fallback status now mirrors grouped structure
+- File-snapshot fallback output now uses the same high-level sectioned format.
+- Explicitly labels data source as stale-capable snapshot.
+
+### Additional Command Polish
+
+#### `vigil audit`
+- `audit show` now has structured header and severity markers.
+- `audit verify` now has structured summary, break listing, and explicit integrity verdict messaging.
+
+#### `vigil config validate`
+- Human output now clearly separates validity confirmation and warning list with proper singular/plural wording.
+
+#### `vigil setup hmac` and `vigil setup socket`
+- Added clearer operator guidance, including permissions/ownership notes and restart instructions.
+
+#### `vigil init` and `vigil update`
+- `vigil init` now emits a scan progress hint before baseline build and prints a structured completion header.
+- `vigil update` now emits a structured completion header and aligned summary lines.
+
+### Compatibility and Behavior Guarantees
+- `run_scan()` public signature unchanged; existing scheduler/control callers remain valid.
+- JSON mode behavior preserved: no human headers/markers injected into machine output paths.
+- Interactive progress/spinner remains TTY-gated to prevent control sequence leakage in piped/non-interactive usage.
+
+### Validation
+- `cargo check` clean
+- `cargo clippy --all-targets -- -D warnings` clean
+- `cargo fmt --all --check` clean
+- `cargo test --all-targets` clean (including new CLI and doctor tests)
+- `cargo build --features parallel` clean
+- `cd fuzz && cargo check` clean
+
 ## [0.16.1] - 2026-04-06
 
 ### Release Summary

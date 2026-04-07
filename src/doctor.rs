@@ -264,16 +264,19 @@ pub fn diagnostics_verdict(checks: &[DiagnosticCheck]) -> String {
         .count();
 
     if failures == 0 && warnings == 0 {
-        "Verdict: All systems nominal. Vigil is watching.".to_string()
+        "All systems nominal. Vigil is watching.".to_string()
     } else if failures == 0 {
         format!(
-            "Verdict: {} warnings. Vigil is running with reduced coverage.",
-            warnings
+            "{} {}. Vigil is running with reduced coverage.",
+            warnings,
+            if warnings == 1 { "warning" } else { "warnings" }
         )
     } else {
         format!(
-            "Verdict: {} issues need attention. Run suggested commands above.",
-            failures
+            "{} {} need{} attention. Run suggested commands above.",
+            failures,
+            if failures == 1 { "issue" } else { "issues" },
+            if failures == 1 { "s" } else { "" }
         )
     }
 }
@@ -1753,5 +1756,31 @@ mod tests {
             "unexpected detail: {}",
             check.detail
         );
+    }
+
+    #[test]
+    fn verdict_singular_warning() {
+        let checks = vec![DiagnosticCheck {
+            name: "x".to_string(),
+            status: CheckStatus::Warning,
+            detail: "warn".to_string(),
+            fix: None,
+        }];
+        let verdict = diagnostics_verdict(&checks);
+        assert!(verdict.contains("1 warning."), "got: {}", verdict);
+        assert!(!verdict.contains("1 warnings"));
+    }
+
+    #[test]
+    fn verdict_singular_failure() {
+        let checks = vec![DiagnosticCheck {
+            name: "x".to_string(),
+            status: CheckStatus::Failed,
+            detail: "fail".to_string(),
+            fix: None,
+        }];
+        let verdict = diagnostics_verdict(&checks);
+        assert!(verdict.contains("1 issue"), "got: {}", verdict);
+        assert!(!verdict.contains("1 issues"));
     }
 }

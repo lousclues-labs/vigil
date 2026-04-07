@@ -43,6 +43,10 @@ pub enum Command {
         /// Trigger scan on the running daemon via control socket instead of running inline
         #[arg(long)]
         now: bool,
+
+        /// After showing changes, update baseline to accept current state
+        #[arg(long)]
+        accept: bool,
     },
 
     /// Show daemon status
@@ -227,6 +231,31 @@ mod tests {
                 assert!(disable);
             }
             _ => panic!("expected setup socket command"),
+        }
+    }
+
+    #[test]
+    fn check_accept_flag_parses() {
+        let cli = Cli::try_parse_from(["vigil", "check", "--accept"]).expect("parse");
+        match cli.command {
+            Command::Check { accept, full, now } => {
+                assert!(accept);
+                assert!(!full);
+                assert!(!now);
+            }
+            _ => panic!("expected check command"),
+        }
+    }
+
+    #[test]
+    fn check_accept_and_full_parses() {
+        let cli = Cli::try_parse_from(["vigil", "check", "--accept", "--full"]).expect("parse");
+        match cli.command {
+            Command::Check { accept, full, .. } => {
+                assert!(accept);
+                assert!(full);
+            }
+            _ => panic!("expected check command"),
         }
     }
 }

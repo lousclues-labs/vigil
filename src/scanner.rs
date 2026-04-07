@@ -173,11 +173,31 @@ pub fn refresh_baseline(conn: &Connection, config: &Config) -> Result<BaselineIn
 
 /// Run a baseline comparison scan.
 pub fn run_scan(conn: &Connection, config: &Config, mode: ScanMode) -> Result<ScanResult> {
+    run_scan_with_progress(conn, config, mode, |_, _| {})
+}
+
+/// Run a baseline comparison scan with a progress callback.
+///
+/// The `progress` closure is called every 1,000 files with `(checked_so_far, total_entries)`.
+pub fn run_scan_with_progress<F>(
+    conn: &Connection,
+    config: &Config,
+    mode: ScanMode,
+    progress: F,
+) -> Result<ScanResult>
+where
+    F: Fn(u64, u64),
+{
     let scan_start = std::time::Instant::now();
     let mut result = ScanResult::default();
+    let total = baseline_ops::count(conn)?.max(0) as u64;
 
     baseline_ops::for_each_entry(conn, |entry| {
         result.total_checked += 1;
+
+        if result.total_checked % 1000 == 0 {
+            progress(result.total_checked, total);
+        }
 
         let opts = CaptureOpts {
             force_hash: mode == ScanMode::Full,
@@ -232,6 +252,8 @@ pub fn run_scan(conn: &Connection, config: &Config, mode: ScanMode) -> Result<Sc
 
         Ok(())
     })?;
+
+    progress(total, total);
 
     result.duration_ms = scan_start.elapsed().as_millis() as u64;
 
