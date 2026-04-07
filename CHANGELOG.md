@@ -4,6 +4,89 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-04-06
+
+### Release Summary
+- P0 correctness fix: auto-rebaseline on package updates no longer writes zeroed/default metadata into the baseline, eliminating false-positive change detections on subsequent scans.
+- New file detection: real-time monitoring now generates `Created` alerts when a file appears under a watched path that has no baseline entry, closing a coverage gap for dropped binaries, new cron entries, and autostart files.
+- New `vigil diff <path>` command for instant single-file baseline comparison without scanning the entire baseline.
+- New `vigil check --accept --path <glob>` for selective baseline acceptance, allowing operators to accept known changes while preserving alerts for unexpected modifications.
+- Periodic WAL checkpointing in the coordinator prevents unbounded WAL growth on systems with heavy real-time event traffic.
+- Repository cleanup: `fuzz/target/` build artifacts removed from tracking and added to `.gitignore`.
+
+### Bug Fixes
+
+#### Auto-rebaseline no longer sends zeroed baseline entries (P0)
+- In `src/worker.rs`, when a package update was detected and `auto_rebaseline` was enabled, the worker sent a `BaselineUpdate` with `Default::default()` for all fields (zeroed inode, empty hash, size 0, mode 0, uid 0, gid 0, epoch mtime).
+- The baseline writer in `src/lib.rs` upserted this entry directly, overwriting the real file metadata with all-zero values.
+- On the next scan or event, every field differed from the zeroed baseline, producing false-positive change detections for files that were already correctly handled by the package manager.
+- Fixed by re-snapshotting the file with `FileSnapshot::from_path()` at accept time, capturing the actual post-update state. If the snapshot fails (file deleted between event and rebaseline), the update is silently skipped — the next scan will catch the deletion.
+- File changed: `src/worker.rs` (auto-rebaseline block in `spawn_workers`).
+
+### New Features
+
+#### Real-time detection of new files under watched paths
+- Previously, when a `Create` or `MovedTo` filesystem event arrived for a path with no baseline entry, both `process_event()` and `process_event_cached()` logged at info level and returned `Ok(None)` — silently discarding the event.
+- This meant a new binary dropped into `/usr/bin/`, a new `.desktop` file in `~/.config/autostart/`, or a new cron entry in `/etc/cron.d/` was invisible to real-time monitoring. Only the scheduled scan would eventually catch it.
+- Now, when a `Create`/`MovedTo` event arrives for a path under a watched group (resolved via `WatchGroupIndex::lookup()`), a `ChangeResult` with `Change::Created` is generated and dispatched through the alert pipeline.
+- Files not under any watched path (e.g. `/tmp`) are still silently ignored.
+- Severity is inherited from the watch group configuration.
+- The `package` field is `None` for newly created files; the scheduled scan picks up package ownership if applicable.
+- The existing test `process_event_returns_none_for_non_baselined_create` continues to pass — it uses `/tmp/nonexistent-baseline` which is not under any watch group.
+- Aligns with Principle IV (Structure Over Behavior) and Principle X (Fail Open, Fail Loud).
+- File changed: `src/worker.rs` (`process_event()` and `process_event_cached()` None branches).
+
+#### `vigil diff <path>` — single-file baseline comparison
+- Added `Diff { path }` variant to `Command` enum in `src/cli.rs`.
+- Added `cmd_diff()` function in `src/main.rs` that:
+  - Canonicalizes the input path.
+  - Looks up the baseline entry by path.
+  - If not in baseline: prints guidance to add the parent directory to a watch group.
+  - If file deleted: prints deletion notice with last known hash and package.
+  - If file exists: snapshots current state, diffs against baseline, and prints per-field changes using the same `print_change_detail()` format as `vigil check`.
+  - If no changes: prints confirmation with hash, size, permissions, owner, package, and source.
+- Files changed: `src/cli.rs`, `src/main.rs`.
+
+#### `vigil check --accept --path <glob>` — selective acceptance
+- Added `path: Option<String>` to the `Check` command in `src/cli.rs` with `requires = "accept"`.
+- When `--path` is specified with `--accept`, only changes whose paths match the glob pattern are accepted into the baseline. Unmatched changes are preserved as-is.
+- Uses `globset::GlobMatcher` for pattern matching (globset is an existing dependency).
+- Output reports accepted/total counts and names the filter pattern.
+- After acceptance, prints count of changes not accepted.
+- Without `--path`, `--accept` continues to accept all changes (existing behavior unchanged).
+- Files changed: `src/cli.rs`, `src/main.rs` (`cmd_check()` accept logic).
+
+### Daemon Improvements
+
+#### Periodic WAL checkpoint in coordinator
+- The coordinator's housekeeping loop (every 60 seconds) now includes a WAL checkpoint that runs every 5 ticks (every 5 minutes).
+- Uses `PRAGMA wal_checkpoint(PASSIVE)` — transfers WAL pages to the database file without blocking concurrent readers.
+- Checkpoints both `baseline.db` and `audit.db` using fresh connections to avoid lock contention with worker threads.
+- Failed checkpoints are logged at debug level and retried on the next cycle.
+- Prevents unbounded WAL file growth on systems with heavy real-time events (thousands of baseline writes from package updates).
+- File changed: `src/coordinator.rs`.
+
+### Repository Cleanup
+
+#### `fuzz/target/` removed from git tracking
+- Added `fuzz/target/` to `.gitignore`.
+- Ran `git rm -r --cached fuzz/target/` to untrack ~500KB of compiled build artifacts (libsqlite3-sys, libfuzzer-sys, blake3 build scripts) without deleting local files.
+- Fixes GitHub linguist misclassifying build script output as "Makefile" (was inflating language breakdown to 29.6% Makefile).
+- File changed: `.gitignore`.
+
+### Tests
+- Added `baseline_update_for_package_has_real_data` in `src/worker.rs`: documents the zeroed-entry bug by asserting default `BaselineEntry` fields are empty/zero.
+- Added `process_event_detects_new_file_under_watched_path` in `src/worker.rs`: verifies `Change::Created` is generated for new files under watched paths.
+- Added `diff_command_parses` in `src/cli.rs`: verifies `vigil diff /etc/passwd` CLI parsing.
+- Added `check_accept_path_requires_accept` in `src/cli.rs`: verifies `--path` without `--accept` is rejected.
+- Added `check_accept_with_path_parses` in `src/cli.rs`: verifies combined `--accept --path` parsing.
+
+### Validation
+- `cargo check` clean
+- `cargo clippy --all-targets -- -D warnings` clean
+- `cargo fmt --all --check` clean
+- `cargo test --all-targets` clean (109 unit tests + all integration tests pass)
+
 ## [0.16.2] - 2026-04-06
 
 ### Release Summary

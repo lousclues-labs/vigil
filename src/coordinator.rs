@@ -30,6 +30,7 @@ pub fn spawn(
             // Trigger the first housekeeping/snapshot tick immediately on startup
             // so post-update doctor/status calls do not wait a full minute.
             let mut last_tick = std::time::Instant::now() - Duration::from_secs(60);
+            let mut checkpoint_counter: u32 = 0;
 
             while !shutdown.load(Ordering::Acquire) {
                 if reload_flag.swap(false, Ordering::AcqRel) {
@@ -93,6 +94,24 @@ pub fn spawn(
                     }
                     if let Err(e) = doctor::write_health_snapshot(&cfg) {
                         tracing::debug!(error = %e, "failed to write health snapshot");
+                    }
+
+                    // Periodic WAL checkpoint every 5 minutes
+                    checkpoint_counter += 1;
+                    if checkpoint_counter >= 5 {
+                        checkpoint_counter = 0;
+                        if let Ok(baseline_conn) = db::open_baseline_db(&cfg) {
+                            match baseline_conn.pragma_update(None, "wal_checkpoint", "PASSIVE") {
+                                Ok(()) => tracing::debug!("WAL checkpoint (baseline) completed"),
+                                Err(e) => tracing::debug!(error = %e, "WAL checkpoint (baseline) failed"),
+                            }
+                        }
+                        if let Ok(audit_conn) = db::open_audit_db(&cfg) {
+                            match audit_conn.pragma_update(None, "wal_checkpoint", "PASSIVE") {
+                                Ok(()) => tracing::debug!("WAL checkpoint (audit) completed"),
+                                Err(e) => tracing::debug!(error = %e, "WAL checkpoint (audit) failed"),
+                            }
+                        }
                     }
 
                     let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);

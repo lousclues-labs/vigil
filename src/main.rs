@@ -44,7 +44,12 @@ fn run(cli: Cli) -> vigil::Result<i32> {
             cmd_watch(config_path.as_deref())?;
             Ok(0)
         }
-        Command::Check { full, now, accept } => {
+        Command::Check {
+            full,
+            now,
+            accept,
+            path: accept_path,
+        } => {
             if now && accept {
                 eprintln!("error: --accept cannot be used with --now (baseline updates require direct database access)");
                 return Ok(1);
@@ -52,8 +57,12 @@ fn run(cli: Cli) -> vigil::Result<i32> {
             if now {
                 cmd_check_live(config_path.as_deref(), full)?;
             } else {
-                cmd_check(config_path.as_deref(), full, accept)?;
+                cmd_check(config_path.as_deref(), full, accept, accept_path)?;
             }
+            Ok(0)
+        }
+        Command::Diff { path } => {
+            cmd_diff(config_path.as_deref(), &path)?;
             Ok(0)
         }
         Command::Status => {
@@ -165,7 +174,12 @@ fn cmd_watch(config_path: Option<&Path>) -> vigil::Result<()> {
     vigil::Daemon::from_config(cfg)?.run()
 }
 
-fn cmd_check(config_path: Option<&Path>, full: bool, accept: bool) -> vigil::Result<()> {
+fn cmd_check(
+    config_path: Option<&Path>,
+    full: bool,
+    accept: bool,
+    accept_path: Option<String>,
+) -> vigil::Result<()> {
     let cfg = vigil::config::load_config(config_path)?;
     let conn = vigil::db::open_baseline_db(&cfg)?;
 
@@ -237,76 +251,201 @@ fn cmd_check(config_path: Option<&Path>, full: bool, accept: bool) -> vigil::Res
     }
 
     if accept && !result.changes.is_empty() {
+        let path_filter: Option<globset::GlobMatcher> = accept_path.as_ref().map(|pattern| {
+            globset::Glob::new(pattern)
+                .unwrap_or_else(|_| globset::Glob::new("*").unwrap())
+                .compile_matcher()
+        });
+
+        let changes_to_accept: Vec<_> = result
+            .changes
+            .iter()
+            .filter(|c| match &path_filter {
+                Some(matcher) => matcher.is_match(c.path.as_ref()),
+                None => true,
+            })
+            .collect();
+
         println!();
-        println!(
-            "  Accepting {} change{} into baseline...",
-            result.changes_found,
-            if result.changes_found == 1 { "" } else { "s" }
-        );
+        if !changes_to_accept.is_empty() {
+            if let Some(ref pattern) = accept_path {
+                println!(
+                    "  Accepting {} of {} changes matching '{}'...",
+                    changes_to_accept.len(),
+                    result.changes_found,
+                    pattern
+                );
+            } else {
+                println!(
+                    "  Accepting {} change{} into baseline...",
+                    changes_to_accept.len(),
+                    if changes_to_accept.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                );
+            }
 
-        let now = chrono::Utc::now().timestamp();
-        let mut accepted = 0u64;
-        let mut failed = 0u64;
+            let now = chrono::Utc::now().timestamp();
+            let mut accepted = 0u64;
+            let mut failed = 0u64;
 
-        for change in &result.changes {
-            let opts = vigil::types::CaptureOpts {
-                force_hash: true,
-                max_file_size: cfg.scanner.max_file_size,
-                mmap_threshold: cfg.scanner.mmap_threshold,
-                baseline_mtime: None,
-                baseline_hash: None,
-            };
+            for change in &changes_to_accept {
+                let opts = vigil::types::CaptureOpts {
+                    force_hash: true,
+                    max_file_size: cfg.scanner.max_file_size,
+                    mmap_threshold: cfg.scanner.mmap_threshold,
+                    baseline_mtime: None,
+                    baseline_hash: None,
+                };
 
-            match vigil::types::FileSnapshot::from_path(&change.path, &opts) {
-                Ok(vigil::types::SnapshotOrDeleted::Snapshot(snapshot)) => {
-                    let entry = vigil::types::BaselineEntry {
-                        id: None,
-                        path: change.path.as_ref().clone(),
-                        identity: snapshot.identity,
-                        content: snapshot.content,
-                        permissions: snapshot.permissions,
-                        security: snapshot.security,
-                        mtime: snapshot.mtime,
-                        package: change.package.clone(),
-                        source: vigil::types::BaselineSource::Manual,
-                        added_at: now,
-                        updated_at: now,
-                    };
-                    match vigil::db::baseline_ops::upsert(&conn, &entry) {
-                        Ok(()) => accepted += 1,
-                        Err(e) => {
-                            eprintln!("    failed to accept {}: {}", change.path.display(), e);
-                            failed += 1;
+                match vigil::types::FileSnapshot::from_path(&change.path, &opts) {
+                    Ok(vigil::types::SnapshotOrDeleted::Snapshot(snapshot)) => {
+                        let entry = vigil::types::BaselineEntry {
+                            id: None,
+                            path: change.path.as_ref().clone(),
+                            identity: snapshot.identity,
+                            content: snapshot.content,
+                            permissions: snapshot.permissions,
+                            security: snapshot.security,
+                            mtime: snapshot.mtime,
+                            package: change.package.clone(),
+                            source: vigil::types::BaselineSource::Manual,
+                            added_at: now,
+                            updated_at: now,
+                        };
+                        match vigil::db::baseline_ops::upsert(&conn, &entry) {
+                            Ok(()) => accepted += 1,
+                            Err(e) => {
+                                eprintln!("    failed to accept {}: {}", change.path.display(), e);
+                                failed += 1;
+                            }
                         }
                     }
-                }
-                Ok(vigil::types::SnapshotOrDeleted::Deleted) => {
-                    match vigil::db::baseline_ops::remove_by_path(
-                        &conn,
-                        &change.path.to_string_lossy(),
-                    ) {
-                        Ok(_) => accepted += 1,
-                        Err(e) => {
-                            eprintln!("    failed to remove {}: {}", change.path.display(), e);
-                            failed += 1;
+                    Ok(vigil::types::SnapshotOrDeleted::Deleted) => {
+                        match vigil::db::baseline_ops::remove_by_path(
+                            &conn,
+                            &change.path.to_string_lossy(),
+                        ) {
+                            Ok(_) => accepted += 1,
+                            Err(e) => {
+                                eprintln!("    failed to remove {}: {}", change.path.display(), e);
+                                failed += 1;
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    eprintln!("    failed to snapshot {}: {}", change.path.display(), e);
-                    failed += 1;
+                    Err(e) => {
+                        eprintln!("    failed to snapshot {}: {}", change.path.display(), e);
+                        failed += 1;
+                    }
                 }
             }
-        }
 
-        println!();
-        println!("  ● {} accepted, {} failed", accepted, failed);
-        println!();
-        println!("  Baseline updated. Next scan will treat current state as expected.");
-        println!("  Audit log preserved — the original detection is permanent.");
+            println!();
+            println!("  ● {} accepted, {} failed", accepted, failed);
+            println!();
+            println!("  Baseline updated. Next scan will treat accepted files as expected.");
+            println!("  Audit log preserved — the original detections are permanent.");
+
+            let not_accepted = result.changes.len() - changes_to_accept.len();
+            if not_accepted > 0 {
+                println!(
+                    "  {} change{} not accepted.",
+                    not_accepted,
+                    if not_accepted == 1 { " was" } else { "s were" }
+                );
+            }
+        } else if accept_path.is_some() {
+            println!("  No changes matched the filter pattern. Nothing to accept.");
+        }
     }
 
     println!();
+
+    Ok(())
+}
+
+fn cmd_diff(config_path: Option<&Path>, file_path: &Path) -> vigil::Result<()> {
+    let cfg = vigil::config::load_config(config_path)?;
+    let conn = vigil::db::open_baseline_db(&cfg)?;
+
+    let canonical = std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
+    let path_str = canonical.to_string_lossy();
+
+    let baseline = match vigil::db::baseline_ops::get_by_path(&conn, &path_str)? {
+        Some(b) => b,
+        None => {
+            println!();
+            println!("  ○ {} is not in the baseline.", canonical.display());
+            println!();
+            println!("  This file is not monitored. To include it, add its");
+            println!("  parent directory to a watch group in vigil.toml and");
+            println!("  run vigil init.");
+            return Ok(());
+        }
+    };
+
+    let opts = vigil::types::CaptureOpts {
+        force_hash: true,
+        max_file_size: cfg.scanner.max_file_size,
+        mmap_threshold: cfg.scanner.mmap_threshold,
+        baseline_mtime: None,
+        baseline_hash: None,
+    };
+
+    match vigil::types::FileSnapshot::from_path(&canonical, &opts)? {
+        vigil::types::SnapshotOrDeleted::Deleted => {
+            print_header(&format!("Vigil — Diff: {}", canonical.display()));
+            println!("  ✗ File has been deleted from the filesystem.");
+            println!(
+                "    Last known hash: {}",
+                truncate_hash(&baseline.content.hash)
+            );
+            if let Some(ref pkg) = baseline.package {
+                println!("    Package: {}", pkg);
+            }
+            println!();
+        }
+        vigil::types::SnapshotOrDeleted::Snapshot(snapshot) => {
+            let changes = snapshot.diff(&baseline);
+            print_header(&format!("Vigil — Diff: {}", canonical.display()));
+
+            if changes.is_empty() {
+                println!("  ● No changes. File matches baseline.");
+                println!();
+                println!("    Hash:        {}", truncate_hash(&baseline.content.hash));
+                println!("    Size:        {} bytes", baseline.content.size);
+                println!("    Permissions: {:04o}", baseline.permissions.mode);
+                println!(
+                    "    Owner:       {}:{}",
+                    baseline.permissions.owner_uid, baseline.permissions.owner_gid
+                );
+                if let Some(ref pkg) = baseline.package {
+                    println!("    Package:     {}", pkg);
+                }
+                println!("    Source:       {}", baseline.source);
+            } else {
+                println!(
+                    "  ⚠ {} change{} detected:",
+                    changes.len(),
+                    if changes.len() == 1 { "" } else { "s" }
+                );
+                println!();
+
+                for c in &changes {
+                    print_change_detail(c);
+                }
+
+                if let Some(ref pkg) = baseline.package {
+                    println!();
+                    println!("    package: {}", pkg);
+                }
+            }
+
+            println!();
+        }
+    }
 
     Ok(())
 }

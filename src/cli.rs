@@ -47,6 +47,16 @@ pub enum Command {
         /// After showing changes, update baseline to accept current state
         #[arg(long)]
         accept: bool,
+
+        /// Only accept changes matching this glob pattern (requires --accept)
+        #[arg(long, requires = "accept")]
+        path: Option<String>,
+    },
+
+    /// Compare a single file against its baseline entry
+    Diff {
+        /// Path to the file to check
+        path: PathBuf,
     },
 
     /// Show daemon status
@@ -238,10 +248,16 @@ mod tests {
     fn check_accept_flag_parses() {
         let cli = Cli::try_parse_from(["vigil", "check", "--accept"]).expect("parse");
         match cli.command {
-            Command::Check { accept, full, now } => {
+            Command::Check {
+                accept,
+                full,
+                now,
+                path,
+            } => {
                 assert!(accept);
                 assert!(!full);
                 assert!(!now);
+                assert!(path.is_none());
             }
             _ => panic!("expected check command"),
         }
@@ -254,6 +270,36 @@ mod tests {
             Command::Check { accept, full, .. } => {
                 assert!(accept);
                 assert!(full);
+            }
+            _ => panic!("expected check command"),
+        }
+    }
+
+    #[test]
+    fn diff_command_parses() {
+        let cli = Cli::try_parse_from(["vigil", "diff", "/etc/passwd"]).expect("parse diff");
+        match cli.command {
+            Command::Diff { path } => {
+                assert_eq!(path, PathBuf::from("/etc/passwd"));
+            }
+            _ => panic!("expected diff command"),
+        }
+    }
+
+    #[test]
+    fn check_accept_path_requires_accept() {
+        let result = Cli::try_parse_from(["vigil", "check", "--path", "/usr/bin/*"]);
+        assert!(result.is_err(), "--path without --accept should fail");
+    }
+
+    #[test]
+    fn check_accept_with_path_parses() {
+        let cli = Cli::try_parse_from(["vigil", "check", "--accept", "--path", "/usr/bin/vigil*"])
+            .expect("parse");
+        match cli.command {
+            Command::Check { accept, path, .. } => {
+                assert!(accept);
+                assert_eq!(path, Some("/usr/bin/vigil*".to_string()));
             }
             _ => panic!("expected check command"),
         }
