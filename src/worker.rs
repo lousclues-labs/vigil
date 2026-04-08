@@ -86,12 +86,14 @@ pub fn spawn_workers(
                 let mut cache: LruCache<String, BaselineEntry> =
                     LruCache::new(std::num::NonZeroUsize::new(8192).unwrap());
                 let mut drain_counter = 0u32;
+                let mut last_drain = std::time::Instant::now();
 
                 while !shutdown.load(Ordering::Acquire) {
-                    // Periodically drain debounced events
+                    // Periodically drain debounced events (count or time-based)
                     drain_counter += 1;
-                    if drain_counter >= 20 {
+                    if drain_counter >= 10 || last_drain.elapsed() >= Duration::from_millis(200) {
                         drain_counter = 0;
+                        last_drain = std::time::Instant::now();
                         let pending = filter.drain_pending();
                         for path in pending {
                             let path_str = path.to_string_lossy().to_string();
@@ -100,7 +102,7 @@ pub fn spawn_workers(
                         }
                     }
 
-                    match event_rx.recv_timeout(Duration::from_millis(500)) {
+                    match event_rx.recv_timeout(Duration::from_millis(200)) {
                         Ok(event) => {
                             // Clear backpressure flag on successful receive
                             backpressure.store(false, Ordering::Relaxed);
@@ -182,7 +184,7 @@ pub fn spawn_workers(
                                 }
                                 Ok(Ok(None)) => {}
                                 Ok(Err(e)) => {
-                                    tracing::debug!(error = %e, "event processing error");
+                                    tracing::warn!(error = %e, "event processing error");
                                 }
                                 Err(_) => {
                                     metrics.panics_caught.fetch_add(1, Ordering::Relaxed);

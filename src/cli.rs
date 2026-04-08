@@ -94,6 +94,12 @@ pub enum Command {
         action: SetupAction,
     },
 
+    /// Show daemon log entries (errors, warnings, and operational messages)
+    Log {
+        #[command(subcommand)]
+        action: LogAction,
+    },
+
     /// Print version
     Version,
 }
@@ -181,6 +187,43 @@ pub enum SetupAction {
         /// Disable the socket sink
         #[arg(long)]
         disable: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LogAction {
+    /// Show recent daemon log entries from the journal
+    Show {
+        /// Number of lines to show (default: 100)
+        #[arg(long, short = 'n', default_value = "100")]
+        lines: u32,
+
+        /// Filter by minimum level: error, warn, info, debug
+        #[arg(long, short = 'l')]
+        level: Option<String>,
+
+        /// Follow log output in real time
+        #[arg(long, short = 'f')]
+        follow: bool,
+
+        /// Show only entries after this time (e.g. '1h', '30m', '2026-04-07')
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Grep pattern to filter log lines
+        #[arg(long, short = 'g')]
+        grep: Option<String>,
+    },
+
+    /// Show only error and warning entries
+    Errors {
+        /// Number of lines to show (default: 50)
+        #[arg(long, short = 'n', default_value = "50")]
+        lines: u32,
+
+        /// Show only entries after this time (e.g. '1h', '30m', '2026-04-07')
+        #[arg(long)]
+        since: Option<String>,
     },
 }
 

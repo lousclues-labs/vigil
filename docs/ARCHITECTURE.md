@@ -12,7 +12,8 @@ Vigil has one job. Detect filesystem boundary changes and record them.
 |                                                                                |
 |  +-----------------------------+          +----------------------------------+ |
 |  | CLI process: vigil          |          | Daemon process: vigild           | |
-|  | init, check, diff, status   |          | long-running monitor             | |
+|  | init, check, diff, status,  |          | long-running monitor             | |
+|  | doctor, audit, log, config  |          |                                  | |
 |  +-------------+---------------+          +----------------+-----------------+ |
 |                |                                         |                    |
 |                | one-shot commands                       | event loop          |
@@ -138,7 +139,7 @@ src/
 These modules are easy to miss. They are core to the runtime.
 
 - `src/control.rs` handles daemon RPC over Unix socket for `status`, `scan`, and reload actions.
-- `src/coordinator.rs` coordinates reload, snapshot writing, retention rotation, and watchdog heartbeats.
+- `src/coordinator.rs` coordinates reload, snapshot writing, retention rotation, and watchdog heartbeats. Watchdog pings systemd on every loop iteration (~1s) independently of the 60-second housekeeping tick.
 - `src/scan_scheduler.rs` parses cron strings with `croner` and executes scheduled scans.
 - `src/worker.rs` processes monitor events and runs snapshot comparison.
 - `src/bloom.rs` provides fast probabilistic reject for unrelated paths.

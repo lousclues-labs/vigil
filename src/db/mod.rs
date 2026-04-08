@@ -23,8 +23,8 @@ impl<'a> Default for PragmaOpts<'a> {
             sync_mode: "NORMAL",
             busy_timeout_ms: 5000,
             wal_mode: true,
-            cache_size: "-8000",
-            mmap_size: "268435456",
+            cache_size: "-16000",
+            mmap_size: "536870912",
         }
     }
 }
@@ -229,7 +229,7 @@ mod tests {
         let cache_size: i64 = conn
             .pragma_query_value(None, "cache_size", |row| row.get(0))
             .unwrap();
-        assert_eq!(cache_size, -8000);
+        assert_eq!(cache_size, -16000);
 
         let foreign_keys: i64 = conn
             .pragma_query_value(None, "foreign_keys", |row| row.get(0))

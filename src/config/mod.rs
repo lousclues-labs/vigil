@@ -217,7 +217,10 @@ impl Default for DaemonConfig {
 }
 
 fn default_worker_threads() -> u32 {
-    2
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(2);
+    (cpus / 2).clamp(2, 16)
 }
 
 fn default_log_format() -> LogFormat {

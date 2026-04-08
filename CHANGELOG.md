@@ -4,6 +4,74 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-04-07
+
+### Release Summary
+- New `vigil log` CLI command for direct access to daemon journal entries, errors, and warnings without memorizing journalctl flags.
+- Fixed systemd watchdog crash loop: heartbeat was sent every 60s but `WatchdogSec=30` killed the daemon every 30s. Restart counter had reached 2324.
+- Eliminated silent error swallowing across the daemon: DB open failures, snapshot write failures, WAL checkpoint failures, worker event processing errors, alert socket connect failures, and control socket accept errors were all logged at `debug` or silently ignored. All promoted to `warn` or `error`.
+- Performance: parallel scanning enabled by default, smart CPU-based worker thread scaling, doubled SQLite page cache and mmap, doubled event/alert channel buffers, faster debounce drain, lower worker recv latency.
+
+### Added
+
+#### `vigil log` CLI command
+- `vigil log show` -- show recent daemon log entries from the systemd journal.
+  - `-n`, `--lines <N>` -- number of lines to show (default: 100).
+  - `-l`, `--level <LEVEL>` -- filter by minimum level: `error`, `warn`, `info`, `debug`.
+  - `-f`, `--follow` -- follow log output in real time (like `tail -f`).
+  - `--since <TIME>` -- show entries after a time (e.g. `1h`, `30m`, `2026-04-07`).
+  - `-g`, `--grep <PATTERN>` -- grep pattern to filter log lines.
+- `vigil log errors` -- shortcut to show only error and warning entries.
+  - `-n`, `--lines <N>` -- number of lines to show (default: 50).
+  - `--since <TIME>` -- show entries after a time.
+- Both subcommands invoke `journalctl -u vigild.service` with appropriate priority filters.
+
+### Fixed
+
+#### Systemd watchdog crash loop
+- `sd_notify::NotifyState::Watchdog` heartbeat was only sent inside the 60-second coordinator housekeeping block. The systemd unit (`systemd/vigild.service`) sets `WatchdogSec=30`. Systemd killed the daemon every 30 seconds, causing an infinite restart loop.
+- Moved the watchdog heartbeat out of the housekeeping block so it fires on every coordinator loop iteration (~1s).
+- File: `src/coordinator.rs`.
+
+#### Silent error swallowing across daemon subsystems
+- **`src/coordinator.rs`**: `db::open_audit_db()` and `db::open_baseline_db()` failures were silently ignored via `if let Ok(...)` with no `else` branch. Now logged at `error` level with context.
+- **`src/coordinator.rs`**: Metrics snapshot, state snapshot, and health snapshot write failures were logged at `debug` (invisible in production). Promoted to `warn`.
+- **`src/coordinator.rs`**: WAL checkpoint failures were logged at `debug`. Promoted to `warn`.
+- **`src/worker.rs`**: Event processing errors (integrity check failures -- the daemon's core job) were logged at `debug`. Promoted to `warn`.
+- **`src/alert/socket.rs`**: Socket sink connect failures (alerts being silently lost) were logged at `debug`. Promoted to `warn`.
+- **`src/control.rs`**: Control socket accept errors were logged at `debug`. Promoted to `warn`.
+
+### Changed
+
+#### Performance: parallel scanning enabled by default
+- The `parallel` Cargo feature (rayon-based `run_scan_parallel()`) existed but was not in the `default` feature set. Full scans ran single-threaded even on multi-core systems.
+- Changed `default = []` to `default = ["parallel"]` in `Cargo.toml`.
+- Full scans now utilize all available CPU cores via rayon.
+
+#### Performance: smart worker thread default
+- Default worker thread count changed from hardcoded `2` to `available_parallelism() / 2`, clamped to `[2, 16]`.
+- On an 8-core system: 4 workers instead of 2. On a 2-core system: unchanged at 2.
+- File: `src/config/mod.rs`.
+
+#### Performance: faster debounce drain
+- Worker debounce drain trigger changed from count-only (every 20 events) to count + time (every 10 events OR every 200ms, whichever comes first).
+- On slow systems receiving 1 event/second, the old logic would not drain for 20 seconds. Now drains within 200ms.
+- File: `src/worker.rs`.
+
+#### Performance: lower event processing latency
+- Worker `recv_timeout` reduced from 500ms to 200ms, cutting worst-case event processing delay by 300ms.
+- File: `src/worker.rs`.
+
+#### Performance: doubled SQLite page cache and mmap
+- `cache_size` increased from 8MB (`-8000` pages) to 16MB (`-16000` pages). Reduces disk reads on repeated baseline lookups.
+- `mmap_size` increased from 256MB to 512MB. Better OS-level page cache utilization for large baselines.
+- File: `src/db/mod.rs`.
+
+#### Performance: doubled event and alert channel buffers
+- Event channel capacity increased from 1024 to 2048. Reduces backpressure during burst I/O (git operations, recursive deletes, mass package updates).
+- Alert channel capacity increased from 256 to 512. Reduces alert drops when the dispatcher blocks on syslog or socket writes.
+- File: `src/lib.rs`.
+
 ## [0.18.1] - 2026-04-07
 
 ### Release Summary

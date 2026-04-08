@@ -37,7 +37,7 @@ impl AlertSink for SocketSink {
                 }
             }
             Err(e) => {
-                tracing::debug!(error = %e, path = %self.socket_path.display(), "socket sink connect failed");
+                tracing::warn!(error = %e, path = %self.socket_path.display(), "socket sink connect failed");
             }
         }
 

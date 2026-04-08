@@ -66,16 +66,19 @@ pub fn spawn(
                 if last_tick.elapsed() >= Duration::from_secs(60) {
                     let cfg = config.load();
 
-                    if let Ok(audit_conn) = db::open_audit_db(&cfg) {
-                        match db::audit_ops::rotate_audit_log(&audit_conn, cfg.database.audit_retention_days) {
-                            Ok(0) => {}
-                            Ok(n) => tracing::info!(deleted = n, "rotated old audit entries"),
-                            Err(e) => tracing::warn!(error = %e, "audit rotation failed"),
+                    match db::open_audit_db(&cfg) {
+                        Ok(audit_conn) => {
+                            match db::audit_ops::rotate_audit_log(&audit_conn, cfg.database.audit_retention_days) {
+                                Ok(0) => {}
+                                Ok(n) => tracing::info!(deleted = n, "rotated old audit entries"),
+                                Err(e) => tracing::warn!(error = %e, "audit rotation failed"),
+                            }
                         }
+                        Err(e) => tracing::error!(error = %e, "failed to open audit database for rotation"),
                     }
 
                     if let Err(e) = write_metrics_snapshot(&cfg.daemon.runtime_dir, &metrics) {
-                        tracing::debug!(error = %e, "failed to write metrics snapshot");
+                        tracing::warn!(error = %e, "failed to write metrics snapshot");
                     }
 
                     // Check for backpressure and update daemon state
@@ -90,38 +93,40 @@ pub fn spawn(
                     }
 
                     if let Err(e) = write_state_snapshot(&cfg.daemon.runtime_dir, &state) {
-                        tracing::debug!(error = %e, "failed to write state snapshot");
+                        tracing::warn!(error = %e, "failed to write state snapshot");
                     }
                     if let Err(e) = doctor::write_health_snapshot(&cfg) {
-                        tracing::debug!(error = %e, "failed to write health snapshot");
+                        tracing::warn!(error = %e, "failed to write health snapshot");
                     }
 
                     // Periodic WAL checkpoint every 5 minutes
                     checkpoint_counter += 1;
                     if checkpoint_counter >= 5 {
                         checkpoint_counter = 0;
-                        if let Ok(baseline_conn) = db::open_baseline_db(&cfg) {
-                            match baseline_conn.pragma_update(None, "wal_checkpoint", "PASSIVE") {
-                                Ok(()) => tracing::debug!("WAL checkpoint (baseline) completed"),
-                                Err(e) => tracing::debug!(error = %e, "WAL checkpoint (baseline) failed"),
+                        match db::open_baseline_db(&cfg) {
+                            Ok(baseline_conn) => {
+                                match baseline_conn.pragma_update(None, "wal_checkpoint", "PASSIVE") {
+                                    Ok(()) => tracing::debug!("WAL checkpoint (baseline) completed"),
+                                    Err(e) => tracing::warn!(error = %e, "WAL checkpoint (baseline) failed"),
+                                }
                             }
+                            Err(e) => tracing::error!(error = %e, "failed to open baseline database for WAL checkpoint"),
                         }
-                        if let Ok(audit_conn) = db::open_audit_db(&cfg) {
-                            match audit_conn.pragma_update(None, "wal_checkpoint", "PASSIVE") {
-                                Ok(()) => tracing::debug!("WAL checkpoint (audit) completed"),
-                                Err(e) => tracing::debug!(error = %e, "WAL checkpoint (audit) failed"),
+                        match db::open_audit_db(&cfg) {
+                            Ok(audit_conn) => {
+                                match audit_conn.pragma_update(None, "wal_checkpoint", "PASSIVE") {
+                                    Ok(()) => tracing::debug!("WAL checkpoint (audit) completed"),
+                                    Err(e) => tracing::warn!(error = %e, "WAL checkpoint (audit) failed"),
+                                }
                             }
+                            Err(e) => tracing::error!(error = %e, "failed to open audit database for WAL checkpoint"),
                         }
                     }
 
-                    let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
-                    let _ = sd_notify::notify(
-                        false,
-                        &[sd_notify::NotifyState::Status("coordinator heartbeat")],
-                    );
-
                     last_tick = std::time::Instant::now();
                 }
+
+                let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
 
                 std::thread::sleep(Duration::from_millis(1000));
             }

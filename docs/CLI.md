@@ -32,6 +32,7 @@ vigil [GLOBAL_OPTIONS] <COMMAND> [COMMAND_OPTIONS]
 | `audit` | audit log operations (show, stats, verify) |
 | `config` | show or validate config |
 | `setup` | HMAC key and socket configuration |
+| `log` | show daemon log entries (errors, warnings, operational messages) |
 | `version` | print version string |
 
 ---
@@ -307,6 +308,76 @@ vigil setup socket --disable
 
 ---
 
+## `log`
+
+Show daemon log entries from the systemd journal. Wraps `journalctl -u vigild.service` with ergonomic filters.
+
+```bash
+vigil log <SUBCOMMAND>
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `show` | show recent daemon log entries from the journal |
+| `errors` | show only error and warning entries |
+
+### `log show`
+
+Show recent daemon log entries.
+
+```bash
+vigil log show [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `-n`, `--lines <N>` | u32 | `100` | number of lines to show |
+| `-l`, `--level <LEVEL>` | string | all | filter by minimum level: `error`, `warn`, `info`, `debug` |
+| `-f`, `--follow` | flag | off | follow log output in real time |
+| `--since <TIME>` | string | none | show entries after this time (e.g. `1h`, `30m`, `2026-04-07`) |
+| `-g`, `--grep <PATTERN>` | string | none | grep pattern to filter log lines |
+
+Examples:
+
+```bash
+vigil log show
+vigil log show -n 200
+vigil log show --level warn
+vigil log show --since 1h
+vigil log show -f
+vigil log show --grep "database" --level error
+sudo vigil log show --since "2026-04-07" -n 500
+```
+
+### `log errors`
+
+Shortcut to show only error and warning entries. Equivalent to `vigil log show --level warn`.
+
+```bash
+vigil log errors [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `-n`, `--lines <N>` | u32 | `50` | number of lines to show |
+| `--since <TIME>` | string | none | show entries after this time |
+
+Examples:
+
+```bash
+vigil log errors
+vigil log errors -n 20
+vigil log errors --since 1h
+sudo vigil log errors --since "2026-04-06"
+```
+
+Notes:
+- Both subcommands require access to the systemd journal. Use `sudo` if your user is not in the `systemd-journal` group.
+- Output uses `journalctl -o short-iso` format.
+- `--follow` streams output until interrupted with Ctrl+C.
+
+---
+
 ## `version`
 
 Print CLI version.
@@ -318,7 +389,7 @@ vigil version
 Output:
 
 ```text
-vigil 0.18.1
+vigil 0.19.0
 ```
 
 ---

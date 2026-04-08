@@ -98,7 +98,7 @@ pub fn spawn(
                         std::thread::sleep(Duration::from_millis(200));
                     }
                     Err(e) => {
-                        tracing::debug!(error = %e, "control socket accept error");
+                        tracing::warn!(error = %e, "control socket accept error");
                         std::thread::sleep(Duration::from_millis(200));
                     }
                 }
