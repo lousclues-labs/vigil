@@ -4,6 +4,106 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-04-08
+
+### Release Summary
+- Security hardening release addressing 12 vulnerabilities spanning capability parsing, alert suppression logic, symlink classification, hash TOCTOU risk, package manager command trust, audit retention safety, change-diff blind spots, xattr duplication noise, fanotify event semantics, baseline cache coherency, and key material lifetime handling.
+- This release focuses on correctness under adversarial conditions while preserving existing daemon and CLI behavior.
+
+### Fixed
+
+#### 1) Capability escalation detection now works (severity upgrade path restored)
+- `FileSnapshot::has_dangerous_capabilities()` previously searched ASCII strings (`cap_setuid`, `cap_sys_admin`, `cap_dac_override`) inside hex-encoded binary xattr data, always returning false.
+- Capability detection now decodes `security.capability` bytes and checks dangerous bits directly in the permitted mask (`CAP_DAC_OVERRIDE` bit 1, `CAP_SETUID` bit 7, `CAP_SYS_ADMIN` bit 21).
+- Impact: severity escalation to `Critical` for dangerous capability-bearing modified files now triggers as designed.
+- Files changed: `src/types/snapshot.rs`, `tests/snapshot_diff_tests.rs`.
+
+#### 2) Maintenance window suppression no longer drops high-impact alerts
+- During maintenance windows, package-owned changes were fully suppressed regardless of severity.
+- New behavior: `Critical` and `High` are never fully suppressed during maintenance; alerts are dispatched with `maintenance_window=true` context.
+- `Low` and `Medium` package-owned changes remain suppressible during maintenance.
+- Files changed: `src/alert/mod.rs`.
+
+#### 3) Symlink detection from fd capture corrected
+- `from_fd()` used `file.metadata()` (`fstat`), which follows symlinks and cannot identify the path as a symlink.
+- `from_fd()` now performs one path-level `symlink_metadata()` (`lstat`) check for symlink classification and reads `symlink_target` only when the path is a symlink.
+- The function docs now explicitly state that one path-based lstat is required for symlink detection.
+- Files changed: `src/types/snapshot.rs`.
+
+#### 4) Hash mmap path re-open removed (TOCTOU hardening)
+- Hashing used `blake3::Hasher::update_mmap()` with `/proc/self/fd/N`, which re-opened by path and introduced a micro-TOCTOU window.
+- Hashing now performs direct `libc::mmap` on the original fd with an RAII `munmap` guard and falls back to buffered I/O when mmap fails.
+- Impact: metadata and hash are now derived from the same file description.
+- Files changed: `src/hash.rs`.
+
+#### 5) Package manager subprocesses now use absolute binary paths
+- Package backend detection and invocation previously trusted `PATH` resolution (`pacman`, `dpkg`, `rpm`).
+- All package manager calls now use absolute paths (`/usr/bin/pacman`, `/usr/bin/dpkg`, `/usr/bin/rpm`).
+- Added root-ownership guard for `/var/lib/dpkg/info` before parsing `*.list` files.
+- Impact: mitigates command hijacking risk from hostile `PATH` ordering.
+- Files changed: `src/package.rs`.
+
+#### 6) Audit rotation hardened against wall-clock manipulation
+- Coordinator audit rotation previously operated directly from `Utc::now()` without anomaly checks.
+- New safeguards:
+  - Skip rotation when clock jumps forward by more than 1 hour between ticks.
+  - Skip rotation if one pass would delete more than 50% of all audit rows.
+- Impact: reduces evidence-destruction risk via clock-forward attacks.
+- Files changed: `src/coordinator.rs`.
+
+#### 7) File size changes are now visible in diff engine
+- `diff()` compared hashes but not sizes, and no explicit size-change signal existed.
+- Added `Change::SizeChanged { old, new }`, wired through display/primary change mapping, audit type mapping, and alert naming.
+- Files changed: `src/types/change.rs`, `src/types/snapshot.rs`, `src/db/audit_ops.rs`, `src/alert/mod.rs`, `src/main.rs`.
+
+#### 8) Device changes are now visible in diff engine
+- `diff()` checked inode changes but omitted device (`st_dev`) changes.
+- Added `Change::DeviceChanged { old, new }`, wired through display/primary change mapping, audit type mapping, and alert naming.
+- Impact: improves detection of cross-filesystem substitution/bind-mount style swaps.
+- Files changed: `src/types/change.rs`, `src/types/snapshot.rs`, `src/db/audit_ops.rs`, `src/alert/mod.rs`, `src/main.rs`.
+
+#### 9) Duplicate `security.*` xattrs removed from generic xattr map
+- `read_xattrs_fd()` filtered `system.*` only, leaving `security.*` duplicated in both dedicated fields and generic xattr map.
+- Generic xattr collection now skips both `system.*` and `security.*` keys.
+- Impact: avoids duplicate/noisy change entries.
+- Files changed: `src/types/snapshot.rs`.
+
+#### 10) fanotify mask now includes `FAN_CLOSE_WRITE`
+- Monitoring relied on `FAN_MODIFY` only, which can fire on partial writes.
+- Added `FAN_CLOSE_WRITE` to mask and mapped it to `FsEventType::Modify` alongside `FAN_MODIFY`.
+- Impact: improves stability for post-write integrity checks and reduces partial-write false positives.
+- Files changed: `src/monitor/fanotify.rs`.
+
+#### 11) Baseline LRU cache coherency fixed after auto-rebaseline writes
+- Worker LRU baseline cache could remain stale after baseline writer commits.
+- Added shared `Arc<AtomicU64>` generation counter:
+  - baseline writer increments after successful commit with writes,
+  - workers compare local generation each loop tick and clear cache on mismatch.
+- Impact: baseline cache invalidation now propagates quickly and deterministically.
+- Files changed: `src/lib.rs`, `src/worker.rs`.
+
+#### 12) HMAC key handling now zeroizes intermediate material
+- Added `zeroize` dependency and applied explicit zeroization to intermediate decoded key text in `load_hmac_key()`.
+- `AlertDispatcher` now stores HMAC keys as `Option<Zeroizing<Vec<u8>>>`.
+- Impact: reduces residual key material lifetime in process heap memory.
+- Files changed: `Cargo.toml`, `Cargo.lock`, `src/hmac.rs`, `src/alert/mod.rs`.
+
+### Tests
+- Added and updated unit/integration coverage for the security fixes, including:
+  - symlink classification and symlink target capture via fd-path snapshot API,
+  - dangerous capability detection from real VFS capability blobs,
+  - `SizeChanged` and `DeviceChanged` diff emission,
+  - mmap-path and buffered hash consistency,
+  - maintenance-window suppression behavior for high severities,
+  - package manager absolute path constants.
+- Related files include `src/types/snapshot.rs`, `src/hash.rs`, `src/alert/mod.rs`, `src/package.rs`, and `tests/snapshot_diff_tests.rs`.
+
+### Validation
+- `cargo check` passes.
+- `cargo test --all-targets` passes.
+- `cargo clippy --all-targets -- -D warnings` passes.
+- `cd fuzz && cargo check` passes.
+
 ## [0.21.0] - 2026-04-08
 
 ### Release Summary

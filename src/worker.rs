@@ -1,6 +1,6 @@
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -56,6 +56,7 @@ pub fn spawn_workers(
     shutdown: Arc<AtomicBool>,
     baseline_update_tx: Option<Sender<BaselineUpdate>>,
     backpressure: Arc<AtomicBool>,
+    baseline_generation: Arc<AtomicU64>,
 ) -> Vec<JoinHandle<()>> {
     let mut handles = Vec::new();
 
@@ -69,6 +70,7 @@ pub fn spawn_workers(
         let db_path = baseline_db_path.to_path_buf();
         let update_tx = baseline_update_tx.clone();
         let backpressure = backpressure.clone();
+        let generation = baseline_generation.clone();
 
         let handle_result = std::thread::Builder::new()
             .name(format!("vigil-worker-{}", i))
@@ -87,8 +89,15 @@ pub fn spawn_workers(
                     LruCache::new(std::num::NonZeroUsize::new(8192).unwrap());
                 let mut drain_counter = 0u32;
                 let mut last_drain = std::time::Instant::now();
+                let mut local_generation = generation.load(Ordering::Acquire);
 
                 while !shutdown.load(Ordering::Acquire) {
+                    // Invalidate LRU cache when baseline writer has committed new entries
+                    let current_gen = generation.load(Ordering::Acquire);
+                    if current_gen != local_generation {
+                        cache.clear();
+                        local_generation = current_gen;
+                    }
                     // Periodically drain debounced events (count or time-based)
                     drain_counter += 1;
                     if drain_counter >= 10 || last_drain.elapsed() >= Duration::from_millis(200) {

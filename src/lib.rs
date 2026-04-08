@@ -19,7 +19,7 @@ pub mod types;
 pub mod watch_index;
 pub mod worker;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -122,6 +122,9 @@ impl Daemon {
         // Baseline update channel for auto-rebaselining package changes
         let (baseline_update_tx, baseline_update_rx) = bounded::<worker::BaselineUpdate>(512);
 
+        // Generation counter for cache invalidation across workers and baseline writer
+        let baseline_generation = Arc::new(AtomicU64::new(0));
+
         let workers = worker::spawn_workers(
             cfg.daemon.worker_threads,
             self.config.clone(),
@@ -133,6 +136,7 @@ impl Daemon {
             self.shutdown.clone(),
             Some(baseline_update_tx),
             backpressure.clone(),
+            baseline_generation.clone(),
         );
 
         // Spawn baseline writer thread
@@ -141,6 +145,7 @@ impl Daemon {
             baseline_update_rx,
             self.shutdown.clone(),
             self.metrics.clone(),
+            baseline_generation.clone(),
         )?;
 
         let alert_handle = spawn_alert_thread(
@@ -421,6 +426,7 @@ fn spawn_baseline_writer(
     rx: crossbeam_channel::Receiver<worker::BaselineUpdate>,
     shutdown: Arc<AtomicBool>,
     metrics: Arc<Metrics>,
+    baseline_generation: Arc<AtomicU64>,
 ) -> Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name("vigil-baseline-writer".into())
@@ -469,6 +475,9 @@ fn spawn_baseline_writer(
                         if let Err(e) = conn.execute_batch("COMMIT") {
                             tracing::error!(error = %e, "baseline writer commit failed");
                         } else if written > 0 {
+                            // Increment generation counter to signal workers to invalidate caches
+                            baseline_generation.fetch_add(1, Ordering::Release);
+
                             metrics
                                 .baseline_updates
                                 .fetch_add(written, Ordering::Relaxed);

@@ -29,6 +29,7 @@ const FAN_MARK_REMOVE: u32 = 0x0000_0002;
 const FAN_MARK_MOUNT: u32 = 0x0000_0010;
 
 const FAN_MODIFY: u64 = 0x0000_0002;
+const FAN_CLOSE_WRITE: u64 = 0x0000_0008;
 const FAN_ATTRIB: u64 = 0x0000_0004;
 const FAN_CREATE: u64 = 0x0000_0100;
 const FAN_DELETE: u64 = 0x0000_0200;
@@ -126,7 +127,7 @@ pub fn start(
 
     let mount_points = resolve_mount_points(watch_paths);
     tracing::info!(mounts = ?mount_points, "fanotify watching mount points");
-    let mask = FAN_MODIFY | FAN_ATTRIB | FAN_CREATE | FAN_DELETE | FAN_MOVED_FROM | FAN_MOVED_TO;
+    let mask = FAN_MODIFY | FAN_CLOSE_WRITE | FAN_ATTRIB | FAN_CREATE | FAN_DELETE | FAN_MOVED_FROM | FAN_MOVED_TO;
 
     for mount in &mount_points {
         let _ = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD);
@@ -284,7 +285,7 @@ fn apply_fanotify_mark(fan_fd: RawFd, mount: &std::path::Path, mask: u64, op: u3
 }
 
 fn mask_to_event_type(mask: u64) -> Option<FsEventType> {
-    if mask & FAN_MODIFY != 0 {
+    if mask & (FAN_CLOSE_WRITE | FAN_MODIFY) != 0 {
         Some(FsEventType::Modify)
     } else if mask & FAN_ATTRIB != 0 {
         Some(FsEventType::Attrib)

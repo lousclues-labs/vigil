@@ -2027,6 +2027,12 @@ fn print_change_detail(change: &Change) {
         Change::SecurityContextChanged { old, new } => {
             println!("    security context: {} → {}", old, new);
         }
+        Change::SizeChanged { old, new } => {
+            println!("    size: {} → {} bytes", old, new);
+        }
+        Change::DeviceChanged { old, new } => {
+            println!("    device: {} → {}", old, new);
+        }
         Change::Deleted => {
             println!("    file deleted from filesystem");
         }

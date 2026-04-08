@@ -1127,7 +1127,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vigil"
-version = "0.20.0"
+version = "0.21.0"
 dependencies = [
  "arc-swap",
  "blake3",
@@ -1154,6 +1154,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "xattr",
+ "zeroize",
 ]
 
 [[package]]
@@ -1336,6 +1337,12 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "zeroize"
+version = "1.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
 
 [[package]]
 name = "zmij"

@@ -43,6 +43,7 @@ pub fn spawn(
             let mut last_tick = std::time::Instant::now() - Duration::from_secs(60);
             let mut checkpoint_counter: u32 = 0;
             let mut last_dropped: u64 = 0;
+            let mut last_rotation_timestamp = Utc::now().timestamp();
 
             while !shutdown.load(Ordering::Acquire) {
                 if reload_flag.swap(false, Ordering::AcqRel) {
@@ -129,16 +130,51 @@ pub fn spawn(
                 if last_tick.elapsed() >= Duration::from_secs(60) {
                     let cfg = config.load();
 
-                    match db::open_audit_db(&cfg) {
-                        Ok(audit_conn) => {
-                            match db::audit_ops::rotate_audit_log(&audit_conn, cfg.database.audit_retention_days) {
-                                Ok(0) => {}
-                                Ok(n) => tracing::info!(deleted = n, "rotated old audit entries"),
-                                Err(e) => tracing::warn!(error = %e, "audit rotation failed"),
+                    // Clock anomaly detection: if the wall clock has jumped forward
+                    // by more than 1 hour since the last tick, skip audit rotation
+                    // to prevent evidence destruction via clock manipulation.
+                    let now_ts = Utc::now().timestamp();
+                    let clock_delta = now_ts - last_rotation_timestamp;
+                    if clock_delta > 3600 {
+                        tracing::error!(
+                            jump_secs = clock_delta,
+                            "clock anomaly detected — skipping audit rotation to prevent evidence loss"
+                        );
+                    } else {
+                        match db::open_audit_db(&cfg) {
+                            Ok(audit_conn) => {
+                                // Safety check: count total entries and compute how many
+                                // would be deleted. Skip if > 50% would be removed.
+                                let total: i64 = audit_conn
+                                    .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
+                                    .unwrap_or(0);
+                                let cutoff = now_ts - (cfg.database.audit_retention_days as i64 * 86400);
+                                let would_delete: i64 = audit_conn
+                                    .query_row(
+                                        "SELECT COUNT(*) FROM audit_log WHERE timestamp < ?1",
+                                        rusqlite::params![cutoff],
+                                        |row| row.get(0),
+                                    )
+                                    .unwrap_or(0);
+
+                                if total > 0 && would_delete * 2 > total {
+                                    tracing::error!(
+                                        total = total,
+                                        would_delete = would_delete,
+                                        "audit rotation would delete >50% of entries — skipping (possible clock manipulation)"
+                                    );
+                                } else {
+                                    match db::audit_ops::rotate_audit_log(&audit_conn, cfg.database.audit_retention_days) {
+                                        Ok(0) => {}
+                                        Ok(n) => tracing::info!(deleted = n, "rotated old audit entries"),
+                                        Err(e) => tracing::warn!(error = %e, "audit rotation failed"),
+                                    }
+                                }
                             }
+                            Err(e) => tracing::error!(error = %e, "failed to open audit database for rotation"),
                         }
-                        Err(e) => tracing::error!(error = %e, "failed to open audit database for rotation"),
                     }
+                    last_rotation_timestamp = now_ts;
 
                     if let Err(e) = write_metrics_snapshot(&cfg.daemon.runtime_dir, &metrics) {
                         tracing::warn!(error = %e, "failed to write metrics snapshot");

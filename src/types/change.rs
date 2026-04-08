@@ -49,6 +49,14 @@ pub enum Change {
         old: String,
         new: String,
     },
+    SizeChanged {
+        old: u64,
+        new: u64,
+    },
+    DeviceChanged {
+        old: u64,
+        new: u64,
+    },
     Deleted,
     Created,
 }
@@ -65,6 +73,8 @@ impl std::fmt::Display for Change {
             Change::CapabilitiesChanged { .. } => write!(f, "capabilities_changed"),
             Change::XattrChanged { .. } => write!(f, "xattr_changed"),
             Change::SecurityContextChanged { .. } => write!(f, "security_context_changed"),
+            Change::SizeChanged { .. } => write!(f, "size_changed"),
+            Change::DeviceChanged { .. } => write!(f, "device_changed"),
             Change::Deleted => write!(f, "deleted"),
             Change::Created => write!(f, "created"),
         }
@@ -116,6 +126,8 @@ impl ChangeResult {
                 Change::CapabilitiesChanged { .. } => "capabilities_changed",
                 Change::XattrChanged { .. } => "xattr_changed",
                 Change::SecurityContextChanged { .. } => "security_context_changed",
+                Change::SizeChanged { .. } => "size_changed",
+                Change::DeviceChanged { .. } => "device_changed",
                 Change::Deleted => "deleted",
                 Change::Created => "created",
             })

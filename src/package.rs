@@ -10,6 +10,11 @@ use crate::types::PackageBackend;
 /// Timeout for package manager subprocess calls.
 const PKG_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Absolute paths for package managers — prevents PATH injection attacks.
+const PACMAN_PATH: &str = "/usr/bin/pacman";
+const DPKG_PATH: &str = "/usr/bin/dpkg";
+const RPM_PATH: &str = "/usr/bin/rpm";
+
 /// Query the system's package manager to determine which package owns a file.
 /// Returns None if the file is not owned by any package.
 pub fn query_package_owner(path: &Path, config: &PackageManagerConfig) -> Option<String> {
@@ -31,11 +36,11 @@ pub fn query_package_owner(path: &Path, config: &PackageManagerConfig) -> Option
 
 /// Detect which package manager is available on the system.
 pub fn detect_backend() -> PackageBackend {
-    if command_exists("pacman") {
+    if Path::new(PACMAN_PATH).is_file() {
         PackageBackend::Pacman
-    } else if command_exists("dpkg") {
+    } else if Path::new(DPKG_PATH).is_file() {
         PackageBackend::Dpkg
-    } else if command_exists("rpm") {
+    } else if Path::new(RPM_PATH).is_file() {
         PackageBackend::Rpm
     } else {
         tracing::warn!("No supported package manager detected");
@@ -45,7 +50,7 @@ pub fn detect_backend() -> PackageBackend {
 
 fn query_pacman(path: &str) -> Option<String> {
     let output = run_with_timeout(
-        Command::new("pacman").args(["-Qo", "--quiet", path]),
+        Command::new(PACMAN_PATH).args(["-Qo", "--quiet", path]),
         PKG_QUERY_TIMEOUT,
     )?;
 
@@ -62,7 +67,7 @@ fn query_pacman(path: &str) -> Option<String> {
 }
 
 fn query_dpkg(path: &str) -> Option<String> {
-    let output = run_with_timeout(Command::new("dpkg").args(["-S", path]), PKG_QUERY_TIMEOUT)?;
+    let output = run_with_timeout(Command::new(DPKG_PATH).args(["-S", path]), PKG_QUERY_TIMEOUT)?;
 
     if output.status.success() {
         let line = String::from_utf8_lossy(&output.stdout);
@@ -73,7 +78,7 @@ fn query_dpkg(path: &str) -> Option<String> {
 }
 
 fn query_rpm(path: &str) -> Option<String> {
-    let output = run_with_timeout(Command::new("rpm").args(["-qf", path]), PKG_QUERY_TIMEOUT)?;
+    let output = run_with_timeout(Command::new(RPM_PATH).args(["-qf", path]), PKG_QUERY_TIMEOUT)?;
 
     if output.status.success() {
         let pkg = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -115,12 +120,6 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process
     }
 }
 
-fn command_exists(cmd: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(cmd).is_file()))
-        .unwrap_or(false)
-}
-
 /// Batch query package ownership for multiple paths at once.
 /// Batches paths into groups of ~100 for efficiency.
 pub fn batch_query_package_owners(
@@ -158,7 +157,7 @@ pub fn batch_query_package_owners(
 
 fn batch_query_dpkg(paths: &[String]) -> HashMap<String, String> {
     let mut results = HashMap::new();
-    let mut cmd = Command::new("dpkg");
+    let mut cmd = Command::new(DPKG_PATH);
     cmd.arg("-S");
     for p in paths {
         cmd.arg(p);
@@ -228,7 +227,7 @@ fn build_cache_pacman() -> HashMap<PathBuf, String> {
     let mut cache = HashMap::new();
     // `pacman -Ql` outputs "package /path/to/file" per line
     let timeout = Duration::from_secs(30);
-    if let Some(output) = run_with_timeout(Command::new("pacman").arg("-Ql"), timeout) {
+    if let Some(output) = run_with_timeout(Command::new(PACMAN_PATH).arg("-Ql"), timeout) {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
@@ -250,6 +249,27 @@ fn build_cache_dpkg() -> HashMap<PathBuf, String> {
     let mut cache = HashMap::new();
     // Parse /var/lib/dpkg/info/*.list files directly for speed
     let list_dir = Path::new("/var/lib/dpkg/info");
+
+    // Verify the directory is owned by root before parsing to prevent
+    // reading from a tampered dpkg info directory.
+    {
+        use std::os::unix::fs::MetadataExt;
+        match std::fs::metadata(list_dir) {
+            Ok(meta) if meta.uid() != 0 => {
+                tracing::error!(
+                    owner_uid = meta.uid(),
+                    "/var/lib/dpkg/info is not owned by root — refusing to read package lists"
+                );
+                return cache;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot stat /var/lib/dpkg/info");
+                return cache;
+            }
+            _ => {} // uid == 0, proceed
+        }
+    }
+
     if list_dir.is_dir() {
         if let Ok(entries) = std::fs::read_dir(list_dir) {
             for entry in entries.flatten() {
@@ -282,7 +302,7 @@ fn build_cache_rpm() -> HashMap<PathBuf, String> {
     // use `rpm -qa --filesbypkg` which outputs "package  /path" per line
     let timeout = Duration::from_secs(60);
     if let Some(output) =
-        run_with_timeout(Command::new("rpm").args(["-qa", "--filesbypkg"]), timeout)
+        run_with_timeout(Command::new(RPM_PATH).args(["-qa", "--filesbypkg"]), timeout)
     {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -311,6 +331,16 @@ fn build_cache_rpm() -> HashMap<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_manager_paths_are_absolute() {
+        assert!(
+            PACMAN_PATH.starts_with('/'),
+            "pacman path must be absolute"
+        );
+        assert!(DPKG_PATH.starts_with('/'), "dpkg path must be absolute");
+        assert!(RPM_PATH.starts_with('/'), "rpm path must be absolute");
+    }
 
     #[test]
     fn parse_dpkg_batch_output() {

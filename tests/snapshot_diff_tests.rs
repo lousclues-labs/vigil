@@ -60,7 +60,14 @@ fn diff_detects_multiple_dimensions() {
             mode: 0o600,
             owner_uid: 1000,
             owner_gid: 1000,
-            capabilities: Some("cap_setuid+ep".into()),
+            // Real VFS v2 capability blob with CAP_SETUID (bit 7) set
+            capabilities: Some(hex::encode([
+                0x02, 0x00, 0x00, 0x02, // magic: VFS_CAP_REVISION_2 + effective
+                0x80, 0x00, 0x00, 0x00, // permitted[0]: bit 7 = CAP_SETUID
+                0x80, 0x00, 0x00, 0x00, // inheritable[0]
+                0x00, 0x00, 0x00, 0x00, // permitted[1]
+                0x00, 0x00, 0x00, 0x00, // inheritable[1]
+            ])),
         },
         security: SecurityState {
             xattrs,

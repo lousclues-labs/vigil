@@ -1,6 +1,6 @@
 [package]
 name = "vigil"
-version = "0.21.0"
+version = "0.22.0"
 edition = "2021"
 description = "Lightweight file integrity monitor for Linux desktops"
 # Vigil is dual-licensed: GPL-3.0-only for open-source use,
@@ -93,6 +93,9 @@ lru = "0.16.3"
 
 # Cron schedule parsing for scheduled scans
 croner = "2"
+
+# Secure memory zeroization for key material
+zeroize = "1"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

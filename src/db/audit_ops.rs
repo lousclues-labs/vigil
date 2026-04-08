@@ -337,6 +337,8 @@ fn changes_json_to_primary_type(json: &str) -> String {
                         "CapabilitiesChanged" => "capabilities_changed",
                         "XattrChanged" => "xattr_changed",
                         "SecurityContextChanged" => "security_context_changed",
+                        "SizeChanged" => "size_changed",
+                        "DeviceChanged" => "device_changed",
                         "Deleted" => "deleted",
                         "Created" => "created",
                         _ => "unknown",

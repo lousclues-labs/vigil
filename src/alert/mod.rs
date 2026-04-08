@@ -18,6 +18,8 @@ use crate::error::Result;
 use crate::metrics::Metrics;
 use crate::types::{Alert, AlertContext, AlertFileInfo, Change, ChangeResult, Severity};
 
+use zeroize::Zeroizing;
+
 /// Message passed from workers/scanners to the alert dispatcher.
 #[derive(Debug, Clone)]
 pub struct AlertPayload {
@@ -45,7 +47,7 @@ pub struct AlertDispatcher {
     rate_limiter: Mutex<RateLimiter>,
     cooldowns: Mutex<HashMap<String, Instant>>,
     cooldown_secs: u64,
-    hmac_key: Option<Vec<u8>>,
+    hmac_key: Option<Zeroizing<Vec<u8>>>,
     last_chain_hash: Mutex<String>,
     max_alerts_per_minute: u32,
     metrics: Arc<Metrics>,
@@ -114,7 +116,7 @@ impl AlertDispatcher {
 
         let hmac_key = if config.security.hmac_signing {
             match crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
-                Ok(key) => Some(key),
+                Ok(key) => Some(Zeroizing::new(key)),
                 Err(e) => {
                     tracing::warn!(error = %e, "HMAC key load failed; audit entries will be unsigned");
                     None
@@ -232,7 +234,12 @@ impl AlertDispatcher {
     }
 
     fn is_suppressed(&self, change: &ChangeResult, maintenance_window: bool) -> bool {
+        // Never fully suppress Critical/High changes, even during maintenance windows.
+        // These still dispatch to sinks but will have maintenance_window=true in the alert.
         if maintenance_window && change.package.is_some() {
+            if change.severity >= Severity::High {
+                return false;
+            }
             return true;
         }
 
@@ -374,6 +381,8 @@ fn change_to_name(change: &Change) -> &'static str {
         Change::CapabilitiesChanged { .. } => "capabilities_changed",
         Change::XattrChanged { .. } => "xattr_changed",
         Change::SecurityContextChanged { .. } => "security_context_changed",
+        Change::SizeChanged { .. } => "size_changed",
+        Change::DeviceChanged { .. } => "device_changed",
         Change::Deleted => "deleted",
         Change::Created => "created",
     }
@@ -521,5 +530,72 @@ mod tests {
         let entries = audit_ops::get_recent(&dispatcher.audit_conn, 10).unwrap();
         assert_eq!(entries.len(), 1);
         assert!(entries[0].hmac.is_some(), "HMAC should be present");
+    }
+
+    #[test]
+    fn critical_severity_not_suppressed_during_maintenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit_path = dir.path().join("audit.db");
+
+        let cfg = crate::config::default_config();
+        let metrics = Arc::new(crate::metrics::Metrics::new());
+        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics).unwrap();
+
+        let critical_change = ChangeResult {
+            path: std::sync::Arc::new(std::path::PathBuf::from("/usr/bin/sudo")),
+            changes: vec![Change::ContentModified {
+                old_hash: "aaa".into(),
+                new_hash: "bbb".into(),
+            }],
+            severity: Severity::Critical,
+            monitored_group: "system".into(),
+            process: None,
+            package: Some("sudo".into()),
+            package_update: true,
+        };
+
+        // Critical + package during maintenance should NOT be suppressed
+        assert!(
+            !dispatcher.is_suppressed(&critical_change, true),
+            "Critical severity changes must not be suppressed during maintenance"
+        );
+
+        let high_change = ChangeResult {
+            path: std::sync::Arc::new(std::path::PathBuf::from("/usr/bin/passwd")),
+            changes: vec![Change::ContentModified {
+                old_hash: "ccc".into(),
+                new_hash: "ddd".into(),
+            }],
+            severity: Severity::High,
+            monitored_group: "system".into(),
+            process: None,
+            package: Some("shadow".into()),
+            package_update: true,
+        };
+
+        // High + package during maintenance should NOT be suppressed
+        assert!(
+            !dispatcher.is_suppressed(&high_change, true),
+            "High severity changes must not be suppressed during maintenance"
+        );
+
+        let low_change = ChangeResult {
+            path: std::sync::Arc::new(std::path::PathBuf::from("/usr/share/doc/readme")),
+            changes: vec![Change::ContentModified {
+                old_hash: "eee".into(),
+                new_hash: "fff".into(),
+            }],
+            severity: Severity::Low,
+            monitored_group: "docs".into(),
+            process: None,
+            package: Some("man-pages".into()),
+            package_update: true,
+        };
+
+        // Low + package during maintenance SHOULD be suppressed
+        assert!(
+            dispatcher.is_suppressed(&low_change, true),
+            "Low severity changes with package should be suppressed during maintenance"
+        );
     }
 }

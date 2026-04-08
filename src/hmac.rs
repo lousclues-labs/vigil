@@ -2,6 +2,7 @@ use std::path::Path;
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use zeroize::Zeroize;
 
 use crate::error::{Result, VigilError};
 
@@ -52,14 +53,17 @@ pub fn load_hmac_key(path: &Path) -> Result<Vec<u8>> {
     })?;
 
     // If the file contains hex-encoded key, decode it; otherwise use raw bytes
-    let trimmed = String::from_utf8_lossy(&content).trim().to_string();
-    if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+    let mut trimmed = String::from_utf8_lossy(&content).trim().to_string();
+    let result = if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
         hex::decode(&trimmed).map_err(|e| {
             VigilError::HmacVerification(format!("invalid hex in HMAC key file: {}", e))
         })
     } else {
         Ok(content)
-    }
+    };
+    // Zeroize the intermediate string to prevent key material from persisting in freed memory
+    trimmed.zeroize();
+    result
 }
 
 /// Build the data string for HMAC computation from audit entry fields.
