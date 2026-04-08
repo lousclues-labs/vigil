@@ -34,6 +34,7 @@ log_format = "text"             # text, json
 runtime_dir = "/run/vigil"
 control_socket = "/run/vigil/control.sock"
 debounce_ms = 100
+event_channel_capacity = 4096    # event channel buffer size
 
 [scanner]
 schedule = "0 3 * * *"
@@ -41,7 +42,7 @@ mode = "incremental"            # incremental, full
 hash_algorithm = "blake3"
 max_file_size = 2147483648
 mmap_threshold = 1048576
-scheduled_mode = "incremental"  # incremental, full
+scheduled_mode = "full"          # incremental, full (full protects against mtime-reset attacks)
 parallel = false
 
 [alerts]
@@ -71,7 +72,7 @@ patterns = [
   "*.swp", "*.swx", "*~", "*.tmp", "*.log", "*.cache",
   ".git/*", "__pycache__/*"
 ]
-system_exclusions = ["/proc/*", "/sys/*", "/dev/*", "/run/*", "/tmp/*"]
+system_exclusions = ["/proc/*", "/sys/*", "/dev/*", "/run/user/*", "/run/lock/*", "/run/utmp", "/tmp/*"]
 
 [package_manager]
 auto_rebaseline = true
@@ -84,6 +85,7 @@ signal_socket = ""
 hmac_signing = false
 hmac_key_path = "/etc/vigil/hmac.key"
 verify_config_integrity = true
+control_socket_auth = true        # challenge-response auth on control socket
 
 [database]
 wal_mode = true
@@ -122,6 +124,7 @@ paths = [
 | `runtime_dir` | path | `/run/vigil` | runtime snapshots and daemon files |
 | `control_socket` | path | `/run/vigil/control.sock` | daemon control socket |
 | `debounce_ms` | integer | `100` | per-path debounce window |
+| `event_channel_capacity` | integer | `4096` | event channel buffer size; higher values reduce event drops under I/O load |
 
 ### `[scanner]`
 
@@ -132,7 +135,7 @@ paths = [
 | `hash_algorithm` | enum | `blake3` | currently only `blake3` |
 | `max_file_size` | integer | `2147483648` | bytes |
 | `mmap_threshold` | integer | `1048576` | bytes |
-| `scheduled_mode` | enum | `incremental` | mode used by scheduler |
+| `scheduled_mode` | enum | `full` | mode used by scheduler. `full` rehashes every file regardless of mtime for protection against mtime-reset attacks |
 | `parallel` | bool | `false` | enables optional parallel scanning paths |
 
 ### `[alerts]`
@@ -171,7 +174,7 @@ paths = [
 | Option | Type | Default | Notes |
 |--------|------|---------|-------|
 | `patterns` | string[] | built-in list | globset pattern list |
-| `system_exclusions` | string[] | `/proc/*`, `/sys/*`, `/dev/*`, `/run/*`, `/tmp/*` | system path exclusions |
+| `system_exclusions` | string[] | `/proc/*`, `/sys/*`, `/dev/*`, `/run/user/*`, `/run/lock/*`, `/run/utmp`, `/tmp/*` | system path exclusions. `/run/*` is intentionally not blanket-excluded to prevent attacker persistence via `/run/systemd/transient/`. |
 
 ### `[package_manager]`
 
@@ -190,9 +193,10 @@ paths = [
 
 | Option | Type | Default | Notes |
 |--------|------|---------|-------|
-| `hmac_signing` | bool | `false` | enables HMAC audit signing |
+| `hmac_signing` | bool | `false` | enables HMAC audit signing, baseline HMAC verification, and config HMAC verification |
 | `hmac_key_path` | path | `/etc/vigil/hmac.key` | HMAC key file |
 | `verify_config_integrity` | bool | `true` | integrity check toggle |
+| `control_socket_auth` | bool | `true` | enables challenge-response authentication on the control socket (requires `hmac_signing = true`) |
 
 ### `[database]`
 

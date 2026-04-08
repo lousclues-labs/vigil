@@ -23,6 +23,8 @@ pub struct Metrics {
     pub cache_misses: AtomicU64,
     pub baseline_updates: AtomicU64,
     pub backpressure_events: AtomicU64,
+    /// Control socket commands executed.
+    pub control_commands: AtomicU64,
     /// Unix timestamp set once at daemon startup.
     pub uptime_start: i64,
 }
@@ -48,6 +50,7 @@ impl Metrics {
             cache_misses: AtomicU64::new(0),
             baseline_updates: AtomicU64::new(0),
             backpressure_events: AtomicU64::new(0),
+            control_commands: AtomicU64::new(0),
             uptime_start: chrono::Utc::now().timestamp(),
         }
     }
@@ -73,6 +76,7 @@ impl Metrics {
             cache_misses: self.cache_misses.load(Ordering::Relaxed),
             baseline_updates: self.baseline_updates.load(Ordering::Relaxed),
             backpressure_events: self.backpressure_events.load(Ordering::Relaxed),
+            control_commands: self.control_commands.load(Ordering::Relaxed),
             uptime_start: self.uptime_start,
         }
     }
@@ -105,6 +109,7 @@ pub struct MetricsSnapshot {
     pub cache_misses: u64,
     pub baseline_updates: u64,
     pub backpressure_events: u64,
+    pub control_commands: u64,
     pub uptime_start: i64,
 }
 

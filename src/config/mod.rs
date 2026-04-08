@@ -198,6 +198,9 @@ pub struct DaemonConfig {
     pub control_socket: PathBuf,
     #[serde(default = "default_debounce_ms")]
     pub debounce_ms: u64,
+    /// Event channel capacity. Higher values reduce event drops under load.
+    #[serde(default = "default_event_channel_capacity")]
+    pub event_channel_capacity: usize,
 }
 
 impl Default for DaemonConfig {
@@ -212,6 +215,7 @@ impl Default for DaemonConfig {
             runtime_dir: default_runtime_dir(),
             control_socket: default_control_socket(),
             debounce_ms: default_debounce_ms(),
+            event_channel_capacity: default_event_channel_capacity(),
         }
     }
 }
@@ -251,6 +255,10 @@ fn default_debounce_ms() -> u64 {
     100
 }
 
+fn default_event_channel_capacity() -> usize {
+    4096
+}
+
 fn default_monitor_backend() -> MonitorBackend {
     MonitorBackend::Fanotify
 }
@@ -267,7 +275,10 @@ pub struct ScannerConfig {
     pub max_file_size: u64,
     #[serde(default = "default_mmap_threshold")]
     pub mmap_threshold: u64,
-    #[serde(default = "default_scan_mode")]
+    /// Scheduled scan mode. Full mode rehashes every file regardless of mtime,
+    /// providing protection against mtime-reset attacks at a cost of higher I/O.
+    /// Users with very large baselines can set this to `incremental` in their config.
+    #[serde(default = "default_scheduled_mode")]
     pub scheduled_mode: ScanMode,
     #[serde(default)]
     pub parallel: bool,
@@ -281,7 +292,7 @@ impl Default for ScannerConfig {
             hash_algorithm: default_hash_algorithm(),
             max_file_size: default_max_file_size(),
             mmap_threshold: default_mmap_threshold(),
-            scheduled_mode: default_scan_mode(),
+            scheduled_mode: ScanMode::Full,
             parallel: false,
         }
     }
@@ -297,6 +308,10 @@ fn default_schedule() -> String {
 
 fn default_scan_mode() -> ScanMode {
     ScanMode::Incremental
+}
+
+fn default_scheduled_mode() -> ScanMode {
+    ScanMode::Full
 }
 
 fn default_hash_algorithm() -> HashAlgorithm {
@@ -400,12 +415,21 @@ fn default_log_min_severity() -> Severity {
     Severity::Low
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExclusionsConfig {
     #[serde(default = "default_exclusion_patterns")]
     pub patterns: Vec<String>,
     #[serde(default = "default_system_exclusions")]
     pub system_exclusions: Vec<String>,
+}
+
+impl Default for ExclusionsConfig {
+    fn default() -> Self {
+        Self {
+            patterns: default_exclusion_patterns(),
+            system_exclusions: default_system_exclusions(),
+        }
+    }
 }
 
 fn default_exclusion_patterns() -> Vec<String> {
@@ -421,12 +445,19 @@ fn default_exclusion_patterns() -> Vec<String> {
     ]
 }
 
+/// Default system exclusions. Note: `/run/*` is intentionally NOT blanket-excluded.
+/// Attackers can persist via transient systemd units in `/run/systemd/transient/`.
+/// Blanket exclusion of `/run/*` creates a monitoring blind spot.
+/// Vigil's own runtime directory (`/run/vigil/`) is excluded via the self_paths
+/// mechanism in ExclusionFilter.
 fn default_system_exclusions() -> Vec<String> {
     vec![
         "/proc/*".into(),
         "/sys/*".into(),
         "/dev/*".into(),
-        "/run/*".into(),
+        "/run/user/*".into(),
+        "/run/lock/*".into(),
+        "/run/utmp".into(),
         "/tmp/*".into(),
     ]
 }
@@ -466,6 +497,10 @@ pub struct SecurityConfig {
     pub hmac_key_path: PathBuf,
     #[serde(default = "default_true")]
     pub verify_config_integrity: bool,
+    /// Enable challenge-response authentication on the control socket.
+    /// Requires hmac_signing to be enabled.
+    #[serde(default = "default_true")]
+    pub control_socket_auth: bool,
 }
 
 impl Default for SecurityConfig {
@@ -474,6 +509,7 @@ impl Default for SecurityConfig {
             hmac_signing: false,
             hmac_key_path: default_hmac_key_path(),
             verify_config_integrity: true,
+            control_socket_auth: true,
         }
     }
 }
@@ -713,6 +749,18 @@ pub fn validate_config_deep(config: &Config) -> Result<Vec<String>> {
         ));
     }
 
+    // Check if vigl config file is covered by any watch group
+    let config_path_str = "/etc/vigil/vigil.toml";
+    let config_covered = config.watch.values().any(|group| {
+        group
+            .paths
+            .iter()
+            .any(|p| config_path_str.starts_with(p.trim_end_matches('/')) || p == config_path_str)
+    });
+    if !config_covered {
+        warnings.push("vigil config file is not covered by any watch group".into());
+    }
+
     Ok(warnings)
 }
 
@@ -782,6 +830,14 @@ pub fn default_config() -> Config {
         },
     );
 
+    watch.insert(
+        "vigil_self".into(),
+        WatchGroup {
+            severity: Severity::Critical,
+            paths: vec!["/etc/vigil/vigil.toml".into(), "/etc/vigil/hmac.key".into()],
+        },
+    );
+
     Config {
         config_version: 2,
         daemon: DaemonConfig::default(),
@@ -844,5 +900,45 @@ mod tests {
         "#;
         let result: std::result::Result<Config, _> = toml::from_str(toml_str);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn default_scheduled_mode_is_full() {
+        let config = default_config();
+        assert_eq!(config.scanner.scheduled_mode, ScanMode::Full);
+    }
+
+    #[test]
+    fn default_config_includes_vigil_self_watch_group() {
+        let config = default_config();
+        assert!(
+            config.watch.contains_key("vigil_self"),
+            "default config must include vigil_self watch group"
+        );
+        let group = &config.watch["vigil_self"];
+        assert_eq!(group.severity, Severity::Critical);
+        assert!(group.paths.iter().any(|p| p.contains("vigil.toml")));
+    }
+
+    #[test]
+    fn validate_deep_warns_when_config_not_watched() {
+        let mut config = default_config();
+        config.watch.clear();
+        // Keep at least one watch group with an existing path so deep validation doesn't fail
+        config.watch.insert(
+            "test".into(),
+            WatchGroup {
+                severity: Severity::Low,
+                paths: vec!["/usr/bin/".into()],
+            },
+        );
+        let warnings = validate_config_deep(&config).unwrap();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("vigil config file is not covered")),
+            "should warn when config file is not watched: {:?}",
+            warnings,
+        );
     }
 }

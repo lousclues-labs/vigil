@@ -154,6 +154,20 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<Base
     };
 
     baseline_ops::set_config_state(conn, "last_baseline_refresh", &now.to_string())?;
+
+    // Store baseline HMAC if HMAC signing is configured
+    if config.security.hmac_signing {
+        if let Ok(key) = crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
+            match baseline_ops::compute_baseline_hmac(conn, &key) {
+                Ok(hmac) => {
+                    let _ = baseline_ops::set_config_state(conn, "baseline_hmac", &hmac);
+                    tracing::info!("baseline HMAC computed and stored");
+                }
+                Err(e) => tracing::warn!(error = %e, "failed to compute baseline HMAC"),
+            }
+        }
+    }
+
     let db_size_bytes = std::fs::metadata(&config.daemon.db_path)
         .map(|m| m.len())
         .unwrap_or(0);

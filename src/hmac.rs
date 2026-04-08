@@ -63,6 +63,9 @@ pub fn load_hmac_key(path: &Path) -> Result<Vec<u8>> {
 }
 
 /// Build the data string for HMAC computation from audit entry fields.
+///
+/// Includes `previous_chain_hash` so that HMAC verification can detect
+/// deletion of entries from the middle of the audit chain.
 pub fn build_audit_hmac_data(
     timestamp: i64,
     path: &str,
@@ -70,15 +73,17 @@ pub fn build_audit_hmac_data(
     severity: &str,
     old_hash: Option<&str>,
     new_hash: Option<&str>,
+    previous_chain_hash: &str,
 ) -> Vec<u8> {
     format!(
-        "{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}",
         timestamp,
         path,
         change_type,
         severity,
         old_hash.unwrap_or(""),
         new_hash.unwrap_or(""),
+        previous_chain_hash,
     )
     .into_bytes()
 }
@@ -201,19 +206,54 @@ mod tests {
             "critical",
             Some("oldhash"),
             Some("newhash"),
+            "prev_chain_hash_abc",
         );
         assert_eq!(
             String::from_utf8(data).unwrap(),
-            "1700000000|/etc/passwd|modified|critical|oldhash|newhash"
+            "1700000000|/etc/passwd|modified|critical|oldhash|newhash|prev_chain_hash_abc"
         );
     }
 
     #[test]
     fn build_audit_data_none_hashes() {
-        let data = build_audit_hmac_data(1700000000, "/etc/test", "deleted", "high", None, None);
+        let data = build_audit_hmac_data(
+            1700000000,
+            "/etc/test",
+            "deleted",
+            "high",
+            None,
+            None,
+            "genesis",
+        );
         assert_eq!(
             String::from_utf8(data).unwrap(),
-            "1700000000|/etc/test|deleted|high||"
+            "1700000000|/etc/test|deleted|high|||genesis"
+        );
+    }
+
+    #[test]
+    fn build_audit_data_includes_previous_chain_hash() {
+        let data1 = build_audit_hmac_data(
+            1700000000,
+            "/etc/test",
+            "modified",
+            "high",
+            None,
+            None,
+            "chain_a",
+        );
+        let data2 = build_audit_hmac_data(
+            1700000000,
+            "/etc/test",
+            "modified",
+            "high",
+            None,
+            None,
+            "chain_b",
+        );
+        assert_ne!(
+            data1, data2,
+            "different previous chain hash must produce different HMAC data"
         );
     }
 

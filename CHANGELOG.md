@@ -4,6 +4,105 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-04-08
+
+### Release Summary
+Comprehensive security hardening addressing 11 categories of evasion and tampering vulnerabilities identified in an adversarial review. Key changes: Vigil now watches its own config and HMAC key files, verifies baseline integrity via HMAC on startup, refuses to auto-reinitialize a previously-initialized but empty baseline, includes previous chain hashes in audit HMAC computation, authenticates control socket connections via challenge-response, logs all control socket operations with peer credentials, detects and alerts on sustained event drops, narrows default system exclusions to close monitoring blind spots, and defaults scheduled scans to full mode to defeat mtime-reset attacks.
+
+### Changed
+
+#### Default scheduled scan mode changed to `Full` (Fix 5)
+- `scanner.scheduled_mode` now defaults to `Full` instead of `Incremental`. Full mode rehashes every file regardless of mtime, providing protection against mtime-reset evasion attacks. Users with very large baselines can set `scheduled_mode = "incremental"` in their config.
+- File changed: `src/config/mod.rs`.
+
+#### Narrowed `/run/*` system exclusion (Fix 9)
+- The blanket `/run/*` system exclusion is replaced with targeted exclusions: `/run/user/*`, `/run/lock/*`, `/run/utmp`. Attackers can persist via transient systemd units in `/run/systemd/transient/`; blanket exclusion created a monitoring blind spot.
+- Vigil's own runtime directory (`/run/vigil/`) is still excluded via the self-paths mechanism.
+- `ExclusionsConfig::default()` now populates default exclusion patterns and system exclusions instead of producing empty vectors. Previously the `#[derive(Default)]` trait produced empty vecs, and defaults only applied during TOML deserialization.
+- Files changed: `src/config/mod.rs`, `src/filter/exclusion.rs`, `tests/daemon_smoke_tests.rs`.
+
+#### HMAC chain now includes previous chain hash (Fix 4)
+- `build_audit_hmac_data()` in `src/hmac.rs` now takes a `previous_chain_hash` parameter. Individual audit entry HMACs are chained: deleting entries from the middle of the audit chain is now detectable via HMAC verification, not just via the BLAKE3 chain hash (which has no secret key).
+- `verify_chain_with_hmac()` added to `src/db/audit_ops.rs` for optional chained HMAC verification when a key is provided.
+- Helper functions `changes_json_to_primary_type()` and `changes_json_extract_hashes()` added for HMAC data reconstruction during verification.
+- Files changed: `src/hmac.rs`, `src/alert/mod.rs`, `src/db/audit_ops.rs`.
+
+#### Debounce drain now re-checks paths (Fix 3)
+- When debounced pending paths are drained, they are now re-checked by processing them as synthetic `FsEvent` objects. Previously, drained paths only had their LRU cache entries invalidated; if no further event arrived, the change was silently missed until the next scheduled scan.
+- File changed: `src/worker.rs`.
+
+#### Hardened `ensure_baseline_health` — no silent auto-reinitialize (Fix 10)
+- After the first successful baseline initialization, a `baseline_initialized` flag is set in `config_state`. If the baseline is later found empty but was previously initialized, Vigil refuses to auto-reinitialize and returns an error: "baseline was previously initialized but is now empty — possible tampering". A desktop notification is also sent.
+- `vigil init` and `vigil init --force` also set the `baseline_initialized` flag.
+- Files changed: `src/lib.rs`, `src/main.rs`.
+
+#### Event channel capacity now configurable (Fix 8c)
+- New config field `daemon.event_channel_capacity` (default: 4096, up from hardcoded 2048). Higher values reduce event drops under sustained I/O load or flood conditions.
+- File changed: `src/config/mod.rs`, `src/lib.rs`.
+
+### Added
+
+#### Self-monitoring watch group (Fix 1)
+- Default config now includes a `vigil_self` watch group at `Critical` severity, watching `/etc/vigil/vigil.toml` and `/etc/vigil/hmac.key`. An attacker who modifies Vigil's config or HMAC key now triggers a Critical alert.
+- `validate_config_deep()` emits a warning if no watch group covers the config file path.
+- `process_event_inner()` in `src/worker.rs` logs at `tracing::error!` with message "vigil self-protection: config file modified" or "vigil self-protection: HMAC key file modified" when these files are changed.
+- Files changed: `src/config/mod.rs`, `src/worker.rs`.
+- New test file: `tests/self_monitoring_tests.rs`.
+
+#### Baseline tamper detection on startup (Fix 2)
+- After every baseline initialization, a baseline HMAC is computed over all entries and stored in `config_state` key `baseline_hmac`.
+- On daemon startup, if `security.hmac_signing = true`, the stored baseline HMAC is compared to a freshly computed one. If they don't match, the daemon refuses to start with error "baseline HMAC verification failed — possible tampering" and sends a Critical desktop notification.
+- If no stored HMAC exists (upgrade path), one is computed and stored for future verification.
+- The baseline writer thread periodically recomputes the baseline HMAC (every 100 batches or 60 seconds) to keep it current.
+- `vigil check --accept` recomputes and stores the baseline HMAC after accepting changes.
+- Files changed: `src/lib.rs`, `src/scanner.rs`, `src/main.rs`.
+- New test file: `tests/baseline_tamper_tests.rs`.
+
+#### Config file integrity verification (Fix 11)
+- On daemon startup, the BLAKE3 hash of the config file is computed and stored in the `Daemon` struct.
+- On config reload (SIGHUP), the coordinator computes the new config hash and logs any change at `warn` level.
+- When `security.hmac_signing = true`, a config file HMAC is stored in `config_state` key `config_file_hmac`. On reload, if the stored HMAC doesn't match the current config file, the reload is rejected with error "config reload REJECTED: config file HMAC verification failed".
+- Files changed: `src/lib.rs`, `src/coordinator.rs`.
+
+#### Control socket authentication (Fix 6)
+- New config field `security.control_socket_auth` (default: `true`). When enabled and `hmac_signing = true`, the control socket uses a challenge-response authentication protocol: server sends a 32-byte random hex nonce, client must respond with `HMAC-SHA256(nonce, hmac_key)`.
+- If authentication is not configured (HMAC signing disabled), the socket falls back to unauthenticated mode with a `tracing::warn!` on every connection.
+- Client-side authentication implemented in `query_control_socket()` and `query_control_socket_authenticated()`.
+- Files changed: `src/config/mod.rs`, `src/control.rs`, `src/main.rs`.
+
+#### Audit trail for control socket operations (Fix 7)
+- `reload` and `scan` control socket commands now log at `tracing::warn!` with the method name.
+- New `control_commands` counter in `src/metrics.rs` tracks total control socket commands executed.
+- Peer credentials (PID, UID, GID) are logged via `SO_PEERCRED` on every control socket connection.
+- Files changed: `src/control.rs`, `src/metrics.rs`.
+
+#### Event flood detection (Fix 8b)
+- The coordinator thread now tracks `events_dropped` across housekeeping ticks. If the count increased, it logs at `tracing::error!` with both the delta and total: "filesystem events are being dropped — possible evasion attack or I/O overload".
+- File changed: `src/coordinator.rs`.
+
+#### `ReloadSource` enum (Fix 6d)
+- New `ReloadSource` enum in `src/coordinator.rs` (`Signal`, `ControlSocket`, `Unknown`) for differentiating reload triggers in future use.
+- File changed: `src/coordinator.rs`.
+
+### Tests
+
+#### New test files
+- `tests/baseline_tamper_tests.rs` — 5 tests covering baseline HMAC roundtrip, tamper detection, content-dependent HMAC output, `baseline_initialized` flag behavior, and empty-baseline-after-init refusal.
+- `tests/self_monitoring_tests.rs` — 4 tests verifying config/HMAC key files are not excluded, `vigil_self` watch group exists, mutable state files are excluded.
+
+#### New unit tests in existing files
+- `src/config/mod.rs`: `default_scheduled_mode_is_full`, `default_config_includes_vigil_self_watch_group`, `validate_deep_warns_when_config_not_watched`.
+- `src/filter/exclusion.rs`: `run_systemd_transient_not_excluded_by_default`, `run_vigil_excluded_via_self_paths`, `run_user_excluded_by_default`, `tmp_excluded_by_default`, `proc_excluded_by_default`, `vigil_config_not_excluded`.
+- `src/hmac.rs`: updated `build_audit_data_format` and `build_audit_data_none_hashes` for 7-arg signature; added `build_audit_data_includes_previous_chain_hash`.
+- `src/control.rs`: `control_commands_metric_increments_on_reload`.
+
+### Documentation
+- `CHANGELOG.md` — this entry.
+- `docs/CONFIGURATION.md` — updated `system_exclusions` default, `scheduled_mode` default, added `event_channel_capacity` and `control_socket_auth` fields.
+- `docs/ARCHITECTURE.md` — updated control socket description to note authentication and audit logging.
+- `docs/THREAT_MODEL.md` — updated evasion considerations and mitigations to reflect new hardening.
+- `docs/SECURITY.md` — updated security boundary and HMAC key lifecycle notes.
+
 ## [0.20.0] - 2026-04-07
 
 ### Release Summary

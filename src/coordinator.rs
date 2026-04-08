@@ -15,6 +15,14 @@ use crate::watch_index::WatchGroupIndex;
 
 use chrono::Utc;
 
+/// Source of a config reload request.
+#[derive(Debug, Clone)]
+pub enum ReloadSource {
+    Signal,
+    ControlSocket,
+    Unknown,
+}
+
 pub fn spawn(
     config: Arc<ArcSwap<Config>>,
     metrics: Arc<Metrics>,
@@ -24,6 +32,9 @@ pub fn spawn(
     reload_flag: Arc<AtomicBool>,
     backpressure: Arc<AtomicBool>,
 ) -> crate::Result<JoinHandle<()>> {
+    // Compute initial config hash for integrity tracking
+    let mut last_config_hash = config_file_hash();
+
     std::thread::Builder::new()
         .name("vigil-coordinator".into())
         .spawn(move || {
@@ -31,9 +42,60 @@ pub fn spawn(
             // so post-update doctor/status calls do not wait a full minute.
             let mut last_tick = std::time::Instant::now() - Duration::from_secs(60);
             let mut checkpoint_counter: u32 = 0;
+            let mut last_dropped: u64 = 0;
 
             while !shutdown.load(Ordering::Acquire) {
                 if reload_flag.swap(false, Ordering::AcqRel) {
+                    // Check config file integrity before reload
+                    let new_config_hash = config_file_hash();
+                    if new_config_hash != last_config_hash {
+                        tracing::warn!(
+                            old_hash = last_config_hash.as_deref().unwrap_or("none"),
+                            new_hash = new_config_hash.as_deref().unwrap_or("none"),
+                            "config file hash changed during reload"
+                        );
+                    }
+
+                    // If HMAC signing is enabled, verify config HMAC
+                    let cfg = config.load();
+                    if cfg.security.hmac_signing {
+                        if let Ok(key) = crate::hmac::load_hmac_key(&cfg.security.hmac_key_path) {
+                            if let Some(content) = config_file_content() {
+                                let current_hmac =
+                                    crate::hmac::compute_hmac(&key, &content).unwrap_or_default();
+                                // Load stored config HMAC from baseline db
+                                if let Ok(baseline_conn) = db::open_baseline_db(&cfg) {
+                                    let stored = crate::db::baseline_ops::get_config_state(
+                                        &baseline_conn,
+                                        "config_file_hmac",
+                                    )
+                                    .ok()
+                                    .flatten();
+                                    match stored {
+                                        Some(ref expected) if expected != &current_hmac => {
+                                            tracing::error!(
+                                                "config reload REJECTED: config file HMAC \
+                                                 verification failed. The config file may \
+                                                 have been tampered with."
+                                            );
+                                            continue; // skip reload
+                                        }
+                                        None => {
+                                            // Store initial config HMAC
+                                            let _ =
+                                                crate::db::baseline_ops::set_config_state(
+                                                    &baseline_conn,
+                                                    "config_file_hmac",
+                                                    &current_hmac,
+                                                );
+                                        }
+                                        _ => {} // HMAC matches, proceed
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     match crate::config::load_config(None) {
                         Ok(new_cfg) => {
                             match crate::config::validate_config_deep(&new_cfg) {
@@ -56,6 +118,7 @@ pub fn spawn(
 
                             config.store(Arc::new(new_cfg.clone()));
                             watch_index.store(Arc::new(WatchGroupIndex::from_config(&new_cfg)));
+                            last_config_hash = new_config_hash.clone();
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "config reload failed");
@@ -91,6 +154,19 @@ pub fn spawn(
                             };
                         }
                     }
+
+                    // Detect sustained event drops (possible evasion attack)
+                    let current_dropped =
+                        metrics.events_dropped.load(Ordering::Relaxed);
+                    if current_dropped > last_dropped {
+                        let delta = current_dropped - last_dropped;
+                        tracing::error!(
+                            dropped = delta,
+                            total_dropped = current_dropped,
+                            "filesystem events are being dropped — possible evasion attack or I/O overload"
+                        );
+                    }
+                    last_dropped = current_dropped;
 
                     if let Err(e) = write_state_snapshot(&cfg.daemon.runtime_dir, &state) {
                         tracing::warn!(error = %e, "failed to write state snapshot");
@@ -162,4 +238,19 @@ fn write_state_snapshot(
 
     std::fs::write(path, serde_json::to_vec_pretty(&value)?)?;
     Ok(())
+}
+
+/// Compute the BLAKE3 hash of the current config file, if found.
+fn config_file_hash() -> Option<String> {
+    config_file_content().map(|content| crate::hash::blake3_hash_bytes(&content))
+}
+
+/// Read raw config file content from the standard search paths.
+fn config_file_content() -> Option<Vec<u8>> {
+    if let Ok(env_path) = std::env::var("VIGIL_CONFIG") {
+        if let Ok(content) = std::fs::read(&env_path) {
+            return Some(content);
+        }
+    }
+    std::fs::read("/etc/vigil/vigil.toml").ok()
 }

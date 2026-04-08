@@ -124,6 +124,7 @@ fn cmd_init(config_path: Option<&Path>, force: bool) -> vigil::Result<()> {
 
     eprintln!("  Scanning watch paths...");
     let result = vigil::scanner::build_initial_baseline(&conn, &cfg)?;
+    vigil::db::baseline_ops::set_config_state(&conn, "baseline_initialized", "true")?;
 
     print_header("Vigil — Baseline Initialized");
 
@@ -351,6 +352,24 @@ fn cmd_check(
             println!();
             println!("  Baseline updated. Next scan will treat accepted files as expected.");
             println!("  Audit log preserved — the original detections are permanent.");
+
+            // Recompute baseline HMAC after accepting changes
+            if cfg.security.hmac_signing {
+                if let Ok(key) = vigil::hmac::load_hmac_key(&cfg.security.hmac_key_path) {
+                    match vigil::db::baseline_ops::compute_baseline_hmac(&conn, &key) {
+                        Ok(hmac) => {
+                            let _ = vigil::db::baseline_ops::set_config_state(
+                                &conn,
+                                "baseline_hmac",
+                                &hmac,
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("  warning: failed to update baseline HMAC: {}", e);
+                        }
+                    }
+                }
+            }
 
             let not_accepted = result.changes.len() - changes_to_accept.len();
             if not_accepted > 0 {
@@ -1807,17 +1826,87 @@ fn query_control_socket(
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
 
-    let mut stream = UnixStream::connect(socket_path)?;
+    let stream = UnixStream::connect(socket_path)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
-    writeln!(stream, "{}", request)?;
-    stream.flush()?;
+    // Send request
+    (&stream).write_all(request.as_bytes())?;
+    (&stream).write_all(b"\n")?;
+    (&stream).flush()?;
+
+    let mut reader = BufReader::new(&stream);
+    let mut first_line = String::new();
+    reader.read_line(&mut first_line)?;
+
+    let first_value: serde_json::Value = serde_json::from_str(first_line.trim())?;
+
+    // If the server sent a challenge, reconnect with authenticated request
+    if first_value
+        .get("challenge")
+        .and_then(|v| v.as_str())
+        .is_some()
+    {
+        drop(reader);
+        drop(stream);
+        return query_control_socket_authenticated(socket_path, request);
+    }
+
+    // No challenge — use first_value as the response
+    if first_value.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+        Ok(first_value)
+    } else {
+        Err(first_value
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("unknown error")
+            .into())
+    }
+}
+
+fn query_control_socket_authenticated(
+    socket_path: &Path,
+    request: &str,
+) -> std::result::Result<serde_json::Value, Box<dyn std::error::Error>> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    let stream = UnixStream::connect(socket_path)?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+    // Read challenge
+    let mut reader = BufReader::new(&stream);
+    let mut challenge_line = String::new();
+    reader.read_line(&mut challenge_line)?;
+    let challenge: serde_json::Value = serde_json::from_str(challenge_line.trim())?;
+    let nonce = challenge
+        .get("challenge")
+        .and_then(|v| v.as_str())
+        .ok_or("missing challenge nonce")?;
+
+    // Load HMAC key and compute response
+    let hmac_key_path = std::path::PathBuf::from("/etc/vigil/hmac.key");
+    let key = vigil::hmac::load_hmac_key(&hmac_key_path)?;
+    let hmac_response = vigil::hmac::compute_hmac(&key, nonce.as_bytes())?;
+
+    // Build authenticated request
+    let mut req_value: serde_json::Value = serde_json::from_str(request)?;
+    if let Some(obj) = req_value.as_object_mut() {
+        obj.insert("response".into(), serde_json::Value::String(hmac_response));
+    }
+    let auth_request = serde_json::to_string(&req_value)?;
+
+    // Need to drop reader to get mutable access to stream
+    drop(reader);
+    (&stream).write_all(auth_request.as_bytes())?;
+    (&stream).write_all(b"\n")?;
+    (&stream).flush()?;
 
     let mut reader = BufReader::new(&stream);
     let mut response = String::new();
     reader.read_line(&mut response)?;
-
     let value: serde_json::Value = serde_json::from_str(&response)?;
     if value.get("ok").and_then(|v| v.as_bool()) == Some(true) {
         Ok(value)

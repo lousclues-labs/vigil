@@ -269,6 +269,8 @@ impl AlertDispatcher {
     fn write_audit_entry(&self, payload: &AlertPayload, suppressed: bool) -> Result<()> {
         let change = &payload.change;
 
+        let previous = self.last_chain_hash.lock().clone();
+
         let hmac = match self.hmac_key.as_ref() {
             Some(key) => {
                 let ts = chrono::Utc::now().timestamp();
@@ -297,13 +299,13 @@ impl AlertDispatcher {
                     &change.severity.to_string(),
                     old_hash,
                     new_hash,
+                    &previous,
                 );
                 Some(crate::hmac::compute_hmac(key, &data)?)
             }
             None => None,
         };
 
-        let previous = self.last_chain_hash.lock().clone();
         let new_hash = audit_ops::insert_audit_entry(
             &self.audit_conn,
             change,

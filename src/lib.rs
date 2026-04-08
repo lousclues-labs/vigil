@@ -47,6 +47,8 @@ pub struct Daemon {
     pub shutdown: Arc<AtomicBool>,
     pub reload_flag: Arc<AtomicBool>,
     pub watch_index: Arc<ArcSwap<WatchGroupIndex>>,
+    /// BLAKE3 hash of the config file contents at startup.
+    pub config_hash: Option<String>,
 }
 
 impl Daemon {
@@ -54,6 +56,26 @@ impl Daemon {
         let baseline_db_preexisting = config.daemon.db_path.exists();
         let baseline_conn = db::open_baseline_db(&config)?;
         let watch_index = WatchGroupIndex::from_config(&config);
+
+        // Compute config file hash for integrity tracking
+        let config_hash = config_search_paths_for_hash()
+            .and_then(|path| std::fs::read(&path).ok())
+            .map(|content| crate::hash::blake3_hash_bytes(&content));
+
+        // Store config HMAC if signing is enabled
+        if config.security.hmac_signing {
+            if let Ok(key) = crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
+                if let Some(ref hash) = config_hash {
+                    let config_hmac =
+                        crate::hmac::compute_hmac(&key, hash.as_bytes()).unwrap_or_default();
+                    let _ = baseline_ops::set_config_state(
+                        &baseline_conn,
+                        "config_file_hmac",
+                        &config_hmac,
+                    );
+                }
+            }
+        }
 
         Ok(Self {
             config: Arc::new(ArcSwap::from_pointee(config)),
@@ -64,6 +86,7 @@ impl Daemon {
             shutdown: Arc::new(AtomicBool::new(false)),
             reload_flag: Arc::new(AtomicBool::new(false)),
             watch_index: Arc::new(ArcSwap::from_pointee(watch_index)),
+            config_hash,
         })
     }
 
@@ -83,7 +106,7 @@ impl Daemon {
         let _signal_handle =
             spawn_signal_thread(sigset, self.shutdown.clone(), self.reload_flag.clone())?;
 
-        let (event_tx, event_rx) = bounded::<FsEvent>(2048);
+        let (event_tx, event_rx) = bounded::<FsEvent>(cfg.daemon.event_channel_capacity);
         let (alert_tx, alert_rx) = bounded::<AlertPayload>(512);
 
         let backpressure = Arc::new(AtomicBool::new(false));
@@ -204,6 +227,7 @@ impl Daemon {
                 "Baseline database not found. Auto-initializing from configured watch paths."
             );
             let result = scanner::build_initial_baseline(&self.baseline_conn, config)?;
+            baseline_ops::set_config_state(&self.baseline_conn, "baseline_initialized", "true")?;
             let group_names: Vec<&str> = result.groups.iter().map(|g| g.name.as_str()).collect();
             let message = format!(
                 "First run complete — now monitoring {} {} across {} ({}).\n\
@@ -261,6 +285,7 @@ impl Daemon {
 
             let fresh_conn = db::open_baseline_db(config)?;
             let result = scanner::build_initial_baseline(&fresh_conn, config)?;
+            let _ = baseline_ops::set_config_state(&fresh_conn, "baseline_initialized", "true");
 
             tracing::error!(
                 backup = %backup_path.display(),
@@ -287,8 +312,31 @@ impl Daemon {
 
         let count = baseline_ops::count(&self.baseline_conn)?;
         if count <= 0 {
+            let was_initialized =
+                baseline_ops::get_config_state(&self.baseline_conn, "baseline_initialized")?
+                    .map(|v| v == "true")
+                    .unwrap_or(false);
+
+            if was_initialized {
+                tracing::error!(
+                    "Baseline is empty but was previously initialized. \
+                     Possible tampering. Refusing to auto-reinitialize. \
+                     Run 'vigil init --force' to manually reinitialize."
+                );
+                notify_desktop(
+                    "⚠ BASELINE EMPTY — previously initialized. Possible tampering. \
+                     Run 'vigil init --force' to reinitialize.",
+                    NotifyUrgency::Critical,
+                );
+                return Err(VigilError::Baseline(
+                    "baseline was previously initialized but is now empty — possible tampering"
+                        .into(),
+                ));
+            }
+
             tracing::warn!("Baseline is empty. Populating from configured watch paths.");
             let result = scanner::build_initial_baseline(&self.baseline_conn, config)?;
+            baseline_ops::set_config_state(&self.baseline_conn, "baseline_initialized", "true")?;
             notify_desktop(
                 &format!(
                     "Baseline was empty — repopulated with {} monitored {}.",
@@ -301,6 +349,46 @@ impl Daemon {
                 ),
                 NotifyUrgency::Normal,
             );
+        }
+
+        // Verify baseline HMAC if signing is enabled
+        if config.security.hmac_signing {
+            if let Ok(key) = crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
+                let stored = baseline_ops::get_config_state(&self.baseline_conn, "baseline_hmac")?;
+                match stored {
+                    Some(ref expected) => {
+                        let current =
+                            baseline_ops::compute_baseline_hmac(&self.baseline_conn, &key)?;
+                        if current == *expected {
+                            tracing::info!("baseline HMAC verification passed");
+                        } else {
+                            tracing::error!(
+                                "BASELINE TAMPER DETECTED: HMAC verification failed. \
+                                 The baseline database has been modified outside of Vigil."
+                            );
+                            notify_desktop(
+                                "⚠ BASELINE TAMPER DETECTED — HMAC mismatch. \
+                                 Run 'vigil doctor' immediately.",
+                                NotifyUrgency::Critical,
+                            );
+                            return Err(VigilError::Baseline(
+                                "baseline HMAC verification failed — possible tampering".into(),
+                            ));
+                        }
+                    }
+                    None => {
+                        tracing::warn!(
+                            "no baseline HMAC stored; computing and storing for future verification"
+                        );
+                        let hmac = baseline_ops::compute_baseline_hmac(&self.baseline_conn, &key)?;
+                        baseline_ops::set_config_state(
+                            &self.baseline_conn,
+                            "baseline_hmac",
+                            &hmac,
+                        )?;
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -346,6 +434,8 @@ fn spawn_baseline_writer(
             };
 
             let mut batch: Vec<worker::BaselineUpdate> = Vec::new();
+            let mut last_hmac_update = std::time::Instant::now();
+            let mut batch_count = 0u64;
 
             while !shutdown.load(Ordering::Acquire) {
                 match rx.recv_timeout(Duration::from_millis(500)) {
@@ -382,6 +472,35 @@ fn spawn_baseline_writer(
                             metrics
                                 .baseline_updates
                                 .fetch_add(written, Ordering::Relaxed);
+                            batch_count += 1;
+
+                            // Periodically recompute baseline HMAC (every 100 batches or 60s)
+                            if batch_count.is_multiple_of(100)
+                                || last_hmac_update.elapsed() >= Duration::from_secs(60)
+                            {
+                                // Try to load HMAC key from the stored path
+                                let hmac_key_path = std::path::PathBuf::from("/etc/vigil/hmac.key");
+                                if hmac_key_path.exists() {
+                                    if let Ok(key) = crate::hmac::load_hmac_key(&hmac_key_path) {
+                                        match baseline_ops::compute_baseline_hmac(&conn, &key) {
+                                            Ok(hmac) => {
+                                                let _ = baseline_ops::set_config_state(
+                                                    &conn,
+                                                    "baseline_hmac",
+                                                    &hmac,
+                                                );
+                                            }
+                                            Err(e) => {
+                                                tracing::debug!(
+                                                    error = %e,
+                                                    "baseline writer HMAC update failed"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                last_hmac_update = std::time::Instant::now();
+                            }
                         }
                     }
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
@@ -509,6 +628,21 @@ fn humanize_duration(d: std::time::Duration) -> String {
     } else {
         format!("{}m {}s", secs / 60, secs % 60)
     }
+}
+
+/// Find the first config file that exists, for hashing.
+fn config_search_paths_for_hash() -> Option<std::path::PathBuf> {
+    if let Ok(env_path) = std::env::var("VIGIL_CONFIG") {
+        let p = std::path::PathBuf::from(env_path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let default = std::path::PathBuf::from("/etc/vigil/vigil.toml");
+    if default.exists() {
+        return Some(default);
+    }
+    None
 }
 
 fn raise_nofile_limit(target: u64) {

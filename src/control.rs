@@ -72,6 +72,15 @@ pub fn spawn(
 
     let socket_path_clone = socket_path.clone();
 
+    // Load HMAC key for auth if configured
+    let hmac_key_path = PathBuf::from("/etc/vigil/hmac.key");
+    let hmac_key: Option<Vec<u8>> = if hmac_key_path.exists() {
+        crate::hmac::load_hmac_key(&hmac_key_path).ok()
+    } else {
+        None
+    };
+    let auth_enabled = hmac_key.is_some();
+
     std::thread::Builder::new()
         .name("vigil-control".into())
         .spawn(move || {
@@ -90,6 +99,8 @@ pub fn spawn(
                             &reload_flag,
                             &scan_trigger_tx,
                             &db_path,
+                            hmac_key.as_deref(),
+                            auth_enabled,
                         ) {
                             tracing::debug!(error = %e, "control socket connection error");
                         }
@@ -111,6 +122,7 @@ pub fn spawn(
         .map_err(|e| VigilError::Control(format!("cannot spawn control thread: {}", e)))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_connection(
     stream: std::os::unix::net::UnixStream,
     metrics: &Metrics,
@@ -118,7 +130,87 @@ fn handle_connection(
     reload_flag: &AtomicBool,
     scan_trigger_tx: &crossbeam_channel::Sender<ScanRequest>,
     baseline_db_path: &Path,
+    hmac_key: Option<&[u8]>,
+    auth_enabled: bool,
 ) -> Result<()> {
+    // Log peer credentials when available
+    log_peer_credentials(&stream);
+
+    if auth_enabled {
+        if let Some(key) = hmac_key {
+            // Challenge-response authentication
+            let nonce = generate_nonce();
+            let challenge = serde_json::json!({"challenge": nonce});
+            let mut writer = &stream;
+            let mut challenge_str =
+                serde_json::to_string(&challenge).unwrap_or_else(|_| r#"{"challenge":""}"#.into());
+            challenge_str.push('\n');
+            writer
+                .write_all(challenge_str.as_bytes())
+                .map_err(|e| VigilError::Control(format!("failed to send challenge: {}", e)))?;
+            writer
+                .flush()
+                .map_err(|e| VigilError::Control(format!("failed to flush challenge: {}", e)))?;
+
+            // Read authenticated request
+            let mut line = String::new();
+            let mut reader = BufReader::new(&stream);
+            if reader.read_line(&mut line).is_err() {
+                return Ok(());
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return Ok(());
+            }
+
+            match serde_json::from_str::<serde_json::Value>(trimmed) {
+                Ok(request) => {
+                    let client_response = request["response"].as_str().unwrap_or("");
+                    let expected_hmac =
+                        crate::hmac::compute_hmac(key, nonce.as_bytes()).unwrap_or_default();
+                    if client_response != expected_hmac {
+                        let fail_resp = r#"{"ok":false,"error":"authentication failed"}"#;
+                        let mut writer = &stream;
+                        let _ = writer.write_all(fail_resp.as_bytes());
+                        let _ = writer.write_all(b"\n");
+                        let _ = writer.flush();
+                        tracing::warn!("control socket authentication failed");
+                        return Ok(());
+                    }
+
+                    let method = request["method"].as_str().unwrap_or("");
+                    let response = dispatch(
+                        method,
+                        &request,
+                        metrics,
+                        state,
+                        reload_flag,
+                        scan_trigger_tx,
+                        baseline_db_path,
+                    );
+
+                    let mut writer = &stream;
+                    let mut response_str = serde_json::to_string(&response)
+                        .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization error"}"#.into());
+                    response_str.push('\n');
+                    let _ = writer.write_all(response_str.as_bytes());
+                    let _ = writer.flush();
+                }
+                Err(_) => {
+                    let fail_resp = r#"{"ok":false,"error":"invalid JSON"}"#;
+                    let mut writer = &stream;
+                    let _ = writer.write_all(fail_resp.as_bytes());
+                    let _ = writer.write_all(b"\n");
+                    let _ = writer.flush();
+                }
+            }
+            return Ok(());
+        }
+    } else {
+        tracing::warn!("control socket connection without authentication (hmac_signing disabled)");
+    }
+
+    // Unauthenticated fallback path
     let mut line = String::new();
     let mut reader = BufReader::new(&stream);
     if reader.read_line(&mut line).is_err() {
@@ -165,6 +257,11 @@ fn dispatch(
     scan_trigger_tx: &crossbeam_channel::Sender<ScanRequest>,
     baseline_db_path: &Path,
 ) -> serde_json::Value {
+    // Log and count security-relevant control socket commands
+    if matches!(method, "reload" | "scan") {
+        log_control_action(method, metrics);
+    }
+
     match method {
         "status" => handle_status(metrics, state),
         "baseline_count" => handle_baseline_count(baseline_db_path),
@@ -262,6 +359,51 @@ fn handle_metrics_prometheus(metrics: &Metrics) -> serde_json::Value {
         "ok": true,
         "text": snap.to_prometheus(),
     })
+}
+
+/// Log control socket command execution for audit trail.
+fn log_control_action(method: &str, metrics: &Metrics) {
+    tracing::warn!(method = method, "control socket command executed");
+    metrics.control_commands.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Generate a random 32-byte hex nonce for challenge-response auth.
+fn generate_nonce() -> String {
+    use std::io::Read;
+    let mut buf = [0u8; 32];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let _ = f.read_exact(&mut buf);
+    }
+    hex::encode(buf)
+}
+
+/// Log peer credentials of the connecting process using SO_PEERCRED.
+fn log_peer_credentials(stream: &std::os::unix::net::UnixStream) {
+    use std::os::unix::io::AsRawFd;
+
+    let fd = stream.as_raw_fd();
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+
+    // SAFETY: getsockopt with SO_PEERCRED is safe on a valid Unix socket fd.
+    let ret = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut cred as *mut libc::ucred as *mut libc::c_void,
+            &mut len,
+        )
+    };
+
+    if ret == 0 {
+        tracing::info!(
+            peer_pid = cred.pid,
+            peer_uid = cred.uid,
+            peer_gid = cred.gid,
+            "control socket connection"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -410,5 +552,31 @@ mod tests {
         assert_eq!(result["ok"], true);
         assert_eq!(result["daemon"]["state"], "healthy");
         assert_eq!(result["metrics"]["events_received"], 10);
+    }
+
+    #[test]
+    fn control_commands_metric_increments_on_reload() {
+        let metrics = Metrics::new();
+        let state = RwLock::new(DaemonState::Healthy);
+        let reload_flag = AtomicBool::new(false);
+        let (scan_tx, _scan_rx) = crossbeam_channel::bounded::<ScanRequest>(1);
+
+        assert_eq!(metrics.control_commands.load(Ordering::Relaxed), 0);
+
+        dispatch(
+            "reload",
+            &serde_json::json!({"method": "reload"}),
+            &metrics,
+            &state,
+            &reload_flag,
+            &scan_tx,
+            Path::new("/dev/null"),
+        );
+
+        assert_eq!(
+            metrics.control_commands.load(Ordering::Relaxed),
+            1,
+            "control_commands metric should increment on reload"
+        );
     }
 }

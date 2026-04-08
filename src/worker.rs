@@ -99,6 +99,56 @@ pub fn spawn_workers(
                             let path_str = path.to_string_lossy().to_string();
                             // Invalidate cache for re-checked paths
                             cache.pop(&path_str);
+
+                            // Re-check drained paths by processing them as synthetic events
+                            let synthetic = FsEvent {
+                                path: Arc::new(path),
+                                event_type: FsEventType::Modify,
+                                timestamp: chrono::Utc::now(),
+                                event_fd: None,
+                                process: None,
+                            };
+
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    process_event_cached(
+                                        &conn,
+                                        &synthetic,
+                                        &config,
+                                        &watch_index,
+                                        &metrics,
+                                        &mut cache,
+                                    )
+                                }));
+
+                            match result {
+                                Ok(Ok(Some(change_result))) => {
+                                    let p_str =
+                                        change_result.path.to_string_lossy().to_string();
+                                    cache.pop(&p_str);
+                                    if alert_tx
+                                        .send(AlertPayload {
+                                            change: change_result,
+                                            maintenance_window: false,
+                                        })
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                Ok(Ok(None)) => {}
+                                Ok(Err(e)) => {
+                                    tracing::warn!(error = %e, "debounce re-check error");
+                                }
+                                Err(_) => {
+                                    metrics
+                                        .panics_caught
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    tracing::error!(
+                                        "panic caught during debounce re-check"
+                                    );
+                                }
+                            }
                         }
                     }
 
@@ -306,6 +356,22 @@ fn process_event_inner(
     metrics: &Metrics,
     baseline: BaselineEntry,
 ) -> Result<Option<ChangeResult>> {
+    // Self-protection: log at error level if config or HMAC key is modified
+    let path_str_ref = event.path.to_string_lossy();
+    let config_path = "/etc/vigil/vigil.toml";
+    let hmac_key_path = cfg.security.hmac_key_path.to_string_lossy();
+    if path_str_ref.as_ref() == config_path {
+        tracing::error!(
+            path = %event.path.display(),
+            "vigil self-protection: config file modified"
+        );
+    } else if path_str_ref.as_ref() == hmac_key_path.as_ref() {
+        tracing::error!(
+            path = %event.path.display(),
+            "vigil self-protection: HMAC key file modified"
+        );
+    }
+
     let (group_name, severity) = idx
         .lookup(&event.path)
         .map(|(g, s)| (g.to_string(), s))

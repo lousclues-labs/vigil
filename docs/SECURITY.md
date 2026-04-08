@@ -145,7 +145,14 @@ It does not:
 | inode replacement attacks | inode and device checks |
 | race between event and read | fd-first snapshot pipeline |
 | notification suppression hiding evidence | audit rows still written |
-| audit tamper attempts | chain hash verification and optional HMAC |
+| audit tamper attempts | chain hash verification, chained HMAC with previous hash, and optional HMAC |
+| baseline deletion/truncation | `baseline_initialized` flag prevents silent auto-reinitialize |
+| baseline at-rest tampering | baseline HMAC verification on startup |
+| config file poisoning | config HMAC verification on reload when HMAC signing enabled |
+| control socket abuse | challenge-response auth, peer credential logging, command audit trail |
+| mtime-reset evasion | scheduled scans default to full mode (rehash regardless of mtime) |
+| event channel flooding | event drop detection with coordinator-level alerting |
+| persistence via `/run/` | `/run/*` not blanket-excluded; targeted exclusions only |
 
 ### Out of scope
 
@@ -171,8 +178,9 @@ vigil audit verify
 What it checks:
 - each `chain_hash` links to the previous entry
 - chain ordering and continuity across the audit log
+- when HMAC key is available, HMAC signatures are verified (including previous chain hash linkage)
 
-When HMAC is enabled, signatures add a second integrity layer.
+When HMAC is enabled, signatures add a second integrity layer. The HMAC data includes the previous chain hash, so deleting entries from the middle of the chain is detectable even if the attacker can recompute BLAKE3 chain hashes.
 
 ---
 
@@ -201,11 +209,29 @@ Recommended rotation flow:
 
 If attacker can read the key and edit the audit database, HMAC cannot protect integrity.
 
+The HMAC key is also used for:
+- baseline tamper detection: baseline HMAC is computed and verified on daemon startup
+- config file integrity: config HMAC is verified on reload to reject tampering
+- control socket authentication: challenge-response protocol uses the HMAC key
+
+---
+
+## Control Socket Security
+
+The daemon control socket (`/run/vigil/control.sock`) accepts commands for `status`, `reload`, `scan`, and other operations.
+
+Protections:
+- socket permissions set to `0600` on creation
+- when `security.hmac_signing = true` and `security.control_socket_auth = true` (default), connections require challenge-response authentication using the HMAC key
+- peer credentials (PID, UID, GID) are logged via `SO_PEERCRED` on every connection
+- `reload` and `scan` commands are logged at `warn` level with a `control_commands` metric counter
+- without HMAC signing, the socket falls back to unauthenticated mode with a warning on every connection
+
 ---
 
 ## Socket Security
 
-`hooks.signal_socket` uses Unix domain sockets.
+`hooks.signal_socket` uses Unix domain sockets for alert forwarding.
 
 - keep socket directory private
 - use restrictive permissions

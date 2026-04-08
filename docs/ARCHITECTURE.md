@@ -47,6 +47,8 @@ Vigil has one job. Detect filesystem boundary changes and record them.
 |  +------------------------------ control plane --------------------------------+ |
 |  | control.rs listens on daemon.control_socket (default /run/vigil/control.sock) |
 |  | methods: status, baseline_count, reload, scan, metrics_prometheus            |
+|  | authentication: challenge-response with HMAC key when hmac_signing = true    |
+|  | audit: logs peer PID/UID/GID via SO_PEERCRED; counts control_commands metric |
 |  +-------------------------------------------------------------------------------+ |
 +--------------------------------------------------------------------------------+
 ```
@@ -138,14 +140,14 @@ src/
 
 These modules are easy to miss. They are core to the runtime.
 
-- `src/control.rs` handles daemon RPC over Unix socket for `status`, `scan`, and reload actions.
-- `src/coordinator.rs` coordinates reload, snapshot writing, retention rotation, and watchdog heartbeats. Watchdog pings systemd on every loop iteration (~1s) independently of the 60-second housekeeping tick.
+- `src/control.rs` handles daemon RPC over Unix socket for `status`, `scan`, and reload actions. When HMAC signing is enabled, connections are authenticated via nonce-based challenge-response. All `reload` and `scan` commands are logged with peer credentials.
+- `src/coordinator.rs` coordinates reload, snapshot writing, retention rotation, and watchdog heartbeats. Watchdog pings systemd on every loop iteration (~1s) independently of the 60-second housekeeping tick. Detects sustained event drops and logs evasion warnings. Verifies config file integrity on reload.
 - `src/scan_scheduler.rs` parses cron strings with `croner` and executes scheduled scans.
-- `src/worker.rs` processes monitor events and runs snapshot comparison.
+- `src/worker.rs` processes monitor events and runs snapshot comparison. Debounced paths are re-checked via synthetic events. Logs self-protection warnings when config or HMAC key files are modified.
 - `src/bloom.rs` provides fast probabilistic reject for unrelated paths.
 - `src/watch_index.rs` maps a path to the most specific watch group.
 - `src/metrics.rs` stores counters. Coordinator writes `metrics.json`. Doctor writes `health.json`.
-- `src/hmac.rs` signs and verifies audit entries with HMAC-SHA256.
+- `src/hmac.rs` signs and verifies audit entries with HMAC-SHA256. Audit HMAC data includes the previous chain hash for deletion detection.
 - `src/config/diff.rs` reports config changes on SIGHUP reload.
 - `src/db/migrate.rs` migrates baseline schema from v1 blobs to v2 flattened columns.
 - `src/alert/remote_syslog.rs` sends RFC5424 alerts to remote syslog.
@@ -199,8 +201,11 @@ Scheduled scans use `scanner.scheduled_mode`.
 
 ```
 control socket request
+  -> challenge-response auth (if hmac_signing enabled)
+  -> log peer credentials (PID, UID, GID)
   -> control::dispatch()
   -> status | baseline_count | reload | scan | metrics_prometheus
+  -> log_control_action() for reload/scan
   -> JSON response
 ```
 
@@ -290,6 +295,15 @@ Indexes:
 
 `config_state` is a small key value table.
 Columns are `key`, `value`, and `updated_at`.
+
+Known keys:
+
+| Key | Purpose |
+|-----|---------|
+| `last_baseline_refresh` | timestamp of last baseline build |
+| `baseline_initialized` | `"true"` after first successful init; prevents silent auto-reinit on empty baseline |
+| `baseline_hmac` | HMAC of all baseline entries for at-rest tamper detection |
+| `config_file_hmac` | HMAC of config file contents for reload integrity verification |
 
 ---
 

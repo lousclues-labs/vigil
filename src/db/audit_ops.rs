@@ -238,8 +238,16 @@ pub fn rotate_audit_log(conn: &Connection, retention_days: u32) -> Result<usize>
 }
 
 pub fn verify_chain(conn: &Connection) -> Result<AuditChainVerifyResult> {
+    verify_chain_with_hmac(conn, None)
+}
+
+/// Verify the audit chain, optionally also verifying HMACs when a key is provided.
+pub fn verify_chain_with_hmac(
+    conn: &Connection,
+    hmac_key: Option<&[u8]>,
+) -> Result<AuditChainVerifyResult> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, timestamp, path, changes_json, severity, chain_hash
+        "SELECT id, timestamp, path, changes_json, severity, chain_hash, hmac
          FROM audit_log ORDER BY id ASC",
     )?;
 
@@ -251,6 +259,7 @@ pub fn verify_chain(conn: &Connection) -> Result<AuditChainVerifyResult> {
             row.get::<_, String>(3)?,
             row.get::<_, String>(4)?,
             row.get::<_, String>(5)?,
+            row.get::<_, Option<String>>(6)?,
         ))
     })?;
 
@@ -265,17 +274,40 @@ pub fn verify_chain(conn: &Connection) -> Result<AuditChainVerifyResult> {
     let mut missing = 0u64;
 
     for row in rows {
-        let (id, ts, path, changes_json, severity, chain_hash) = row?;
+        let (id, ts, path, changes_json, severity, chain_hash, entry_hmac) = row?;
         total += 1;
 
         if chain_hash.is_empty() {
             missing += 1;
+            prev = chain_hash;
             continue;
         }
 
         let expected = compute_chain_hash(&prev, ts, &path, &changes_json, &severity);
         if expected == chain_hash {
-            valid += 1;
+            // Also verify HMAC if key is provided and entry has one
+            if let (Some(key), Some(ref stored_hmac)) = (hmac_key, &entry_hmac) {
+                // We need the primary change type and content hashes to rebuild HMAC data.
+                // Parse changes_json to extract these.
+                let primary = changes_json_to_primary_type(&changes_json);
+                let (old_hash, new_hash) = changes_json_extract_hashes(&changes_json);
+                let data = crate::hmac::build_audit_hmac_data(
+                    ts,
+                    &path,
+                    &primary,
+                    &severity,
+                    old_hash.as_deref(),
+                    new_hash.as_deref(),
+                    &prev,
+                );
+                if crate::hmac::verify_hmac(key, &data, stored_hmac) {
+                    valid += 1;
+                } else {
+                    breaks.push((id, ts));
+                }
+            } else {
+                valid += 1;
+            }
         } else {
             breaks.push((id, ts));
         }
@@ -283,6 +315,60 @@ pub fn verify_chain(conn: &Connection) -> Result<AuditChainVerifyResult> {
     }
 
     Ok((total, valid, breaks, missing))
+}
+
+/// Extract the primary change type from changes_json.
+fn changes_json_to_primary_type(json: &str) -> String {
+    if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(json) {
+        if let Some(first) = arr.first() {
+            if first.is_string() {
+                return first.as_str().unwrap_or("unknown").to_string();
+            }
+            // Handle tagged enum format: {"ContentModified": {...}}
+            if let Some(obj) = first.as_object() {
+                if let Some(key) = obj.keys().next() {
+                    return match key.as_str() {
+                        "ContentModified" => "content_modified",
+                        "PermissionsChanged" => "permissions_changed",
+                        "OwnerChanged" => "owner_changed",
+                        "InodeChanged" => "inode_changed",
+                        "TypeChanged" => "type_changed",
+                        "SymlinkTargetChanged" => "symlink_target_changed",
+                        "CapabilitiesChanged" => "capabilities_changed",
+                        "XattrChanged" => "xattr_changed",
+                        "SecurityContextChanged" => "security_context_changed",
+                        "Deleted" => "deleted",
+                        "Created" => "created",
+                        _ => "unknown",
+                    }
+                    .to_string();
+                }
+            }
+        }
+    }
+    "unknown".to_string()
+}
+
+/// Extract old_hash and new_hash from changes_json if a ContentModified change exists.
+fn changes_json_extract_hashes(json: &str) -> (Option<String>, Option<String>) {
+    if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(json) {
+        for item in &arr {
+            if let Some(obj) = item.as_object() {
+                if let Some(cm) = obj.get("ContentModified") {
+                    let old = cm
+                        .get("old_hash")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let new = cm
+                        .get("new_hash")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    return (old, new);
+                }
+            }
+        }
+    }
+    (None, None)
 }
 
 #[derive(Debug, Clone)]

@@ -20,6 +20,8 @@ fn daemon_start_and_shutdown_smoke_test() {
     cfg.alerts.desktop_notifications = false;
     cfg.alerts.syslog = false;
     cfg.hooks.signal_socket.clear();
+    cfg.exclusions.system_exclusions.clear();
+    cfg.exclusions.patterns.clear();
     cfg.watch.clear();
     cfg.watch.insert(
         "test".into(),

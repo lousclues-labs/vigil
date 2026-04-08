@@ -141,4 +141,61 @@ mod tests {
         assert!(f.is_excluded("/tmp/file.swp"));
         assert!(f.is_excluded("/home/u/repo/.git/config"));
     }
+
+    #[test]
+    fn run_systemd_transient_not_excluded_by_default() {
+        let cfg = crate::config::default_config();
+        let f = ExclusionFilter::new(&cfg);
+        assert!(
+            !f.is_excluded("/run/systemd/transient/evil.service"),
+            "/run/systemd/transient/ should NOT be excluded by default"
+        );
+    }
+
+    #[test]
+    fn run_vigil_excluded_via_self_paths() {
+        let cfg = crate::config::default_config();
+        let f = ExclusionFilter::new(&cfg);
+        assert!(
+            f.is_excluded("/run/vigil/state.json"),
+            "/run/vigil/ should be excluded via self_paths"
+        );
+    }
+
+    #[test]
+    fn run_user_excluded_by_default() {
+        let cfg = crate::config::default_config();
+        let f = ExclusionFilter::new(&cfg);
+        assert!(
+            f.is_excluded("/run/user/1000/bus"),
+            "/run/user/* should be excluded"
+        );
+    }
+
+    #[test]
+    fn tmp_excluded_by_default() {
+        let cfg = crate::config::default_config();
+        let f = ExclusionFilter::new(&cfg);
+        assert!(f.is_excluded("/tmp/foo"), "/tmp/* should be excluded");
+    }
+
+    #[test]
+    fn proc_excluded_by_default() {
+        let cfg = crate::config::default_config();
+        let f = ExclusionFilter::new(&cfg);
+        assert!(
+            f.is_excluded("/proc/1/status"),
+            "/proc/* should be excluded"
+        );
+    }
+
+    #[test]
+    fn vigil_config_not_excluded() {
+        let cfg = crate::config::default_config();
+        let f = ExclusionFilter::new(&cfg);
+        assert!(
+            !f.is_excluded("/etc/vigil/vigil.toml"),
+            "vigil config should NOT be excluded"
+        );
+    }
 }

@@ -83,11 +83,12 @@ Key boundaries:
 
 | Surface | Risk |
 |---------|------|
-| config files (`/etc/vigil/vigil.toml`, user override) | scope manipulation or suppression settings |
-| SQLite DB (`/var/lib/vigil/baseline.db`) | baseline/audit tampering |
+| config files (`/etc/vigil/vigil.toml`, user override) | scope manipulation or suppression settings. Mitigated: vigil_self watch group monitors config at Critical severity; config HMAC verification rejects tampered reloads when HMAC signing is enabled. |
+| SQLite DB (`/var/lib/vigil/baseline.db`) | baseline/audit tampering. Mitigated: baseline HMAC verification on startup; `baseline_initialized` flag prevents silent recovery from empty baseline. |
 | JSON alert log (`/var/log/vigil/alerts.json`) | forensic record tampering |
 | signal socket path (`hooks.signal_socket`) | local IPC misuse if path permissions weak |
-| monitor backend interfaces (fanotify/inotify) | dropped events or reduced coverage under fallback |
+| control socket (`/run/vigil/control.sock`) | privileged command injection. Mitigated: 0600 permissions, challenge-response authentication, peer credential logging, control command audit trail. |
+| monitor backend interfaces (fanotify/inotify) | dropped events or reduced coverage under fallback. Mitigated: event drop detection with coordinator-level alerting. |
 
 ---
 
@@ -99,12 +100,28 @@ Possible bypass/evasion routes:
 - modifications in paths never added to watch groups
 - alert flooding to trigger suppression windows (still audited)
 - direct tampering with logs/db by privileged attacker
+- mtime-reset attacks (file modified, mtime restored to original)
+- baseline deletion/truncation followed by daemon restart
+- config file poisoning to add exclusions or disable alerting
+- control socket abuse to trigger reload of tampered config
+- event channel flooding to cause event drops
+- persistence via transient systemd units in `/run/systemd/transient/`
 
 Mitigations in design:
 - deterministic structural comparison
 - inode/device checks for replacement attacks
 - audit entries written even when notifications suppressed
 - explicit fallback warnings when fanotify is unavailable
+- scheduled scans default to full mode (rehash regardless of mtime)
+- baseline HMAC verification on startup detects at-rest tampering
+- `baseline_initialized` flag prevents silent auto-reinitialize of empty baselines
+- config file HMAC verification on reload rejects tampered configs when HMAC signing is enabled
+- control socket challenge-response authentication when HMAC signing is enabled
+- all control socket commands logged with peer PID/UID/GID via SO_PEERCRED
+- event drops detected and logged as possible evasion by coordinator
+- `/run/*` not blanket-excluded; targeted exclusions preserve visibility into `/run/systemd/`
+- vigil self-monitoring: config and HMAC key files watched at Critical severity
+- HMAC chain includes previous chain hash to detect mid-chain audit entry deletion
 
 ---
 
