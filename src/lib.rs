@@ -475,7 +475,8 @@ fn spawn_baseline_writer(
                             batch_count += 1;
 
                             // Periodically recompute baseline HMAC (every 100 batches or 60s)
-                            if batch_count.is_multiple_of(100)
+                            #[allow(clippy::manual_is_multiple_of)]
+                            if batch_count % 100 == 0
                                 || last_hmac_update.elapsed() >= Duration::from_secs(60)
                             {
                                 // Try to load HMAC key from the stored path
