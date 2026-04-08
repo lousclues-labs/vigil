@@ -54,13 +54,43 @@ impl AlertSink for DbusSink {
             return Ok(());
         }
 
-        let title = format!("Vigil {}", alert.severity.to_string().to_uppercase());
-        let body = format!("{} ({})", alert.file.path.display(), alert.change_type);
+        let urgency = match alert.severity {
+            Severity::Critical | Severity::High => "critical",
+            Severity::Medium => "normal",
+            Severity::Low => "low",
+        };
 
-        let status = Command::new("notify-send").arg(title).arg(body).status();
+        let title = format!(
+            "Vigil — {} {}",
+            alert.severity.to_string().to_uppercase(),
+            alert.change_type,
+        );
+
+        let mut body = format!("{}", alert.file.path.display());
+
+        if let Some(ref pkg) = alert.file.package {
+            body.push_str(&format!(" ({})", pkg));
+        }
+
+        if let Some(ref exe) = alert.file.responsible_exe {
+            body.push_str(&format!("\nBy: {}", exe));
+        }
+
+        if alert.context.maintenance_window {
+            body.push_str("\n[during maintenance window]");
+        }
+
+        body.push_str("\nRun 'vigil audit show --last 5' for details.");
+
+        let status = Command::new("notify-send")
+            .arg("--app-name=Vigil")
+            .arg(format!("--urgency={}", urgency))
+            .arg(&title)
+            .arg(&body)
+            .status();
 
         if let Err(e) = status {
-            tracing::debug!(error = %e, "notify-send failed");
+            tracing::debug!(error = %e, "desktop notification failed");
         }
 
         Ok(())

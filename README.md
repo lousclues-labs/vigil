@@ -186,7 +186,7 @@ hash_algorithm = "blake3"          # the only option that makes sense
 max_file_size = 2147483648         # 2 GB -- skip larger files
 
 [alerts]
-desktop_notifications = true       # D-Bus via notify-send
+desktop_notifications = true       # D-Bus via notify-send (with --app-name=Vigil and urgency mapping)
 cooldown_seconds = 300             # per-path alert cooldown (5 min)
 rate_limit = 10                    # max alerts per minute
 

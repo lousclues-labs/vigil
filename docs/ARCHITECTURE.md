@@ -74,7 +74,7 @@ The coordinator owns lifecycle coordination and periodic housekeeping.
 src/
 |-- alert/
 |   |-- mod.rs              # Alert engine. Suppression and channel dispatch.
-|   |-- dbus.rs             # notify-send desktop notifications.
+|   |-- dbus.rs             # Desktop notifications via notify-send with urgency mapping.
 |   |-- journal.rs          # journald/syslog logging.
 |   |-- json_log.rs         # Append-only JSON alert file.
 |   |-- remote_syslog.rs    # Remote syslog forwarding over TCP or UDP.

@@ -139,7 +139,7 @@ paths = [
 
 | Option | Type | Default | Notes |
 |--------|------|---------|-------|
-| `desktop_notifications` | bool | `true` | enables `notify-send` sink |
+| `desktop_notifications` | bool | `true` | enables desktop notification sink (via `notify-send` with `--app-name=Vigil` and severity-based urgency) |
 | `syslog` | bool | `true` | enables journald/syslog sink |
 | `log_file` | path | `/var/log/vigil/alerts.json` | JSON alert sink path |
 | `webhook_url` | string | empty | reserved field |
@@ -153,7 +153,7 @@ paths = [
 
 | Option | Type | Default | Notes |
 |--------|------|---------|-------|
-| `dbus_min_severity` | enum | `medium` | desktop minimum severity |
+| `dbus_min_severity` | enum | `medium` | desktop minimum severity. Alerts below this level are not shown. Severity maps to `notify-send` urgency: critical/high = `critical`, medium = `normal`, low = `low`. |
 | `log_min_severity` | enum | `low` | JSON log minimum severity |
 
 ### `[alerts.remote_syslog]`

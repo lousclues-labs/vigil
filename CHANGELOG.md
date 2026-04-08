@@ -4,6 +4,70 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-04-07
+
+### Release Summary
+- Desktop notification UX overhaul: all popups now display "Vigil" as the application name instead of "notify-send", urgency levels are mapped to alert severity, lifecycle messages are user-facing and actionable, and real-time integrity alerts include package, process, and maintenance metadata.
+- Previously-silent empty-baseline repopulation now sends a desktop notification.
+- New `humanize_duration()` helper formats scan durations for user-facing messages.
+
+### Changed
+
+#### Desktop notifications: `--app-name=Vigil` and urgency mapping
+- All `notify-send` calls now pass `--app-name=Vigil` so the desktop environment displays "Vigil" instead of "notify-send" in notification popups.
+- Added `NotifyUrgency` enum (`Low`, `Normal`, `Critical`) to `notify_desktop()` in `src/lib.rs`.
+- Lifecycle notifications use context-appropriate urgency: first-run baseline = `low`, corruption recovery = `critical`, empty-baseline repopulation = `normal`.
+- Real-time alert notifications in `DbusSink::dispatch()` map `Severity::Critical` and `Severity::High` to `--urgency=critical`, `Severity::Medium` to `--urgency=normal`, `Severity::Low` to `--urgency=low`.
+- Files changed: `src/lib.rs`, `src/alert/dbus.rs`.
+
+#### Lifecycle notification messages rewritten
+- **First-run baseline creation**: now reports file count, watch group names (or count), scan duration, and suggests `vigil status`. Previously: "Vigil: Baseline auto-initialized with N entries."
+- **Corruption recovery**: now reports file count in rebuilt baseline, notes backup was preserved, and suggests `vigil audit show`. Previously: included the full backup file path (unreadable in small popups).
+- **Empty-baseline repopulation**: now sends a notification reporting the repopulated file count. Previously: silent (no notification).
+- File changed: `src/lib.rs`.
+
+#### Real-time alert notifications enriched
+- Notification title now includes both severity and change type (e.g. "Vigil -- CRITICAL Modified").
+- Notification body now includes:
+  - File path (always present).
+  - Package name, if the file is owned by a package.
+  - Responsible process executable, if captured.
+  - Maintenance window indicator, if the event occurred during a maintenance window.
+  - Actionable next step: "Run 'vigil audit show --last 5' for details."
+- Previously: title was "Vigil CRITICAL", body was "path (change_type)" with no metadata.
+- File changed: `src/alert/dbus.rs`.
+
+#### Internal log message update
+- `tracing::debug!` message for notification failures changed from "notify-send failed" to "desktop notification failed" in both `src/lib.rs` and `src/alert/dbus.rs`. Implementation details no longer leak into logs.
+
+### Added
+
+#### `humanize_duration()` helper
+- Formats `std::time::Duration` for user-facing messages: sub-second as `347ms`, seconds as `42s`, minutes as `2m 5s`.
+- Used in the first-run baseline notification to show scan duration.
+- File changed: `src/lib.rs`.
+
+#### Unit tests for `humanize_duration()`
+- `humanize_duration_sub_second`: verifies millisecond formatting.
+- `humanize_duration_seconds`: verifies second formatting.
+- `humanize_duration_minutes`: verifies minute+second formatting.
+- File changed: `src/lib.rs`.
+
+### Documentation
+
+#### docs/ARCHITECTURE.md
+- `dbus.rs` module description updated to reflect urgency mapping.
+
+#### docs/CONFIGURATION.md
+- `desktop_notifications` field description updated to mention `--app-name=Vigil` and severity-based urgency.
+- `dbus_min_severity` field description expanded with urgency mapping details (critical/high = critical, medium = normal, low = low).
+
+#### docs/FAQ.md
+- Desktop notification answer updated to mention `--app-name=Vigil` and urgency mapping.
+
+#### README.md
+- Inline config comment for `desktop_notifications` updated to mention urgency mapping.
+
 ## [0.19.0] - 2026-04-07
 
 ### Release Summary

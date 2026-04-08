@@ -204,10 +204,24 @@ impl Daemon {
                 "Baseline database not found. Auto-initializing from configured watch paths."
             );
             let result = scanner::build_initial_baseline(&self.baseline_conn, config)?;
-            notify_desktop(&format!(
-                "Vigil: Baseline auto-initialized with {} entries.",
-                result.total_count
-            ));
+            let group_names: Vec<&str> = result.groups.iter().map(|g| g.name.as_str()).collect();
+            let message = format!(
+                "First run complete — now monitoring {} {} across {} ({}).\n\
+                 Run 'vigil status' for details.",
+                result.total_count,
+                if result.total_count == 1 {
+                    "file"
+                } else {
+                    "files"
+                },
+                if group_names.len() == 1 {
+                    group_names[0].to_string()
+                } else {
+                    format!("{} watch groups", group_names.len())
+                },
+                humanize_duration(result.duration),
+            );
+            notify_desktop(&message, NotifyUrgency::Low);
             return Ok(());
         }
 
@@ -254,11 +268,19 @@ impl Daemon {
                 "baseline database reinitialized after corruption"
             );
 
-            notify_desktop(&format!(
-                "Vigil: Baseline was corrupt. Backed up to {} and reinitialized with {} entries. Review the backup.",
-                backup_path.display(),
-                result.total_count
-            ));
+            notify_desktop(
+                &format!(
+                    "⚠ Database was corrupt — rebuilt with {} {}.\n\
+                     Previous DB backed up. Run 'vigil audit show' to review.",
+                    result.total_count,
+                    if result.total_count == 1 {
+                        "file"
+                    } else {
+                        "files"
+                    },
+                ),
+                NotifyUrgency::Critical,
+            );
 
             return Ok(());
         }
@@ -266,7 +288,19 @@ impl Daemon {
         let count = baseline_ops::count(&self.baseline_conn)?;
         if count <= 0 {
             tracing::warn!("Baseline is empty. Populating from configured watch paths.");
-            let _ = scanner::build_initial_baseline(&self.baseline_conn, config)?;
+            let result = scanner::build_initial_baseline(&self.baseline_conn, config)?;
+            notify_desktop(
+                &format!(
+                    "Baseline was empty — repopulated with {} monitored {}.",
+                    result.total_count,
+                    if result.total_count == 1 {
+                        "file"
+                    } else {
+                        "files"
+                    },
+                ),
+                NotifyUrgency::Normal,
+            );
         }
 
         Ok(())
@@ -441,14 +475,39 @@ fn corrupt_backup_path(db_path: &std::path::Path) -> std::path::PathBuf {
     std::path::PathBuf::from(backup)
 }
 
-fn notify_desktop(message: &str) {
+enum NotifyUrgency {
+    Low,
+    Normal,
+    Critical,
+}
+
+fn notify_desktop(message: &str, urgency: NotifyUrgency) {
+    let urgency_str = match urgency {
+        NotifyUrgency::Low => "low",
+        NotifyUrgency::Normal => "normal",
+        NotifyUrgency::Critical => "critical",
+    };
+
     let status = std::process::Command::new("notify-send")
+        .arg("--app-name=Vigil")
+        .arg(format!("--urgency={}", urgency_str))
         .arg("Vigil")
         .arg(message)
         .status();
 
     if let Err(e) = status {
-        tracing::debug!(error = %e, "notify-send failed");
+        tracing::debug!(error = %e, "desktop notification failed");
+    }
+}
+
+fn humanize_duration(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 1 {
+        format!("{}ms", d.as_millis())
+    } else if secs < 60 {
+        format!("{}s", secs)
+    } else {
+        format!("{}m {}s", secs / 60, secs % 60)
     }
 }
 
@@ -496,5 +555,28 @@ fn raise_nofile_limit(target: u64) {
             let err = std::io::Error::last_os_error();
             tracing::warn!(error = %err, "failed to raise RLIMIT_NOFILE");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn humanize_duration_sub_second() {
+        let d = std::time::Duration::from_millis(347);
+        assert_eq!(humanize_duration(d), "347ms");
+    }
+
+    #[test]
+    fn humanize_duration_seconds() {
+        let d = std::time::Duration::from_secs(42);
+        assert_eq!(humanize_duration(d), "42s");
+    }
+
+    #[test]
+    fn humanize_duration_minutes() {
+        let d = std::time::Duration::from_secs(125);
+        assert_eq!(humanize_duration(d), "2m 5s");
     }
 }

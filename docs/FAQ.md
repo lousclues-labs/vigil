@@ -80,7 +80,7 @@ If HMAC signing is enabled, signatures add another integrity layer.
 
 Yes.
 
-Desktop notifications are optional. On headless hosts, rely on:
+Desktop notifications are optional. They use `--app-name=Vigil` and map alert severity to `notify-send` urgency levels (critical, normal, low). On headless hosts, rely on:
 - journald/syslog
 - JSON alert file
 - optional signal socket integration
