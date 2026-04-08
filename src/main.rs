@@ -2000,7 +2000,7 @@ fn cmd_log(action: LogAction) -> vigil::Result<()> {
             let status = ProcessCommand::new("journalctl")
                 .args(&args)
                 .status()
-                .map_err(|e| vigil::VigilError::Io(e))?;
+                .map_err(vigil::VigilError::Io)?;
 
             if !status.success() {
                 eprintln!("journalctl exited with status {}", status);
@@ -2028,7 +2028,7 @@ fn cmd_log(action: LogAction) -> vigil::Result<()> {
             let status = ProcessCommand::new("journalctl")
                 .args(&args)
                 .status()
-                .map_err(|e| vigil::VigilError::Io(e))?;
+                .map_err(vigil::VigilError::Io)?;
 
             if !status.success() {
                 eprintln!("journalctl exited with status {}", status);
