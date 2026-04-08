@@ -1956,11 +1956,8 @@ fn cmd_log(action: LogAction) -> vigil::Result<()> {
             since,
             grep,
         } => {
-            let mut args: Vec<String> = vec![
-                "--no-pager".into(),
-                "-u".into(),
-                "vigild.service".into(),
-            ];
+            let mut args: Vec<String> =
+                vec!["--no-pager".into(), "-u".into(), "vigild.service".into()];
 
             if follow {
                 args.push("-f".into());
@@ -1981,7 +1978,10 @@ fn cmd_log(action: LogAction) -> vigil::Result<()> {
                     "info" | "notice" => "6",
                     "debug" => "7",
                     other => {
-                        eprintln!("error: unknown log level '{}' (use: error, warn, info, debug)", other);
+                        eprintln!(
+                            "error: unknown log level '{}' (use: error, warn, info, debug)",
+                            other
+                        );
                         return Ok(());
                     }
                 };
