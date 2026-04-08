@@ -11,82 +11,18 @@ All notable changes to Vigil will be documented in this file.
 - This release focuses on correctness under adversarial conditions while preserving existing daemon and CLI behavior.
 
 ### Fixed
-
-#### 1) Capability escalation detection now works (severity upgrade path restored)
-- `FileSnapshot::has_dangerous_capabilities()` previously searched ASCII strings (`cap_setuid`, `cap_sys_admin`, `cap_dac_override`) inside hex-encoded binary xattr data, always returning false.
-- Capability detection now decodes `security.capability` bytes and checks dangerous bits directly in the permitted mask (`CAP_DAC_OVERRIDE` bit 1, `CAP_SETUID` bit 7, `CAP_SYS_ADMIN` bit 21).
-- Impact: severity escalation to `Critical` for dangerous capability-bearing modified files now triggers as designed.
-- Files changed: `src/types/snapshot.rs`, `tests/snapshot_diff_tests.rs`.
-
-#### 2) Maintenance window suppression no longer drops high-impact alerts
-- During maintenance windows, package-owned changes were fully suppressed regardless of severity.
-- New behavior: `Critical` and `High` are never fully suppressed during maintenance; alerts are dispatched with `maintenance_window=true` context.
-- `Low` and `Medium` package-owned changes remain suppressible during maintenance.
-- Files changed: `src/alert/mod.rs`.
-
-#### 3) Symlink detection from fd capture corrected
-- `from_fd()` used `file.metadata()` (`fstat`), which follows symlinks and cannot identify the path as a symlink.
-- `from_fd()` now performs one path-level `symlink_metadata()` (`lstat`) check for symlink classification and reads `symlink_target` only when the path is a symlink.
-- The function docs now explicitly state that one path-based lstat is required for symlink detection.
-- Files changed: `src/types/snapshot.rs`.
-
-#### 4) Hash mmap path re-open removed (TOCTOU hardening)
-- Hashing used `blake3::Hasher::update_mmap()` with `/proc/self/fd/N`, which re-opened by path and introduced a micro-TOCTOU window.
-- Hashing now performs direct `libc::mmap` on the original fd with an RAII `munmap` guard and falls back to buffered I/O when mmap fails.
-- Impact: metadata and hash are now derived from the same file description.
-- Files changed: `src/hash.rs`.
-
-#### 5) Package manager subprocesses now use absolute binary paths
-- Package backend detection and invocation previously trusted `PATH` resolution (`pacman`, `dpkg`, `rpm`).
-- All package manager calls now use absolute paths (`/usr/bin/pacman`, `/usr/bin/dpkg`, `/usr/bin/rpm`).
-- Added root-ownership guard for `/var/lib/dpkg/info` before parsing `*.list` files.
-- Impact: mitigates command hijacking risk from hostile `PATH` ordering.
-- Files changed: `src/package.rs`.
-
-#### 6) Audit rotation hardened against wall-clock manipulation
-- Coordinator audit rotation previously operated directly from `Utc::now()` without anomaly checks.
-- New safeguards:
-  - Skip rotation when clock jumps forward by more than 1 hour between ticks.
-  - Skip rotation if one pass would delete more than 50% of all audit rows.
-- Impact: reduces evidence-destruction risk via clock-forward attacks.
-- Files changed: `src/coordinator.rs`.
-
-#### 7) File size changes are now visible in diff engine
-- `diff()` compared hashes but not sizes, and no explicit size-change signal existed.
-- Added `Change::SizeChanged { old, new }`, wired through display/primary change mapping, audit type mapping, and alert naming.
-- Files changed: `src/types/change.rs`, `src/types/snapshot.rs`, `src/db/audit_ops.rs`, `src/alert/mod.rs`, `src/main.rs`.
-
-#### 8) Device changes are now visible in diff engine
-- `diff()` checked inode changes but omitted device (`st_dev`) changes.
-- Added `Change::DeviceChanged { old, new }`, wired through display/primary change mapping, audit type mapping, and alert naming.
-- Impact: improves detection of cross-filesystem substitution/bind-mount style swaps.
-- Files changed: `src/types/change.rs`, `src/types/snapshot.rs`, `src/db/audit_ops.rs`, `src/alert/mod.rs`, `src/main.rs`.
-
-#### 9) Duplicate `security.*` xattrs removed from generic xattr map
-- `read_xattrs_fd()` filtered `system.*` only, leaving `security.*` duplicated in both dedicated fields and generic xattr map.
-- Generic xattr collection now skips both `system.*` and `security.*` keys.
-- Impact: avoids duplicate/noisy change entries.
-- Files changed: `src/types/snapshot.rs`.
-
-#### 10) fanotify mask now includes `FAN_CLOSE_WRITE`
-- Monitoring relied on `FAN_MODIFY` only, which can fire on partial writes.
-- Added `FAN_CLOSE_WRITE` to mask and mapped it to `FsEventType::Modify` alongside `FAN_MODIFY`.
-- Impact: improves stability for post-write integrity checks and reduces partial-write false positives.
-- Files changed: `src/monitor/fanotify.rs`.
-
-#### 11) Baseline LRU cache coherency fixed after auto-rebaseline writes
-- Worker LRU baseline cache could remain stale after baseline writer commits.
-- Added shared `Arc<AtomicU64>` generation counter:
-  - baseline writer increments after successful commit with writes,
-  - workers compare local generation each loop tick and clear cache on mismatch.
-- Impact: baseline cache invalidation now propagates quickly and deterministically.
-- Files changed: `src/lib.rs`, `src/worker.rs`.
-
-#### 12) HMAC key handling now zeroizes intermediate material
-- Added `zeroize` dependency and applied explicit zeroization to intermediate decoded key text in `load_hmac_key()`.
-- `AlertDispatcher` now stores HMAC keys as `Option<Zeroizing<Vec<u8>>>`.
-- Impact: reduces residual key material lifetime in process heap memory.
-- Files changed: `Cargo.toml`, `Cargo.lock`, `src/hmac.rs`, `src/alert/mod.rs`.
+- **security**: capability escalation detection now works — `FileSnapshot::has_dangerous_capabilities()` previously searched ASCII strings (`cap_setuid`, `cap_sys_admin`, `cap_dac_override`) inside hex-encoded binary xattr data, always returning false. Capability detection now decodes `security.capability` bytes and checks dangerous bits directly in the permitted mask (`CAP_DAC_OVERRIDE` bit 1, `CAP_SETUID` bit 7, `CAP_SYS_ADMIN` bit 21). Severity escalation to `Critical` for dangerous capability-bearing modified files now triggers as designed (VIGIL-VULN-013, Critical).
+- **security**: maintenance window suppression no longer drops high-impact alerts — during maintenance windows, package-owned changes were fully suppressed regardless of severity. `Critical` and `High` are now never fully suppressed during maintenance; alerts are dispatched with `maintenance_window=true` context. `Low` and `Medium` package-owned changes remain suppressible (VIGIL-VULN-014, High).
+- **security**: symlink detection from fd capture corrected — `from_fd()` used `file.metadata()` (`fstat`), which follows symlinks and cannot identify the path as a symlink. `from_fd()` now performs one path-level `symlink_metadata()` (`lstat`) check for symlink classification and reads `symlink_target` only when the path is a symlink (VIGIL-VULN-015, High).
+- **security**: hash mmap path re-open removed (TOCTOU hardening) — hashing used `blake3::Hasher::update_mmap()` with `/proc/self/fd/N`, which re-opened by path and introduced a micro-TOCTOU window. Hashing now performs direct `libc::mmap` on the original fd with an RAII `munmap` guard and falls back to buffered I/O when mmap fails. Metadata and hash are now derived from the same file description (VIGIL-VULN-016, High).
+- **security**: package manager subprocesses now use absolute binary paths (`/usr/bin/pacman`, `/usr/bin/dpkg`, `/usr/bin/rpm`) — backend detection and invocation previously trusted `PATH` resolution, allowing command hijacking from hostile `PATH` ordering. Added root-ownership guard for `/var/lib/dpkg/info` before parsing `*.list` files (VIGIL-VULN-017, High).
+- **security**: audit rotation hardened against wall-clock manipulation — coordinator audit rotation previously operated directly from `Utc::now()` without anomaly checks. New safeguards skip rotation when the clock jumps forward by more than 1 hour between ticks and when one pass would delete more than 50% of all audit rows, reducing evidence-destruction risk via clock-forward attacks (VIGIL-VULN-018, High).
+- **security**: file size changes are now visible in diff engine — `diff()` compared hashes but not sizes, and no explicit size-change signal existed. Added `Change::SizeChanged { old, new }`, wired through display/primary change mapping, audit type mapping, and alert naming (VIGIL-VULN-019, Medium).
+- **security**: device changes are now visible in diff engine — `diff()` checked inode changes but omitted device (`st_dev`) changes. Added `Change::DeviceChanged { old, new }`, wired through display/primary change mapping, audit type mapping, and alert naming, improving detection of cross-filesystem substitution/bind-mount style swaps (VIGIL-VULN-020, Medium).
+- **security**: duplicate `security.*` xattrs removed from generic xattr map — `read_xattrs_fd()` filtered `system.*` only, leaving `security.*` duplicated in both dedicated fields and generic xattr map. Generic xattr collection now skips both `system.*` and `security.*` keys, avoiding duplicate/noisy change entries (VIGIL-VULN-021, Low).
+- **security**: fanotify mask now includes `FAN_CLOSE_WRITE` — monitoring relied on `FAN_MODIFY` only, which can fire on partial writes. Added `FAN_CLOSE_WRITE` to mask and mapped it to `FsEventType::Modify` alongside `FAN_MODIFY`, improving stability for post-write integrity checks and reducing partial-write false positives (VIGIL-VULN-022, Medium).
+- **security**: baseline LRU cache coherency fixed after auto-rebaseline writes — worker LRU baseline cache could remain stale after baseline writer commits. Added shared `Arc<AtomicU64>` generation counter; baseline writer increments after successful commit, workers compare local generation each loop tick and clear cache on mismatch. Cache invalidation now propagates quickly and deterministically (VIGIL-VULN-023, High).
+- **security**: HMAC key handling now zeroizes intermediate material — added `zeroize` dependency and applied explicit zeroization to intermediate decoded key text in `load_hmac_key()`. `AlertDispatcher` now stores HMAC keys as `Option<Zeroizing<Vec<u8>>>`, reducing residual key material lifetime in process heap memory (VIGIL-VULN-024, Medium).
 
 ### Tests
 - Added and updated unit/integration coverage for the security fixes, including:
@@ -96,7 +32,6 @@ All notable changes to Vigil will be documented in this file.
   - mmap-path and buffered hash consistency,
   - maintenance-window suppression behavior for high severities,
   - package manager absolute path constants.
-- Related files include `src/types/snapshot.rs`, `src/hash.rs`, `src/alert/mod.rs`, `src/package.rs`, and `tests/snapshot_diff_tests.rs`.
 
 ### Validation
 - `cargo check` passes.
@@ -110,87 +45,25 @@ All notable changes to Vigil will be documented in this file.
 Comprehensive security hardening addressing 11 categories of evasion and tampering vulnerabilities identified in an adversarial review. Key changes: Vigil now watches its own config and HMAC key files, verifies baseline integrity via HMAC on startup, refuses to auto-reinitialize a previously-initialized but empty baseline, includes previous chain hashes in audit HMAC computation, authenticates control socket connections via challenge-response, logs all control socket operations with peer credentials, detects and alerts on sustained event drops, narrows default system exclusions to close monitoring blind spots, and defaults scheduled scans to full mode to defeat mtime-reset attacks.
 
 ### Changed
-
-#### Default scheduled scan mode changed to `Full` (Fix 5)
-- `scanner.scheduled_mode` now defaults to `Full` instead of `Incremental`. Full mode rehashes every file regardless of mtime, providing protection against mtime-reset evasion attacks. Users with very large baselines can set `scheduled_mode = "incremental"` in their config.
-- File changed: `src/config/mod.rs`.
-
-#### Narrowed `/run/*` system exclusion (Fix 9)
-- The blanket `/run/*` system exclusion is replaced with targeted exclusions: `/run/user/*`, `/run/lock/*`, `/run/utmp`. Attackers can persist via transient systemd units in `/run/systemd/transient/`; blanket exclusion created a monitoring blind spot.
-- Vigil's own runtime directory (`/run/vigil/`) is still excluded via the self-paths mechanism.
-- `ExclusionsConfig::default()` now populates default exclusion patterns and system exclusions instead of producing empty vectors. Previously the `#[derive(Default)]` trait produced empty vecs, and defaults only applied during TOML deserialization.
-- Files changed: `src/config/mod.rs`, `src/filter/exclusion.rs`, `tests/daemon_smoke_tests.rs`.
-
-#### HMAC chain now includes previous chain hash (Fix 4)
-- `build_audit_hmac_data()` in `src/hmac.rs` now takes a `previous_chain_hash` parameter. Individual audit entry HMACs are chained: deleting entries from the middle of the audit chain is now detectable via HMAC verification, not just via the BLAKE3 chain hash (which has no secret key).
-- `verify_chain_with_hmac()` added to `src/db/audit_ops.rs` for optional chained HMAC verification when a key is provided.
-- Helper functions `changes_json_to_primary_type()` and `changes_json_extract_hashes()` added for HMAC data reconstruction during verification.
-- Files changed: `src/hmac.rs`, `src/alert/mod.rs`, `src/db/audit_ops.rs`.
-
-#### Debounce drain now re-checks paths (Fix 3)
-- When debounced pending paths are drained, they are now re-checked by processing them as synthetic `FsEvent` objects. Previously, drained paths only had their LRU cache entries invalidated; if no further event arrived, the change was silently missed until the next scheduled scan.
-- File changed: `src/worker.rs`.
-
-#### Hardened `ensure_baseline_health` — no silent auto-reinitialize (Fix 10)
-- After the first successful baseline initialization, a `baseline_initialized` flag is set in `config_state`. If the baseline is later found empty but was previously initialized, Vigil refuses to auto-reinitialize and returns an error: "baseline was previously initialized but is now empty — possible tampering". A desktop notification is also sent.
-- `vigil init` and `vigil init --force` also set the `baseline_initialized` flag.
-- Files changed: `src/lib.rs`, `src/main.rs`.
-
-#### Event channel capacity now configurable (Fix 8c)
-- New config field `daemon.event_channel_capacity` (default: 4096, up from hardcoded 2048). Higher values reduce event drops under sustained I/O load or flood conditions.
-- File changed: `src/config/mod.rs`, `src/lib.rs`.
+- **security**: default scheduled scan mode changed to `Full` — `scanner.scheduled_mode` now defaults to `Full` instead of `Incremental`. Full mode rehashes every file regardless of mtime, providing protection against mtime-reset evasion attacks. Users with very large baselines can set `scheduled_mode = "incremental"` in their config (VIGIL-VULN-005, High).
+- **security**: narrowed `/run/*` system exclusion — the blanket `/run/*` exclusion is replaced with targeted exclusions (`/run/user/*`, `/run/lock/*`, `/run/utmp`). Attackers could persist via transient systemd units in `/run/systemd/transient/`; blanket exclusion created a monitoring blind spot. `ExclusionsConfig::default()` now populates default exclusion patterns and system exclusions instead of producing empty vectors (VIGIL-VULN-010, High).
+- **security**: HMAC chain now includes previous chain hash — `build_audit_hmac_data()` takes a `previous_chain_hash` parameter, chaining individual audit entry HMACs. Deleting entries from the middle of the audit chain is now detectable via HMAC verification, not just via the BLAKE3 chain hash (which has no secret key). Added `verify_chain_with_hmac()` and helper functions `changes_json_to_primary_type()` and `changes_json_extract_hashes()` for HMAC data reconstruction during verification (VIGIL-VULN-004, High).
+- **security**: debounce drain now re-checks paths — when debounced pending paths are drained, they are now re-checked by processing them as synthetic `FsEvent` objects. Previously, drained paths only had their LRU cache entries invalidated; if no further event arrived, the change was silently missed until the next scheduled scan (VIGIL-VULN-003, Medium).
+- **security**: hardened `ensure_baseline_health` to refuse silent auto-reinitialize — after the first successful baseline initialization, a `baseline_initialized` flag is set in `config_state`. If the baseline is later found empty but was previously initialized, Vigil refuses to auto-reinitialize and returns an error with a desktop notification. Previously an attacker could truncate the baseline and the daemon would silently rebuild it (VIGIL-VULN-011, Critical).
+- **security**: event channel capacity now configurable — new config field `daemon.event_channel_capacity` (default: 4096, up from hardcoded 2048). Higher values reduce event drops under sustained I/O load or flood conditions (VIGIL-VULN-009, Low).
 
 ### Added
-
-#### Self-monitoring watch group (Fix 1)
-- Default config now includes a `vigil_self` watch group at `Critical` severity, watching `/etc/vigil/vigil.toml` and `/etc/vigil/hmac.key`. An attacker who modifies Vigil's config or HMAC key now triggers a Critical alert.
-- `validate_config_deep()` emits a warning if no watch group covers the config file path.
-- `process_event_inner()` in `src/worker.rs` logs at `tracing::error!` with message "vigil self-protection: config file modified" or "vigil self-protection: HMAC key file modified" when these files are changed.
-- Files changed: `src/config/mod.rs`, `src/worker.rs`.
-- New test file: `tests/self_monitoring_tests.rs`.
-
-#### Baseline tamper detection on startup (Fix 2)
-- After every baseline initialization, a baseline HMAC is computed over all entries and stored in `config_state` key `baseline_hmac`.
-- On daemon startup, if `security.hmac_signing = true`, the stored baseline HMAC is compared to a freshly computed one. If they don't match, the daemon refuses to start with error "baseline HMAC verification failed — possible tampering" and sends a Critical desktop notification.
-- If no stored HMAC exists (upgrade path), one is computed and stored for future verification.
-- The baseline writer thread periodically recomputes the baseline HMAC (every 100 batches or 60 seconds) to keep it current.
-- `vigil check --accept` recomputes and stores the baseline HMAC after accepting changes.
-- Files changed: `src/lib.rs`, `src/scanner.rs`, `src/main.rs`.
-- New test file: `tests/baseline_tamper_tests.rs`.
-
-#### Config file integrity verification (Fix 11)
-- On daemon startup, the BLAKE3 hash of the config file is computed and stored in the `Daemon` struct.
-- On config reload (SIGHUP), the coordinator computes the new config hash and logs any change at `warn` level.
-- When `security.hmac_signing = true`, a config file HMAC is stored in `config_state` key `config_file_hmac`. On reload, if the stored HMAC doesn't match the current config file, the reload is rejected with error "config reload REJECTED: config file HMAC verification failed".
-- Files changed: `src/lib.rs`, `src/coordinator.rs`.
-
-#### Control socket authentication (Fix 6)
-- New config field `security.control_socket_auth` (default: `true`). When enabled and `hmac_signing = true`, the control socket uses a challenge-response authentication protocol: server sends a 32-byte random hex nonce, client must respond with `HMAC-SHA256(nonce, hmac_key)`.
-- If authentication is not configured (HMAC signing disabled), the socket falls back to unauthenticated mode with a `tracing::warn!` on every connection.
-- Client-side authentication implemented in `query_control_socket()` and `query_control_socket_authenticated()`.
-- Files changed: `src/config/mod.rs`, `src/control.rs`, `src/main.rs`.
-
-#### Audit trail for control socket operations (Fix 7)
-- `reload` and `scan` control socket commands now log at `tracing::warn!` with the method name.
-- New `control_commands` counter in `src/metrics.rs` tracks total control socket commands executed.
-- Peer credentials (PID, UID, GID) are logged via `SO_PEERCRED` on every control socket connection.
-- Files changed: `src/control.rs`, `src/metrics.rs`.
-
-#### Event flood detection (Fix 8b)
-- The coordinator thread now tracks `events_dropped` across housekeeping ticks. If the count increased, it logs at `tracing::error!` with both the delta and total: "filesystem events are being dropped — possible evasion attack or I/O overload".
-- File changed: `src/coordinator.rs`.
-
-#### `ReloadSource` enum (Fix 6d)
+- **security**: self-monitoring watch group — default config now includes a `vigil_self` watch group at `Critical` severity, watching `/etc/vigil/vigil.toml` and `/etc/vigil/hmac.key`. An attacker who modifies Vigil's config or HMAC key now triggers a Critical alert. `validate_config_deep()` emits a warning if no watch group covers the config file path. `process_event_inner()` logs at `tracing::error!` when these files are changed (VIGIL-VULN-001, Critical).
+- **security**: baseline tamper detection on startup — after every baseline initialization, a baseline HMAC is computed over all entries and stored in `config_state`. On daemon startup with `security.hmac_signing = true`, the stored baseline HMAC is compared to a freshly computed one; mismatch refuses to start with a Critical desktop notification. The baseline writer thread periodically recomputes the HMAC to keep it current. Previously the baseline could be silently replaced without detection (VIGIL-VULN-002, Critical).
+- **security**: config file integrity verification on startup and reload — on daemon startup, the BLAKE3 hash of the config file is computed and stored. On SIGHUP reload, if `security.hmac_signing = true` and the stored config file HMAC doesn't match, the reload is rejected. Previously config file modifications between restarts were undetected (VIGIL-VULN-012, High).
+- **security**: control socket now uses challenge-response authentication — new `security.control_socket_auth` config field (default: `true`). When enabled with `hmac_signing = true`, the server sends a 32-byte random hex nonce and the client must respond with `HMAC-SHA256(nonce, hmac_key)`. Previously the control socket accepted unauthenticated commands from any local process with socket access. Falls back to unauthenticated mode with `tracing::warn!` when HMAC signing is disabled (VIGIL-VULN-006, Critical).
+- **security**: audit trail for control socket operations — `reload` and `scan` control socket commands now log at `tracing::warn!` with the method name. Peer credentials (PID, UID, GID) are logged via `SO_PEERCRED` on every connection. New `control_commands` counter tracks total control socket commands executed. Previously control socket commands were unlogged with no peer credential capture (VIGIL-VULN-007, Medium).
+- **security**: event flood detection — the coordinator thread now tracks `events_dropped` across housekeeping ticks and logs at `tracing::error!` with both the delta and total when the count increases, alerting on possible evasion attacks or I/O overload. Previously sustained event drops were silent (VIGIL-VULN-008, Medium).
 - New `ReloadSource` enum in `src/coordinator.rs` (`Signal`, `ControlSocket`, `Unknown`) for differentiating reload triggers in future use.
-- File changed: `src/coordinator.rs`.
 
 ### Tests
-
-#### New test files
 - `tests/baseline_tamper_tests.rs` — 5 tests covering baseline HMAC roundtrip, tamper detection, content-dependent HMAC output, `baseline_initialized` flag behavior, and empty-baseline-after-init refusal.
 - `tests/self_monitoring_tests.rs` — 4 tests verifying config/HMAC key files are not excluded, `vigil_self` watch group exists, mutable state files are excluded.
-
-#### New unit tests in existing files
 - `src/config/mod.rs`: `default_scheduled_mode_is_full`, `default_config_includes_vigil_self_watch_group`, `validate_deep_warns_when_config_not_watched`.
 - `src/filter/exclusion.rs`: `run_systemd_transient_not_excluded_by_default`, `run_vigil_excluded_via_self_paths`, `run_user_excluded_by_default`, `tmp_excluded_by_default`, `proc_excluded_by_default`, `vigil_config_not_excluded`.
 - `src/hmac.rs`: updated `build_audit_data_format` and `build_audit_data_none_hashes` for 7-arg signature; added `build_audit_data_includes_previous_chain_hash`.
