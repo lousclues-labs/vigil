@@ -154,7 +154,8 @@ If Vigil runs as a root-owned systemd service (default), running `vigil doctor` 
 
 ## `update`
 
-Build and install Vigil from a local git repository.
+Build and install Vigil from a local git repository. Performs atomic binary
+replacement, step-by-step progress reporting, and post-update health verification.
 
 ```bash
 vigil update [--repo <PATH>]
@@ -162,13 +163,55 @@ vigil update [--repo <PATH>]
 
 | Option | Description |
 |--------|-------------|
-| `--repo <PATH>` | path to the Vigil git repository (defaults to current directory) |
+| `--repo <PATH>` | path to the Vigil git repository (skips auto-discovery) |
+
+When `--repo` is not provided, Vigil automatically searches for the source
+repository in order: current directory, binary-relative parent directories,
+`~/vigil`, `~/src/vigil`, `~/projects/vigil`, and `/opt/vigil`.
+
+Binaries are installed atomically (copy → chmod → rename) so a crash mid-update
+cannot leave a corrupted binary. After restarting the daemon, the command
+verifies it is actually responding via the control socket before reporting
+success.
 
 Example:
 
 ```bash
 vigil update
 vigil update --repo /opt/vigil
+```
+
+Example output:
+
+```
+  Using repository: /home/user/src/vigil
+
+Building update from /home/user/src/vigil
+   Compiling vigil v0.26.0 (/home/user/src/vigil)
+    Finished `release` profile [optimized] target(s) in 42.3s
+
+Updating: v0.25.1 → v0.26.0
+
+  Stopping vigild.service...
+  ✓ Daemon stopped
+  Installing vigil → /usr/local/bin...
+  Installing vigild → /usr/local/bin...
+  Updating symlinks...
+  Checking systemd units...
+  Checking hooks...
+  Starting vigild.service...
+  ✓ Daemon started
+
+Vigil — Update Complete
+═══════════════════════
+
+  ✓ v0.25.1 → v0.26.0
+  Daemon:   restarted
+  Units:    unchanged
+  Hooks:    unchanged
+  Baseline: preserved (14,832 entries)
+
+  Running health check...
 ```
 
 ---

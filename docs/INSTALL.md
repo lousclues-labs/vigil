@@ -81,10 +81,20 @@ Artifacts:
 
 ## Install Binaries
 
+For manual installation, use the atomic copy-then-rename pattern to avoid
+corrupted binaries if the process is interrupted:
+
 ```bash
-sudo install -Dm755 target/release/vigil /usr/local/bin/vigil
-sudo install -Dm755 target/release/vigild /usr/local/bin/vigild
+sudo cp target/release/vigil /usr/local/bin/.vigil.new
+sudo chmod 755 /usr/local/bin/.vigil.new
+sudo mv /usr/local/bin/.vigil.new /usr/local/bin/vigil
+
+sudo cp target/release/vigild /usr/local/bin/.vigild.new
+sudo chmod 755 /usr/local/bin/.vigild.new
+sudo mv /usr/local/bin/.vigild.new /usr/local/bin/vigild
 ```
+
+Or use `vigil update` which handles this automatically (see [CLI Reference](CLI.md#update)).
 
 Compatibility symlinks for the provided systemd units (`ExecStart=/usr/bin/vigild`):
 

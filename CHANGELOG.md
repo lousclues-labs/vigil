@@ -4,6 +4,26 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-04-08
+
+### Release Summary
+- Major `vigil update` overhaul: automatic repository discovery, step-by-step progress output, atomic binary replacement, post-update daemon health verification, and improved doctor output positioning. The update command now matches the UX standard set by `cmd_check`, `cmd_init`, and `cmd_doctor`.
+
+### Added
+- **cli:** automatic repository discovery for `vigil update` — when `--repo` is not provided, the command now searches multiple candidate paths instead of requiring the user to `cd` into the repo. Discovery checks, in order: current working directory, binary-relative parent walk (walks up from `std::env::current_exe()` looking for `Cargo.toml` with `name = "vigil"`), well-known home paths (`~/vigil`, `~/src/vigil`, `~/projects/vigil`), and `/opt/vigil`. On success, prints `"Using repository: /path"`. On failure, prints all checked paths with actionable guidance. Extracted into `discover_vigil_repo()` helper (`src/main.rs`).
+- **cli:** step-by-step progress output during `vigil update` — every significant operation (daemon stop, binary install, symlink update, systemd unit check, hook check, daemon start) now prints a status message before execution. Success markers (`✓`) and warning markers (`⚠`) provide immediate feedback. No `sudo` or `systemctl` operation runs silently. Consistent 2-space indented formatting matching existing `cmd_doctor` and `cmd_init` style (`src/main.rs`).
+- **cli:** atomic binary replacement via `atomic_install()` helper — replaces the previous `sudo install -Dm755` which destructively overwrote binaries in-place. New pattern: `sudo cp <src> /usr/local/bin/.<name>.new` → `sudo chmod 755` → `sudo mv` (atomic rename). A crash mid-update can never leave a half-written binary. `mv` on the same filesystem is an atomic `rename(2)` at the kernel level (`src/main.rs`).
+- **cli:** post-update daemon health verification — after `systemctl start vigild.service` succeeds, the update command now sleeps 2 seconds then queries the daemon's control socket via `query_control_socket()` with `{"method":"status"}` to verify the daemon is actually running and responding. The final summary now distinguishes three states: `"restarted"` (start succeeded + health check passed), `"started but not responding (check: sudo journalctl -u vigild.service -n 20)"` (start succeeded + health check failed), and `"restart failed"` (start command failed) (`src/main.rs`).
+
+### Changed
+- **cli:** `vigil doctor` output during update moved after the summary block — previously interleaved between daemon start and the final summary, breaking visual flow. Now prints as a separate `"Running health check..."` section after the update summary completes cleanly (`src/main.rs`).
+- **cli:** both symlink operations (vigil + vigild) consolidated under a single `"Updating symlinks..."` message instead of being announced individually — they are a logical unit (`src/main.rs`).
+
+### Validation
+- `cargo check` passes with 0 warnings.
+- `cargo test --all-targets` passes (all tests green).
+- Existing `validate_vigil_repo` and `normalize_version` unit tests unmodified and passing.
+
 ## [0.25.1] - 2026-04-08
 
 ### Fixed

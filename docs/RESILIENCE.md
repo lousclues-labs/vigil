@@ -156,6 +156,8 @@ Version upgrades may change the baseline schema or HMAC field coverage.
 | baseline table empty after schema migration | daemon detects non-trivial DB file size (>4096 bytes), logs warning, auto-reinitializes baseline | automatic since v0.25.0 |
 | stored HMAC mismatches due to field set change | daemon logs warning, recomputes and stores updated HMAC | automatic since v0.25.0 |
 | older daemon version crash-loops on upgrade | `process::exit(1)` before sd_notify Ready | upgrade to v0.25.0+ or manually `vigil init --force` |
+| update binary corrupted by mid-write crash | `vigil` or `vigild` binary is truncated or incomplete | eliminated since v0.26.0 — `vigil update` uses atomic copy-then-rename |
+| daemon not responding after update restart | `systemctl start` returns 0 but daemon crashes immediately | `vigil update` now verifies health via control socket (since v0.26.0) |
 
 Startup diagnostics (baseline DB path, size, readability, HMAC status) are logged at `info` level before the health check runs. Use `RUST_LOG=debug` for maximum visibility.
 

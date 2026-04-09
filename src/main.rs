@@ -976,8 +976,13 @@ fn print_check(check: &doctor::DiagnosticCheck) {
 }
 
 fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
-    let repo_path = repo.unwrap_or(std::env::current_dir()?);
-    validate_vigil_repo(&repo_path)?;
+    let repo_path = match repo {
+        Some(p) => {
+            validate_vigil_repo(&p)?;
+            p
+        }
+        None => discover_vigil_repo()?,
+    };
 
     println!("Building update from {}", repo_path.display());
     let mut build_cmd = ProcessCommand::new("cargo");
@@ -1012,32 +1017,26 @@ fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
 
     println!("Updating: {} → {}", current_version, new_version);
 
+    println!("  Stopping vigild.service...");
     let mut daemon_stop_cmd = ProcessCommand::new("sudo");
     daemon_stop_cmd
         .arg("systemctl")
         .arg("stop")
         .arg("vigild.service");
     let daemon_stopped = run_best_effort(daemon_stop_cmd);
-    if !daemon_stopped {
-        eprintln!("warning: could not stop vigild.service; continuing");
+    if daemon_stopped {
+        println!("  ✓ Daemon stopped");
+    } else {
+        eprintln!("  ⚠ could not stop vigild.service; continuing");
     }
 
-    let mut install_vigil_cmd = ProcessCommand::new("sudo");
-    install_vigil_cmd
-        .arg("install")
-        .arg("-Dm755")
-        .arg(&repo_vigil)
-        .arg("/usr/local/bin/vigil");
-    run_checked(install_vigil_cmd, "install /usr/local/bin/vigil")?;
+    println!("  Installing vigil → /usr/local/bin...");
+    atomic_install(&repo_vigil, Path::new("/usr/local/bin/vigil"))?;
 
-    let mut install_vigild_cmd = ProcessCommand::new("sudo");
-    install_vigild_cmd
-        .arg("install")
-        .arg("-Dm755")
-        .arg(&repo_vigild)
-        .arg("/usr/local/bin/vigild");
-    run_checked(install_vigild_cmd, "install /usr/local/bin/vigild")?;
+    println!("  Installing vigild → /usr/local/bin...");
+    atomic_install(&repo_vigild, Path::new("/usr/local/bin/vigild"))?;
 
+    println!("  Updating symlinks...");
     let mut symlink_vigil_cmd = ProcessCommand::new("sudo");
     symlink_vigil_cmd
         .arg("ln")
@@ -1054,6 +1053,7 @@ fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
         .arg("/usr/bin/vigild");
     run_checked(symlink_vigild_cmd, "create /usr/bin/vigild symlink")?;
 
+    println!("  Checking systemd units...");
     let mut updated_units = Vec::new();
     for unit in ["vigild.service", "vigil-scan.service", "vigil-scan.timer"] {
         let src = repo_path.join("systemd").join(unit);
@@ -1064,11 +1064,13 @@ fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
     }
 
     if !updated_units.is_empty() {
+        println!("  Reloading systemd daemon...");
         let mut daemon_reload_cmd = ProcessCommand::new("sudo");
         daemon_reload_cmd.arg("systemctl").arg("daemon-reload");
         run_checked(daemon_reload_cmd, "systemctl daemon-reload")?;
     }
 
+    println!("  Checking hooks...");
     let updated_hooks = update_hooks_if_changed(&repo_path)?;
 
     // Tighten data directory permissions for v0.25.0+ security hardening.
@@ -1077,17 +1079,35 @@ fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
     chmod_cmd.arg("chmod").arg("750").arg("/var/lib/vigil");
     let _ = run_best_effort(chmod_cmd);
 
+    println!("  Starting vigild.service...");
     let mut daemon_start_cmd = ProcessCommand::new("sudo");
     daemon_start_cmd
         .arg("systemctl")
         .arg("start")
         .arg("vigild.service");
     let daemon_started = run_best_effort(daemon_start_cmd);
-    if !daemon_started {
-        eprintln!("warning: could not start vigild.service");
+    if daemon_started {
+        println!("  ✓ Daemon started");
+    } else {
+        eprintln!("  ⚠ could not start vigild.service");
     }
 
-    let _ = ProcessCommand::new("vigil").arg("doctor").status();
+    // Post-start health check: verify daemon is actually responding
+    let healthy = if daemon_started {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        vigil::config::load_config(None)
+            .ok()
+            .and_then(|cfg| {
+                if !cfg.daemon.control_socket.as_os_str().is_empty() {
+                    query_control_socket(&cfg.daemon.control_socket, r#"{"method":"status"}"#).ok()
+                } else {
+                    None
+                }
+            })
+            .is_some()
+    } else {
+        false
+    };
 
     let baseline_summary = match vigil::config::load_config(None)
         .ok()
@@ -1097,17 +1117,18 @@ fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
         None => "preserved".to_string(),
     };
 
+    let daemon_status = if daemon_started && healthy {
+        "restarted"
+    } else if daemon_started {
+        "started but not responding (check: sudo journalctl -u vigild.service -n 20)"
+    } else {
+        "restart failed"
+    };
+
     print_header("Vigil — Update Complete");
 
     println!("  ✓ {} → {}", current_version, new_version);
-    println!(
-        "  Daemon:   {}",
-        if daemon_started {
-            "restarted"
-        } else {
-            "restart failed"
-        }
-    );
+    println!("  Daemon:   {}", daemon_status);
     println!(
         "  Units:    {}",
         if updated_units.is_empty() {
@@ -1125,6 +1146,10 @@ fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
         }
     );
     println!("  Baseline: {}", baseline_summary);
+
+    println!();
+    println!("  Running health check...");
+    let _ = ProcessCommand::new("vigil").arg("doctor").status();
 
     Ok(())
 }
@@ -1723,6 +1748,92 @@ fn validate_vigil_repo(repo: &Path) -> vigil::Result<()> {
             repo.display()
         )));
     }
+
+    Ok(())
+}
+
+fn discover_vigil_repo() -> vigil::Result<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    let mut labels: Vec<String> = Vec::new();
+
+    // 1. Current working directory
+    if let Ok(cwd) = std::env::current_dir() {
+        labels.push(format!("{} (cwd)", cwd.display()));
+        candidates.push(cwd);
+    }
+
+    // 2. Binary-relative: walk up from the executable's location
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.as_path().parent();
+        while let Some(d) = dir {
+            if d.join("Cargo.toml").exists() {
+                labels.push(format!("{} (binary relative)", d.display()));
+                candidates.push(d.to_path_buf());
+                break;
+            }
+            dir = d.parent();
+        }
+    }
+
+    // 3. Well-known home paths
+    if let Ok(home) = std::env::var("HOME") {
+        let home = PathBuf::from(home);
+        for sub in ["vigil", "src/vigil", "projects/vigil"] {
+            let p = home.join(sub);
+            labels.push(format!("{}", p.display()));
+            candidates.push(p);
+        }
+    }
+
+    // 4. /opt/vigil
+    let opt = PathBuf::from("/opt/vigil");
+    labels.push(format!("{}", opt.display()));
+    candidates.push(opt);
+
+    for candidate in &candidates {
+        if validate_vigil_repo(candidate).is_ok() {
+            println!("  Using repository: {}", candidate.display());
+            return Ok(candidate.clone());
+        }
+    }
+
+    let checked = labels
+        .iter()
+        .map(|l| format!("    {}", l))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Err(vigil::VigilError::Config(format!(
+        "could not locate Vigil source repository\n  checked:\n{}\n  \
+         hint: run from the Vigil source directory, or use: vigil update --repo /path/to/vigil",
+        checked
+    )))
+}
+
+fn atomic_install(src: &Path, dst: &Path) -> vigil::Result<()> {
+    let file_name = dst
+        .file_name()
+        .ok_or_else(|| vigil::VigilError::Daemon("invalid destination path".to_string()))?;
+    let tmp_name = format!(".{}.new", file_name.to_string_lossy());
+    let tmp_dst = dst.with_file_name(&tmp_name);
+
+    let mut cp_cmd = ProcessCommand::new("sudo");
+    cp_cmd.arg("cp").arg(src).arg(&tmp_dst);
+    run_checked(
+        cp_cmd,
+        &format!("cp {} to {}", src.display(), tmp_dst.display()),
+    )?;
+
+    let mut chmod_cmd = ProcessCommand::new("sudo");
+    chmod_cmd.arg("chmod").arg("755").arg(&tmp_dst);
+    run_checked(chmod_cmd, &format!("chmod 755 {}", tmp_dst.display()))?;
+
+    let mut mv_cmd = ProcessCommand::new("sudo");
+    mv_cmd.arg("mv").arg(&tmp_dst).arg(dst);
+    run_checked(
+        mv_cmd,
+        &format!("mv {} to {}", tmp_dst.display(), dst.display()),
+    )?;
 
     Ok(())
 }
