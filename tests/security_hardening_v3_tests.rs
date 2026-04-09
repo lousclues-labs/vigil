@@ -98,7 +98,10 @@ fn baseline_hmac_covers_all_security_fields() {
 
     let hmac1 = baseline_ops::compute_baseline_hmac(&conn1, key).unwrap();
     let hmac2 = baseline_ops::compute_baseline_hmac(&conn2, key).unwrap();
-    assert_eq!(hmac1, hmac2, "identical entries must produce identical HMACs");
+    assert_eq!(
+        hmac1, hmac2,
+        "identical entries must produce identical HMACs"
+    );
 
     // Change inode — previously not covered, now should change HMAC
     let mut entry_diff_inode = entry.clone();
@@ -134,7 +137,10 @@ fn baseline_hmac_covers_all_security_fields() {
     schema::create_baseline_tables(&conn6).unwrap();
     baseline_ops::upsert(&conn6, &entry_diff_caps).unwrap();
     let hmac6 = baseline_ops::compute_baseline_hmac(&conn6, key).unwrap();
-    assert_ne!(hmac1, hmac6, "capabilities change must produce different HMAC");
+    assert_ne!(
+        hmac1, hmac6,
+        "capabilities change must produce different HMAC"
+    );
 
     // Change security_context — previously not covered
     let mut entry_diff_ctx = entry.clone();
@@ -189,7 +195,10 @@ fn metrics_kernel_queue_overflows_counter_exists() {
 #[test]
 fn default_config_includes_self_binary_in_watch() {
     let config = vigil::config::default_config();
-    let vigil_self = config.watch.get("vigil_self").expect("vigil_self group must exist");
+    let vigil_self = config
+        .watch
+        .get("vigil_self")
+        .expect("vigil_self group must exist");
     assert!(
         vigil_self.paths.contains(&"/usr/bin/vigil".to_string()),
         "vigil_self should include /usr/bin/vigil"
@@ -228,7 +237,10 @@ fn symlink_target_uses_canonical_resolution() {
             );
             let resolved = snap.identity.symlink_target.unwrap();
             // Canonical path should be absolute and resolved
-            assert!(resolved.is_absolute(), "canonical target should be absolute");
+            assert!(
+                resolved.is_absolute(),
+                "canonical target should be absolute"
+            );
         }
         vigil::types::SnapshotOrDeleted::Deleted => panic!("file should exist"),
     }
