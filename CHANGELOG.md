@@ -4,6 +4,12 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-04-08
+
+### Fixed
+- **daemon:** startup crash loop after upgrade due to systemd `StateDirectory=` resetting `/var/lib/vigil` permissions to `0755` on every start. The v0.25.0 security hardening check (`verify_directory_safety`) requires `0700` or `0750`, creating a boot loop — systemd resets permissions, daemon rejects them, crashes, systemd restarts. Added `StateDirectoryMode=0750`, `RuntimeDirectoryMode=0750`, and `LogsDirectoryMode=0750` to `vigild.service`. Also fixed `setup.sh` to create directories with `0750` instead of `0755` for new installs, and added `chmod 750 /var/lib/vigil` to the `vigil update` path for existing installations (`systemd/vigild.service`, `setup.sh`, `src/main.rs`).
+- **doctor:** control socket check reported `"status returned ok=false"` even though the daemon was healthy. `query_control_socket_quick()` was sending an unauthenticated `{"method":"status"}` request directly, but when HMAC signing is enabled, the control socket server sends a challenge nonce first and expects an HMAC-authenticated response. The doctor was reading the challenge as the status response and failing. Now checks `security.hmac_signing` and `security.control_socket_auth` from config and performs the full challenge-response handshake when authentication is enabled (`src/doctor.rs`).
+
 ## [0.25.0] - 2026-04-08
 
 ### Release Summary
