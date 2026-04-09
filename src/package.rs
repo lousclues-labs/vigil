@@ -67,7 +67,10 @@ fn query_pacman(path: &str) -> Option<String> {
 }
 
 fn query_dpkg(path: &str) -> Option<String> {
-    let output = run_with_timeout(Command::new(DPKG_PATH).args(["-S", path]), PKG_QUERY_TIMEOUT)?;
+    let output = run_with_timeout(
+        Command::new(DPKG_PATH).args(["-S", path]),
+        PKG_QUERY_TIMEOUT,
+    )?;
 
     if output.status.success() {
         let line = String::from_utf8_lossy(&output.stdout);
@@ -78,7 +81,10 @@ fn query_dpkg(path: &str) -> Option<String> {
 }
 
 fn query_rpm(path: &str) -> Option<String> {
-    let output = run_with_timeout(Command::new(RPM_PATH).args(["-qf", path]), PKG_QUERY_TIMEOUT)?;
+    let output = run_with_timeout(
+        Command::new(RPM_PATH).args(["-qf", path]),
+        PKG_QUERY_TIMEOUT,
+    )?;
 
     if output.status.success() {
         let pkg = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -301,9 +307,10 @@ fn build_cache_rpm() -> HashMap<PathBuf, String> {
     // `rpm -qa --queryformat '%{NAME}\t[%{FILENAMES}\n]'` is complex;
     // use `rpm -qa --filesbypkg` which outputs "package  /path" per line
     let timeout = Duration::from_secs(60);
-    if let Some(output) =
-        run_with_timeout(Command::new(RPM_PATH).args(["-qa", "--filesbypkg"]), timeout)
-    {
+    if let Some(output) = run_with_timeout(
+        Command::new(RPM_PATH).args(["-qa", "--filesbypkg"]),
+        timeout,
+    ) {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
@@ -334,10 +341,7 @@ mod tests {
 
     #[test]
     fn package_manager_paths_are_absolute() {
-        assert!(
-            PACMAN_PATH.starts_with('/'),
-            "pacman path must be absolute"
-        );
+        assert!(PACMAN_PATH.starts_with('/'), "pacman path must be absolute");
         assert!(DPKG_PATH.starts_with('/'), "dpkg path must be absolute");
         assert!(RPM_PATH.starts_with('/'), "rpm path must be absolute");
     }

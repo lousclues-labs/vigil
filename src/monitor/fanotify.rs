@@ -127,7 +127,13 @@ pub fn start(
 
     let mount_points = resolve_mount_points(watch_paths);
     tracing::info!(mounts = ?mount_points, "fanotify watching mount points");
-    let mask = FAN_MODIFY | FAN_CLOSE_WRITE | FAN_ATTRIB | FAN_CREATE | FAN_DELETE | FAN_MOVED_FROM | FAN_MOVED_TO;
+    let mask = FAN_MODIFY
+        | FAN_CLOSE_WRITE
+        | FAN_ATTRIB
+        | FAN_CREATE
+        | FAN_DELETE
+        | FAN_MOVED_FROM
+        | FAN_MOVED_TO;
 
     for mount in &mount_points {
         let _ = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD);

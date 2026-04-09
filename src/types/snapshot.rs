@@ -407,7 +407,13 @@ mod tests {
         snapshot.content.size = 2048; // baseline has size 1024
         let changes = snapshot.diff(&baseline);
         assert!(
-            changes.iter().any(|c| matches!(c, Change::SizeChanged { old: 1024, new: 2048 })),
+            changes.iter().any(|c| matches!(
+                c,
+                Change::SizeChanged {
+                    old: 1024,
+                    new: 2048
+                }
+            )),
             "expected SizeChanged {{ old: 1024, new: 2048 }} in {:?}",
             changes
         );
@@ -457,7 +463,9 @@ mod tests {
         snapshot.identity.device = 42; // baseline has device 1
         let changes = snapshot.diff(&baseline);
         assert!(
-            changes.iter().any(|c| matches!(c, Change::DeviceChanged { old: 1, new: 42 })),
+            changes
+                .iter()
+                .any(|c| matches!(c, Change::DeviceChanged { old: 1, new: 42 })),
             "expected DeviceChanged in {:?}",
             changes
         );
@@ -487,11 +495,9 @@ mod tests {
     fn has_dangerous_capabilities_detects_sys_admin() {
         let mut snapshot = make_snapshot(&make_baseline());
         let cap_bytes: Vec<u8> = vec![
-            0x02, 0x00, 0x00, 0x02,
-            0x00, 0x00, 0x20, 0x00, // permitted[0]: bit 21 = CAP_SYS_ADMIN
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
+            0x02, 0x00, 0x00, 0x02, 0x00, 0x00, 0x20,
+            0x00, // permitted[0]: bit 21 = CAP_SYS_ADMIN
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
         snapshot.permissions.capabilities = Some(hex::encode(&cap_bytes));
         assert!(snapshot.has_dangerous_capabilities());
@@ -502,11 +508,8 @@ mod tests {
         let mut snapshot = make_snapshot(&make_baseline());
         // CAP_NET_BIND_SERVICE = bit 10 — not dangerous
         let cap_bytes: Vec<u8> = vec![
-            0x02, 0x00, 0x00, 0x02,
-            0x00, 0x04, 0x00, 0x00, // permitted[0]: bit 10
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
+            0x02, 0x00, 0x00, 0x02, 0x00, 0x04, 0x00, 0x00, // permitted[0]: bit 10
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
         snapshot.permissions.capabilities = Some(hex::encode(&cap_bytes));
         assert!(!snapshot.has_dangerous_capabilities());
