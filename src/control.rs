@@ -33,6 +33,7 @@ pub struct ScanResponse {
 }
 
 /// Spawn the control socket listener thread.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     socket_path: PathBuf,
     metrics: Arc<Metrics>,
@@ -41,6 +42,7 @@ pub fn spawn(
     reload_flag: Arc<AtomicBool>,
     scan_trigger_tx: crossbeam_channel::Sender<ScanRequest>,
     baseline_db_path: &Path,
+    startup_hmac_key: Option<zeroize::Zeroizing<Vec<u8>>>,
 ) -> Result<JoinHandle<()>> {
     let db_path = baseline_db_path.to_path_buf();
 
@@ -72,13 +74,8 @@ pub fn spawn(
 
     let socket_path_clone = socket_path.clone();
 
-    // Load HMAC key for auth if configured
-    let hmac_key_path = PathBuf::from("/etc/vigil/hmac.key");
-    let hmac_key: Option<Vec<u8>> = if hmac_key_path.exists() {
-        crate::hmac::load_hmac_key(&hmac_key_path).ok()
-    } else {
-        None
-    };
+    // Use the HMAC key loaded at startup — never re-read from disk
+    let hmac_key: Option<Vec<u8>> = startup_hmac_key.map(|k| (*k).clone());
     let auth_enabled = hmac_key.is_some();
 
     std::thread::Builder::new()
@@ -139,7 +136,18 @@ fn handle_connection(
     if auth_enabled {
         if let Some(key) = hmac_key {
             // Challenge-response authentication
-            let nonce = generate_nonce();
+            let nonce = match generate_nonce() {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::error!(error = %e, "nonce generation failed — rejecting connection");
+                    let fail_resp = r#"{"ok":false,"error":"internal security error"}"#;
+                    let mut writer = &stream;
+                    let _ = writer.write_all(fail_resp.as_bytes());
+                    let _ = writer.write_all(b"\n");
+                    let _ = writer.flush();
+                    return Ok(());
+                }
+            };
             let challenge = serde_json::json!({"challenge": nonce});
             let mut writer = &stream;
             let mut challenge_str =
@@ -368,13 +376,21 @@ fn log_control_action(method: &str, metrics: &Metrics) {
 }
 
 /// Generate a random 32-byte hex nonce for challenge-response auth.
-fn generate_nonce() -> String {
+/// Returns Err if randomness cannot be obtained, to prevent predictable nonces.
+fn generate_nonce() -> std::result::Result<String, std::io::Error> {
     use std::io::Read;
     let mut buf = [0u8; 32];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        let _ = f.read_exact(&mut buf);
+    let mut f = std::fs::File::open("/dev/urandom")
+        .map_err(|e| std::io::Error::new(e.kind(), format!("cannot open /dev/urandom: {}", e)))?;
+    f.read_exact(&mut buf)
+        .map_err(|e| std::io::Error::new(e.kind(), format!("/dev/urandom read failed: {}", e)))?;
+    // Verify buffer is not all-zero (catastrophic RNG failure)
+    if buf.iter().all(|&b| b == 0) {
+        return Err(std::io::Error::other(
+            "urandom returned all zeros — refusing to generate nonce",
+        ));
     }
-    hex::encode(buf)
+    Ok(hex::encode(buf))
 }
 
 /// Log peer credentials of the connecting process using SO_PEERCRED.
@@ -436,6 +452,7 @@ mod tests {
             reload_flag,
             scan_tx,
             &db_path,
+            None,
         )
         .unwrap();
 

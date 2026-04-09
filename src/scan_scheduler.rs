@@ -18,6 +18,7 @@ pub fn spawn(
     metrics: Arc<Metrics>,
     shutdown_rx: crossbeam_channel::Receiver<()>,
     scan_trigger_rx: crossbeam_channel::Receiver<ScanRequest>,
+    baseline_conn: rusqlite::Connection,
 ) -> crate::Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name("vigil-scan-scheduler".into())
@@ -26,62 +27,50 @@ pub fn spawn(
                 // Service on-demand scan requests first
                 while let Ok(request) = scan_trigger_rx.try_recv() {
                     let cfg = config.load();
-                    let response = match crate::db::open_baseline_db(&cfg) {
-                        Ok(scan_conn) => {
-                            match crate::scanner::run_scan(&scan_conn, &cfg, request.mode) {
-                                Ok(scan_result) => {
-                                    for change in scan_result.changes {
-                                        let _ = alert_tx.send(AlertPayload {
-                                            change,
-                                            maintenance_window: false,
-                                        });
-                                    }
-                                    metrics.changes_detected.fetch_add(
-                                        scan_result.changes_found,
-                                        Ordering::Relaxed,
-                                    );
-                                    metrics
-                                        .scan_duration_ms
-                                        .store(scan_result.duration_ms, Ordering::Relaxed);
-                                    metrics
-                                        .last_scan_total
-                                        .store(scan_result.total_checked, Ordering::Relaxed);
-
-                                    tracing::info!(
-                                        checked = scan_result.total_checked,
-                                        changes = scan_result.changes_found,
-                                        errors = scan_result.errors,
-                                        "on-demand scan completed"
-                                    );
-
-                                    ScanResponse {
-                                        ok: true,
-                                        total_checked: scan_result.total_checked,
-                                        changes_found: scan_result.changes_found,
-                                        errors: scan_result.errors,
-                                        duration_ms: scan_result.duration_ms,
-                                        error: None,
-                                    }
+                    let response =
+                        match crate::scanner::run_scan(&baseline_conn, &cfg, request.mode) {
+                            Ok(scan_result) => {
+                                for change in scan_result.changes {
+                                    let _ = alert_tx.send(AlertPayload {
+                                        change,
+                                        maintenance_window: false,
+                                    });
                                 }
-                                Err(e) => ScanResponse {
-                                    ok: false,
-                                    total_checked: 0,
-                                    changes_found: 0,
-                                    errors: 0,
-                                    duration_ms: 0,
-                                    error: Some(format!("{}", e)),
-                                },
+                                metrics
+                                    .changes_detected
+                                    .fetch_add(scan_result.changes_found, Ordering::Relaxed);
+                                metrics
+                                    .scan_duration_ms
+                                    .store(scan_result.duration_ms, Ordering::Relaxed);
+                                metrics
+                                    .last_scan_total
+                                    .store(scan_result.total_checked, Ordering::Relaxed);
+
+                                tracing::info!(
+                                    checked = scan_result.total_checked,
+                                    changes = scan_result.changes_found,
+                                    errors = scan_result.errors,
+                                    "on-demand scan completed"
+                                );
+
+                                ScanResponse {
+                                    ok: true,
+                                    total_checked: scan_result.total_checked,
+                                    changes_found: scan_result.changes_found,
+                                    errors: scan_result.errors,
+                                    duration_ms: scan_result.duration_ms,
+                                    error: None,
+                                }
                             }
-                        }
-                        Err(e) => ScanResponse {
-                            ok: false,
-                            total_checked: 0,
-                            changes_found: 0,
-                            errors: 0,
-                            duration_ms: 0,
-                            error: Some(format!("cannot open baseline DB: {}", e)),
-                        },
-                    };
+                            Err(e) => ScanResponse {
+                                ok: false,
+                                total_checked: 0,
+                                changes_found: 0,
+                                errors: 0,
+                                duration_ms: 0,
+                                error: Some(format!("{}", e)),
+                            },
+                        };
                     let _ = request.response_tx.send(response);
                 }
 
@@ -116,40 +105,35 @@ pub fn spawn(
                         return;
                     }
 
-                    match crate::db::open_baseline_db(&cfg) {
-                        Ok(scan_conn) => {
-                            match crate::scanner::run_scan(&scan_conn, &cfg, cfg.scanner.scheduled_mode) {
-                                Ok(scan_result) => {
-                                    for change in scan_result.changes {
-                                        let _ = alert_tx.send(AlertPayload {
-                                            change,
-                                            maintenance_window: false,
-                                        });
-                                    }
-                                    metrics
-                                        .changes_detected
-                                        .fetch_add(scan_result.changes_found, Ordering::Relaxed);
-                                    metrics
-                                        .scan_duration_ms
-                                        .store(scan_result.duration_ms, Ordering::Relaxed);
-                                    metrics
-                                        .last_scan_total
-                                        .store(scan_result.total_checked, Ordering::Relaxed);
-
-                                    tracing::info!(
-                                        checked = scan_result.total_checked,
-                                        changes = scan_result.changes_found,
-                                        errors = scan_result.errors,
-                                        "scheduled scan completed"
-                                    );
-                                }
-                                Err(e) => {
-                                    tracing::error!(error = %e, "scheduled scan failed");
-                                }
+                    // Use startup baseline connection — never re-open by path
+                    match crate::scanner::run_scan(&baseline_conn, &cfg, cfg.scanner.scheduled_mode)
+                    {
+                        Ok(scan_result) => {
+                            for change in scan_result.changes {
+                                let _ = alert_tx.send(AlertPayload {
+                                    change,
+                                    maintenance_window: false,
+                                });
                             }
+                            metrics
+                                .changes_detected
+                                .fetch_add(scan_result.changes_found, Ordering::Relaxed);
+                            metrics
+                                .scan_duration_ms
+                                .store(scan_result.duration_ms, Ordering::Relaxed);
+                            metrics
+                                .last_scan_total
+                                .store(scan_result.total_checked, Ordering::Relaxed);
+
+                            tracing::info!(
+                                checked = scan_result.total_checked,
+                                changes = scan_result.changes_found,
+                                errors = scan_result.errors,
+                                "scheduled scan completed"
+                            );
                         }
                         Err(e) => {
-                            tracing::error!(error = %e, "cannot open baseline DB for scheduled scan");
+                            tracing::error!(error = %e, "scheduled scan failed");
                         }
                     }
                 } else if shutdown_rx.recv_timeout(Duration::from_secs(60)).is_ok() {
@@ -157,5 +141,7 @@ pub fn spawn(
                 }
             }
         })
-        .map_err(|e| crate::VigilError::Daemon(format!("cannot spawn scan scheduler thread: {}", e)))
+        .map_err(|e| {
+            crate::VigilError::Daemon(format!("cannot spawn scan scheduler thread: {}", e))
+        })
 }

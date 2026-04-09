@@ -85,6 +85,20 @@ impl BloomFilter {
         (h1.wrapping_add(h2.wrapping_mul(k as u64)) % self.num_bits as u64) as usize
     }
 
+    /// Check if any prefix of the given path might be in the Bloom filter.
+    /// Walks path components and checks each prefix — if any prefix matches,
+    /// the event should pass through (not be rejected).
+    pub fn might_contain_prefix_of(&self, path: &std::path::Path) -> bool {
+        let mut prefix = std::path::PathBuf::new();
+        for component in path.components() {
+            prefix.push(component);
+            if self.might_contain(prefix.to_string_lossy().as_bytes()) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Build a Bloom filter from watch path prefixes.
     /// Inserts all path component prefixes for each watch path.
     pub fn from_watch_paths(watch_paths: &[std::path::PathBuf]) -> Self {

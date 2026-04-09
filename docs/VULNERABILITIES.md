@@ -58,6 +58,19 @@ Use this as a reference when assessing Vigil's security posture or auditing spec
 | VIGIL-VULN-035 | Low | 0.23.0 | Process attribution via /proc/[pid]/exe raceable (PID recycling) |
 | VIGIL-VULN-036 | Medium | 0.23.0 | Negative clock jump not detected — enables clock manipulation replay |
 | VIGIL-VULN-037 | Medium | 0.23.0 | Scanner follows symlinks without recording resolution chain |
+| VIGIL-VULN-038 | Critical | 0.24.0 | Audit DB has no TOCTOU protection — only baseline DB is identity-checked |
+| VIGIL-VULN-039 | Critical | 0.24.0 | Scan scheduler opens baseline DB by path — bypasses TOCTOU check |
+| VIGIL-VULN-040 | High | 0.24.0 | Coordinator WAL checkpoint opens baseline DB by path — same TOCTOU bypass |
+| VIGIL-VULN-041 | Critical | 0.24.0 | HMAC key loaded from disk on every use — key file replacement undetected between loads |
+| VIGIL-VULN-042 | High | 0.24.0 | Runtime dir files written without atomic rename — partial writes observable |
+| VIGIL-VULN-043 | High | 0.24.0 | Bloom filter prefix insertion allows targeted false-negative evasion |
+| VIGIL-VULN-044 | High | 0.24.0 | package_update field hardcoded false — auto-rebaseline is dead code |
+| VIGIL-VULN-045 | Medium | 0.24.0 | Control socket nonce uses /dev/urandom with no fallback verification |
+| VIGIL-VULN-046 | Medium | 0.24.0 | Alert dispatcher audit failures cause silent evidence loss |
+| VIGIL-VULN-047 | Medium | 0.24.0 | Exclusion filter self-path check uses starts_with on strings — prefix collision |
+| VIGIL-VULN-048 | Medium | 0.24.0 | Config reload HMAC verification opens fresh DB connection — TOCTOU |
+| VIGIL-VULN-049 | Low | 0.24.0 | sd_notify called unconditionally — no NOTIFY_SOCKET safety verification |
+| VIGIL-VULN-050 | Medium | 0.24.0 | Scheduled scan severity hardcoded Medium — critical changes downgraded |
 
 ---
 
@@ -430,3 +443,133 @@ Clock anomaly detection only checked for forward jumps exceeding 1 hour. A negat
 When the scanner encountered a symlink pointing to a regular file, it followed the link and captured the snapshot, but recorded the immediate `read_link()` target rather than the fully resolved canonical path. If the symlink chain was modified (e.g., an intermediate link redirected) without changing the final target's name, the change would not be detected.
 
 **Remediation:** `FileSnapshot::from_fd()` now resolves symlink targets via `canonicalize()`, falling back to `read_link()` if canonicalization fails. The scanner logs the canonical resolution at debug level. Changes in the resolved canonical target between scans emit `SymlinkTargetChanged` alerts at the watch group's severity level.
+
+---
+
+### VIGIL-VULN-038 — Audit DB identity not tracked (Critical)
+
+**Fixed in:** 0.24.0
+
+Only the baseline DB had inode/device identity checks. The coordinator opened `audit.db` by path on housekeeping ticks, while the alert dispatcher could continue writing to an older connection after replacement. An attacker could atomically replace `audit.db` and make operator-facing reads use the attacker-controlled file.
+
+**Remediation:** Vigil now records `audit.db` inode/device identity at startup and verifies it on coordinator ticks alongside baseline identity. If either DB identity changes, Vigil enters degraded state and refuses housekeeping operations that rely on replaced storage.
+
+---
+
+### VIGIL-VULN-039 — Scan scheduler TOCTOU via path-open (Critical)
+
+**Fixed in:** 0.24.0
+
+Scheduled and on-demand scans opened baseline DB by path each run. This bypassed startup trust and let an attacker swap in a crafted baseline DB for scan execution, then swap it back before coordinator checks.
+
+**Remediation:** The scan scheduler now receives and reuses a startup baseline connection, eliminating path-based re-open in the scan execution path.
+
+---
+
+### VIGIL-VULN-040 — WAL checkpoint TOCTOU via path-open (High)
+
+**Fixed in:** 0.24.0
+
+Periodic WAL checkpoints opened baseline/audit DB by path inside coordinator housekeeping. This created a window where checkpoint operations could run on attacker-replaced files.
+
+**Remediation:** Coordinator WAL checkpoints now run on startup-opened baseline and audit connections, removing path-based trust refresh during runtime.
+
+---
+
+### VIGIL-VULN-041 — HMAC key trust-refresh from disk (Critical)
+
+**Fixed in:** 0.24.0
+
+Multiple components loaded `/etc/vigil/hmac.key` at different times. A root attacker replacing the key could poison future HMAC calculations and verification flows after startup.
+
+**Remediation:** Vigil now loads HMAC key material once at startup into zeroizing memory (`Zeroizing<Vec<u8>>`) and passes it to all runtime consumers (coordinator, baseline writer, alert dispatcher, control socket). Runtime code paths no longer re-read HMAC key from disk.
+
+---
+
+### VIGIL-VULN-042 — Runtime JSON snapshots not atomically written (High)
+
+**Fixed in:** 0.24.0
+
+Runtime files in `/run/vigil` were written with direct overwrite semantics, allowing partial/truncated reads during write windows and race opportunities around replacement timing.
+
+**Remediation:** Runtime snapshots (`metrics.json`, `state.json`, `health.json`) are now written using same-directory temp file plus atomic `rename(2)`.
+
+---
+
+### VIGIL-VULN-043 — Bloom fast-reject semantic mismatch (High)
+
+**Fixed in:** 0.24.0
+
+The Bloom filter inserted watched path prefixes but checked full event paths directly. Correct behavior depended on accidental false positives rather than explicit prefix semantics.
+
+**Remediation:** Bloom fast-reject now checks whether any prefix of the event path is present (`might_contain_prefix_of`), matching insertion semantics and preventing non-deterministic blind spots.
+
+---
+
+### VIGIL-VULN-044 — package_update hardcoded false (High)
+
+**Fixed in:** 0.24.0
+
+Worker change results always set `package_update = false`, so auto-rebaseline logic for package-owned files was effectively dead code.
+
+**Remediation:** Worker now sets `package_update = true` when a baseline entry is package-owned and a content modification is detected, re-enabling intended auto-rebaseline behavior.
+
+---
+
+### VIGIL-VULN-045 — Nonce generation did not fail closed (Medium)
+
+**Fixed in:** 0.24.0
+
+Control socket nonce generation ignored `/dev/urandom` read failures and could produce predictable zero-filled output under error conditions.
+
+**Remediation:** Nonce generation now returns `Result`, rejects failed entropy reads, rejects all-zero buffers, and closes authentication flow on nonce failure.
+
+---
+
+### VIGIL-VULN-046 — Audit write failures dropped evidence (Medium)
+
+**Fixed in:** 0.24.0
+
+On audit DB write failures, entries were logged as errors but not retried, causing silent evidence gaps during repeated DB failure windows.
+
+**Remediation:** Alert dispatcher now buffers failed audit writes in a bounded retry queue and replays buffered entries after successful DB reopen. Permanent overflow loss is tracked via `audit_entries_lost` metric.
+
+---
+
+### VIGIL-VULN-047 — Self-path exclusion prefix collision (Medium)
+
+**Fixed in:** 0.24.0
+
+Self-path exclusion used plain string `starts_with`, so `/run/vigil` also matched attacker-controlled prefixes like `/run/vigil-backdoor`.
+
+**Remediation:** Exclusion matching is now path-component aware by requiring exact self-path or self-path plus `/` prefix boundary.
+
+---
+
+### VIGIL-VULN-048 — Config reload HMAC check used fresh DB path-open (Medium)
+
+**Fixed in:** 0.24.0
+
+Config reload verification opened baseline DB by path for `config_file_hmac` lookups, reintroducing TOCTOU in reload-time trust checks.
+
+**Remediation:** Coordinator reload path now uses startup baseline connection and startup-loaded HMAC key for config integrity verification.
+
+---
+
+### VIGIL-VULN-049 — sd_notify sent to unvalidated NOTIFY_SOCKET (Low)
+
+**Fixed in:** 0.24.0
+
+Vigil sent lifecycle/watchdog notifications without validating `NOTIFY_SOCKET`, allowing information leakage to attacker-controlled sockets via environment injection.
+
+**Remediation:** Vigil now validates `NOTIFY_SOCKET` before `sd_notify`, accepting only `/run/systemd/` paths and abstract sockets.
+
+---
+
+### VIGIL-VULN-050 — Scheduled scan severity downgrade (Medium)
+
+**Fixed in:** 0.24.0
+
+Scheduled scanner emitted `Severity::Medium` for all change results, ignoring configured watch-group severities and potentially downgrading critical findings.
+
+**Remediation:** Scanner now resolves severity from watch-group index per path, with fallback only when no watch-group mapping exists.

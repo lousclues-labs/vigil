@@ -27,6 +27,8 @@ pub struct Metrics {
     pub control_commands: AtomicU64,
     /// Fanotify kernel queue overflow events.
     pub kernel_queue_overflows: AtomicU64,
+    /// Audit entries permanently lost due to buffer overflow.
+    pub audit_entries_lost: AtomicU64,
     /// Unix timestamp set once at daemon startup.
     pub uptime_start: i64,
 }
@@ -54,6 +56,7 @@ impl Metrics {
             backpressure_events: AtomicU64::new(0),
             control_commands: AtomicU64::new(0),
             kernel_queue_overflows: AtomicU64::new(0),
+            audit_entries_lost: AtomicU64::new(0),
             uptime_start: chrono::Utc::now().timestamp(),
         }
     }
@@ -81,6 +84,7 @@ impl Metrics {
             backpressure_events: self.backpressure_events.load(Ordering::Relaxed),
             control_commands: self.control_commands.load(Ordering::Relaxed),
             kernel_queue_overflows: self.kernel_queue_overflows.load(Ordering::Relaxed),
+            audit_entries_lost: self.audit_entries_lost.load(Ordering::Relaxed),
             uptime_start: self.uptime_start,
         }
     }
@@ -115,6 +119,7 @@ pub struct MetricsSnapshot {
     pub backpressure_events: u64,
     pub control_commands: u64,
     pub kernel_queue_overflows: u64,
+    pub audit_entries_lost: u64,
     pub uptime_start: i64,
 }
 
@@ -219,6 +224,12 @@ impl MetricsSnapshot {
             "vigil_kernel_queue_overflows_total",
             "Fanotify kernel queue overflow events",
             self.kernel_queue_overflows,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_audit_entries_lost_total",
+            "Audit entries permanently lost due to buffer overflow",
+            self.audit_entries_lost,
         );
 
         let _ = writeln!(out);

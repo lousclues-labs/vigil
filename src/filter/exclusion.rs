@@ -68,11 +68,19 @@ impl ExclusionFilter {
             return true;
         }
 
-        if self
-            .self_paths
-            .iter()
-            .any(|p| !p.is_empty() && path.starts_with(p))
-        {
+        if self.self_paths.iter().any(|p| {
+            if p.is_empty() {
+                return false;
+            }
+            // Use path-component-aware comparison: append '/' to prevent
+            // /run/vigil matching /run/vigil-backdoor
+            let prefix = if p.ends_with('/') {
+                p.to_string()
+            } else {
+                format!("{}/", p)
+            };
+            path == p || path.starts_with(&prefix)
+        }) {
             return true;
         }
 

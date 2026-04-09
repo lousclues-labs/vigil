@@ -215,6 +215,9 @@ where
     let mut result = ScanResult::default();
     let total = baseline_ops::count(conn)?.max(0) as u64;
 
+    // Build watch group index for severity lookup during scheduled scans
+    let watch_index = crate::watch_index::WatchGroupIndex::from_config(config);
+
     baseline_ops::for_each_entry(conn, |entry| {
         result.total_checked += 1;
 
@@ -240,22 +243,30 @@ where
 
         match crate::types::FileSnapshot::from_path(&entry.path, &opts) {
             Ok(SnapshotOrDeleted::Deleted) => {
+                let (group_name, group_severity) = watch_index
+                    .lookup(&entry.path)
+                    .map(|(g, s)| (g.to_string(), s))
+                    .unwrap_or(("scheduled_scan".into(), Severity::High));
                 result.changes.push(ChangeResult::deletion(
                     &entry.path,
                     &entry,
-                    Severity::High,
-                    "scheduled_scan".into(),
+                    group_severity,
+                    group_name,
                 ));
                 result.changes_found += 1;
             }
             Ok(SnapshotOrDeleted::Snapshot(snapshot)) => {
                 let changes = snapshot.diff(&entry);
                 if !changes.is_empty() {
+                    let (group_name, group_severity) = watch_index
+                        .lookup(&entry.path)
+                        .map(|(g, s)| (g.to_string(), s))
+                        .unwrap_or(("scheduled_scan".into(), Severity::Medium));
                     result.changes.push(ChangeResult {
                         path: std::sync::Arc::new(entry.path.clone()),
                         changes,
-                        severity: Severity::Medium,
-                        monitored_group: "scheduled_scan".into(),
+                        severity: group_severity,
+                        monitored_group: group_name,
                         process: None,
                         package: entry.package.clone(),
                         package_update: false,

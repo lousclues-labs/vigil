@@ -216,9 +216,10 @@ pub fn start(
 
                         let fd_link = format!("/proc/self/fd/{}", event.fd);
                         if let Ok(path) = std::fs::read_link(&fd_link) {
-                            // Bloom filter fast-reject: skip BTreeMap lookup for
-                            // paths that are definitely not watched
-                            if !current_bloom.might_contain(path.to_string_lossy().as_bytes()) {
+                            // Bloom filter fast-reject: check if any prefix of the
+                            // event path is in the filter (not the full path, which
+                            // was never inserted)
+                            if !current_bloom.might_contain_prefix_of(&path) {
                                 // fd_guard drops and closes the fd automatically
                                 offset += event.event_len as usize;
                                 continue;

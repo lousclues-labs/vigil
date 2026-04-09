@@ -4,6 +4,26 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-04-08
+
+### Release Summary
+- Fourth-round security hardening addressing 13 vulnerabilities (VIGIL-VULN-038 through VIGIL-VULN-050) found by a sophisticated local adversary with root access who assumed all Round 1–3 fixes were deployed. Theme: eliminate temporal coherence gaps — every "open by path" and "load from disk" in a security-critical code path was a TOCTOU or trust-refresh the attacker could poison. Carry trust from startup; don't re-derive it.
+
+### Fixed
+- **security:** audit.db identity (inode/device) now tracked and verified alongside baseline.db — prevents atomic file replacement of audit evidence (VIGIL-VULN-038, Critical).
+- **security:** scan scheduler now uses the startup baseline connection instead of re-opening by path — closes TOCTOU window for on-demand and scheduled scans (VIGIL-VULN-039, Critical).
+- **security:** coordinator WAL checkpoint uses startup connections — prevents checkpoint of attacker-replaced database (VIGIL-VULN-040, High).
+- **security:** HMAC key loaded exactly once at startup and stored in Daemon struct — key file replacement no longer poisons subsequent HMAC operations. Baseline writer, alert dispatcher, coordinator, and control socket all use the startup key (VIGIL-VULN-041, Critical).
+- **security:** runtime directory files (metrics.json, state.json, health.json) written via atomic temp+rename — prevents partial-read spoofing and race-condition file replacement (VIGIL-VULN-042, High).
+- **security:** Bloom filter fast-reject now checks path prefixes instead of full path — eliminates non-deterministic monitoring gaps for files under watched directories (VIGIL-VULN-043, High).
+- **security:** `package_update` detection implemented in worker — auto-rebaseline code path is no longer dead; reduces alert fatigue that enabled evasion (VIGIL-VULN-044, High).
+- **security:** control socket nonce generation fails closed when /dev/urandom is unavailable — prevents predictable nonce from zeroed buffer (VIGIL-VULN-045, Medium).
+- **security:** failed audit writes buffered in memory (bounded to 1000) and retried after DB reopen — closes silent evidence gap during audit DB failures. `audit_entries_lost` metric added (VIGIL-VULN-046, Medium).
+- **security:** exclusion filter self-path check uses path-component-aware comparison — prevents `/run/vigil`-prefixed attacker directories from being silently excluded (VIGIL-VULN-047, Medium).
+- **security:** config reload HMAC verification uses startup baseline connection — prevents TOCTOU when both config and baseline DB are replaced (VIGIL-VULN-048, Medium).
+- **security:** `NOTIFY_SOCKET` validated before sd_notify calls — only accepts `/run/systemd/` paths and abstract sockets; prevents lifecycle state leak to attacker-controlled socket (VIGIL-VULN-049, Low).
+- **security:** scheduled scan severity resolved from watch group config instead of hardcoded Medium — prevents Critical/High severity downgrade for scheduled findings (VIGIL-VULN-050, Medium).
+
 ## [0.23.0] - 2026-04-08
 
 ### Release Summary

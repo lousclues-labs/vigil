@@ -435,6 +435,12 @@ fn process_event_inner(
         severity
     };
 
+    // Detect package-owned file changes for auto-rebaseline
+    let is_package_update = baseline.package.is_some()
+        && changes
+            .iter()
+            .any(|c| matches!(c, Change::ContentModified { .. }));
+
     Ok(Some(ChangeResult {
         path: event.path.clone(),
         changes,
@@ -442,7 +448,7 @@ fn process_event_inner(
         monitored_group: group_name,
         process: event.process.clone(),
         package: baseline.package.clone(),
-        package_update: false,
+        package_update: is_package_update,
     }))
 }
 

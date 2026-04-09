@@ -33,6 +33,10 @@ pub fn spawn(
     reload_flag: Arc<AtomicBool>,
     backpressure: Arc<AtomicBool>,
     baseline_db_identity: Option<crate::db::DbFileIdentity>,
+    audit_db_identity: Option<crate::db::DbFileIdentity>,
+    startup_hmac_key: Option<zeroize::Zeroizing<Vec<u8>>>,
+    startup_baseline_conn: rusqlite::Connection,
+    startup_audit_conn: rusqlite::Connection,
 ) -> crate::Result<JoinHandle<()>> {
     // Compute initial config hash for integrity tracking
     let mut last_config_hash = config_file_hash();
@@ -69,38 +73,36 @@ pub fn spawn(
                     // If HMAC signing is enabled, verify config HMAC
                     let cfg = config.load();
                     if cfg.security.hmac_signing {
-                        if let Ok(key) = crate::hmac::load_hmac_key(&cfg.security.hmac_key_path) {
+                        if let Some(ref key) = startup_hmac_key {
                             if let Some(content) = config_file_content() {
                                 let current_hmac =
-                                    crate::hmac::compute_hmac(&key, &content).unwrap_or_default();
-                                // Load stored config HMAC from baseline db
-                                if let Ok(baseline_conn) = db::open_baseline_db(&cfg) {
-                                    let stored = crate::db::baseline_ops::get_config_state(
-                                        &baseline_conn,
-                                        "config_file_hmac",
-                                    )
-                                    .ok()
-                                    .flatten();
-                                    match stored {
-                                        Some(ref expected) if expected != &current_hmac => {
-                                            tracing::error!(
-                                                "config reload REJECTED: config file HMAC \
-                                                 verification failed. The config file may \
-                                                 have been tampered with."
-                                            );
-                                            continue; // skip reload
-                                        }
-                                        None => {
-                                            // Store initial config HMAC
-                                            let _ =
-                                                crate::db::baseline_ops::set_config_state(
-                                                    &baseline_conn,
-                                                    "config_file_hmac",
-                                                    &current_hmac,
-                                                );
-                                        }
-                                        _ => {} // HMAC matches, proceed
+                                    crate::hmac::compute_hmac(key, &content).unwrap_or_default();
+                                // Load stored config HMAC from startup baseline connection
+                                let stored = crate::db::baseline_ops::get_config_state(
+                                    &startup_baseline_conn,
+                                    "config_file_hmac",
+                                )
+                                .ok()
+                                .flatten();
+                                match stored {
+                                    Some(ref expected) if expected != &current_hmac => {
+                                        tracing::error!(
+                                            "config reload REJECTED: config file HMAC \
+                                             verification failed. The config file may \
+                                             have been tampered with."
+                                        );
+                                        continue; // skip reload
                                     }
+                                    None => {
+                                        // Store initial config HMAC
+                                        let _ =
+                                            crate::db::baseline_ops::set_config_state(
+                                                &startup_baseline_conn,
+                                                "config_file_hmac",
+                                                &current_hmac,
+                                            );
+                                    }
+                                    _ => {} // HMAC matches, proceed
                                 }
                             }
                         }
@@ -166,6 +168,33 @@ pub fn spawn(
                         }
                     }
 
+                    // TOCTOU check: verify audit DB has not been replaced since startup
+                    if let Some(ref identity) = audit_db_identity {
+                        let audit_path = db::audit_db_path(&cfg);
+                        match identity.is_replaced(&audit_path) {
+                            Ok(true) => {
+                                tracing::error!(
+                                    "audit database file replaced — possible evidence \
+                                     destruction. Inode/device changed since startup."
+                                );
+                                let mut s = state.write();
+                                *s = DaemonState::Degraded {
+                                    reason: "audit_db_replaced".into(),
+                                    since: Utc::now(),
+                                };
+                                last_tick = std::time::Instant::now();
+                                continue;
+                            }
+                            Ok(false) => {} // identity matches, proceed
+                            Err(e) => {
+                                tracing::error!(
+                                    error = %e,
+                                    "failed to stat audit database for TOCTOU check"
+                                );
+                            }
+                        }
+                    }
+
                     // Bind-mount evasion detection: compare current mounts against
                     // the set established at startup. New mounts over watched paths
                     // could evade fanotify monitoring.
@@ -221,37 +250,35 @@ pub fn spawn(
                     if clock_anomaly {
                         // Do NOT update last_rotation_timestamp on any clock anomaly
                     } else {
-                        match db::open_audit_db(&cfg) {
-                            Ok(audit_conn) => {
-                                // Safety check: count total entries and compute how many
-                                // would be deleted. Skip if > 50% would be removed.
-                                let total: i64 = audit_conn
-                                    .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
-                                    .unwrap_or(0);
-                                let cutoff = now_ts - (cfg.database.audit_retention_days as i64 * 86400);
-                                let would_delete: i64 = audit_conn
-                                    .query_row(
-                                        "SELECT COUNT(*) FROM audit_log WHERE timestamp < ?1",
-                                        rusqlite::params![cutoff],
-                                        |row| row.get(0),
-                                    )
-                                    .unwrap_or(0);
+                        // Use the startup audit connection — never re-open by path
+                        {
+                            // Safety check: count total entries and compute how many
+                            // would be deleted. Skip if > 50% would be removed.
+                            let total: i64 = startup_audit_conn
+                                .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
+                                .unwrap_or(0);
+                            let cutoff = now_ts - (cfg.database.audit_retention_days as i64 * 86400);
+                            let would_delete: i64 = startup_audit_conn
+                                .query_row(
+                                    "SELECT COUNT(*) FROM audit_log WHERE timestamp < ?1",
+                                    rusqlite::params![cutoff],
+                                    |row| row.get(0),
+                                )
+                                .unwrap_or(0);
 
-                                if total > 0 && would_delete * 2 > total {
-                                    tracing::error!(
-                                        total = total,
-                                        would_delete = would_delete,
-                                        "audit rotation would delete >50% of entries — skipping (possible clock manipulation)"
-                                    );
-                                } else {
-                                    match db::audit_ops::rotate_audit_log(&audit_conn, cfg.database.audit_retention_days) {
-                                        Ok(0) => {}
-                                        Ok(n) => tracing::info!(deleted = n, "rotated old audit entries"),
-                                        Err(e) => tracing::warn!(error = %e, "audit rotation failed"),
-                                    }
+                            if total > 0 && would_delete * 2 > total {
+                                tracing::error!(
+                                    total = total,
+                                    would_delete = would_delete,
+                                    "audit rotation would delete >50% of entries — skipping (possible clock manipulation)"
+                                );
+                            } else {
+                                match db::audit_ops::rotate_audit_log(&startup_audit_conn, cfg.database.audit_retention_days) {
+                                    Ok(0) => {}
+                                    Ok(n) => tracing::info!(deleted = n, "rotated old audit entries"),
+                                    Err(e) => tracing::warn!(error = %e, "audit rotation failed"),
                                 }
                             }
-                            Err(e) => tracing::error!(error = %e, "failed to open audit database for rotation"),
                         }
                         last_rotation_timestamp = now_ts;
                     }
@@ -295,30 +322,23 @@ pub fn spawn(
                     checkpoint_counter += 1;
                     if checkpoint_counter >= 5 {
                         checkpoint_counter = 0;
-                        match db::open_baseline_db(&cfg) {
-                            Ok(baseline_conn) => {
-                                match baseline_conn.pragma_update(None, "wal_checkpoint", "PASSIVE") {
-                                    Ok(()) => tracing::debug!("WAL checkpoint (baseline) completed"),
-                                    Err(e) => tracing::warn!(error = %e, "WAL checkpoint (baseline) failed"),
-                                }
-                            }
-                            Err(e) => tracing::error!(error = %e, "failed to open baseline database for WAL checkpoint"),
+                        // Use startup connections — never re-open by path
+                        match startup_baseline_conn.pragma_update(None, "wal_checkpoint", "PASSIVE") {
+                            Ok(()) => tracing::debug!("WAL checkpoint (baseline) completed"),
+                            Err(e) => tracing::warn!(error = %e, "WAL checkpoint (baseline) failed"),
                         }
-                        match db::open_audit_db(&cfg) {
-                            Ok(audit_conn) => {
-                                match audit_conn.pragma_update(None, "wal_checkpoint", "PASSIVE") {
-                                    Ok(()) => tracing::debug!("WAL checkpoint (audit) completed"),
-                                    Err(e) => tracing::warn!(error = %e, "WAL checkpoint (audit) failed"),
-                                }
-                            }
-                            Err(e) => tracing::error!(error = %e, "failed to open audit database for WAL checkpoint"),
+                        match startup_audit_conn.pragma_update(None, "wal_checkpoint", "PASSIVE") {
+                            Ok(()) => tracing::debug!("WAL checkpoint (audit) completed"),
+                            Err(e) => tracing::warn!(error = %e, "WAL checkpoint (audit) failed"),
                         }
                     }
 
                     last_tick = std::time::Instant::now();
                 }
 
-                let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+                if is_notify_socket_safe() {
+                    let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+                }
 
                 std::thread::sleep(Duration::from_millis(1000));
             }
@@ -330,7 +350,7 @@ fn write_metrics_snapshot(runtime_dir: &std::path::Path, metrics: &Metrics) -> c
     std::fs::create_dir_all(runtime_dir)?;
     let path = runtime_dir.join("metrics.json");
     let data = serde_json::to_vec_pretty(&metrics.snapshot())?;
-    std::fs::write(path, data)?;
+    atomic_write(&path, &data)?;
     Ok(())
 }
 
@@ -352,7 +372,33 @@ fn write_state_snapshot(
         }),
     };
 
-    std::fs::write(path, serde_json::to_vec_pretty(&value)?)?;
+    atomic_write(&path, &serde_json::to_vec_pretty(&value)?)?;
+    Ok(())
+}
+
+/// Atomically write data to a file by writing to a temp file in the same
+/// directory, then rename(). rename() on the same filesystem is atomic on Linux.
+pub fn atomic_write(path: &std::path::Path, data: &[u8]) -> crate::Result<()> {
+    use std::io::Write;
+
+    let dir = path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("/tmp"));
+
+    // Build temp file name from target filename + PID + counter for uniqueness
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "vigil".to_string());
+    let tmp_name = format!(".{}.{}.tmp", file_name, std::process::id());
+    let tmp_path = dir.join(&tmp_name);
+
+    let mut f = std::fs::File::create(&tmp_path)?;
+    f.write_all(data)?;
+    f.sync_all()?;
+    drop(f);
+
+    std::fs::rename(&tmp_path, path)?;
     Ok(())
 }
 
@@ -384,4 +430,31 @@ fn config_file_content() -> Option<Vec<u8>> {
         }
     }
     std::fs::read("/etc/vigil/vigil.toml").ok()
+}
+
+/// Validate that NOTIFY_SOCKET points to a safe systemd-controlled path.
+/// Rejects non-standard paths to prevent lifecycle state leaks.
+pub fn is_notify_socket_safe() -> bool {
+    match std::env::var("NOTIFY_SOCKET") {
+        Ok(val) => {
+            // Abstract sockets (@-prefixed) are acceptable
+            if val.starts_with('@') {
+                return true;
+            }
+            // Only accept paths under /run/systemd/
+            if val.starts_with("/run/systemd/") {
+                return true;
+            }
+            tracing::warn!(
+                socket = %val,
+                "NOTIFY_SOCKET points to non-standard path — ignoring to prevent \
+                 lifecycle state leak"
+            );
+            false
+        }
+        Err(_) => {
+            // No NOTIFY_SOCKET set — sd_notify will be a no-op anyway
+            true
+        }
+    }
 }

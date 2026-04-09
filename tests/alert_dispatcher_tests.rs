@@ -19,7 +19,7 @@ fn dispatcher_writes_and_verifies_audit_chain() {
     cfg.alerts.remote_syslog.enabled = false;
 
     let metrics = Arc::new(vigil::metrics::Metrics::new());
-    let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics.clone()).unwrap();
+    let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics.clone(), None).unwrap();
 
     let (tx, rx) = bounded::<AlertPayload>(4);
     let shutdown = Arc::new(AtomicBool::new(false));

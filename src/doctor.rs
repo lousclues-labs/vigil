@@ -133,7 +133,7 @@ pub fn read_health_snapshot(config: &Config) -> Option<RuntimeHealthSnapshot> {
 pub fn write_health_snapshot(config: &Config) -> crate::Result<()> {
     let snapshot = collect_health_snapshot(config);
     fs::create_dir_all(&config.daemon.runtime_dir)?;
-    fs::write(health_path(config), serde_json::to_vec_pretty(&snapshot)?)?;
+    crate::coordinator::atomic_write(&health_path(config), &serde_json::to_vec_pretty(&snapshot)?)?;
     Ok(())
 }
 

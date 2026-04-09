@@ -53,10 +53,23 @@ pub struct AlertDispatcher {
     metrics: Arc<Metrics>,
     hostname: String,
     consecutive_audit_failures: std::sync::atomic::AtomicU32,
+    /// Bounded buffer for audit entries that failed to write; retried after DB reopen.
+    audit_retry_buffer: Mutex<Vec<PendingAuditEntry>>,
+}
+
+/// An audit entry pending retry after a DB write failure.
+struct PendingAuditEntry {
+    payload: AlertPayload,
+    suppressed: bool,
 }
 
 impl AlertDispatcher {
-    pub fn new(config: &Config, audit_db_path: &Path, metrics: Arc<Metrics>) -> Result<Self> {
+    pub fn new(
+        config: &Config,
+        audit_db_path: &Path,
+        metrics: Arc<Metrics>,
+        startup_hmac_key: Option<Zeroizing<Vec<u8>>>,
+    ) -> Result<Self> {
         if let Some(parent) = audit_db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -114,17 +127,7 @@ impl AlertDispatcher {
                 .to_string()
         });
 
-        let hmac_key = if config.security.hmac_signing {
-            match crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
-                Ok(key) => Some(Zeroizing::new(key)),
-                Err(e) => {
-                    tracing::warn!(error = %e, "HMAC key load failed; audit entries will be unsigned");
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let hmac_key = startup_hmac_key;
 
         let hostname = std::fs::read_to_string("/etc/hostname")
             .ok()
@@ -148,6 +151,7 @@ impl AlertDispatcher {
             metrics,
             hostname,
             consecutive_audit_failures: std::sync::atomic::AtomicU32::new(0),
+            audit_retry_buffer: Mutex::new(Vec::new()),
         })
     }
 
@@ -167,6 +171,24 @@ impl AlertDispatcher {
                         self.metrics
                             .db_errors
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                        // Buffer the failed entry for retry (bounded to 1000)
+                        {
+                            let mut buffer = self.audit_retry_buffer.lock();
+                            if buffer.len() < 1000 {
+                                buffer.push(PendingAuditEntry {
+                                    payload: payload.clone(),
+                                    suppressed,
+                                });
+                            } else {
+                                tracing::error!(
+                                    "audit retry buffer full — audit entry permanently lost"
+                                );
+                                self.metrics
+                                    .audit_entries_lost
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
 
                         let failures = self
                             .consecutive_audit_failures
@@ -192,6 +214,29 @@ impl AlertDispatcher {
                                         self.consecutive_audit_failures
                                             .store(0, std::sync::atomic::Ordering::Relaxed);
                                         tracing::info!("audit DB connection reopened");
+
+                                        // Retry buffered entries
+                                        let pending: Vec<PendingAuditEntry> = {
+                                            let mut buffer = self.audit_retry_buffer.lock();
+                                            std::mem::take(&mut *buffer)
+                                        };
+                                        let retry_count = pending.len();
+                                        let mut retry_ok = 0u64;
+                                        for entry in pending {
+                                            if self
+                                                .write_audit_entry(&entry.payload, entry.suppressed)
+                                                .is_ok()
+                                            {
+                                                retry_ok += 1;
+                                            }
+                                        }
+                                        if retry_count > 0 {
+                                            tracing::info!(
+                                                retried = retry_count,
+                                                succeeded = retry_ok,
+                                                "retried buffered audit entries"
+                                            );
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -400,7 +445,7 @@ mod tests {
 
         let cfg = crate::config::default_config();
         let metrics = Arc::new(crate::metrics::Metrics::new());
-        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics).unwrap();
+        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, None).unwrap();
 
         let payload = AlertPayload {
             change: ChangeResult {
@@ -429,7 +474,7 @@ mod tests {
         cfg.alerts.cooldown_seconds = 10; // 10 second cooldown
 
         let metrics = Arc::new(crate::metrics::Metrics::new());
-        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics).unwrap();
+        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, None).unwrap();
 
         let change = ChangeResult {
             path: std::sync::Arc::new(std::path::PathBuf::from("/tmp/cooldown_test")),
@@ -470,7 +515,7 @@ mod tests {
         cfg.alerts.cooldown_seconds = 0; // disable cooldown for this test
 
         let metrics = Arc::new(crate::metrics::Metrics::new());
-        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics).unwrap();
+        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, None).unwrap();
 
         for i in 0..5 {
             let change = ChangeResult {
@@ -504,10 +549,13 @@ mod tests {
         let key_path = dir.path().join("hmac.key");
         std::fs::write(&key_path, "a".repeat(64)).unwrap();
         cfg.security.hmac_signing = true;
-        cfg.security.hmac_key_path = key_path;
+        cfg.security.hmac_key_path = key_path.clone();
 
+        let hmac_key = crate::hmac::load_hmac_key(&key_path)
+            .ok()
+            .map(Zeroizing::new);
         let metrics = Arc::new(crate::metrics::Metrics::new());
-        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics).unwrap();
+        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, hmac_key).unwrap();
 
         let payload = AlertPayload {
             change: ChangeResult {
@@ -539,7 +587,7 @@ mod tests {
 
         let cfg = crate::config::default_config();
         let metrics = Arc::new(crate::metrics::Metrics::new());
-        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics).unwrap();
+        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, None).unwrap();
 
         let critical_change = ChangeResult {
             path: std::sync::Arc::new(std::path::PathBuf::from("/usr/bin/sudo")),

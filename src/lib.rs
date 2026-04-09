@@ -51,6 +51,10 @@ pub struct Daemon {
     pub config_hash: Option<String>,
     /// Inode+device identity of the baseline DB recorded at startup for TOCTOU detection.
     pub baseline_db_identity: Option<db::DbFileIdentity>,
+    /// Inode+device identity of the audit DB recorded at startup for TOCTOU detection.
+    pub audit_db_identity: Option<db::DbFileIdentity>,
+    /// HMAC key loaded once at startup; never re-read from disk.
+    pub startup_hmac_key: Option<zeroize::Zeroizing<Vec<u8>>>,
 }
 
 impl Daemon {
@@ -62,6 +66,25 @@ impl Daemon {
         // Record inode+device of baseline DB for TOCTOU detection
         let baseline_db_identity = db::DbFileIdentity::from_path(&config.daemon.db_path).ok();
 
+        // Record inode+device of audit DB for TOCTOU detection
+        let audit_db_path = db::audit_db_path(&config);
+        // Ensure audit DB exists so we can record its identity
+        let _audit_conn = db::open_audit_db(&config)?;
+        let audit_db_identity = db::DbFileIdentity::from_path(&audit_db_path).ok();
+
+        // Load HMAC key exactly once at startup — never re-read from disk
+        let startup_hmac_key = if config.security.hmac_signing {
+            match crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
+                Ok(key) => Some(zeroize::Zeroizing::new(key)),
+                Err(e) => {
+                    tracing::warn!(error = %e, "HMAC key load failed at startup");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // Compute config file hash for integrity tracking
         let config_hash = config_search_paths_for_hash()
             .and_then(|path| std::fs::read(&path).ok())
@@ -69,10 +92,10 @@ impl Daemon {
 
         // Store config HMAC if signing is enabled
         if config.security.hmac_signing {
-            if let Ok(key) = crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
+            if let Some(ref key) = startup_hmac_key {
                 if let Some(ref hash) = config_hash {
                     let config_hmac =
-                        crate::hmac::compute_hmac(&key, hash.as_bytes()).unwrap_or_default();
+                        crate::hmac::compute_hmac(key, hash.as_bytes()).unwrap_or_default();
                     let _ = baseline_ops::set_config_state(
                         &baseline_conn,
                         "config_file_hmac",
@@ -93,6 +116,8 @@ impl Daemon {
             watch_index: Arc::new(ArcSwap::from_pointee(watch_index)),
             config_hash,
             baseline_db_identity,
+            audit_db_identity,
+            startup_hmac_key,
         })
     }
 
@@ -169,6 +194,7 @@ impl Daemon {
             self.shutdown.clone(),
             self.metrics.clone(),
             baseline_generation.clone(),
+            self.startup_hmac_key.clone(),
         )?;
 
         let alert_handle = spawn_alert_thread(
@@ -177,7 +203,14 @@ impl Daemon {
             self.shutdown.clone(),
             &audit_db_path,
             self.metrics.clone(),
+            self.startup_hmac_key.clone(),
         )?;
+
+        // Open a startup baseline connection for the coordinator to use
+        // (avoids TOCTOU by never re-opening by path)
+        let coordinator_baseline_conn = db::open_baseline_db(&cfg)?;
+        // Open a startup audit connection for the coordinator
+        let coordinator_audit_conn = db::open_audit_db(&cfg)?;
 
         let coordinator_handle = coordinator::spawn(
             self.config.clone(),
@@ -188,6 +221,10 @@ impl Daemon {
             self.reload_flag.clone(),
             backpressure.clone(),
             self.baseline_db_identity,
+            self.audit_db_identity,
+            self.startup_hmac_key.clone(),
+            coordinator_baseline_conn,
+            coordinator_audit_conn,
         )?;
 
         let (shutdown_tx, shutdown_rx) = crossbeam_channel::bounded::<()>(1);
@@ -196,6 +233,9 @@ impl Daemon {
         let (scan_trigger_tx, scan_trigger_rx) =
             crossbeam_channel::bounded::<control::ScanRequest>(1);
 
+        // Open a startup baseline connection for the scan scheduler (avoids TOCTOU)
+        let scan_baseline_conn = db::open_baseline_db(&cfg)?;
+
         let scan_handle = scan_scheduler::spawn(
             self.config.clone(),
             self.shutdown.clone(),
@@ -203,9 +243,12 @@ impl Daemon {
             self.metrics.clone(),
             shutdown_rx,
             scan_trigger_rx,
+            scan_baseline_conn,
         )?;
 
-        let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]);
+        if coordinator::is_notify_socket_safe() {
+            let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]);
+        }
         tracing::info!("vigil daemon ready");
 
         // Spawn control socket if configured
@@ -218,6 +261,7 @@ impl Daemon {
                 self.reload_flag.clone(),
                 scan_trigger_tx,
                 &baseline_db_path,
+                self.startup_hmac_key.clone(),
             )?)
         } else {
             None
@@ -228,7 +272,9 @@ impl Daemon {
             std::thread::sleep(Duration::from_secs(1));
         }
 
-        let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
+        if coordinator::is_notify_socket_safe() {
+            let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
+        }
 
         // Signal the scan scheduler to wake up and exit
         let _ = shutdown_tx.send(());
@@ -382,12 +428,12 @@ impl Daemon {
 
         // Verify baseline HMAC if signing is enabled
         if config.security.hmac_signing {
-            if let Ok(key) = crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
+            if let Some(ref key) = self.startup_hmac_key {
                 let stored = baseline_ops::get_config_state(&self.baseline_conn, "baseline_hmac")?;
                 match stored {
                     Some(ref expected) => {
                         let current =
-                            baseline_ops::compute_baseline_hmac(&self.baseline_conn, &key)?;
+                            baseline_ops::compute_baseline_hmac(&self.baseline_conn, key)?;
                         if current == *expected {
                             tracing::info!("baseline HMAC verification passed");
                         } else {
@@ -409,7 +455,7 @@ impl Daemon {
                         tracing::warn!(
                             "no baseline HMAC stored; computing and storing for future verification"
                         );
-                        let hmac = baseline_ops::compute_baseline_hmac(&self.baseline_conn, &key)?;
+                        let hmac = baseline_ops::compute_baseline_hmac(&self.baseline_conn, key)?;
                         baseline_ops::set_config_state(
                             &self.baseline_conn,
                             "baseline_hmac",
@@ -435,9 +481,10 @@ fn spawn_alert_thread(
     shutdown: Arc<AtomicBool>,
     audit_db_path: &std::path::Path,
     metrics: Arc<Metrics>,
+    startup_hmac_key: Option<zeroize::Zeroizing<Vec<u8>>>,
 ) -> Result<JoinHandle<()>> {
     let cfg = config.load();
-    let dispatcher = AlertDispatcher::new(&cfg, audit_db_path, metrics)?;
+    let dispatcher = AlertDispatcher::new(&cfg, audit_db_path, metrics, startup_hmac_key)?;
 
     std::thread::Builder::new()
         .name("vigil-alert".into())
@@ -451,6 +498,7 @@ fn spawn_baseline_writer(
     shutdown: Arc<AtomicBool>,
     metrics: Arc<Metrics>,
     baseline_generation: Arc<AtomicU64>,
+    startup_hmac_key: Option<zeroize::Zeroizing<Vec<u8>>>,
 ) -> Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name("vigil-baseline-writer".into())
@@ -512,24 +560,21 @@ fn spawn_baseline_writer(
                             if batch_count % 100 == 0
                                 || last_hmac_update.elapsed() >= Duration::from_secs(60)
                             {
-                                // Try to load HMAC key from the stored path
-                                let hmac_key_path = std::path::PathBuf::from("/etc/vigil/hmac.key");
-                                if hmac_key_path.exists() {
-                                    if let Ok(key) = crate::hmac::load_hmac_key(&hmac_key_path) {
-                                        match baseline_ops::compute_baseline_hmac(&conn, &key) {
-                                            Ok(hmac) => {
-                                                let _ = baseline_ops::set_config_state(
-                                                    &conn,
-                                                    "baseline_hmac",
-                                                    &hmac,
-                                                );
-                                            }
-                                            Err(e) => {
-                                                tracing::debug!(
-                                                    error = %e,
-                                                    "baseline writer HMAC update failed"
-                                                );
-                                            }
+                                // Use the HMAC key loaded at startup — never re-read from disk
+                                if let Some(ref key) = startup_hmac_key {
+                                    match baseline_ops::compute_baseline_hmac(&conn, key) {
+                                        Ok(hmac) => {
+                                            let _ = baseline_ops::set_config_state(
+                                                &conn,
+                                                "baseline_hmac",
+                                                &hmac,
+                                            );
+                                        }
+                                        Err(e) => {
+                                            tracing::debug!(
+                                                error = %e,
+                                                "baseline writer HMAC update failed"
+                                            );
                                         }
                                     }
                                 }
