@@ -1380,6 +1380,7 @@ fn read_pid(path: &Path) -> Option<i32> {
     raw.trim().parse::<i32>().ok()
 }
 
+#[allow(unsafe_code)]
 fn is_pid_alive(pid: i32) -> bool {
     if pid <= 0 {
         return false;

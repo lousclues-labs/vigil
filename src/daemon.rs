@@ -11,6 +11,9 @@ fn main() {
 
     if let Err(e) = run() {
         tracing::error!(error = %e, "fatal daemon error");
+        eprintln!("vigild: fatal error: {}", e);
+        // Ensure the error message reaches journald before exit
+        std::thread::sleep(std::time::Duration::from_millis(100));
         process::exit(1);
     }
 }

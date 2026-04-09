@@ -20,6 +20,7 @@ pub struct FsEvent {
 // struct as a whole is Send for crossbeam channels.
 // SAFETY: OwnedFd is Send, all other fields are Send. The fd is transferred
 // (moved) between threads, never shared.
+#[allow(unsafe_code)]
 unsafe impl Send for FsEvent {}
 
 /// Filesystem event types from kernel monitors.

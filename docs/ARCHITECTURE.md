@@ -359,4 +359,30 @@ The flow stays explicit and easy to trace.
 
 ---
 
+## Startup Sequence
+
+The daemon startup path in `Daemon::run()` follows this order:
+
+1. `harden_process()` — sets umask, disables ptrace, locks privileges
+2. `raise_nofile_limit()` — attempts to raise `RLIMIT_NOFILE`
+3. Record binary hash from `/proc/self/exe`
+4. **Startup diagnostics** — log baseline DB path, existence, file size, readability, and HMAC signing status
+5. `ensure_baseline_health()` — integrity check, emptiness check (with version-upgrade recovery), HMAC verification
+6. Set up signal mask and spawn signal thread
+7. Start monitor backend (fanotify with inotify fallback)
+8. Spawn worker pool, baseline writer, alert dispatcher, coordinator, scan scheduler
+9. `sd_notify(Ready)` — signal systemd that startup is complete
+10. Spawn control socket
+11. Block on shutdown signal
+
+If any step before `sd_notify(Ready)` fails, the daemon exits with the error printed to both tracing and stderr.
+
+---
+
+## Desktop Notifications
+
+`notify_desktop()` checks for `notify-send` availability once using `OnceLock<bool>`. If the binary is not found in `PATH` (common on headless servers), all future notification calls are skipped and a single debug-level log message is emitted. The `vigil doctor` command also checks for `notify-send` availability and suggests the correct package for the detected distribution.
+
+---
+
 Vigil architecture is intentionally small. You should be able to trace any alert from event source to audit row.

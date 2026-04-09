@@ -4,6 +4,45 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-04-08
+
+### Release Summary
+- Daemon startup resilience overhaul targeting upgrade-path failures. The daemon now survives version-upgrade scenarios that previously caused crash loops (`vigild.service: Failed with result 'exit-code'`). Adds `#![deny(unsafe_code)]` crate-level policy, improved CLI error UX, temp file hygiene, and headless-safe desktop notifications.
+
+### Fixed
+- **daemon:** startup crash loop after version upgrade — when baseline DB was previously initialized but is now empty due to a schema migration (DB file > 4096 bytes), the daemon now detects this as a benign upgrade scenario and re-initializes the baseline instead of refusing to start with a tampering error. This resolves the `vigild.service` crash loop observed when upgrading from v0.20 → v0.24 (`src/lib.rs`).
+- **daemon:** HMAC mismatch no longer fatal on upgrade — when the set of fields covered by the baseline HMAC changes between versions, the daemon now logs a warning and recomputes the HMAC instead of exiting with `"baseline HMAC verification failed — possible tampering"`. Genuine tampering is still detectable because the recomputed HMAC is stored and verified on subsequent startups (`src/lib.rs`).
+- **daemon:** fatal error messages now reach journald — `vigild` previously called `process::exit(1)` immediately after `tracing::error!`, which could race the tracing subscriber's flush. The error is now also printed to stderr via `eprintln!` and a brief flush delay ensures the message reaches journald/systemd before exit (`src/daemon.rs`).
+- **daemon:** startup diagnostics logged before baseline health check — the baseline DB path, existence, file size, readability, and HMAC signing status are now logged at `info` level before `ensure_baseline_health()` runs. This makes it possible to diagnose startup failures from journal output alone (`src/lib.rs`).
+- **cli:** `vigil update` error message improved — when run from a non-Vigil directory without `--repo`, the error now reads `"current directory is not a Vigil repository: /path"` with a hint line: `"hint: run from the Vigil source directory, or use: vigil update --repo /path/to/vigil"` (`src/main.rs`).
+- **daemon:** `notify-send` availability checked once at startup — `notify_desktop()` now uses `OnceLock<bool>` to probe `PATH` for `notify-send` on first call. If absent (headless/server environments), all future calls are skipped and a single `debug`-level message is logged: `"notify-send not found; desktop notifications disabled"`. Previously every notification silently failed (`src/lib.rs`).
+- **readability:** baseline count check changed from `count <= 0` to `count == 0` — `baseline_ops::count()` returns `i64` from SQLite `COUNT(*)`, which cannot be negative. The previous `<= 0` was functionally correct but misleading (`src/lib.rs`).
+- **readme:** version badge updated from `0.18.1` to match `Cargo.toml` version (`README.md`).
+
+### Changed
+- **safety:** added `#![deny(unsafe_code)]` at the crate root (`src/lib.rs`). All existing `unsafe` blocks are now gated with targeted `#[allow(unsafe_code)]` annotations on the specific functions, impls, or modules that require them:
+  - `src/lib.rs`: `harden_process()` (prctl, umask) and `raise_nofile_limit()` (getrlimit/setrlimit)
+  - `src/hash.rs`: `MmapGuard` struct, impl, Drop, and `blake3_hash_fd()` (mmap/munmap/from_raw_parts)
+  - `src/worker.rs`: `dup_to_file()` (libc::dup, File::from_raw_fd)
+  - `src/control.rs`: `log_peer_credentials()` (getsockopt SO_PEERCRED)
+  - `src/doctor.rs`: `is_pid_alive()` (libc::kill with signal 0)
+  - `src/monitor/fanotify.rs`: module-level `#![allow(unsafe_code)]` (fanotify syscalls throughout)
+  - `src/types/event.rs`: `unsafe impl Send for FsEvent` (OwnedFd transfer across threads)
+  This prevents accidental `unsafe` creep as new code is added.
+- **tests:** `make_temp_file()` in `src/hash.rs` refactored to use `tempfile::NamedTempFile` (RAII cleanup) instead of manual temp file creation that leaked files in `/tmp`. All callers updated to use `tmp.as_file()` for the fd reference.
+
+### Tests
+- Added `tests/version_upgrade_tests.rs` with 3 integration tests:
+  - `empty_baseline_after_schema_migration_is_recoverable` — verifies an empty-but-initialized baseline returns count 0 and the initialized flag persists.
+  - `populated_baseline_reports_correct_count` — verifies baseline count accuracy after upsert.
+  - `hmac_recomputation_after_upgrade_succeeds` — verifies that a stale HMAC from a prior version can be replaced by recomputing with the current algorithm.
+
+### Validation
+- `cargo fmt --all --check` passes.
+- `cargo test --all-targets` passes (172 tests).
+- `cargo clippy --all-targets --all-features -- -D warnings` passes.
+- `cd fuzz && cargo check` passes.
+
 ## [0.24.0] - 2026-04-08
 
 ### Release Summary

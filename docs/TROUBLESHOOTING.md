@@ -173,6 +173,45 @@ vigil audit show -n 20
 
 ---
 
+## Daemon Crash Loop After Version Upgrade
+
+### Symptoms
+
+- `vigild.service` exits immediately after `systemctl start`
+- journal shows `Failed with result 'exit-code'`
+- no useful error message visible in `journalctl`
+
+### Cause
+
+A version upgrade may change the baseline schema or HMAC field coverage. If the baseline DB was previously initialized but tables are now empty after migration, or if the stored HMAC no longer matches, older versions treated this as tampering and called `process::exit(1)` before the error message was flushed to journald.
+
+### Fix
+
+1. Run the daemon manually with debug logging to see the actual error:
+
+```bash
+RUST_LOG=debug sudo /usr/local/bin/vigild
+```
+
+2. If the error mentions "baseline was previously initialized but is now empty", upgrade to v0.25.0+ which handles this automatically.
+
+3. If you cannot upgrade, manually reinitialize:
+
+```bash
+sudo systemctl stop vigild.service
+vigil init --force
+sudo systemctl start vigild.service
+```
+
+4. If the error mentions HMAC verification failure, the HMAC field set changed between versions. Upgrade to v0.25.0+ (auto-recomputes) or delete the stored HMAC:
+
+```bash
+sqlite3 /var/lib/vigil/baseline.db "DELETE FROM config_state WHERE key = 'baseline_hmac';"
+sudo systemctl restart vigild.service
+```
+
+---
+
 ## systemd Service Fails to Stay Up
 
 Run this checklist.

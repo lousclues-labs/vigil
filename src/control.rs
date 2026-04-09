@@ -394,6 +394,7 @@ fn generate_nonce() -> std::result::Result<String, std::io::Error> {
 }
 
 /// Log peer credentials of the connecting process using SO_PEERCRED.
+#[allow(unsafe_code)]
 fn log_peer_credentials(stream: &std::os::unix::net::UnixStream) {
     use std::os::unix::io::AsRawFd;
 

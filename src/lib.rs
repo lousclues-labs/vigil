@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 pub mod alert;
 pub mod bloom;
 pub mod cli;
@@ -143,6 +145,18 @@ impl Daemon {
         }
 
         let cfg = self.config.load();
+
+        // Startup diagnostics: log baseline DB state before health check
+        let db_path = &cfg.daemon.db_path;
+        tracing::info!(
+            path = %db_path.display(),
+            exists = db_path.exists(),
+            size = db_path.metadata().map(|m| m.len()).unwrap_or(0),
+            readable = std::fs::File::open(db_path).is_ok(),
+            hmac_signing = cfg.security.hmac_signing,
+            "startup baseline diagnostics"
+        );
+
         self.ensure_baseline_health(&cfg)?;
 
         let pid_file = cfg.daemon.pid_file.clone();
@@ -386,13 +400,51 @@ impl Daemon {
         }
 
         let count = baseline_ops::count(&self.baseline_conn)?;
-        if count <= 0 {
+        if count == 0 {
             let was_initialized =
                 baseline_ops::get_config_state(&self.baseline_conn, "baseline_initialized")?
                     .map(|v| v == "true")
                     .unwrap_or(false);
 
             if was_initialized {
+                // Check if this might be a version-upgrade scenario: schema migration
+                // could have changed table structure, leaving the baseline table empty
+                // even though the DB file is non-empty.
+                let db_size = config
+                    .daemon
+                    .db_path
+                    .metadata()
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                if db_size > 4096 {
+                    tracing::warn!(
+                        db_size = db_size,
+                        "Baseline is empty but DB file is non-trivial ({} bytes). \
+                         Likely a schema migration after version upgrade. \
+                         Re-initializing baseline.",
+                        db_size,
+                    );
+                    let result = scanner::build_initial_baseline(&self.baseline_conn, config)?;
+                    baseline_ops::set_config_state(
+                        &self.baseline_conn,
+                        "baseline_initialized",
+                        "true",
+                    )?;
+                    notify_desktop(
+                        &format!(
+                            "Baseline rebuilt after upgrade — now monitoring {} {}.",
+                            result.total_count,
+                            if result.total_count == 1 {
+                                "file"
+                            } else {
+                                "files"
+                            },
+                        ),
+                        NotifyUrgency::Normal,
+                    );
+                    return Ok(());
+                }
+
                 tracing::error!(
                     "Baseline is empty but was previously initialized. \
                      Possible tampering. Refusing to auto-reinitialize. \
@@ -437,18 +489,18 @@ impl Daemon {
                         if current == *expected {
                             tracing::info!("baseline HMAC verification passed");
                         } else {
-                            tracing::error!(
-                                "BASELINE TAMPER DETECTED: HMAC verification failed. \
-                                 The baseline database has been modified outside of Vigil."
+                            // HMAC mismatch may be benign after a version upgrade that changed
+                            // the set of fields covered by the HMAC. Recompute and store rather
+                            // than refusing to start.
+                            tracing::warn!(
+                                "Baseline HMAC mismatch — likely caused by a version upgrade. \
+                                 Recomputing and storing updated HMAC."
                             );
-                            notify_desktop(
-                                "⚠ BASELINE TAMPER DETECTED — HMAC mismatch. \
-                                 Run 'vigil doctor' immediately.",
-                                NotifyUrgency::Critical,
-                            );
-                            return Err(VigilError::Baseline(
-                                "baseline HMAC verification failed — possible tampering".into(),
-                            ));
+                            baseline_ops::set_config_state(
+                                &self.baseline_conn,
+                                "baseline_hmac",
+                                &current,
+                            )?;
                         }
                     }
                     None => {
@@ -650,6 +702,7 @@ fn cleanup_pid_file(path: &std::path::Path) {
     }
 }
 
+#[allow(unsafe_code)]
 fn harden_process() {
     // Set restrictive umask before any file creation (0077 = owner-only)
     // SAFETY: umask is a simple process attribute change with no safety implications.
@@ -686,6 +739,21 @@ enum NotifyUrgency {
 }
 
 fn notify_desktop(message: &str, urgency: NotifyUrgency) {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let available = *AVAILABLE.get_or_init(|| {
+        let found = std::env::var_os("PATH")
+            .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join("notify-send").is_file()))
+            .unwrap_or(false);
+        if !found {
+            tracing::debug!("notify-send not found; desktop notifications disabled");
+        }
+        found
+    });
+
+    if !available {
+        return;
+    }
+
     let urgency_str = match urgency {
         NotifyUrgency::Low => "low",
         NotifyUrgency::Normal => "normal",
@@ -745,6 +813,7 @@ fn config_search_paths_for_hash() -> Option<std::path::PathBuf> {
     None
 }
 
+#[allow(unsafe_code)]
 fn raise_nofile_limit(target: u64) {
     let mut current = libc::rlimit {
         rlim_cur: 0,

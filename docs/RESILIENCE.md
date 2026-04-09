@@ -147,6 +147,20 @@ Did monitoring stop?
 
 ---
 
+## Version Upgrade Recovery
+
+Version upgrades may change the baseline schema or HMAC field coverage.
+
+| Failure | Behavior | Recovery |
+|---------|----------|----------|
+| baseline table empty after schema migration | daemon detects non-trivial DB file size (>4096 bytes), logs warning, auto-reinitializes baseline | automatic since v0.25.0 |
+| stored HMAC mismatches due to field set change | daemon logs warning, recomputes and stores updated HMAC | automatic since v0.25.0 |
+| older daemon version crash-loops on upgrade | `process::exit(1)` before sd_notify Ready | upgrade to v0.25.0+ or manually `vigil init --force` |
+
+Startup diagnostics (baseline DB path, size, readability, HMAC status) are logged at `info` level before the health check runs. Use `RUST_LOG=debug` for maximum visibility.
+
+---
+
 ## What Resilience Means Here
 
 Vigil does not promise perfect detection under total system compromise.

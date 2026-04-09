@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+
 use std::collections::HashSet;
 use std::ffi::CString;
 use std::os::fd::{FromRawFd, OwnedFd};

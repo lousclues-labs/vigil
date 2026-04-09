@@ -34,6 +34,7 @@ pub enum UpdateReason {
 }
 
 /// Duplicate a raw file descriptor and wrap it in a `File` with RAII ownership.
+#[allow(unsafe_code)]
 fn dup_to_file(raw_fd: std::os::fd::RawFd) -> std::io::Result<std::fs::File> {
     // SAFETY: dup() creates a new fd referring to the same open file description.
     let dup_fd = unsafe { libc::dup(raw_fd) };

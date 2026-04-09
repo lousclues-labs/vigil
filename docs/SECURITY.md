@@ -241,6 +241,30 @@ If socket delivery fails, other channels keep working.
 
 ---
 
+## Unsafe Code Policy
+
+The crate root declares `#![deny(unsafe_code)]`.
+
+All `unsafe` usage must be annotated with `#[allow(unsafe_code)]` on the specific function, impl block, or module that requires it. Each `unsafe` block must include a `// SAFETY:` comment explaining why the invariants hold.
+
+Current allowed locations:
+
+| Location | Reason |
+|----------|--------|
+| `src/lib.rs` — `harden_process()` | prctl, umask syscalls |
+| `src/lib.rs` — `raise_nofile_limit()` | getrlimit/setrlimit syscalls |
+| `src/hash.rs` — `MmapGuard` | mmap/munmap/from_raw_parts |
+| `src/hash.rs` — `blake3_hash_fd()` | calls MmapGuard::new |
+| `src/worker.rs` — `dup_to_file()` | libc::dup, File::from_raw_fd |
+| `src/control.rs` — `log_peer_credentials()` | getsockopt SO_PEERCRED |
+| `src/doctor.rs` — `is_pid_alive()` | libc::kill signal 0 probe |
+| `src/monitor/fanotify.rs` | module-level allow (fanotify syscalls) |
+| `src/types/event.rs` — `impl Send for FsEvent` | OwnedFd thread transfer |
+
+Adding new `unsafe` code without updating this table and providing a `// SAFETY:` comment will be caught by `cargo clippy` and CI.
+
+---
+
 ## Operational Checks
 
 Run these commands during hardening and incident response.

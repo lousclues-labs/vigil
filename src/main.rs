@@ -1695,7 +1695,8 @@ fn validate_vigil_repo(repo: &Path) -> vigil::Result<()> {
     let cargo_toml = repo.join("Cargo.toml");
     if !cargo_toml.exists() {
         return Err(vigil::VigilError::Config(format!(
-            "Not a Vigil repository: {}",
+            "current directory is not a Vigil repository: {}\n\
+             hint: run from the Vigil source directory, or use: vigil update --repo /path/to/vigil",
             repo.display()
         )));
     }
@@ -1711,7 +1712,8 @@ fn validate_vigil_repo(repo: &Path) -> vigil::Result<()> {
 
     if package_name != Some("vigil") {
         return Err(vigil::VigilError::Config(format!(
-            "Not a Vigil repository: {}",
+            "current directory is not a Vigil repository: {}\n\
+             hint: run from the Vigil source directory, or use: vigil update --repo /path/to/vigil",
             repo.display()
         )));
     }

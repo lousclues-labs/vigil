@@ -5,11 +5,13 @@ use std::os::unix::io::AsRawFd;
 use crate::error::{Result, VigilError};
 
 /// RAII guard for memory-mapped regions. Calls munmap on drop.
+#[allow(unsafe_code)]
 struct MmapGuard {
     ptr: *mut libc::c_void,
     len: usize,
 }
 
+#[allow(unsafe_code)]
 impl MmapGuard {
     /// Create a read-only mmap of the given fd.
     ///
@@ -37,6 +39,7 @@ impl MmapGuard {
     }
 }
 
+#[allow(unsafe_code)]
 impl Drop for MmapGuard {
     fn drop(&mut self) {
         // SAFETY: ptr and len are from a successful mmap call.
@@ -51,6 +54,7 @@ impl Drop for MmapGuard {
 /// - Smaller files: buffered reader with 128KB buffer (16x default)
 ///
 /// The fd is NOT closed. The caller retains ownership.
+#[allow(unsafe_code)]
 pub fn blake3_hash_fd(file: &File, size: u64, mmap_threshold: u64) -> Result<String> {
     let mut hasher = blake3::Hasher::new();
 
@@ -105,16 +109,16 @@ mod tests {
 
     #[test]
     fn hash_empty_file() {
-        let tmp = make_temp_file("empty", b"");
-        let hash = blake3_hash_fd(&tmp, 0, 1_048_576).unwrap();
+        let tmp = make_temp_file(b"");
+        let hash = blake3_hash_fd(tmp.as_file(), 0, 1_048_576).unwrap();
         let expected = blake3::hash(b"").to_hex().to_string();
         assert_eq!(hash, expected);
     }
 
     #[test]
     fn hash_known_content() {
-        let tmp = make_temp_file("known", b"hello vigil");
-        let hash = blake3_hash_fd(&tmp, 11, 1_048_576).unwrap();
+        let tmp = make_temp_file(b"hello vigil");
+        let hash = blake3_hash_fd(tmp.as_file(), 11, 1_048_576).unwrap();
         let expected = blake3::hash(b"hello vigil").to_hex().to_string();
         assert_eq!(hash, expected);
     }
@@ -136,8 +140,8 @@ mod tests {
     #[test]
     fn hash_fd_matches_hash_bytes() {
         let content = b"the filesystem is the source of truth";
-        let tmp = make_temp_file("match", content);
-        let file_hash = blake3_hash_fd(&tmp, content.len() as u64, 1_048_576).unwrap();
+        let tmp = make_temp_file(content);
+        let file_hash = blake3_hash_fd(tmp.as_file(), content.len() as u64, 1_048_576).unwrap();
         let bytes_hash = blake3_hash_bytes(content);
         assert_eq!(file_hash, bytes_hash);
     }
@@ -146,10 +150,10 @@ mod tests {
     fn hash_mmap_matches_buffered() {
         // Create a file > 0 bytes and hash it via both mmap (threshold=1) and buffered (threshold=MAX)
         let content = b"mmap vs buffered consistency check with enough data to test";
-        let tmp_mmap = make_temp_file("mmap_path", content);
-        let tmp_buf = make_temp_file("buf_path", content);
-        let hash_mmap = blake3_hash_fd(&tmp_mmap, content.len() as u64, 1).unwrap(); // threshold=1 forces mmap
-        let hash_buf = blake3_hash_fd(&tmp_buf, content.len() as u64, u64::MAX).unwrap(); // threshold=MAX forces buffered
+        let tmp_mmap = make_temp_file(content);
+        let tmp_buf = make_temp_file(content);
+        let hash_mmap = blake3_hash_fd(tmp_mmap.as_file(), content.len() as u64, 1).unwrap(); // threshold=1 forces mmap
+        let hash_buf = blake3_hash_fd(tmp_buf.as_file(), content.len() as u64, u64::MAX).unwrap(); // threshold=MAX forces buffered
         assert_eq!(hash_mmap, hash_buf);
     }
 
@@ -160,23 +164,8 @@ mod tests {
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
-    fn make_temp_file(suffix: &str, content: &[u8]) -> File {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "vigil-hash-test-{}-{}-{}",
-            std::process::id(),
-            suffix,
-            n,
-        ));
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .read(true)
-            .truncate(true)
-            .open(&path)
-            .unwrap();
+    fn make_temp_file(content: &[u8]) -> tempfile::NamedTempFile {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(content).unwrap();
         f.flush().unwrap();
         f.seek(SeekFrom::Start(0)).unwrap();
