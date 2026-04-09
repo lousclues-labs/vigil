@@ -45,6 +45,19 @@ Use this as a reference when assessing Vigil's security posture or auditing spec
 | VIGIL-VULN-022 | Medium | 0.22.0 | fanotify relied on `FAN_MODIFY` only, missing completed writes |
 | VIGIL-VULN-023 | High | 0.22.0 | Worker baseline cache could remain stale after baseline commits |
 | VIGIL-VULN-024 | Medium | 0.22.0 | Intermediate HMAC key material persisted in heap memory |
+| VIGIL-VULN-025 | Critical | 0.23.0 | Baseline DB opened by path after HMAC verification — TOCTOU window |
+| VIGIL-VULN-026 | High | 0.23.0 | SQLite WAL/SHM sidecar files not permission-restricted |
+| VIGIL-VULN-027 | High | 0.23.0 | Database directory ownership and permissions not verified |
+| VIGIL-VULN-028 | Critical | 0.23.0 | VIGIL_CONFIG env var allows config path override in production |
+| VIGIL-VULN-029 | Medium | 0.23.0 | VIGIL_SKIP_PACKAGE_OWNER env var accessible in production |
+| VIGIL-VULN-030 | High | 0.23.0 | Bind mount over monitored directory evades fanotify detection |
+| VIGIL-VULN-031 | High | 0.23.0 | fanotify kernel queue overflow (FAN_Q_OVERFLOW) silently ignored |
+| VIGIL-VULN-032 | High | 0.23.0 | Baseline HMAC only covers 5 of 13 security-relevant fields |
+| VIGIL-VULN-033 | Medium | 0.23.0 | Vigil's own binary not in self-monitoring watch group |
+| VIGIL-VULN-034 | Medium | 0.23.0 | sd_notify socket spoofable — systemd kept happy while Vigil frozen |
+| VIGIL-VULN-035 | Low | 0.23.0 | Process attribution via /proc/[pid]/exe raceable (PID recycling) |
+| VIGIL-VULN-036 | Medium | 0.23.0 | Negative clock jump not detected — enables clock manipulation replay |
+| VIGIL-VULN-037 | Medium | 0.23.0 | Scanner follows symlinks without recording resolution chain |
 
 ---
 
@@ -287,3 +300,133 @@ The worker LRU baseline cache could remain stale after the baseline writer commi
 Intermediate decoded key text in `load_hmac_key()` was not explicitly cleared from memory after use. Key material could persist in heap memory longer than necessary.
 
 **Remediation:** Added `zeroize` dependency and applied explicit zeroization to intermediate decoded key text. `AlertDispatcher` now stores HMAC keys as `Option<Zeroizing<Vec<u8>>>`.
+
+---
+
+### VIGIL-VULN-025 — Baseline DB TOCTOU after HMAC verification (Critical)
+
+**Fixed in:** 0.23.0
+
+After HMAC verification succeeded at startup, the baseline database was subsequently re-opened by path for scans and periodic HMAC recomputation. An attacker with root access could atomically replace the database file between HMAC verification and the next open, bypassing integrity checks entirely.
+
+**Remediation:** On startup, after HMAC verification succeeds, the inode and device of the baseline DB file are recorded via `DbFileIdentity`. Before every coordinator housekeeping tick, the DB path is stat'd and compared against the recorded identity. If the inode or device differs, all operations are refused and a critical log is emitted: "baseline database file replaced — possible tampering."
+
+---
+
+### VIGIL-VULN-026 — WAL/SHM sidecar files not permission-restricted (High)
+
+**Fixed in:** 0.23.0
+
+SQLite WAL-mode databases create `-wal` and `-shm` sidecar files that inherited the default umask. On systems with permissive umasks, these files could be world-readable, leaking baseline content to unprivileged local users.
+
+**Remediation:** After opening a database in WAL mode, permissions on `{db}-wal` and `{db}-shm` are explicitly set to 0600. The daemon process umask is set to 0077 in `harden_process()` before any file creation.
+
+---
+
+### VIGIL-VULN-027 — Database directory ownership not verified (High)
+
+**Fixed in:** 0.23.0
+
+The database directory was created via `create_dir_all` without verifying ownership or permissions. A non-root user who pre-created the directory could influence database file placement or access.
+
+**Remediation:** After `create_dir_all`, the directory is verified to be owned by uid 0 with mode no wider than 0750. If the check fails, database opening returns an error: "database directory has unsafe ownership or permissions." The check is gated behind `#[cfg(not(any(test, debug_assertions)))]` so tests can use temp directories.
+
+---
+
+### VIGIL-VULN-028 — VIGIL_CONFIG env var allows config override in production (Critical)
+
+**Fixed in:** 0.23.0
+
+The `VIGIL_CONFIG` environment variable was unconditionally trusted for config path resolution. An attacker who could set environment variables (e.g., via systemd override, `/proc/pid/environ` manipulation, or PAM modules) could redirect Vigil to a weakened configuration file.
+
+**Remediation:** `VIGIL_CONFIG` is only unrestricted in test/debug builds (`#[cfg(any(test, debug_assertions))]`). In release builds, the target file must be owned by root (uid 0) with mode ≤ 0644. Applied consistently across `config_search_paths()`, `config_file_content()`, and `config_search_paths_for_hash()`.
+
+---
+
+### VIGIL-VULN-029 — VIGIL_SKIP_PACKAGE_OWNER accessible in production (Medium)
+
+**Fixed in:** 0.23.0
+
+The `VIGIL_SKIP_PACKAGE_OWNER` environment variable disabled package ownership lookups when set. An attacker could set this to suppress package-update context from alerts, degrading attribution quality.
+
+**Remediation:** The env var check is gated behind `#[cfg(any(test, debug_assertions))]`. In production builds, package owner lookup is always performed.
+
+---
+
+### VIGIL-VULN-030 — Bind mount evades fanotify monitoring (High)
+
+**Fixed in:** 0.23.0
+
+fanotify with `FAN_MARK_MOUNT` monitors a specific mount. An attacker who bind-mounted a new filesystem over a watched directory would cause fanotify to continue monitoring the old (now hidden) mount point, while the visible directory contents are unmonitored.
+
+**Remediation:** The coordinator records the mount set from `/proc/self/mountinfo` at startup. Every 60-second housekeeping tick, mountinfo is re-read and compared. New mounts that overlap with configured watch paths trigger error-level logging: "new mount detected over watched path — real-time monitoring may be compromised."
+
+---
+
+### VIGIL-VULN-031 — FAN_Q_OVERFLOW silently ignored (High)
+
+**Fixed in:** 0.23.0
+
+When the kernel's fanotify event queue overflowed, the `FAN_Q_OVERFLOW` flag was set on events but never checked. Vigil silently missed an unknown number of filesystem events, creating a detection gap an attacker could exploit by generating high I/O to force overflow.
+
+**Remediation:** Before the `event.fd >= 0` check, the event loop now checks for `FAN_Q_OVERFLOW` (mask `0x4000`). Overflow events are logged at error level, increment the new `kernel_queue_overflows` metric counter, and continue without attempting fd operations.
+
+---
+
+### VIGIL-VULN-032 — Baseline HMAC only covers 5 of 13 fields (High)
+
+**Fixed in:** 0.23.0
+
+`compute_baseline_hmac()` only included path, hash, mode, owner_uid, and owner_gid in the canonical HMAC data. An attacker who modified the remaining 8 fields (size, inode, device, file_type, symlink_target, capabilities, xattrs, security_context) would not trigger an HMAC mismatch.
+
+**Remediation:** Canonical HMAC data now includes all 13 security-relevant fields: path, hash, size, mode, owner_uid, owner_gid, inode, device, file_type, symlink_target (or empty), capabilities (or empty), xattrs_json, and security_context. This is a breaking change for stored HMACs — on upgrade, the HMAC is automatically recomputed.
+
+---
+
+### VIGIL-VULN-033 — Vigil binary not in self-monitoring watch group (Medium)
+
+**Fixed in:** 0.23.0
+
+The `vigil_self` watch group only covered config and HMAC key files. The Vigil binaries themselves (`/usr/bin/vigil`, `/usr/bin/vigild`) were not monitored. An attacker who replaced the binary would not trigger an alert.
+
+**Remediation:** `/usr/bin/vigil` and `/usr/bin/vigild` are added to the default `vigil_self` watch group. On startup, the BLAKE3 hash of `/proc/self/exe` is computed, logged at info level, and stored in `config_state` key `binary_hash`.
+
+---
+
+### VIGIL-VULN-034 — sd_notify socket spoofable (Medium)
+
+**Fixed in:** 0.23.0
+
+The systemd unit file did not set `NotifyAccess=main`. By default, systemd may accept `sd_notify` messages from any process in the service's cgroup. An attacker could send fake `READY=1` and `WATCHDOG=1` messages to keep systemd satisfied while the actual Vigil process is frozen or killed.
+
+**Remediation:** Added `NotifyAccess=main` to restrict sd_notify to the main process PID only. Changed `ProtectHome=read-only` to `ProtectHome=true` and removed `/var/log/vigil` from `ReadWritePaths`.
+
+---
+
+### VIGIL-VULN-035 — PID recycling race in process attribution (Low)
+
+**Fixed in:** 0.23.0
+
+Process attribution via `/proc/{pid}/exe` was performed inside the `if is_watched` block, after bloom filter checks and watch index lookups. The delay between fanotify delivering the event and the readlink increased the PID recycling window, allowing attribution to the wrong process.
+
+**Remediation:** The `/proc/{pid}/exe` readlink is now performed immediately after reading the event metadata, before any channel send or bloom filter check, minimizing the recycling window. A comment documents that `FAN_REPORT_PIDFD` (Linux 6.2+) would eliminate this race entirely.
+
+---
+
+### VIGIL-VULN-036 — Negative clock jump not detected (Medium)
+
+**Fixed in:** 0.23.0
+
+Clock anomaly detection only checked for forward jumps exceeding 1 hour. A negative clock jump (setting the clock backward) was not detected. An attacker could set the clock back to make recent audit entries appear to be in the future, then forward again to trigger rotation of those entries — a clock manipulation replay attack.
+
+**Remediation:** The coordinator now detects backward clock jumps exceeding 60 seconds and skips audit rotation. `last_rotation_timestamp` is not updated when any clock anomaly (forward or backward) is detected, preventing the attacker from resetting the reference point.
+
+---
+
+### VIGIL-VULN-037 — Symlink target not canonically resolved (Medium)
+
+**Fixed in:** 0.23.0
+
+When the scanner encountered a symlink pointing to a regular file, it followed the link and captured the snapshot, but recorded the immediate `read_link()` target rather than the fully resolved canonical path. If the symlink chain was modified (e.g., an intermediate link redirected) without changing the final target's name, the change would not be detected.
+
+**Remediation:** `FileSnapshot::from_fd()` now resolves symlink targets via `canonicalize()`, falling back to `read_link()` if canonicalization fails. The scanner logs the canonical resolution at debug level. Changes in the resolved canonical target between scans emit `SymlinkTargetChanged` alerts at the watch group's severity level.
