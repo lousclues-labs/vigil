@@ -1071,6 +1071,12 @@ fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
 
     let updated_hooks = update_hooks_if_changed(&repo_path)?;
 
+    // Tighten data directory permissions for v0.25.0+ security hardening.
+    // Older installs may have 0755; the daemon now requires 0700 or 0750.
+    let mut chmod_cmd = ProcessCommand::new("sudo");
+    chmod_cmd.arg("chmod").arg("750").arg("/var/lib/vigil");
+    let _ = run_best_effort(chmod_cmd);
+
     let mut daemon_start_cmd = ProcessCommand::new("sudo");
     daemon_start_cmd
         .arg("systemctl")

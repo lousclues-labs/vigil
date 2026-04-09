@@ -277,7 +277,7 @@ step_dirs() {
         return 0
     fi
 
-    sudo install -d -m 755 "$DATA_DIR" "$LOG_DIR" "$RUN_DIR"
+    sudo install -d -m 750 "$DATA_DIR" "$LOG_DIR" "$RUN_DIR"
     ok "Created $DATA_DIR $LOG_DIR $RUN_DIR"
 }
 

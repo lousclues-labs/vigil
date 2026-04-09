@@ -35,8 +35,11 @@ WatchdogSec=30
 # PID file
 PIDFile=/run/vigil/vigild.pid
 RuntimeDirectory=vigil
+RuntimeDirectoryMode=0750
 StateDirectory=vigil
+StateDirectoryMode=0750
 LogsDirectory=vigil
+LogsDirectoryMode=0750
 
 [Install]
 WantedBy=multi-user.target
