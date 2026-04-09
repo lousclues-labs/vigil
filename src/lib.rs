@@ -49,6 +49,8 @@ pub struct Daemon {
     pub watch_index: Arc<ArcSwap<WatchGroupIndex>>,
     /// BLAKE3 hash of the config file contents at startup.
     pub config_hash: Option<String>,
+    /// Inode+device identity of the baseline DB recorded at startup for TOCTOU detection.
+    pub baseline_db_identity: Option<db::DbFileIdentity>,
 }
 
 impl Daemon {
@@ -56,6 +58,9 @@ impl Daemon {
         let baseline_db_preexisting = config.daemon.db_path.exists();
         let baseline_conn = db::open_baseline_db(&config)?;
         let watch_index = WatchGroupIndex::from_config(&config);
+
+        // Record inode+device of baseline DB for TOCTOU detection
+        let baseline_db_identity = db::DbFileIdentity::from_path(&config.daemon.db_path).ok();
 
         // Compute config file hash for integrity tracking
         let config_hash = config_search_paths_for_hash()
@@ -87,12 +92,30 @@ impl Daemon {
             reload_flag: Arc::new(AtomicBool::new(false)),
             watch_index: Arc::new(ArcSwap::from_pointee(watch_index)),
             config_hash,
+            baseline_db_identity,
         })
     }
 
     pub fn run(self) -> Result<()> {
         harden_process();
         raise_nofile_limit(4096);
+
+        // Record BLAKE3 hash of Vigil's own binary for self-integrity tracking
+        if let Ok(exe_path) = std::fs::read_link("/proc/self/exe") {
+            if let Ok(content) = std::fs::read(&exe_path) {
+                let binary_hash = crate::hash::blake3_hash_bytes(&content);
+                tracing::info!(
+                    binary = %exe_path.display(),
+                    hash = %binary_hash,
+                    "vigil binary hash recorded"
+                );
+                let _ = baseline_ops::set_config_state(
+                    &self.baseline_conn,
+                    "binary_hash",
+                    &binary_hash,
+                );
+            }
+        }
 
         let cfg = self.config.load();
         self.ensure_baseline_health(&cfg)?;
@@ -164,6 +187,7 @@ impl Daemon {
             self.shutdown.clone(),
             self.reload_flag.clone(),
             backpressure.clone(),
+            self.baseline_db_identity,
         )?;
 
         let (shutdown_tx, shutdown_rx) = crossbeam_channel::bounded::<()>(1);
@@ -582,6 +606,12 @@ fn cleanup_pid_file(path: &std::path::Path) {
 }
 
 fn harden_process() {
+    // Set restrictive umask before any file creation (0077 = owner-only)
+    // SAFETY: umask is a simple process attribute change with no safety implications.
+    unsafe {
+        libc::umask(0o077);
+    }
+
     // SAFETY: PR_SET_DUMPABLE with 0 disables ptrace/core dumps for this process.
     // This does not violate Rust memory safety invariants.
     unsafe {
@@ -642,10 +672,25 @@ fn humanize_duration(d: std::time::Duration) -> String {
 
 /// Find the first config file that exists, for hashing.
 fn config_search_paths_for_hash() -> Option<std::path::PathBuf> {
+    #[cfg(any(test, debug_assertions))]
     if let Ok(env_path) = std::env::var("VIGIL_CONFIG") {
         let p = std::path::PathBuf::from(env_path);
         if p.exists() {
             return Some(p);
+        }
+    }
+    #[cfg(not(any(test, debug_assertions)))]
+    if let Ok(env_path) = std::env::var("VIGIL_CONFIG") {
+        // In production, validate ownership before trusting env override
+        use std::os::unix::fs::MetadataExt;
+        let p = std::path::PathBuf::from(&env_path);
+        if p.exists() {
+            if let Ok(meta) = std::fs::metadata(&p) {
+                let mode = meta.mode() & 0o777;
+                if meta.uid() == 0 && mode <= 0o644 {
+                    return Some(p);
+                }
+            }
         }
     }
     let default = std::path::PathBuf::from("/etc/vigil/vigil.toml");

@@ -75,7 +75,11 @@ impl FileSnapshot {
         };
 
         let symlink_target = if file_type == FileType::Symlink {
-            std::fs::read_link(path).ok()
+            // Use canonicalize to resolve the full chain, so target changes
+            // between scans are detectable even through intermediate links.
+            std::fs::canonicalize(path)
+                .or_else(|_| std::fs::read_link(path))
+                .ok()
         } else {
             None
         };

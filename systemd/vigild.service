@@ -5,6 +5,7 @@ After=local-fs.target
 
 [Service]
 Type=notify
+NotifyAccess=main
 ExecStart=/usr/bin/vigild
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
@@ -13,8 +14,8 @@ RestartSec=5
 # Security hardening
 NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/var/lib/vigil /var/log/vigil /run/vigil
+ProtectHome=true
+ReadWritePaths=/var/lib/vigil /run/vigil
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

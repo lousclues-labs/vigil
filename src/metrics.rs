@@ -25,6 +25,8 @@ pub struct Metrics {
     pub backpressure_events: AtomicU64,
     /// Control socket commands executed.
     pub control_commands: AtomicU64,
+    /// Fanotify kernel queue overflow events.
+    pub kernel_queue_overflows: AtomicU64,
     /// Unix timestamp set once at daemon startup.
     pub uptime_start: i64,
 }
@@ -51,6 +53,7 @@ impl Metrics {
             baseline_updates: AtomicU64::new(0),
             backpressure_events: AtomicU64::new(0),
             control_commands: AtomicU64::new(0),
+            kernel_queue_overflows: AtomicU64::new(0),
             uptime_start: chrono::Utc::now().timestamp(),
         }
     }
@@ -77,6 +80,7 @@ impl Metrics {
             baseline_updates: self.baseline_updates.load(Ordering::Relaxed),
             backpressure_events: self.backpressure_events.load(Ordering::Relaxed),
             control_commands: self.control_commands.load(Ordering::Relaxed),
+            kernel_queue_overflows: self.kernel_queue_overflows.load(Ordering::Relaxed),
             uptime_start: self.uptime_start,
         }
     }
@@ -110,6 +114,7 @@ pub struct MetricsSnapshot {
     pub baseline_updates: u64,
     pub backpressure_events: u64,
     pub control_commands: u64,
+    pub kernel_queue_overflows: u64,
     pub uptime_start: i64,
 }
 
@@ -208,6 +213,12 @@ impl MetricsSnapshot {
             "vigil_uptime_start_timestamp",
             "Daemon start time (unix timestamp)",
             self.uptime_start as u64,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_kernel_queue_overflows_total",
+            "Fanotify kernel queue overflow events",
+            self.kernel_queue_overflows,
         );
 
         let _ = writeln!(out);

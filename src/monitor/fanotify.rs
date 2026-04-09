@@ -35,6 +35,7 @@ const FAN_CREATE: u64 = 0x0000_0100;
 const FAN_DELETE: u64 = 0x0000_0200;
 const FAN_MOVED_FROM: u64 = 0x0000_0040;
 const FAN_MOVED_TO: u64 = 0x0000_0080;
+const FAN_Q_OVERFLOW: u64 = 0x0000_4000;
 
 const FAN_EVENT_METADATA_LEN: usize = std::mem::size_of::<FanotifyEventMetadata>();
 
@@ -180,9 +181,38 @@ pub fn start(
                     let event: FanotifyEventMetadata =
                         unsafe { std::ptr::read_unaligned(buf.as_ptr().add(offset) as *const FanotifyEventMetadata) };
 
+                    // Handle kernel queue overflow: fanotify dropped events
+                    if event.mask & FAN_Q_OVERFLOW != 0 {
+                        tracing::error!(
+                            "fanotify kernel queue overflow (FAN_Q_OVERFLOW) — \
+                             events were dropped by the kernel. File changes may have been missed."
+                        );
+                        metrics
+                            .kernel_queue_overflows
+                            .fetch_add(1, Ordering::Relaxed);
+                        offset += event.event_len as usize;
+                        continue;
+                    }
+
                     if event.fd >= 0 {
                         // Wrap event fd in a guard to prevent leaks on any code path
                         let fd_guard = EventFdGuard(event.fd);
+
+                        // Resolve process attribution immediately to minimize the
+                        // PID recycling window. The fd is still open and valid here.
+                        // NOTE: FAN_REPORT_PIDFD (Linux 6.2+) would eliminate this
+                        // race entirely by providing a stable pidfd reference.
+                        let process = if event.pid > 0 {
+                            let exe = std::fs::read_link(format!("/proc/{}/exe", event.pid))
+                                .ok()
+                                .map(|p| p.to_string_lossy().to_string());
+                            Some(ProcessAttribution {
+                                pid: event.pid as u32,
+                                exe,
+                            })
+                        } else {
+                            None
+                        };
 
                         let fd_link = format!("/proc/self/fd/{}", event.fd);
                         if let Ok(path) = std::fs::read_link(&fd_link) {
@@ -202,18 +232,6 @@ pub fn start(
                                     metrics
                                         .events_received
                                         .fetch_add(1, Ordering::Relaxed);
-
-                                    let process = if event.pid > 0 {
-                                        let exe = std::fs::read_link(format!("/proc/{}/exe", event.pid))
-                                            .ok()
-                                            .map(|p| p.to_string_lossy().to_string());
-                                        Some(ProcessAttribution {
-                                            pid: event.pid as u32,
-                                            exe,
-                                        })
-                                    } else {
-                                        None
-                                    };
 
                                     // Transfer fd ownership into OwnedFd; prevent guard from closing it
                                     let raw = fd_guard.take();
@@ -331,7 +349,7 @@ fn resolve_mount_points(paths: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 /// Parse /proc/self/mountinfo and return a list of mount points.
-fn parse_mountinfo() -> Option<Vec<PathBuf>> {
+pub fn parse_mountinfo() -> Option<Vec<PathBuf>> {
     let content = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
     let mut mounts = Vec::new();
     for line in content.lines() {

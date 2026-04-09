@@ -23,6 +23,7 @@ pub enum ReloadSource {
     Unknown,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     config: Arc<ArcSwap<Config>>,
     metrics: Arc<Metrics>,
@@ -31,9 +32,17 @@ pub fn spawn(
     shutdown: Arc<AtomicBool>,
     reload_flag: Arc<AtomicBool>,
     backpressure: Arc<AtomicBool>,
+    baseline_db_identity: Option<crate::db::DbFileIdentity>,
 ) -> crate::Result<JoinHandle<()>> {
     // Compute initial config hash for integrity tracking
     let mut last_config_hash = config_file_hash();
+
+    // Record initial mount set for bind-mount detection
+    let initial_mounts: std::collections::HashSet<std::path::PathBuf> =
+        crate::monitor::fanotify::parse_mountinfo()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
 
     std::thread::Builder::new()
         .name("vigil-coordinator".into())
@@ -130,16 +139,87 @@ pub fn spawn(
                 if last_tick.elapsed() >= Duration::from_secs(60) {
                     let cfg = config.load();
 
-                    // Clock anomaly detection: if the wall clock has jumped forward
-                    // by more than 1 hour since the last tick, skip audit rotation
-                    // to prevent evidence destruction via clock manipulation.
+                    // TOCTOU check: verify baseline DB has not been replaced since startup
+                    if let Some(ref identity) = baseline_db_identity {
+                        match identity.is_replaced(&cfg.daemon.db_path) {
+                            Ok(true) => {
+                                tracing::error!(
+                                    "baseline database file replaced — possible tampering. \
+                                     Inode/device changed since startup."
+                                );
+                                let mut s = state.write();
+                                *s = DaemonState::Degraded {
+                                    reason: "baseline_db_replaced".into(),
+                                    since: Utc::now(),
+                                };
+                                // Skip all housekeeping when DB identity is compromised
+                                last_tick = std::time::Instant::now();
+                                continue;
+                            }
+                            Ok(false) => {} // identity matches, proceed
+                            Err(e) => {
+                                tracing::error!(
+                                    error = %e,
+                                    "failed to stat baseline database for TOCTOU check"
+                                );
+                            }
+                        }
+                    }
+
+                    // Bind-mount evasion detection: compare current mounts against
+                    // the set established at startup. New mounts over watched paths
+                    // could evade fanotify monitoring.
+                    if let Some(current_mounts) = crate::monitor::fanotify::parse_mountinfo() {
+                        let current_set: std::collections::HashSet<std::path::PathBuf> =
+                            current_mounts.into_iter().collect();
+                        let new_mounts: Vec<_> = current_set
+                            .difference(&initial_mounts)
+                            .collect();
+                        if !new_mounts.is_empty() {
+                            // Check if any new mount is over a watched path
+                            for mount in &new_mounts {
+                                for group in cfg.watch.values() {
+                                    let expanded = crate::config::expand_user_paths(&group.paths);
+                                    for watch_path in &expanded {
+                                        if mount.starts_with(watch_path)
+                                            || watch_path.starts_with(mount.as_path())
+                                        {
+                                            tracing::error!(
+                                                mount = %mount.display(),
+                                                watch_path = %watch_path.display(),
+                                                "new mount detected over watched path — \
+                                                 real-time monitoring may be compromised"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Clock anomaly detection: detect both forward and backward clock jumps.
+                    // Forward jump > 1 hour or backward jump > 60 seconds indicates
+                    // possible clock manipulation (replay or evidence destruction).
                     let now_ts = Utc::now().timestamp();
                     let clock_delta = now_ts - last_rotation_timestamp;
-                    if clock_delta > 3600 {
+                    let clock_anomaly = if clock_delta > 3600 {
                         tracing::error!(
                             jump_secs = clock_delta,
-                            "clock anomaly detected — skipping audit rotation to prevent evidence loss"
+                            "forward clock anomaly detected — skipping audit rotation to prevent evidence loss"
                         );
+                        true
+                    } else if clock_delta < -60 {
+                        tracing::error!(
+                            jump_secs = clock_delta,
+                            "negative clock jump detected — skipping audit rotation (possible clock manipulation replay)"
+                        );
+                        true
+                    } else {
+                        false
+                    };
+
+                    if clock_anomaly {
+                        // Do NOT update last_rotation_timestamp on any clock anomaly
                     } else {
                         match db::open_audit_db(&cfg) {
                             Ok(audit_conn) => {
@@ -173,8 +253,8 @@ pub fn spawn(
                             }
                             Err(e) => tracing::error!(error = %e, "failed to open audit database for rotation"),
                         }
+                        last_rotation_timestamp = now_ts;
                     }
-                    last_rotation_timestamp = now_ts;
 
                     if let Err(e) = write_metrics_snapshot(&cfg.daemon.runtime_dir, &metrics) {
                         tracing::warn!(error = %e, "failed to write metrics snapshot");
@@ -283,9 +363,24 @@ fn config_file_hash() -> Option<String> {
 
 /// Read raw config file content from the standard search paths.
 fn config_file_content() -> Option<Vec<u8>> {
+    #[cfg(any(test, debug_assertions))]
     if let Ok(env_path) = std::env::var("VIGIL_CONFIG") {
         if let Ok(content) = std::fs::read(&env_path) {
             return Some(content);
+        }
+    }
+    #[cfg(not(any(test, debug_assertions)))]
+    if let Ok(env_path) = std::env::var("VIGIL_CONFIG") {
+        // In production, validate ownership before reading
+        use std::os::unix::fs::MetadataExt;
+        let p = std::path::Path::new(&env_path);
+        if let Ok(meta) = std::fs::metadata(p) {
+            let mode = meta.mode() & 0o777;
+            if meta.uid() == 0 && mode <= 0o644 {
+                if let Ok(content) = std::fs::read(p) {
+                    return Some(content);
+                }
+            }
         }
     }
     std::fs::read("/etc/vigil/vigil.toml").ok()

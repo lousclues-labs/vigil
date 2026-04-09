@@ -8,6 +8,32 @@ use crate::error::{Result, VigilError};
 use rusqlite::Connection;
 use std::path::Path;
 
+/// Identity (inode + device) of a database file, used for TOCTOU detection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DbFileIdentity {
+    pub inode: u64,
+    pub device: u64,
+}
+
+impl DbFileIdentity {
+    /// Stat the given path and return its inode + device.
+    pub fn from_path(path: &Path) -> Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path)?;
+        Ok(Self {
+            inode: meta.ino(),
+            device: meta.dev(),
+        })
+    }
+
+    /// Compare against the current stat of the path. Returns `true` if the file
+    /// has been replaced (different inode or device).
+    pub fn is_replaced(&self, path: &Path) -> Result<bool> {
+        let current = Self::from_path(path)?;
+        Ok(current != *self)
+    }
+}
+
 /// Common SQLite pragma configuration.
 pub struct PragmaOpts<'a> {
     pub sync_mode: &'a str,
@@ -112,6 +138,10 @@ fn open_db_internal(
 ) -> Result<Connection> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
+        // Only enforce directory ownership checks in production builds.
+        // Tests run as unprivileged users in temp directories.
+        #[cfg(not(any(test, debug_assertions)))]
+        verify_directory_safety(parent)?;
     }
 
     let conn = Connection::open(db_path)?;
@@ -131,6 +161,9 @@ fn open_db_internal(
             ..PragmaOpts::default()
         },
     )?;
+
+    // Restrict WAL/SHM sidecar file permissions to owner-only (0600)
+    restrict_sidecar_permissions(db_path);
 
     if is_baseline {
         // Run v1→v2 migration if the old JSON blob schema is present
@@ -214,6 +247,51 @@ pub fn integrity_check(conn: &Connection) -> Result<()> {
 /// Checkpoint WAL and truncate.
 pub fn wal_checkpoint(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
+    Ok(())
+}
+
+/// Restrict permissions on WAL and SHM sidecar files to 0600 if they exist.
+fn restrict_sidecar_permissions(db_path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    for suffix in &["-wal", "-shm"] {
+        let mut sidecar = db_path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        let sidecar_path = std::path::Path::new(&sidecar);
+        if sidecar_path.exists() {
+            if let Err(e) =
+                std::fs::set_permissions(sidecar_path, std::fs::Permissions::from_mode(0o600))
+            {
+                tracing::warn!(
+                    path = %sidecar_path.display(),
+                    error = %e,
+                    "failed to restrict sidecar file permissions"
+                );
+            }
+        }
+    }
+}
+
+/// Verify that the database directory is owned by root (uid 0) and has
+/// permissions no wider than 0750. Returns an error if unsafe.
+#[cfg(not(any(test, debug_assertions)))]
+fn verify_directory_safety(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(dir)?;
+    if meta.uid() != 0 {
+        return Err(VigilError::Config(format!(
+            "database directory has unsafe ownership: {} is owned by uid {} (expected root/0)",
+            dir.display(),
+            meta.uid()
+        )));
+    }
+    let mode = meta.mode() & 0o777;
+    if mode & 0o027 != 0 {
+        return Err(VigilError::Config(format!(
+            "database directory has unsafe permissions: {} has mode {:04o} (expected 0700 or 0750)",
+            dir.display(),
+            mode
+        )));
+    }
     Ok(())
 }
 

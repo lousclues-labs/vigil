@@ -4,6 +4,35 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-04-08
+
+### Release Summary
+- Third-round security hardening release addressing 13 vulnerabilities identified in an adversarial audit by a sophisticated local adversary with root access. Key changes: baseline DB TOCTOU detection via inode/device identity tracking, WAL/SHM sidecar permission restriction, database directory ownership verification, VIGIL_CONFIG environment variable gated for production builds, mount-change detection for bind-mount evasion, fanotify queue overflow handling, baseline HMAC expanded to all 13 security-relevant fields, self-binary monitoring, systemd unit hardening, PID recycling race mitigation, negative clock jump detection, and symlink target canonical resolution.
+
+### Fixed
+- **security**: baseline DB TOCTOU window closed — after HMAC verification at startup, inode+device identity of the baseline database is recorded. Before every housekeeping tick, the coordinator stats the DB path and compares identity; if the file has been atomically replaced, all operations are refused and a critical log is emitted (VIGIL-VULN-025, Critical).
+- **security**: SQLite WAL/SHM sidecar files now permission-restricted — after opening a database in WAL mode, permissions on `{db}-wal` and `{db}-shm` are explicitly set to 0600 if they exist. Process umask set to 0077 at daemon startup before any file creation (VIGIL-VULN-026, High).
+- **security**: database directory ownership and permissions verified — `open_db_internal` now verifies the database directory is owned by uid 0 with mode no wider than 0750. Rejects unsafe directories with a descriptive error (VIGIL-VULN-027, High).
+- **security**: `VIGIL_CONFIG` environment variable gated in production — environment variable config path override is only unrestricted in test/debug builds. In production (release) builds, the target file must be owned by root with mode <= 0644. Applied consistently across config loading, coordinator content reads, and lib hash computation (VIGIL-VULN-028, Critical).
+- **security**: `VIGIL_SKIP_PACKAGE_OWNER` environment variable gated behind `#[cfg(any(test, debug_assertions))]` — in production builds, package owner lookup is always performed. Prevents attackers from disabling package attribution (VIGIL-VULN-029, Medium).
+- **security**: bind-mount evasion detection — coordinator housekeeping loop now re-reads `/proc/self/mountinfo` every 60 seconds and compares against the mount set established at startup. New mounts over watched paths trigger error-level logging (VIGIL-VULN-030, High).
+- **security**: fanotify kernel queue overflow (`FAN_Q_OVERFLOW`) now detected and logged — overflow events increment the new `kernel_queue_overflows` metric counter and log at error level, alerting operators that file changes may have been missed (VIGIL-VULN-031, High).
+- **security**: baseline HMAC now covers all 13 security-relevant fields — expanded canonical data to include path, hash, size, mode, owner_uid, owner_gid, inode, device, file_type, symlink_target, capabilities, xattrs_json, and security_context. Previously only 5 fields were covered. Stored HMACs are automatically recomputed on upgrade (VIGIL-VULN-032, High).
+- **security**: Vigil's own binaries added to self-monitoring — `/usr/bin/vigil` and `/usr/bin/vigild` added to the default `vigil_self` watch group. On startup, the BLAKE3 hash of `/proc/self/exe` is computed, logged, and stored in `config_state` key `binary_hash` (VIGIL-VULN-033, Medium).
+- **security**: systemd unit file hardened — added `NotifyAccess=main` to prevent sd_notify socket spoofing, changed `ProtectHome=read-only` to `ProtectHome=true`, removed `/var/log/vigil` from `ReadWritePaths` (VIGIL-VULN-034, Medium).
+- **security**: process attribution PID recycling race minimized — `/proc/{pid}/exe` readlink moved to immediately after reading fanotify event metadata, before any channel send or bloom filter check. Added comment documenting that `FAN_REPORT_PIDFD` (Linux 6.2+) would eliminate this race entirely (VIGIL-VULN-035, Low).
+- **security**: negative clock jump detection added — coordinator now detects backward clock jumps exceeding 60 seconds and skips audit rotation. `last_rotation_timestamp` is not updated when any clock anomaly (forward or backward) is detected, preventing replay attacks that manipulate the system clock (VIGIL-VULN-036, Medium).
+- **security**: symlink target tracking uses canonical resolution — `FileSnapshot::from_fd` now resolves symlink targets via `canonicalize()` (falling back to `read_link()`) to capture the full resolution chain. Changes in the resolved canonical target between scans emit `SymlinkTargetChanged` alerts (VIGIL-VULN-037, Medium).
+
+### Tests
+- Added 8 new tests covering TOCTOU inode detection, full HMAC field coverage, mount parsing, kernel overflow metrics, self-binary watch group inclusion, and symlink canonical resolution.
+
+### Validation
+- `cargo check` passes.
+- `cargo test --all-targets` passes.
+- `cargo clippy --all-targets -- -D warnings` passes.
+- `cd fuzz && cargo check` passes.
+
 ## [0.22.0] - 2026-04-08
 
 ### Release Summary

@@ -229,18 +229,36 @@ pub fn get_config_state(conn: &Connection, key: &str) -> Result<Option<String>> 
 }
 
 /// Compute HMAC over the baseline table for at-rest tamper evidence.
+/// Covers all 13 security-relevant fields for comprehensive integrity.
 pub fn compute_baseline_hmac(conn: &Connection, key: &[u8]) -> Result<String> {
     let entries = get_all(conn)?;
     let mut canonical = String::new();
 
     for entry in entries {
+        let symlink_str = entry
+            .identity
+            .symlink_target
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let caps_str = entry.permissions.capabilities.as_deref().unwrap_or("");
+        let xattrs_json = serde_json::to_string(&entry.security.xattrs).unwrap_or_default();
+
         canonical.push_str(&format!(
-            "{}|{}|{}|{}|{}\n",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}\n",
             entry.path.display(),
             entry.content.hash,
+            entry.content.size,
             entry.permissions.mode,
             entry.permissions.owner_uid,
             entry.permissions.owner_gid,
+            entry.identity.inode,
+            entry.identity.device,
+            entry.identity.file_type,
+            symlink_str,
+            caps_str,
+            xattrs_json,
+            entry.security.security_context,
         ));
     }
 

@@ -41,15 +41,24 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<Base
     let now = chrono::Utc::now().timestamp();
     let exclusions = crate::filter::exclusion::ExclusionFilter::new(config);
 
-    let skip_package_owner = std::env::var("VIGIL_SKIP_PACKAGE_OWNER")
-        .map(|v| {
-            let v = v.trim();
-            v == "1"
-                || v.eq_ignore_ascii_case("true")
-                || v.eq_ignore_ascii_case("yes")
-                || v.eq_ignore_ascii_case("on")
-        })
-        .unwrap_or(false);
+    let skip_package_owner = {
+        #[cfg(any(test, debug_assertions))]
+        {
+            std::env::var("VIGIL_SKIP_PACKAGE_OWNER")
+                .map(|v| {
+                    let v = v.trim();
+                    v == "1"
+                        || v.eq_ignore_ascii_case("true")
+                        || v.eq_ignore_ascii_case("yes")
+                        || v.eq_ignore_ascii_case("on")
+                })
+                .unwrap_or(false)
+        }
+        #[cfg(not(any(test, debug_assertions)))]
+        {
+            false
+        }
+    };
 
     conn.execute_batch("BEGIN IMMEDIATE")?;
 
@@ -422,6 +431,15 @@ where
             // This avoids recursive loops in trees like /etc/systemd/system.
             match std::fs::metadata(&path) {
                 Ok(target) if target.is_file() => {
+                    // Resolve the canonical target path so that symlink target
+                    // changes between scans are recorded in the baseline snapshot.
+                    if let Ok(canonical) = std::fs::canonicalize(&path) {
+                        tracing::debug!(
+                            symlink = %path.display(),
+                            target = %canonical.display(),
+                            "resolved symlink to canonical target"
+                        );
+                    }
                     visit(&path)?;
                 }
                 Ok(target) if target.is_dir() => {

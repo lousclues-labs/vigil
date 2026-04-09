@@ -651,8 +651,33 @@ fn config_search_paths(explicit_path: Option<&Path>) -> Vec<PathBuf> {
     if let Some(p) = explicit_path {
         paths.push(p.to_path_buf());
     }
+    // VIGIL_CONFIG env var is only allowed in test/debug builds.
+    // In production, require the config file to be in a standard location
+    // or passed explicitly via CLI.
+    #[cfg(any(test, debug_assertions))]
     if let Ok(env_path) = std::env::var("VIGIL_CONFIG") {
         paths.push(PathBuf::from(env_path));
+    }
+    #[cfg(not(any(test, debug_assertions)))]
+    if let Ok(env_path) = std::env::var("VIGIL_CONFIG") {
+        // In production, validate ownership: file must be owned by root with mode <= 0644
+        let p = PathBuf::from(&env_path);
+        if p.exists() {
+            use std::os::unix::fs::MetadataExt;
+            if let Ok(meta) = std::fs::metadata(&p) {
+                let mode = meta.mode() & 0o777;
+                if meta.uid() == 0 && mode <= 0o644 {
+                    paths.push(p);
+                } else {
+                    tracing::error!(
+                        path = %p.display(),
+                        uid = meta.uid(),
+                        mode = format!("{:04o}", mode),
+                        "VIGIL_CONFIG target rejected: must be owned by root with mode <= 0644"
+                    );
+                }
+            }
+        }
     }
     if let Some(home) = std::env::var_os("HOME") {
         paths.push(PathBuf::from(home).join(".config/vigil/vigil.toml"));
@@ -834,7 +859,12 @@ pub fn default_config() -> Config {
         "vigil_self".into(),
         WatchGroup {
             severity: Severity::Critical,
-            paths: vec!["/etc/vigil/vigil.toml".into(), "/etc/vigil/hmac.key".into()],
+            paths: vec![
+                "/etc/vigil/vigil.toml".into(),
+                "/etc/vigil/hmac.key".into(),
+                "/usr/bin/vigil".into(),
+                "/usr/bin/vigild".into(),
+            ],
         },
     );
 
