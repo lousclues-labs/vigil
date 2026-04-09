@@ -1006,7 +1006,7 @@ fn check_control_socket(config: &Config) -> DiagnosticCheck {
         };
     }
 
-    match query_control_socket_quick(socket_path) {
+    match query_control_socket_quick(socket_path, &config.security) {
         Ok(_) => DiagnosticCheck {
             name: "Control".into(),
             status: CheckStatus::Ok,
@@ -1022,12 +1022,14 @@ fn check_control_socket(config: &Config) -> DiagnosticCheck {
     }
 }
 
-fn query_control_socket_quick(socket_path: &Path) -> std::result::Result<(), String> {
+fn query_control_socket_quick(
+    socket_path: &Path,
+    security: &crate::config::SecurityConfig,
+) -> std::result::Result<(), String> {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
 
-    let mut stream =
-        UnixStream::connect(socket_path).map_err(|e| format!("connect failed: {}", e))?;
+    let stream = UnixStream::connect(socket_path).map_err(|e| format!("connect failed: {}", e))?;
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(2)))
         .map_err(|e| format!("set timeout: {}", e))?;
@@ -1035,21 +1037,77 @@ fn query_control_socket_quick(socket_path: &Path) -> std::result::Result<(), Str
         .set_write_timeout(Some(std::time::Duration::from_secs(2)))
         .map_err(|e| format!("set timeout: {}", e))?;
 
-    writeln!(stream, r#"{{"method":"status"}}"#).map_err(|e| format!("write: {}", e))?;
-    stream.flush().map_err(|e| format!("flush: {}", e))?;
+    let auth_enabled = security.hmac_signing && security.control_socket_auth;
 
-    let mut reader = BufReader::new(&stream);
-    let mut response = String::new();
-    reader
-        .read_line(&mut response)
-        .map_err(|e| format!("read: {}", e))?;
+    if auth_enabled {
+        // Authenticated mode: read challenge, compute HMAC, send authenticated request.
+        let mut reader = BufReader::new(&stream);
+        let mut challenge_line = String::new();
+        reader
+            .read_line(&mut challenge_line)
+            .map_err(|e| format!("read challenge: {}", e))?;
 
-    let value: serde_json::Value =
-        serde_json::from_str(&response).map_err(|e| format!("parse: {}", e))?;
-    if value.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-        Ok(())
+        let challenge: serde_json::Value = serde_json::from_str(challenge_line.trim())
+            .map_err(|e| format!("parse challenge: {}", e))?;
+        let nonce = challenge
+            .get("challenge")
+            .and_then(|v| v.as_str())
+            .ok_or("server did not send a challenge nonce")?;
+
+        let key = crate::hmac::load_hmac_key(&security.hmac_key_path)
+            .map_err(|e| format!("load HMAC key: {}", e))?;
+        let hmac_response = crate::hmac::compute_hmac(&key, nonce.as_bytes())
+            .map_err(|e| format!("compute HMAC: {}", e))?;
+
+        let auth_request = serde_json::json!({
+            "method": "status",
+            "response": hmac_response,
+        });
+
+        drop(reader);
+        let mut req_str =
+            serde_json::to_string(&auth_request).map_err(|e| format!("serialize: {}", e))?;
+        req_str.push('\n');
+        (&stream)
+            .write_all(req_str.as_bytes())
+            .map_err(|e| format!("write: {}", e))?;
+        (&stream).flush().map_err(|e| format!("flush: {}", e))?;
+
+        let mut reader = BufReader::new(&stream);
+        let mut response = String::new();
+        reader
+            .read_line(&mut response)
+            .map_err(|e| format!("read: {}", e))?;
+
+        let value: serde_json::Value =
+            serde_json::from_str(&response).map_err(|e| format!("parse: {}", e))?;
+        if value.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+            Ok(())
+        } else {
+            let err_msg = value
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown error");
+            Err(format!("status error: {}", err_msg))
+        }
     } else {
-        Err("status returned ok=false".into())
+        // Unauthenticated mode: send request, read response.
+        writeln!(&stream, r#"{{"method":"status"}}"#).map_err(|e| format!("write: {}", e))?;
+        (&stream).flush().map_err(|e| format!("flush: {}", e))?;
+
+        let mut reader = BufReader::new(&stream);
+        let mut response = String::new();
+        reader
+            .read_line(&mut response)
+            .map_err(|e| format!("read: {}", e))?;
+
+        let value: serde_json::Value =
+            serde_json::from_str(&response).map_err(|e| format!("parse: {}", e))?;
+        if value.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+            Ok(())
+        } else {
+            Err("status returned ok=false".into())
+        }
     }
 }
 
