@@ -57,15 +57,16 @@ Vigil has one job. Detect filesystem boundary changes and record them.
 
 ## Runtime Threads
 
-`vigild` runs a small fixed set of threads.
+`vigild` runs a small fixed set of threads, all owned by `DaemonRuntime` (in `src/lib.rs`).
 
 - monitor thread in `src/monitor/fanotify.rs` or `src/monitor/inotify.rs`
-- worker thread pool in `src/worker.rs`
-- alert dispatcher thread in `src/alert/mod.rs`
-- coordinator thread in `src/coordinator.rs`
+- worker thread pool in `src/worker.rs` — each worker holds a `WorkerContext` struct
+- alert dispatcher thread in `src/alert/mod.rs` — runs `AlertDispatcher::run()`
+- coordinator thread in `src/coordinator.rs` — runs a `Coordinator` struct's tick loop
 - scan scheduler thread in `src/scan_scheduler.rs`
-- control socket thread in `src/control.rs`
+- control socket thread in `src/control.rs` — dispatches via a `ControlHandler` struct
 
+The `DaemonRuntime` owns all `JoinHandle`s, channel senders, and shutdown state.
 The coordinator owns lifecycle coordination and periodic housekeeping.
 
 ---
@@ -117,21 +118,21 @@ src/
 |
 |-- bloom.rs                # Bloom filter for fast path membership reject.
 |-- cli.rs                  # clap command tree and flags.
-|-- control.rs              # Unix control socket command server.
-|-- coordinator.rs          # Thread lifecycle and periodic coordinator loop.
+|-- control.rs              # Unix control socket. ControlHandler struct dispatches methods.
+|-- coordinator.rs          # Coordinator struct with tick loop and named housekeeping methods.
 |-- daemon.rs               # vigild binary entrypoint.
 |-- doctor.rs               # System health diagnostics and health snapshot.
 |-- error.rs                # Central error type.
 |-- hash.rs                 # BLAKE3 hashing helpers.
 |-- hmac.rs                 # HMAC signing and verification helpers.
-|-- lib.rs                  # Daemon runtime orchestration.
+|-- lib.rs                  # Daemon struct + DaemonRuntime (start/wait/drain lifecycle).
 |-- main.rs                 # CLI entrypoint and command dispatch.
 |-- metrics.rs              # Runtime counters and snapshot serialization.
 |-- package.rs              # Package manager detection and ownership query.
 |-- scan_scheduler.rs       # Cron-based scan scheduling with croner.
 |-- scanner.rs              # Scheduled scans and baseline refresh work.
 |-- watch_index.rs          # Path to watch-group lookup index.
-`-- worker.rs               # Event processing worker pipeline.
+`-- worker.rs               # WorkerContext struct: evaluate, process_safe, drain_debounced.
 ```
 
 ---
@@ -140,10 +141,12 @@ src/
 
 These modules are easy to miss. They are core to the runtime.
 
-- `src/control.rs` handles daemon RPC over Unix socket for `status`, `scan`, and reload actions. When HMAC signing is enabled, connections are authenticated via nonce-based challenge-response. All `reload` and `scan` commands are logged with peer credentials.
-- `src/coordinator.rs` coordinates reload, snapshot writing, retention rotation, and watchdog heartbeats. Watchdog pings systemd on every loop iteration (~1s) independently of the 60-second housekeeping tick. Detects sustained event drops and logs evasion warnings. Verifies config file integrity on reload.
+- `src/lib.rs` defines `Daemon` (config, connections, startup) and `DaemonRuntime` (thread ownership, channel lifecycle). `Daemon::run()` is ~11 lines: harden, record binary hash, start runtime, wait, drain. `DaemonRuntime::start()` wires all channels, spawns all threads, emits `sd_notify(Ready)`. `DaemonRuntime::drain()` joins threads in dependency order.
+- `src/control.rs` defines `ControlHandler` — a struct holding metrics, state, reload flag, scan trigger, DB path, HMAC key, and auth flag. Methods: `handle_connection` (auth-or-read, dispatch, write), `authenticate_and_read` (challenge-response), `read_request`, `write_response`, `dispatch`. When HMAC signing is enabled, connections are authenticated via nonce-based challenge-response. All `reload` and `scan` commands are logged with peer credentials.
+- `src/coordinator.rs` defines `CoordinatorConfig` (spawn arguments) and `Coordinator` (runtime state). The main loop calls `handle_reload()` on flag and `tick()` every 60 seconds. `tick()` sequences: `check_baseline_db_identity`, `check_audit_db_identity`, `check_mount_evasion`, `detect_clock_anomaly`, `rotate_audit_log`, `write_snapshots`, `check_backpressure`, `check_event_drops`, `maybe_checkpoint_wal`. Watchdog pings systemd on every loop iteration (~1s) via `notify_watchdog()`.
+- `src/worker.rs` defines `WorkerSpawnArgs` (spawn arguments) and `WorkerContext` (per-worker state: connection, config, watch index, metrics, filter, LRU cache, generation tracker). Key methods: `evaluate` (cache lookup + baseline + snapshot + diff + classify), `process_safe` (catch_unwind wrapper), `drain_debounced` (debounced re-check). Logs self-protection warnings when config or HMAC key files are modified.
+- `src/alert/mod.rs` defines `AlertDispatcher` with extracted methods: `record_audit` (DB write + error recovery + retry buffer + DB reopen) and `dispatch_to_sinks` (sink iteration). `run()` is ~17 lines.
 - `src/scan_scheduler.rs` parses cron strings with `croner` and executes scheduled scans.
-- `src/worker.rs` processes monitor events and runs snapshot comparison. Debounced paths are re-checked via synthetic events. Logs self-protection warnings when config or HMAC key files are modified.
 - `src/bloom.rs` provides fast probabilistic reject for unrelated paths.
 - `src/watch_index.rs` maps a path to the most specific watch group.
 - `src/metrics.rs` stores counters. Coordinator writes `metrics.json`. Doctor writes `health.json`.
@@ -174,16 +177,17 @@ Result: `baseline` table is populated with trusted file state.
 ```
 filesystem event
   -> monitor backend (fanotify or inotify)
-  -> worker::process_event()
-  -> worker::process_event_inner()
-  -> FileSnapshot::from_fd() or FileSnapshot::from_path()
-  -> FileSnapshot::diff(&baseline_entry)
-  -> alert dispatcher
-  -> audit write always
-  -> notification sinks if not suppressed
+  -> WorkerContext::process_safe(event)
+  -> WorkerContext::evaluate(event)
+     -> cache lookup or baseline_ops::get_by_path()
+     -> process_event_inner()
+     -> FileSnapshot::from_fd() or FileSnapshot::from_path()
+     -> FileSnapshot::diff(&baseline_entry)
+  -> AlertDispatcher::record_audit() (always)
+  -> AlertDispatcher::dispatch_to_sinks() (if not suppressed)
 ```
 
-Comparison and classification run in `src/worker.rs` and `src/types/snapshot.rs`.
+Comparison and classification run in `src/worker.rs` (`WorkerContext`) and `src/types/snapshot.rs`.
 
 ### 3) Scheduled Scan Pipeline
 
@@ -201,12 +205,13 @@ Scheduled scans use `scanner.scheduled_mode`.
 
 ```
 control socket request
-  -> challenge-response auth (if hmac_signing enabled)
+  -> ControlHandler::handle_connection(stream)
   -> log peer credentials (PID, UID, GID)
-  -> control::dispatch()
-  -> status | baseline_count | reload | scan | metrics_prometheus
+  -> ControlHandler::authenticate_and_read() or read_request()
+  -> ControlHandler::dispatch(method, request)
+  -> handle_status | handle_baseline_count | handle_reload | handle_scan | handle_metrics_prometheus
   -> log_control_action() for reload/scan
-  -> JSON response
+  -> ControlHandler::write_response()
 ```
 
 `vigil check --now` and status queries use this path when daemon mode is active.
@@ -226,7 +231,7 @@ open(path)
 ```
 
 This lives in `FileSnapshot::from_fd`, `FileSnapshot::from_path`, and `FileSnapshot::diff`.
-`worker::process_event_inner` drives the call sequence.
+`WorkerContext::evaluate` → `process_event_inner` drives the call sequence.
 
 This model reduces TOCTOU exposure because metadata and hash come from the same opened object.
 
@@ -361,19 +366,28 @@ The flow stays explicit and easy to trace.
 
 ## Startup Sequence
 
-The daemon startup path in `Daemon::run()` follows this order:
+The daemon startup path follows two stages: `Daemon::run()` handles pre-flight checks, then delegates to `DaemonRuntime`.
+
+**`Daemon::run()` (pre-flight):**
 
 1. `harden_process()` — sets umask, disables ptrace, locks privileges
 2. `raise_nofile_limit()` — attempts to raise `RLIMIT_NOFILE`
-3. Record binary hash from `/proc/self/exe`
-4. **Startup diagnostics** — log baseline DB path, existence, file size, readability, and HMAC signing status
+3. `record_binary_hash()` — BLAKE3 hash of `/proc/self/exe`
+4. `log_startup_diagnostics()` — log baseline DB path, existence, file size, readability, and HMAC signing status
 5. `ensure_baseline_health()` — integrity check, emptiness check (with version-upgrade recovery), HMAC verification
+
+**`DaemonRuntime::start()` (thread wiring):**
+
 6. Set up signal mask and spawn signal thread
 7. Start monitor backend (fanotify with inotify fallback)
-8. Spawn worker pool, baseline writer, alert dispatcher, coordinator, scan scheduler
+8. Spawn worker pool (`WorkerSpawnArgs`), baseline writer, alert dispatcher, coordinator (`CoordinatorConfig`), scan scheduler
 9. `sd_notify(Ready)` — signal systemd that startup is complete
-10. Spawn control socket
+10. Spawn control socket (`ControlHandler`)
+
+**`DaemonRuntime::wait_for_shutdown()` + `DaemonRuntime::drain()`:**
+
 11. Block on shutdown signal
+12. Send `sd_notify(Stopping)`, drop senders, join all threads in dependency order, cleanup PID file
 
 If any step before `sd_notify(Ready)` fails, the daemon exits with the error printed to both tracing and stderr.
 

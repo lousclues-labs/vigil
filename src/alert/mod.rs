@@ -18,6 +18,7 @@ use crate::error::Result;
 use crate::metrics::Metrics;
 use crate::types::{Alert, AlertContext, AlertFileInfo, Change, ChangeResult, Severity};
 
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use zeroize::Zeroizing;
 
 /// Message passed from workers/scanners to the alert dispatcher.
@@ -52,7 +53,7 @@ pub struct AlertDispatcher {
     max_alerts_per_minute: u32,
     metrics: Arc<Metrics>,
     hostname: String,
-    consecutive_audit_failures: std::sync::atomic::AtomicU32,
+    consecutive_audit_failures: AtomicU32,
     /// Bounded buffer for audit entries that failed to write; retried after DB reopen.
     audit_retry_buffer: Mutex<Vec<PendingAuditEntry>>,
 }
@@ -150,130 +151,122 @@ impl AlertDispatcher {
             max_alerts_per_minute: config.alerts.max_alerts_per_minute,
             metrics,
             hostname,
-            consecutive_audit_failures: std::sync::atomic::AtomicU32::new(0),
+            consecutive_audit_failures: AtomicU32::new(0),
             audit_retry_buffer: Mutex::new(Vec::new()),
         })
     }
 
-    pub fn run(
-        mut self,
-        alert_rx: Receiver<AlertPayload>,
-        shutdown: Arc<std::sync::atomic::AtomicBool>,
-    ) {
-        while !shutdown.load(std::sync::atomic::Ordering::Acquire) {
+    pub fn run(mut self, alert_rx: Receiver<AlertPayload>, shutdown: Arc<AtomicBool>) {
+        while !shutdown.load(Ordering::Acquire) {
             match alert_rx.recv_timeout(Duration::from_millis(500)) {
                 Ok(payload) => {
                     let suppressed =
                         self.is_suppressed(&payload.change, payload.maintenance_window);
-
-                    if let Err(e) = self.write_audit_entry(&payload, suppressed) {
-                        tracing::error!(error = %e, "audit write failed");
-                        self.metrics
-                            .db_errors
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-                        // Buffer the failed entry for retry (bounded to 1000)
-                        {
-                            let mut buffer = self.audit_retry_buffer.lock();
-                            if buffer.len() < 1000 {
-                                buffer.push(PendingAuditEntry {
-                                    payload: payload.clone(),
-                                    suppressed,
-                                });
-                            } else {
-                                tracing::error!(
-                                    "audit retry buffer full — audit entry permanently lost"
-                                );
-                                self.metrics
-                                    .audit_entries_lost
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            }
-                        }
-
-                        let failures = self
-                            .consecutive_audit_failures
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                            + 1;
-
-                        if failures >= 3 {
-                            tracing::warn!(
-                                failures = failures,
-                                "attempting to reopen audit DB after consecutive failures"
-                            );
-                            match rusqlite::Connection::open(&self.audit_db_path) {
-                                Ok(new_conn) => {
-                                    if let Ok(()) = crate::db::apply_pragmas(
-                                        &new_conn,
-                                        &crate::db::PragmaOpts {
-                                            sync_mode: "FULL",
-                                            wal_mode: true,
-                                            ..crate::db::PragmaOpts::default()
-                                        },
-                                    ) {
-                                        self.audit_conn = new_conn;
-                                        self.consecutive_audit_failures
-                                            .store(0, std::sync::atomic::Ordering::Relaxed);
-                                        tracing::info!("audit DB connection reopened");
-
-                                        // Retry buffered entries
-                                        let pending: Vec<PendingAuditEntry> = {
-                                            let mut buffer = self.audit_retry_buffer.lock();
-                                            std::mem::take(&mut *buffer)
-                                        };
-                                        let retry_count = pending.len();
-                                        let mut retry_ok = 0u64;
-                                        for entry in pending {
-                                            if self
-                                                .write_audit_entry(&entry.payload, entry.suppressed)
-                                                .is_ok()
-                                            {
-                                                retry_ok += 1;
-                                            }
-                                        }
-                                        if retry_count > 0 {
-                                            tracing::info!(
-                                                retried = retry_count,
-                                                succeeded = retry_ok,
-                                                "retried buffered audit entries"
-                                            );
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::error!(error = %e, "failed to reopen audit DB");
-                                }
-                            }
-                        }
-                    } else {
-                        self.consecutive_audit_failures
-                            .store(0, std::sync::atomic::Ordering::Relaxed);
-                        self.metrics
-                            .db_writes
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-
+                    self.record_audit(&payload, suppressed);
                     if suppressed {
                         self.metrics
                             .alerts_suppressed
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            .fetch_add(1, Ordering::Relaxed);
                         continue;
                     }
-
                     let alert = self.build_alert(&payload);
-                    for sink in &self.sinks {
-                        if alert.severity >= sink.min_severity() {
-                            if let Err(e) = sink.dispatch(&alert) {
-                                tracing::warn!(sink = sink.name(), error = %e, "alert sink failed");
-                            }
-                        }
-                    }
-
+                    self.dispatch_to_sinks(&alert);
                     self.metrics
                         .alerts_dispatched
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        .fetch_add(1, Ordering::Relaxed);
                 }
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    }
+
+    fn record_audit(&mut self, payload: &AlertPayload, suppressed: bool) {
+        if let Err(e) = self.write_audit_entry(payload, suppressed) {
+            tracing::error!(error = %e, "audit write failed");
+            self.metrics.db_errors.fetch_add(1, Ordering::Relaxed);
+
+            // Buffer the failed entry for retry (bounded to 1000)
+            {
+                let mut buffer = self.audit_retry_buffer.lock();
+                if buffer.len() < 1000 {
+                    buffer.push(PendingAuditEntry {
+                        payload: payload.clone(),
+                        suppressed,
+                    });
+                } else {
+                    tracing::error!("audit retry buffer full — audit entry permanently lost");
+                    self.metrics
+                        .audit_entries_lost
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            }
+
+            let failures = self
+                .consecutive_audit_failures
+                .fetch_add(1, Ordering::Relaxed)
+                + 1;
+
+            if failures >= 3 {
+                tracing::warn!(
+                    failures = failures,
+                    "attempting to reopen audit DB after consecutive failures"
+                );
+                match rusqlite::Connection::open(&self.audit_db_path) {
+                    Ok(new_conn) => {
+                        if let Ok(()) = crate::db::apply_pragmas(
+                            &new_conn,
+                            &crate::db::PragmaOpts {
+                                sync_mode: "FULL",
+                                wal_mode: true,
+                                ..crate::db::PragmaOpts::default()
+                            },
+                        ) {
+                            self.audit_conn = new_conn;
+                            self.consecutive_audit_failures.store(0, Ordering::Relaxed);
+                            tracing::info!("audit DB connection reopened");
+
+                            // Retry buffered entries
+                            let pending: Vec<PendingAuditEntry> = {
+                                let mut buffer = self.audit_retry_buffer.lock();
+                                std::mem::take(&mut *buffer)
+                            };
+                            let retry_count = pending.len();
+                            let mut retry_ok = 0u64;
+                            for entry in pending {
+                                if self
+                                    .write_audit_entry(&entry.payload, entry.suppressed)
+                                    .is_ok()
+                                {
+                                    retry_ok += 1;
+                                }
+                            }
+                            if retry_count > 0 {
+                                tracing::info!(
+                                    retried = retry_count,
+                                    succeeded = retry_ok,
+                                    "retried buffered audit entries"
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to reopen audit DB");
+                    }
+                }
+            }
+        } else {
+            self.consecutive_audit_failures.store(0, Ordering::Relaxed);
+            self.metrics.db_writes.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn dispatch_to_sinks(&self, alert: &Alert) {
+        for sink in &self.sinks {
+            if alert.severity >= sink.min_severity() {
+                if let Err(e) = sink.dispatch(alert) {
+                    tracing::warn!(sink = sink.name(), error = %e, "alert sink failed");
+                }
             }
         }
     }

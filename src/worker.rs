@@ -1,5 +1,5 @@
 use std::os::fd::{AsRawFd, FromRawFd};
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -45,33 +45,195 @@ fn dup_to_file(raw_fd: std::os::fd::RawFd) -> std::io::Result<std::fs::File> {
     Ok(unsafe { std::fs::File::from_raw_fd(dup_fd) })
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn spawn_workers(
-    count: u32,
+/// Arguments for spawning the worker pool.
+pub struct WorkerSpawnArgs {
+    pub count: u32,
+    pub config: Arc<ArcSwap<Config>>,
+    pub event_rx: Receiver<FsEvent>,
+    pub alert_tx: Sender<AlertPayload>,
+    pub baseline_db_path: PathBuf,
+    pub watch_index: Arc<ArcSwap<WatchGroupIndex>>,
+    pub metrics: Arc<Metrics>,
+    pub shutdown: Arc<AtomicBool>,
+    pub baseline_update_tx: Option<Sender<BaselineUpdate>>,
+    pub backpressure: Arc<AtomicBool>,
+    pub baseline_generation: Arc<AtomicU64>,
+}
+
+/// Per-worker processing context holding connection, cache, and filter state.
+struct WorkerContext {
+    conn: Connection,
     config: Arc<ArcSwap<Config>>,
-    event_rx: Receiver<FsEvent>,
-    alert_tx: Sender<AlertPayload>,
-    baseline_db_path: &Path,
     watch_index: Arc<ArcSwap<WatchGroupIndex>>,
     metrics: Arc<Metrics>,
-    shutdown: Arc<AtomicBool>,
-    baseline_update_tx: Option<Sender<BaselineUpdate>>,
-    backpressure: Arc<AtomicBool>,
-    baseline_generation: Arc<AtomicU64>,
-) -> Vec<JoinHandle<()>> {
+    filter: EventFilter,
+    cache: LruCache<String, BaselineEntry>,
+    local_generation: u64,
+    generation: Arc<AtomicU64>,
+    drain_counter: u32,
+    last_drain: std::time::Instant,
+}
+
+impl WorkerContext {
+    fn refresh_cache_if_stale(&mut self) {
+        let current_gen = self.generation.load(Ordering::Acquire);
+        if current_gen != self.local_generation {
+            self.cache.clear();
+            self.local_generation = current_gen;
+        }
+    }
+
+    fn evaluate(&mut self, event: &FsEvent) -> Result<Option<ChangeResult>> {
+        let cfg = self.config.load();
+        let idx = self.watch_index.load();
+        let path_str = event.path.to_string_lossy().to_string();
+
+        let baseline = if let Some(cached) = self.cache.get(&path_str) {
+            self.metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
+            cached.clone()
+        } else {
+            self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
+            match baseline_ops::get_by_path(&self.conn, &path_str)? {
+                Some(b) => {
+                    self.cache.put(path_str.clone(), b.clone());
+                    b
+                }
+                None => {
+                    if matches!(event.event_type, FsEventType::Create | FsEventType::MovedTo) {
+                        if let Some((group_name, severity)) = idx.lookup(&event.path) {
+                            return Ok(Some(ChangeResult {
+                                path: event.path.clone(),
+                                changes: vec![Change::Created],
+                                severity,
+                                monitored_group: group_name.to_string(),
+                                process: event.process.clone(),
+                                package: None,
+                                package_update: false,
+                            }));
+                        }
+                        tracing::info!(path = %event.path.display(), "new file detected (not in baseline)");
+                    }
+                    return Ok(None);
+                }
+            }
+        };
+
+        let result = process_event_inner(&self.conn, event, &cfg, &idx, &self.metrics, baseline)?;
+        if result.is_some() {
+            self.cache.pop(&path_str);
+        }
+        Ok(result)
+    }
+
+    fn process_safe(&mut self, event: &FsEvent) -> Option<ChangeResult> {
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.evaluate(event)));
+        match result {
+            Ok(Ok(Some(cr))) => Some(cr),
+            Ok(Ok(None)) => None,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "event processing error");
+                None
+            }
+            Err(_) => {
+                self.metrics.panics_caught.fetch_add(1, Ordering::Relaxed);
+                tracing::error!("panic caught in worker thread");
+                None
+            }
+        }
+    }
+
+    fn drain_debounced(&mut self) -> Vec<AlertPayload> {
+        self.drain_counter += 1;
+        if self.drain_counter < 10 && self.last_drain.elapsed() < Duration::from_millis(200) {
+            return Vec::new();
+        }
+        self.drain_counter = 0;
+        self.last_drain = std::time::Instant::now();
+
+        let pending = self.filter.drain_pending();
+        let mut alerts = Vec::new();
+        for path in pending {
+            let path_str = path.to_string_lossy().to_string();
+            self.cache.pop(&path_str);
+
+            let synthetic = FsEvent {
+                path: Arc::new(path),
+                event_type: FsEventType::Modify,
+                timestamp: chrono::Utc::now(),
+                event_fd: None,
+                process: None,
+            };
+
+            if let Some(cr) = self.process_safe(&synthetic) {
+                alerts.push(AlertPayload {
+                    change: cr,
+                    maintenance_window: false,
+                });
+            }
+        }
+        alerts
+    }
+
+    fn try_auto_rebaseline(
+        &self,
+        change_result: &ChangeResult,
+        update_tx: &Option<Sender<BaselineUpdate>>,
+    ) {
+        if !change_result.package_update {
+            return;
+        }
+        if let Some(ref tx) = update_tx {
+            let cfg = self.config.load();
+            if cfg.package_manager.auto_rebaseline {
+                let now_ts = chrono::Utc::now().timestamp();
+                let opts = CaptureOpts {
+                    force_hash: true,
+                    max_file_size: cfg.scanner.max_file_size,
+                    mmap_threshold: cfg.scanner.mmap_threshold,
+                    baseline_mtime: None,
+                    baseline_hash: None,
+                };
+
+                if let Ok(SnapshotOrDeleted::Snapshot(fresh)) =
+                    crate::types::FileSnapshot::from_path(&change_result.path, &opts)
+                {
+                    let _ = tx.try_send(BaselineUpdate {
+                        entry: BaselineEntry {
+                            id: None,
+                            path: change_result.path.as_ref().clone(),
+                            identity: fresh.identity,
+                            content: fresh.content,
+                            permissions: fresh.permissions,
+                            security: fresh.security,
+                            mtime: fresh.mtime,
+                            package: change_result.package.clone(),
+                            source: crate::types::BaselineSource::PackageManager,
+                            added_at: now_ts,
+                            updated_at: now_ts,
+                        },
+                        reason: UpdateReason::PackageUpdate,
+                    });
+                }
+            }
+        }
+    }
+}
+
+pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
     let mut handles = Vec::new();
 
-    for i in 0..count {
-        let event_rx = event_rx.clone();
-        let alert_tx = alert_tx.clone();
-        let config = config.clone();
-        let watch_index = watch_index.clone();
-        let metrics = metrics.clone();
-        let shutdown = shutdown.clone();
-        let db_path = baseline_db_path.to_path_buf();
-        let update_tx = baseline_update_tx.clone();
-        let backpressure = backpressure.clone();
-        let generation = baseline_generation.clone();
+    for i in 0..args.count {
+        let event_rx = args.event_rx.clone();
+        let alert_tx = args.alert_tx.clone();
+        let config = args.config.clone();
+        let watch_index = args.watch_index.clone();
+        let metrics = args.metrics.clone();
+        let shutdown = args.shutdown.clone();
+        let db_path = args.baseline_db_path.clone();
+        let update_tx = args.baseline_update_tx.clone();
+        let backpressure = args.backpressure.clone();
+        let generation = args.baseline_generation.clone();
 
         let handle_result = std::thread::Builder::new()
             .name(format!("vigil-worker-{}", i))
@@ -85,170 +247,46 @@ pub fn spawn_workers(
                 };
 
                 let cfg = config.load();
-                let mut filter = EventFilter::with_metrics(&cfg, Some(metrics.clone()));
-                let mut cache: LruCache<String, BaselineEntry> =
-                    LruCache::new(std::num::NonZeroUsize::new(8192).unwrap());
-                let mut drain_counter = 0u32;
-                let mut last_drain = std::time::Instant::now();
-                let mut local_generation = generation.load(Ordering::Acquire);
+                let local_generation = generation.load(Ordering::Acquire);
+                let mut ctx = WorkerContext {
+                    conn,
+                    config: config.clone(),
+                    watch_index: watch_index.clone(),
+                    metrics: metrics.clone(),
+                    filter: EventFilter::with_metrics(&cfg, Some(metrics.clone())),
+                    cache: LruCache::new(std::num::NonZeroUsize::new(8192).unwrap()),
+                    local_generation,
+                    generation,
+                    drain_counter: 0,
+                    last_drain: std::time::Instant::now(),
+                };
 
                 while !shutdown.load(Ordering::Acquire) {
-                    // Invalidate LRU cache when baseline writer has committed new entries
-                    let current_gen = generation.load(Ordering::Acquire);
-                    if current_gen != local_generation {
-                        cache.clear();
-                        local_generation = current_gen;
-                    }
-                    // Periodically drain debounced events (count or time-based)
-                    drain_counter += 1;
-                    if drain_counter >= 10 || last_drain.elapsed() >= Duration::from_millis(200) {
-                        drain_counter = 0;
-                        last_drain = std::time::Instant::now();
-                        let pending = filter.drain_pending();
-                        for path in pending {
-                            let path_str = path.to_string_lossy().to_string();
-                            // Invalidate cache for re-checked paths
-                            cache.pop(&path_str);
+                    ctx.refresh_cache_if_stale();
 
-                            // Re-check drained paths by processing them as synthetic events
-                            let synthetic = FsEvent {
-                                path: Arc::new(path),
-                                event_type: FsEventType::Modify,
-                                timestamp: chrono::Utc::now(),
-                                event_fd: None,
-                                process: None,
-                            };
-
-                            let result =
-                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    process_event_cached(
-                                        &conn,
-                                        &synthetic,
-                                        &config,
-                                        &watch_index,
-                                        &metrics,
-                                        &mut cache,
-                                    )
-                                }));
-
-                            match result {
-                                Ok(Ok(Some(change_result))) => {
-                                    let p_str =
-                                        change_result.path.to_string_lossy().to_string();
-                                    cache.pop(&p_str);
-                                    if alert_tx
-                                        .send(AlertPayload {
-                                            change: change_result,
-                                            maintenance_window: false,
-                                        })
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
-                                }
-                                Ok(Ok(None)) => {}
-                                Ok(Err(e)) => {
-                                    tracing::warn!(error = %e, "debounce re-check error");
-                                }
-                                Err(_) => {
-                                    metrics
-                                        .panics_caught
-                                        .fetch_add(1, Ordering::Relaxed);
-                                    tracing::error!(
-                                        "panic caught during debounce re-check"
-                                    );
-                                }
-                            }
+                    for payload in ctx.drain_debounced() {
+                        if alert_tx.send(payload).is_err() {
+                            return;
                         }
                     }
 
                     match event_rx.recv_timeout(Duration::from_millis(200)) {
                         Ok(event) => {
-                            // Clear backpressure flag on successful receive
                             backpressure.store(false, Ordering::Relaxed);
-
-                            // Apply EventFilter before processing
-                            if !filter.should_process(&event) {
+                            if !ctx.filter.should_process(&event) {
                                 continue;
                             }
-
-                            metrics.events_processed.fetch_add(1, Ordering::Relaxed);
-
-                            let result =
-                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    process_event_cached(
-                                        &conn,
-                                        &event,
-                                        &config,
-                                        &watch_index,
-                                        &metrics,
-                                        &mut cache,
-                                    )
-                                }));
-
-                            match result {
-                                Ok(Ok(Some(change_result))) => {
-                                    // Invalidate cache for changed paths
-                                    let path_str =
-                                        change_result.path.to_string_lossy().to_string();
-                                    cache.pop(&path_str);
-
-                                    // Auto-rebaseline for package updates
-                                    if change_result.package_update {
-                                        if let Some(ref tx) = update_tx {
-                                            let cfg = config.load();
-                                            if cfg.package_manager.auto_rebaseline {
-                                                // Re-snapshot the file to capture post-update state
-                                                let now_ts = chrono::Utc::now().timestamp();
-                                                let opts = CaptureOpts {
-                                                    force_hash: true,
-                                                    max_file_size: cfg.scanner.max_file_size,
-                                                    mmap_threshold: cfg.scanner.mmap_threshold,
-                                                    baseline_mtime: None,
-                                                    baseline_hash: None,
-                                                };
-
-                                                if let Ok(SnapshotOrDeleted::Snapshot(fresh)) =
-                                                    crate::types::FileSnapshot::from_path(&change_result.path, &opts)
-                                                {
-                                                    let _ = tx.try_send(BaselineUpdate {
-                                                        entry: BaselineEntry {
-                                                            id: None,
-                                                            path: change_result.path.as_ref().clone(),
-                                                            identity: fresh.identity,
-                                                            content: fresh.content,
-                                                            permissions: fresh.permissions,
-                                                            security: fresh.security,
-                                                            mtime: fresh.mtime,
-                                                            package: change_result.package.clone(),
-                                                            source: crate::types::BaselineSource::PackageManager,
-                                                            added_at: now_ts,
-                                                            updated_at: now_ts,
-                                                        },
-                                                        reason: UpdateReason::PackageUpdate,
-                                                    });
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    if alert_tx
-                                        .send(AlertPayload {
-                                            change: change_result,
-                                            maintenance_window: false,
-                                        })
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
-                                }
-                                Ok(Ok(None)) => {}
-                                Ok(Err(e)) => {
-                                    tracing::warn!(error = %e, "event processing error");
-                                }
-                                Err(_) => {
-                                    metrics.panics_caught.fetch_add(1, Ordering::Relaxed);
-                                    tracing::error!("panic caught in worker thread");
+                            ctx.metrics.events_processed.fetch_add(1, Ordering::Relaxed);
+                            if let Some(cr) = ctx.process_safe(&event) {
+                                ctx.try_auto_rebaseline(&cr, &update_tx);
+                                if alert_tx
+                                    .send(AlertPayload {
+                                        change: cr,
+                                        maintenance_window: false,
+                                    })
+                                    .is_err()
+                                {
+                                    break;
                                 }
                             }
                         }
@@ -302,60 +340,6 @@ pub fn process_event(
     };
 
     process_event_inner(conn, event, &cfg, &idx, metrics, baseline)
-}
-
-/// Process event with LRU cache lookup.
-fn process_event_cached(
-    conn: &Connection,
-    event: &FsEvent,
-    config: &Arc<ArcSwap<Config>>,
-    watch_index: &Arc<ArcSwap<WatchGroupIndex>>,
-    metrics: &Metrics,
-    cache: &mut LruCache<String, BaselineEntry>,
-) -> Result<Option<ChangeResult>> {
-    let cfg = config.load();
-    let idx = watch_index.load();
-
-    let path_str = event.path.to_string_lossy().to_string();
-
-    let baseline = if let Some(cached) = cache.get(&path_str) {
-        metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
-        cached.clone()
-    } else {
-        metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
-        match baseline_ops::get_by_path(conn, &path_str)? {
-            Some(b) => {
-                cache.put(path_str.clone(), b.clone());
-                b
-            }
-            None => {
-                if matches!(event.event_type, FsEventType::Create | FsEventType::MovedTo) {
-                    if let Some((group_name, severity)) = idx.lookup(&event.path) {
-                        return Ok(Some(ChangeResult {
-                            path: event.path.clone(),
-                            changes: vec![Change::Created],
-                            severity,
-                            monitored_group: group_name.to_string(),
-                            process: event.process.clone(),
-                            package: None,
-                            package_update: false,
-                        }));
-                    }
-                    tracing::info!(path = %event.path.display(), "new file detected (not in baseline)");
-                }
-                return Ok(None);
-            }
-        }
-    };
-
-    let result = process_event_inner(conn, event, &cfg, &idx, metrics, baseline)?;
-
-    // Invalidate cache on detected change
-    if result.is_some() {
-        cache.pop(&path_str);
-    }
-
-    Ok(result)
 }
 
 fn process_event_inner(

@@ -1,14 +1,11 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use parking_lot::RwLock;
 
 use crate::config::Config;
-use crate::db;
-use crate::doctor;
 use crate::metrics::Metrics;
 use crate::types::DaemonState;
 use crate::watch_index::WatchGroupIndex;
@@ -23,8 +20,23 @@ pub enum ReloadSource {
     Unknown,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn spawn(
+/// Arguments for spawning the coordinator thread.
+pub struct CoordinatorConfig {
+    pub config: Arc<ArcSwap<Config>>,
+    pub metrics: Arc<Metrics>,
+    pub state: Arc<RwLock<DaemonState>>,
+    pub watch_index: Arc<ArcSwap<WatchGroupIndex>>,
+    pub shutdown: Arc<AtomicBool>,
+    pub reload_flag: Arc<AtomicBool>,
+    pub backpressure: Arc<AtomicBool>,
+    pub baseline_db_identity: Option<crate::db::DbFileIdentity>,
+    pub audit_db_identity: Option<crate::db::DbFileIdentity>,
+    pub startup_hmac_key: Option<zeroize::Zeroizing<Vec<u8>>>,
+    pub startup_baseline_conn: rusqlite::Connection,
+    pub startup_audit_conn: rusqlite::Connection,
+}
+
+struct Coordinator {
     config: Arc<ArcSwap<Config>>,
     metrics: Arc<Metrics>,
     state: Arc<RwLock<DaemonState>>,
@@ -37,313 +49,365 @@ pub fn spawn(
     startup_hmac_key: Option<zeroize::Zeroizing<Vec<u8>>>,
     startup_baseline_conn: rusqlite::Connection,
     startup_audit_conn: rusqlite::Connection,
-) -> crate::Result<JoinHandle<()>> {
-    // Compute initial config hash for integrity tracking
-    let mut last_config_hash = config_file_hash();
+    last_config_hash: Option<String>,
+    initial_mounts: std::collections::HashSet<std::path::PathBuf>,
+    last_tick: std::time::Instant,
+    checkpoint_counter: u32,
+    last_dropped: u64,
+    last_rotation_timestamp: i64,
+}
 
-    // Record initial mount set for bind-mount detection
-    let initial_mounts: std::collections::HashSet<std::path::PathBuf> =
-        crate::monitor::fanotify::parse_mountinfo()
+pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()>> {
+    let mut coordinator = Coordinator {
+        config: cfg.config,
+        metrics: cfg.metrics,
+        state: cfg.state,
+        watch_index: cfg.watch_index,
+        shutdown: cfg.shutdown,
+        reload_flag: cfg.reload_flag,
+        backpressure: cfg.backpressure,
+        baseline_db_identity: cfg.baseline_db_identity,
+        audit_db_identity: cfg.audit_db_identity,
+        startup_hmac_key: cfg.startup_hmac_key,
+        startup_baseline_conn: cfg.startup_baseline_conn,
+        startup_audit_conn: cfg.startup_audit_conn,
+        last_config_hash: config_file_hash(),
+        initial_mounts: crate::monitor::fanotify::parse_mountinfo()
             .unwrap_or_default()
             .into_iter()
-            .collect();
+            .collect(),
+        last_tick: std::time::Instant::now() - Duration::from_secs(60),
+        checkpoint_counter: 0,
+        last_dropped: 0,
+        last_rotation_timestamp: Utc::now().timestamp(),
+    };
 
     std::thread::Builder::new()
         .name("vigil-coordinator".into())
         .spawn(move || {
-            // Trigger the first housekeeping/snapshot tick immediately on startup
-            // so post-update doctor/status calls do not wait a full minute.
-            let mut last_tick = std::time::Instant::now() - Duration::from_secs(60);
-            let mut checkpoint_counter: u32 = 0;
-            let mut last_dropped: u64 = 0;
-            let mut last_rotation_timestamp = Utc::now().timestamp();
-
-            while !shutdown.load(Ordering::Acquire) {
-                if reload_flag.swap(false, Ordering::AcqRel) {
-                    // Check config file integrity before reload
-                    let new_config_hash = config_file_hash();
-                    if new_config_hash != last_config_hash {
-                        tracing::warn!(
-                            old_hash = last_config_hash.as_deref().unwrap_or("none"),
-                            new_hash = new_config_hash.as_deref().unwrap_or("none"),
-                            "config file hash changed during reload"
-                        );
-                    }
-
-                    // If HMAC signing is enabled, verify config HMAC
-                    let cfg = config.load();
-                    if cfg.security.hmac_signing {
-                        if let Some(ref key) = startup_hmac_key {
-                            if let Some(content) = config_file_content() {
-                                let current_hmac =
-                                    crate::hmac::compute_hmac(key, &content).unwrap_or_default();
-                                // Load stored config HMAC from startup baseline connection
-                                let stored = crate::db::baseline_ops::get_config_state(
-                                    &startup_baseline_conn,
-                                    "config_file_hmac",
-                                )
-                                .ok()
-                                .flatten();
-                                match stored {
-                                    Some(ref expected) if expected != &current_hmac => {
-                                        tracing::error!(
-                                            "config reload REJECTED: config file HMAC \
-                                             verification failed. The config file may \
-                                             have been tampered with."
-                                        );
-                                        continue; // skip reload
-                                    }
-                                    None => {
-                                        // Store initial config HMAC
-                                        let _ =
-                                            crate::db::baseline_ops::set_config_state(
-                                                &startup_baseline_conn,
-                                                "config_file_hmac",
-                                                &current_hmac,
-                                            );
-                                    }
-                                    _ => {} // HMAC matches, proceed
-                                }
-                            }
-                        }
-                    }
-
-                    match crate::config::load_config(None) {
-                        Ok(new_cfg) => {
-                            match crate::config::validate_config_deep(&new_cfg) {
-                                Ok(warnings) => {
-                                    for w in warnings {
-                                        tracing::warn!(warning = %w, "config validation warning");
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::error!(error = %e, "reloaded config rejected by deep validation");
-                                    continue;
-                                }
-                            }
-
-                            let old_cfg = config.load();
-                            let changes = crate::config::diff_config(&old_cfg, &new_cfg);
-                            for c in changes {
-                                tracing::info!(change = %c, "config reloaded");
-                            }
-
-                            config.store(Arc::new(new_cfg.clone()));
-                            watch_index.store(Arc::new(WatchGroupIndex::from_config(&new_cfg)));
-                            last_config_hash = new_config_hash.clone();
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "config reload failed");
-                        }
-                    }
+            while !coordinator.shutdown.load(Ordering::Acquire) {
+                if coordinator.reload_flag.swap(false, Ordering::AcqRel) {
+                    coordinator.handle_reload();
                 }
-
-                if last_tick.elapsed() >= Duration::from_secs(60) {
-                    let cfg = config.load();
-
-                    // TOCTOU check: verify baseline DB has not been replaced since startup
-                    if let Some(ref identity) = baseline_db_identity {
-                        match identity.is_replaced(&cfg.daemon.db_path) {
-                            Ok(true) => {
-                                tracing::error!(
-                                    "baseline database file replaced — possible tampering. \
-                                     Inode/device changed since startup."
-                                );
-                                let mut s = state.write();
-                                *s = DaemonState::Degraded {
-                                    reason: "baseline_db_replaced".into(),
-                                    since: Utc::now(),
-                                };
-                                // Skip all housekeeping when DB identity is compromised
-                                last_tick = std::time::Instant::now();
-                                continue;
-                            }
-                            Ok(false) => {} // identity matches, proceed
-                            Err(e) => {
-                                tracing::error!(
-                                    error = %e,
-                                    "failed to stat baseline database for TOCTOU check"
-                                );
-                            }
-                        }
-                    }
-
-                    // TOCTOU check: verify audit DB has not been replaced since startup
-                    if let Some(ref identity) = audit_db_identity {
-                        let audit_path = db::audit_db_path(&cfg);
-                        match identity.is_replaced(&audit_path) {
-                            Ok(true) => {
-                                tracing::error!(
-                                    "audit database file replaced — possible evidence \
-                                     destruction. Inode/device changed since startup."
-                                );
-                                let mut s = state.write();
-                                *s = DaemonState::Degraded {
-                                    reason: "audit_db_replaced".into(),
-                                    since: Utc::now(),
-                                };
-                                last_tick = std::time::Instant::now();
-                                continue;
-                            }
-                            Ok(false) => {} // identity matches, proceed
-                            Err(e) => {
-                                tracing::error!(
-                                    error = %e,
-                                    "failed to stat audit database for TOCTOU check"
-                                );
-                            }
-                        }
-                    }
-
-                    // Bind-mount evasion detection: compare current mounts against
-                    // the set established at startup. New mounts over watched paths
-                    // could evade fanotify monitoring.
-                    if let Some(current_mounts) = crate::monitor::fanotify::parse_mountinfo() {
-                        let current_set: std::collections::HashSet<std::path::PathBuf> =
-                            current_mounts.into_iter().collect();
-                        let new_mounts: Vec<_> = current_set
-                            .difference(&initial_mounts)
-                            .collect();
-                        if !new_mounts.is_empty() {
-                            // Check if any new mount is over a watched path
-                            for mount in &new_mounts {
-                                for group in cfg.watch.values() {
-                                    let expanded = crate::config::expand_user_paths(&group.paths);
-                                    for watch_path in &expanded {
-                                        if mount.starts_with(watch_path)
-                                            || watch_path.starts_with(mount.as_path())
-                                        {
-                                            tracing::error!(
-                                                mount = %mount.display(),
-                                                watch_path = %watch_path.display(),
-                                                "new mount detected over watched path — \
-                                                 real-time monitoring may be compromised"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Clock anomaly detection: detect both forward and backward clock jumps.
-                    // Forward jump > 1 hour or backward jump > 60 seconds indicates
-                    // possible clock manipulation (replay or evidence destruction).
-                    let now_ts = Utc::now().timestamp();
-                    let clock_delta = now_ts - last_rotation_timestamp;
-                    let clock_anomaly = if clock_delta > 3600 {
-                        tracing::error!(
-                            jump_secs = clock_delta,
-                            "forward clock anomaly detected — skipping audit rotation to prevent evidence loss"
-                        );
-                        true
-                    } else if clock_delta < -60 {
-                        tracing::error!(
-                            jump_secs = clock_delta,
-                            "negative clock jump detected — skipping audit rotation (possible clock manipulation replay)"
-                        );
-                        true
-                    } else {
-                        false
-                    };
-
-                    if clock_anomaly {
-                        // Do NOT update last_rotation_timestamp on any clock anomaly
-                    } else {
-                        // Use the startup audit connection — never re-open by path
-                        {
-                            // Safety check: count total entries and compute how many
-                            // would be deleted. Skip if > 50% would be removed.
-                            let total: i64 = startup_audit_conn
-                                .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
-                                .unwrap_or(0);
-                            let cutoff = now_ts - (cfg.database.audit_retention_days as i64 * 86400);
-                            let would_delete: i64 = startup_audit_conn
-                                .query_row(
-                                    "SELECT COUNT(*) FROM audit_log WHERE timestamp < ?1",
-                                    rusqlite::params![cutoff],
-                                    |row| row.get(0),
-                                )
-                                .unwrap_or(0);
-
-                            if total > 0 && would_delete * 2 > total {
-                                tracing::error!(
-                                    total = total,
-                                    would_delete = would_delete,
-                                    "audit rotation would delete >50% of entries — skipping (possible clock manipulation)"
-                                );
-                            } else {
-                                match db::audit_ops::rotate_audit_log(&startup_audit_conn, cfg.database.audit_retention_days) {
-                                    Ok(0) => {}
-                                    Ok(n) => tracing::info!(deleted = n, "rotated old audit entries"),
-                                    Err(e) => tracing::warn!(error = %e, "audit rotation failed"),
-                                }
-                            }
-                        }
-                        last_rotation_timestamp = now_ts;
-                    }
-
-                    if let Err(e) = write_metrics_snapshot(&cfg.daemon.runtime_dir, &metrics) {
-                        tracing::warn!(error = %e, "failed to write metrics snapshot");
-                    }
-
-                    // Check for backpressure and update daemon state
-                    if backpressure.load(Ordering::Relaxed) {
-                        let mut s = state.write();
-                        if matches!(*s, DaemonState::Healthy) {
-                            *s = DaemonState::Degraded {
-                                reason: "event_backpressure".into(),
-                                since: Utc::now(),
-                            };
-                        }
-                    }
-
-                    // Detect sustained event drops (possible evasion attack)
-                    let current_dropped =
-                        metrics.events_dropped.load(Ordering::Relaxed);
-                    if current_dropped > last_dropped {
-                        let delta = current_dropped - last_dropped;
-                        tracing::error!(
-                            dropped = delta,
-                            total_dropped = current_dropped,
-                            "filesystem events are being dropped — possible evasion attack or I/O overload"
-                        );
-                    }
-                    last_dropped = current_dropped;
-
-                    if let Err(e) = write_state_snapshot(&cfg.daemon.runtime_dir, &state) {
-                        tracing::warn!(error = %e, "failed to write state snapshot");
-                    }
-                    if let Err(e) = doctor::write_health_snapshot(&cfg) {
-                        tracing::warn!(error = %e, "failed to write health snapshot");
-                    }
-
-                    // Periodic WAL checkpoint every 5 minutes
-                    checkpoint_counter += 1;
-                    if checkpoint_counter >= 5 {
-                        checkpoint_counter = 0;
-                        // Use startup connections — never re-open by path
-                        match startup_baseline_conn.pragma_update(None, "wal_checkpoint", "PASSIVE") {
-                            Ok(()) => tracing::debug!("WAL checkpoint (baseline) completed"),
-                            Err(e) => tracing::warn!(error = %e, "WAL checkpoint (baseline) failed"),
-                        }
-                        match startup_audit_conn.pragma_update(None, "wal_checkpoint", "PASSIVE") {
-                            Ok(()) => tracing::debug!("WAL checkpoint (audit) completed"),
-                            Err(e) => tracing::warn!(error = %e, "WAL checkpoint (audit) failed"),
-                        }
-                    }
-
-                    last_tick = std::time::Instant::now();
+                if coordinator.last_tick.elapsed() >= Duration::from_secs(60) {
+                    coordinator.tick();
                 }
-
-                if is_notify_socket_safe() {
-                    let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
-                }
-
+                coordinator.notify_watchdog();
                 std::thread::sleep(Duration::from_millis(1000));
             }
         })
         .map_err(|e| crate::VigilError::Daemon(format!("cannot spawn coordinator thread: {}", e)))
+}
+
+impl Coordinator {
+    fn tick(&mut self) {
+        if !self.check_baseline_db_identity() {
+            return;
+        }
+        if !self.check_audit_db_identity() {
+            return;
+        }
+        self.check_mount_evasion();
+        let clock_anomaly = self.detect_clock_anomaly();
+        if !clock_anomaly {
+            self.rotate_audit_log();
+        }
+        self.write_snapshots();
+        self.check_backpressure();
+        self.check_event_drops();
+        self.maybe_checkpoint_wal();
+        self.last_tick = std::time::Instant::now();
+    }
+
+    fn handle_reload(&mut self) {
+        // Check config file integrity before reload
+        let new_config_hash = config_file_hash();
+        if new_config_hash != self.last_config_hash {
+            tracing::warn!(
+                old_hash = self.last_config_hash.as_deref().unwrap_or("none"),
+                new_hash = new_config_hash.as_deref().unwrap_or("none"),
+                "config file hash changed during reload"
+            );
+        }
+
+        // If HMAC signing is enabled, verify config HMAC
+        let cfg = self.config.load();
+        if cfg.security.hmac_signing {
+            if let Some(ref key) = self.startup_hmac_key {
+                if let Some(content) = config_file_content() {
+                    let current_hmac = crate::hmac::compute_hmac(key, &content).unwrap_or_default();
+                    let stored = crate::db::baseline_ops::get_config_state(
+                        &self.startup_baseline_conn,
+                        "config_file_hmac",
+                    )
+                    .ok()
+                    .flatten();
+                    match stored {
+                        Some(ref expected) if expected != &current_hmac => {
+                            tracing::error!(
+                                "config reload REJECTED: config file HMAC \
+                                 verification failed. The config file may \
+                                 have been tampered with."
+                            );
+                            return; // skip reload
+                        }
+                        None => {
+                            // Store initial config HMAC
+                            let _ = crate::db::baseline_ops::set_config_state(
+                                &self.startup_baseline_conn,
+                                "config_file_hmac",
+                                &current_hmac,
+                            );
+                        }
+                        _ => {} // HMAC matches, proceed
+                    }
+                }
+            }
+        }
+
+        match crate::config::load_config(None) {
+            Ok(new_cfg) => {
+                match crate::config::validate_config_deep(&new_cfg) {
+                    Ok(warnings) => {
+                        for w in warnings {
+                            tracing::warn!(warning = %w, "config validation warning");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "reloaded config rejected by deep validation");
+                        return;
+                    }
+                }
+
+                let old_cfg = self.config.load();
+                let changes = crate::config::diff_config(&old_cfg, &new_cfg);
+                for c in changes {
+                    tracing::info!(change = %c, "config reloaded");
+                }
+
+                self.config.store(Arc::new(new_cfg.clone()));
+                self.watch_index
+                    .store(Arc::new(WatchGroupIndex::from_config(&new_cfg)));
+                self.last_config_hash = new_config_hash.clone();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "config reload failed");
+            }
+        }
+    }
+
+    /// Returns false if the DB identity check failed and tick should abort.
+    fn check_baseline_db_identity(&mut self) -> bool {
+        let cfg = self.config.load();
+        if let Some(ref identity) = self.baseline_db_identity {
+            match identity.is_replaced(&cfg.daemon.db_path) {
+                Ok(true) => {
+                    tracing::error!(
+                        "baseline database file replaced — possible tampering. \
+                         Inode/device changed since startup."
+                    );
+                    let mut s = self.state.write();
+                    *s = DaemonState::Degraded {
+                        reason: "baseline_db_replaced".into(),
+                        since: Utc::now(),
+                    };
+                    self.last_tick = std::time::Instant::now();
+                    return false;
+                }
+                Ok(false) => {} // identity matches, proceed
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "failed to stat baseline database for TOCTOU check"
+                    );
+                }
+            }
+        }
+        true
+    }
+
+    /// Returns false if the DB identity check failed and tick should abort.
+    fn check_audit_db_identity(&mut self) -> bool {
+        let cfg = self.config.load();
+        if let Some(ref identity) = self.audit_db_identity {
+            let audit_path = crate::db::audit_db_path(&cfg);
+            match identity.is_replaced(&audit_path) {
+                Ok(true) => {
+                    tracing::error!(
+                        "audit database file replaced — possible evidence \
+                         destruction. Inode/device changed since startup."
+                    );
+                    let mut s = self.state.write();
+                    *s = DaemonState::Degraded {
+                        reason: "audit_db_replaced".into(),
+                        since: Utc::now(),
+                    };
+                    self.last_tick = std::time::Instant::now();
+                    return false;
+                }
+                Ok(false) => {} // identity matches, proceed
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "failed to stat audit database for TOCTOU check"
+                    );
+                }
+            }
+        }
+        true
+    }
+
+    fn check_mount_evasion(&self) {
+        let cfg = self.config.load();
+        if let Some(current_mounts) = crate::monitor::fanotify::parse_mountinfo() {
+            let current_set: std::collections::HashSet<std::path::PathBuf> =
+                current_mounts.into_iter().collect();
+            let new_mounts: Vec<_> = current_set.difference(&self.initial_mounts).collect();
+            if !new_mounts.is_empty() {
+                for mount in &new_mounts {
+                    for group in cfg.watch.values() {
+                        let expanded = crate::config::expand_user_paths(&group.paths);
+                        for watch_path in &expanded {
+                            if mount.starts_with(watch_path)
+                                || watch_path.starts_with(mount.as_path())
+                            {
+                                tracing::error!(
+                                    mount = %mount.display(),
+                                    watch_path = %watch_path.display(),
+                                    "new mount detected over watched path — \
+                                     real-time monitoring may be compromised"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn detect_clock_anomaly(&mut self) -> bool {
+        let now_ts = Utc::now().timestamp();
+        let clock_delta = now_ts - self.last_rotation_timestamp;
+        if clock_delta > 3600 {
+            tracing::error!(
+                jump_secs = clock_delta,
+                "forward clock anomaly detected — skipping audit rotation to prevent evidence loss"
+            );
+            true
+        } else if clock_delta < -60 {
+            tracing::error!(
+                jump_secs = clock_delta,
+                "negative clock jump detected — skipping audit rotation (possible clock manipulation replay)"
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    fn rotate_audit_log(&mut self) {
+        let cfg = self.config.load();
+        let now_ts = Utc::now().timestamp();
+
+        // Safety check: count total entries and compute how many
+        // would be deleted. Skip if > 50% would be removed.
+        let total: i64 = self
+            .startup_audit_conn
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
+            .unwrap_or(0);
+        let cutoff = now_ts - (cfg.database.audit_retention_days as i64 * 86400);
+        let would_delete: i64 = self
+            .startup_audit_conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE timestamp < ?1",
+                rusqlite::params![cutoff],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if total > 0 && would_delete * 2 > total {
+            tracing::error!(
+                total = total,
+                would_delete = would_delete,
+                "audit rotation would delete >50% of entries — skipping (possible clock manipulation)"
+            );
+        } else {
+            match crate::db::audit_ops::rotate_audit_log(
+                &self.startup_audit_conn,
+                cfg.database.audit_retention_days,
+            ) {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(deleted = n, "rotated old audit entries"),
+                Err(e) => tracing::warn!(error = %e, "audit rotation failed"),
+            }
+        }
+        self.last_rotation_timestamp = now_ts;
+    }
+
+    fn write_snapshots(&self) {
+        let cfg = self.config.load();
+        if let Err(e) = write_metrics_snapshot(&cfg.daemon.runtime_dir, &self.metrics) {
+            tracing::warn!(error = %e, "failed to write metrics snapshot");
+        }
+        if let Err(e) = write_state_snapshot(&cfg.daemon.runtime_dir, &self.state) {
+            tracing::warn!(error = %e, "failed to write state snapshot");
+        }
+        if let Err(e) = crate::doctor::write_health_snapshot(&cfg) {
+            tracing::warn!(error = %e, "failed to write health snapshot");
+        }
+    }
+
+    fn check_backpressure(&self) {
+        if self.backpressure.load(Ordering::Relaxed) {
+            let mut s = self.state.write();
+            if matches!(*s, DaemonState::Healthy) {
+                *s = DaemonState::Degraded {
+                    reason: "event_backpressure".into(),
+                    since: Utc::now(),
+                };
+            }
+        }
+    }
+
+    fn check_event_drops(&mut self) {
+        let current_dropped = self.metrics.events_dropped.load(Ordering::Relaxed);
+        if current_dropped > self.last_dropped {
+            let delta = current_dropped - self.last_dropped;
+            tracing::error!(
+                dropped = delta,
+                total_dropped = current_dropped,
+                "filesystem events are being dropped — possible evasion attack or I/O overload"
+            );
+        }
+        self.last_dropped = current_dropped;
+    }
+
+    fn maybe_checkpoint_wal(&mut self) {
+        self.checkpoint_counter += 1;
+        if self.checkpoint_counter >= 5 {
+            self.checkpoint_counter = 0;
+            match self
+                .startup_baseline_conn
+                .pragma_update(None, "wal_checkpoint", "PASSIVE")
+            {
+                Ok(()) => tracing::debug!("WAL checkpoint (baseline) completed"),
+                Err(e) => tracing::warn!(error = %e, "WAL checkpoint (baseline) failed"),
+            }
+            match self
+                .startup_audit_conn
+                .pragma_update(None, "wal_checkpoint", "PASSIVE")
+            {
+                Ok(()) => tracing::debug!("WAL checkpoint (audit) completed"),
+                Err(e) => tracing::warn!(error = %e, "WAL checkpoint (audit) failed"),
+            }
+        }
+    }
+
+    fn notify_watchdog(&self) {
+        if is_notify_socket_safe() {
+            let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+        }
+    }
 }
 
 fn write_metrics_snapshot(runtime_dir: &std::path::Path, metrics: &Metrics) -> crate::Result<()> {

@@ -126,8 +126,16 @@ impl Daemon {
     pub fn run(self) -> Result<()> {
         harden_process();
         raise_nofile_limit(4096);
+        self.record_binary_hash();
+        let cfg = self.config.load();
+        self.log_startup_diagnostics(&cfg);
+        self.ensure_baseline_health(&cfg)?;
+        let runtime = DaemonRuntime::start(&self)?;
+        runtime.wait_for_shutdown();
+        runtime.drain()
+    }
 
-        // Record BLAKE3 hash of Vigil's own binary for self-integrity tracking
+    fn record_binary_hash(&self) {
         if let Ok(exe_path) = std::fs::read_link("/proc/self/exe") {
             if let Ok(content) = std::fs::read(&exe_path) {
                 let binary_hash = crate::hash::blake3_hash_bytes(&content);
@@ -143,10 +151,9 @@ impl Daemon {
                 );
             }
         }
+    }
 
-        let cfg = self.config.load();
-
-        // Startup diagnostics: log baseline DB state before health check
+    fn log_startup_diagnostics(&self, cfg: &Config) {
         let db_path = &cfg.daemon.db_path;
         tracing::info!(
             path = %db_path.display(),
@@ -156,158 +163,6 @@ impl Daemon {
             hmac_signing = cfg.security.hmac_signing,
             "startup baseline diagnostics"
         );
-
-        self.ensure_baseline_health(&cfg)?;
-
-        let pid_file = cfg.daemon.pid_file.clone();
-        let baseline_db_path = cfg.daemon.db_path.clone();
-        let audit_db_path = db::audit_db_path(&cfg);
-        write_pid_file(&pid_file)?;
-
-        let sigset = setup_signal_mask()?;
-        let _signal_handle =
-            spawn_signal_thread(sigset, self.shutdown.clone(), self.reload_flag.clone())?;
-
-        let (event_tx, event_rx) = bounded::<FsEvent>(cfg.daemon.event_channel_capacity);
-        let (alert_tx, alert_rx) = bounded::<AlertPayload>(512);
-
-        let backpressure = Arc::new(AtomicBool::new(false));
-
-        let _monitor = monitor::start_monitor(
-            &cfg,
-            event_tx.clone(),
-            self.shutdown.clone(),
-            self.watch_index.clone(),
-            self.metrics.clone(),
-        )?;
-
-        // Baseline update channel for auto-rebaselining package changes
-        let (baseline_update_tx, baseline_update_rx) = bounded::<worker::BaselineUpdate>(512);
-
-        // Generation counter for cache invalidation across workers and baseline writer
-        let baseline_generation = Arc::new(AtomicU64::new(0));
-
-        let workers = worker::spawn_workers(
-            cfg.daemon.worker_threads,
-            self.config.clone(),
-            event_rx,
-            alert_tx.clone(),
-            &baseline_db_path,
-            self.watch_index.clone(),
-            self.metrics.clone(),
-            self.shutdown.clone(),
-            Some(baseline_update_tx),
-            backpressure.clone(),
-            baseline_generation.clone(),
-        );
-
-        // Spawn baseline writer thread
-        let baseline_writer = spawn_baseline_writer(
-            baseline_db_path.clone(),
-            baseline_update_rx,
-            self.shutdown.clone(),
-            self.metrics.clone(),
-            baseline_generation.clone(),
-            self.startup_hmac_key.clone(),
-        )?;
-
-        let alert_handle = spawn_alert_thread(
-            self.config.clone(),
-            alert_rx,
-            self.shutdown.clone(),
-            &audit_db_path,
-            self.metrics.clone(),
-            self.startup_hmac_key.clone(),
-        )?;
-
-        // Open a startup baseline connection for the coordinator to use
-        // (avoids TOCTOU by never re-opening by path)
-        let coordinator_baseline_conn = db::open_baseline_db(&cfg)?;
-        // Open a startup audit connection for the coordinator
-        let coordinator_audit_conn = db::open_audit_db(&cfg)?;
-
-        let coordinator_handle = coordinator::spawn(
-            self.config.clone(),
-            self.metrics.clone(),
-            self.state.clone(),
-            self.watch_index.clone(),
-            self.shutdown.clone(),
-            self.reload_flag.clone(),
-            backpressure.clone(),
-            self.baseline_db_identity,
-            self.audit_db_identity,
-            self.startup_hmac_key.clone(),
-            coordinator_baseline_conn,
-            coordinator_audit_conn,
-        )?;
-
-        let (shutdown_tx, shutdown_rx) = crossbeam_channel::bounded::<()>(1);
-
-        // Create scan trigger channel for on-demand scans via control socket
-        let (scan_trigger_tx, scan_trigger_rx) =
-            crossbeam_channel::bounded::<control::ScanRequest>(1);
-
-        // Open a startup baseline connection for the scan scheduler (avoids TOCTOU)
-        let scan_baseline_conn = db::open_baseline_db(&cfg)?;
-
-        let scan_handle = scan_scheduler::spawn(
-            self.config.clone(),
-            self.shutdown.clone(),
-            alert_tx.clone(),
-            self.metrics.clone(),
-            shutdown_rx,
-            scan_trigger_rx,
-            scan_baseline_conn,
-        )?;
-
-        if coordinator::is_notify_socket_safe() {
-            let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]);
-        }
-        tracing::info!("vigil daemon ready");
-
-        // Spawn control socket if configured
-        let _control_handle = if !cfg.daemon.control_socket.as_os_str().is_empty() {
-            Some(control::spawn(
-                cfg.daemon.control_socket.clone(),
-                self.metrics.clone(),
-                self.state.clone(),
-                self.shutdown.clone(),
-                self.reload_flag.clone(),
-                scan_trigger_tx,
-                &baseline_db_path,
-                self.startup_hmac_key.clone(),
-            )?)
-        } else {
-            None
-        };
-
-        // Block until shutdown signal
-        while !self.shutdown.load(Ordering::Acquire) {
-            std::thread::sleep(Duration::from_secs(1));
-        }
-
-        if coordinator::is_notify_socket_safe() {
-            let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
-        }
-
-        // Signal the scan scheduler to wake up and exit
-        let _ = shutdown_tx.send(());
-
-        drop(event_tx);
-        drop(alert_tx);
-
-        for worker in workers {
-            let _ = worker.join();
-        }
-        let _ = baseline_writer.join();
-        let _ = alert_handle.join();
-        let _ = coordinator_handle.join();
-        let _ = scan_handle.join();
-
-        cleanup_pid_file(&pid_file);
-
-        tracing::info!("vigil daemon stopped");
-        Ok(())
     }
 
     fn ensure_baseline_health(&self, config: &Config) -> Result<()> {
@@ -518,6 +373,200 @@ impl Daemon {
             }
         }
 
+        Ok(())
+    }
+}
+
+/// Daemon runtime state — owns all threads, channels, and subsystem handles.
+struct DaemonRuntime {
+    workers: Vec<JoinHandle<()>>,
+    baseline_writer: JoinHandle<()>,
+    alert_handle: JoinHandle<()>,
+    coordinator_handle: JoinHandle<()>,
+    scan_handle: JoinHandle<()>,
+    _control_handle: Option<JoinHandle<()>>,
+    _monitor: monitor::MonitorHandle,
+    _signal_handle: JoinHandle<()>,
+    shutdown: Arc<AtomicBool>,
+    shutdown_tx: crossbeam_channel::Sender<()>,
+    event_tx: crossbeam_channel::Sender<FsEvent>,
+    alert_tx: crossbeam_channel::Sender<AlertPayload>,
+    pid_file: std::path::PathBuf,
+}
+
+impl DaemonRuntime {
+    fn start(daemon: &Daemon) -> Result<Self> {
+        let cfg = daemon.config.load();
+
+        let pid_file = cfg.daemon.pid_file.clone();
+        let baseline_db_path = cfg.daemon.db_path.clone();
+        let audit_db_path = db::audit_db_path(&cfg);
+        write_pid_file(&pid_file)?;
+
+        let sigset = setup_signal_mask()?;
+        let signal_handle =
+            spawn_signal_thread(sigset, daemon.shutdown.clone(), daemon.reload_flag.clone())?;
+
+        let (event_tx, event_rx) = bounded::<FsEvent>(cfg.daemon.event_channel_capacity);
+        let (alert_tx, alert_rx) = bounded::<AlertPayload>(512);
+
+        let backpressure = Arc::new(AtomicBool::new(false));
+
+        let monitor_handle = monitor::start_monitor(
+            &cfg,
+            event_tx.clone(),
+            daemon.shutdown.clone(),
+            daemon.watch_index.clone(),
+            daemon.metrics.clone(),
+        )?;
+
+        // Baseline update channel for auto-rebaselining package changes
+        let (baseline_update_tx, baseline_update_rx) = bounded::<worker::BaselineUpdate>(512);
+
+        // Generation counter for cache invalidation across workers and baseline writer
+        let baseline_generation = Arc::new(AtomicU64::new(0));
+
+        let workers = worker::spawn_workers(worker::WorkerSpawnArgs {
+            count: cfg.daemon.worker_threads,
+            config: daemon.config.clone(),
+            event_rx,
+            alert_tx: alert_tx.clone(),
+            baseline_db_path: baseline_db_path.clone(),
+            watch_index: daemon.watch_index.clone(),
+            metrics: daemon.metrics.clone(),
+            shutdown: daemon.shutdown.clone(),
+            baseline_update_tx: Some(baseline_update_tx),
+            backpressure: backpressure.clone(),
+            baseline_generation: baseline_generation.clone(),
+        });
+
+        // Spawn baseline writer thread
+        let baseline_writer = spawn_baseline_writer(
+            baseline_db_path.clone(),
+            baseline_update_rx,
+            daemon.shutdown.clone(),
+            daemon.metrics.clone(),
+            baseline_generation.clone(),
+            daemon.startup_hmac_key.clone(),
+        )?;
+
+        let alert_handle = spawn_alert_thread(
+            daemon.config.clone(),
+            alert_rx,
+            daemon.shutdown.clone(),
+            &audit_db_path,
+            daemon.metrics.clone(),
+            daemon.startup_hmac_key.clone(),
+        )?;
+
+        // Open startup connections for coordinator (avoids TOCTOU by never re-opening by path)
+        let coordinator_baseline_conn = db::open_baseline_db(&cfg)?;
+        let coordinator_audit_conn = db::open_audit_db(&cfg)?;
+
+        let coordinator_handle = coordinator::spawn(coordinator::CoordinatorConfig {
+            config: daemon.config.clone(),
+            metrics: daemon.metrics.clone(),
+            state: daemon.state.clone(),
+            watch_index: daemon.watch_index.clone(),
+            shutdown: daemon.shutdown.clone(),
+            reload_flag: daemon.reload_flag.clone(),
+            backpressure: backpressure.clone(),
+            baseline_db_identity: daemon.baseline_db_identity,
+            audit_db_identity: daemon.audit_db_identity,
+            startup_hmac_key: daemon.startup_hmac_key.clone(),
+            startup_baseline_conn: coordinator_baseline_conn,
+            startup_audit_conn: coordinator_audit_conn,
+        })?;
+
+        let (shutdown_tx, shutdown_rx) = crossbeam_channel::bounded::<()>(1);
+
+        // Create scan trigger channel for on-demand scans via control socket
+        let (scan_trigger_tx, scan_trigger_rx) =
+            crossbeam_channel::bounded::<control::ScanRequest>(1);
+
+        // Open a startup baseline connection for the scan scheduler (avoids TOCTOU)
+        let scan_baseline_conn = db::open_baseline_db(&cfg)?;
+
+        let scan_handle = scan_scheduler::spawn(
+            daemon.config.clone(),
+            daemon.shutdown.clone(),
+            alert_tx.clone(),
+            daemon.metrics.clone(),
+            shutdown_rx,
+            scan_trigger_rx,
+            scan_baseline_conn,
+        )?;
+
+        if coordinator::is_notify_socket_safe() {
+            let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]);
+        }
+        tracing::info!("vigil daemon ready");
+
+        // Spawn control socket if configured
+        let control_handle = if !cfg.daemon.control_socket.as_os_str().is_empty() {
+            let handler = control::ControlHandler {
+                metrics: daemon.metrics.clone(),
+                state: daemon.state.clone(),
+                reload_flag: daemon.reload_flag.clone(),
+                scan_trigger_tx,
+                baseline_db_path: baseline_db_path.clone(),
+                hmac_key: daemon.startup_hmac_key.as_ref().map(|k| (**k).clone()),
+                auth_enabled: daemon.startup_hmac_key.is_some(),
+            };
+            Some(control::spawn(
+                cfg.daemon.control_socket.clone(),
+                handler,
+                daemon.shutdown.clone(),
+            )?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            workers,
+            baseline_writer,
+            alert_handle,
+            coordinator_handle,
+            scan_handle,
+            _control_handle: control_handle,
+            _monitor: monitor_handle,
+            _signal_handle: signal_handle,
+            shutdown: daemon.shutdown.clone(),
+            shutdown_tx,
+            event_tx,
+            alert_tx,
+            pid_file,
+        })
+    }
+
+    fn wait_for_shutdown(&self) {
+        while !self.shutdown.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    }
+
+    fn drain(self) -> Result<()> {
+        if coordinator::is_notify_socket_safe() {
+            let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
+        }
+
+        // Signal the scan scheduler to wake up and exit
+        let _ = self.shutdown_tx.send(());
+
+        drop(self.event_tx);
+        drop(self.alert_tx);
+
+        for worker in self.workers {
+            let _ = worker.join();
+        }
+        let _ = self.baseline_writer.join();
+        let _ = self.alert_handle.join();
+        let _ = self.coordinator_handle.join();
+        let _ = self.scan_handle.join();
+
+        cleanup_pid_file(&self.pid_file);
+
+        tracing::info!("vigil daemon stopped");
         Ok(())
     }
 }

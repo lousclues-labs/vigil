@@ -4,6 +4,63 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-04-09
+
+### Release Summary
+- Pure structural refactoring of the runtime layer — the five files that wire up threads, channels, and the daemon lifecycle (`src/lib.rs`, `src/worker.rs`, `src/coordinator.rs`, `src/control.rs`, `src/alert/mod.rs`). Zero behavior changes. Functions that did too many things have been decomposed into context structs with focused methods, shared state is passed as struct fields instead of loose variables, and duplicated error handling has been consolidated. All `#[allow(clippy::too_many_arguments)]` annotations have been removed from these files.
+
+### Changed
+- **worker.rs:** introduced `WorkerSpawnArgs` struct to replace the 11 positional arguments to `spawn_workers()` (`src/worker.rs`). Introduced private `WorkerContext` struct that holds per-worker state (connection, config, watch index, metrics, filter, LRU cache, generation tracker, drain timing). Moved event processing into `WorkerContext` methods:
+  - `evaluate(&mut self, event)` — cache lookup + baseline resolution + snapshot capture + diff + severity classification (consolidates the former `process_event_cached` and `process_event_inner` call chain)
+  - `process_safe(&mut self, event)` — wraps `evaluate` in `catch_unwind` with panic metric increment (eliminates duplicated 30-line match arms)
+  - `drain_debounced(&mut self)` — drains debounced events through `process_safe` and returns alert payloads
+  - `refresh_cache_if_stale(&mut self)` — invalidates LRU cache when baseline generation changes
+  - `try_auto_rebaseline(&self, change_result, update_tx)` — package update detection and re-snapshot logic
+  - The worker loop is now ~22 lines (down from ~163 lines). `process_event_cached` has been removed; its logic is absorbed into `WorkerContext::evaluate`. The public `process_event` function is preserved for CLI/test callers (`src/worker.rs`).
+- **coordinator.rs:** introduced `CoordinatorConfig` struct to replace the 12 positional arguments to `coordinator::spawn()` (`src/coordinator.rs`). Introduced private `Coordinator` struct that owns all coordinator state (config, metrics, daemon state, watch index, shutdown/reload flags, DB connections, timing state, initial mount set). Decomposed the 283-line loop body into named methods on `Coordinator`:
+  - `tick(&mut self)` — calls each housekeeping method in sequence
+  - `handle_reload(&mut self)` — config file integrity check, HMAC verification, load + validate + diff + store new config, update watch index
+  - `check_baseline_db_identity(&mut self)` — TOCTOU check on baseline DB inode/device
+  - `check_audit_db_identity(&mut self)` — TOCTOU check on audit DB inode/device
+  - `check_mount_evasion(&self)` — compare current mounts against initial set, log new mounts over watched paths
+  - `detect_clock_anomaly(&mut self)` — forward/backward clock jump detection
+  - `rotate_audit_log(&mut self)` — safety-guarded audit rotation (>50% deletion guard)
+  - `write_snapshots(&self)` — metrics + state + health snapshots via atomic writes
+  - `check_backpressure(&self)` — backpressure flag → `DaemonState::Degraded`
+  - `check_event_drops(&mut self)` — sustained event drop detection (evasion warning)
+  - `maybe_checkpoint_wal(&mut self)` — periodic WAL checkpoint every 5 ticks
+  - `notify_watchdog(&self)` — systemd watchdog notification
+  - The coordinator main loop is now 8 lines: check reload, call `tick()` on interval, notify watchdog, sleep (`src/coordinator.rs`).
+- **control.rs:** introduced `ControlHandler` struct to replace the 8 positional arguments to both `spawn()` and `handle_connection()` (`src/control.rs`). The handler struct holds metrics, daemon state, reload flag, scan trigger channel, baseline DB path, HMAC key, and auth-enabled flag. Decomposed `handle_connection` into focused methods:
+  - `authenticate_and_read(&self, stream)` — challenge-response handshake + authenticated request reading
+  - `read_request(&self, stream)` — unauthenticated JSON read
+  - `write_response(&self, stream, response)` — serialize + write + flush (was duplicated in two code paths)
+  - `dispatch(&self, method, request)` — method routing (now a method on `ControlHandler`)
+  - `handle_status`, `handle_baseline_count`, `handle_reload`, `handle_scan`, `handle_metrics_prometheus` — all converted from free functions to `ControlHandler` methods
+  - `handle_connection` is now ~18 lines: log peer credentials, authenticate or read, dispatch, write response (`src/control.rs`).
+- **alert/mod.rs:** extracted `record_audit(&mut self, payload, suppressed)` method from `AlertDispatcher::run()` — encapsulates audit DB write, error recovery (retry buffer, consecutive failure counting, DB reopen after 3 failures, buffered entry retry). Extracted `dispatch_to_sinks(&self, alert)` method — the sink iteration loop. `AlertDispatcher::run()` is now ~17 lines. Added `use std::sync::atomic::{AtomicBool, AtomicU32, Ordering}` import; replaced all 8+ inline `std::sync::atomic::Ordering::Relaxed` occurrences with `Ordering::Relaxed` (`src/alert/mod.rs`).
+- **lib.rs:** introduced `DaemonRuntime` struct that owns all `JoinHandle`s, channel senders, shutdown state, and the PID file path. Decomposed `Daemon::run()` into:
+  - `DaemonRuntime::start(daemon)` — all channel creation, thread spawning, `Arc::clone()` wiring, and `sd_notify(Ready)` signaling
+  - `DaemonRuntime::wait_for_shutdown(&self)` — the shutdown sleep loop
+  - `DaemonRuntime::drain(self)` — send shutdown signal, drop senders, join all threads in dependency order, cleanup PID file
+  - Extracted `Daemon::record_binary_hash(&self)` — BLAKE3 hash of `/proc/self/exe`
+  - Extracted `Daemon::log_startup_diagnostics(&self, cfg)` — baseline DB state logging
+  - `Daemon::run()` is now 11 lines: harden process, raise nofile limit, record binary hash, log diagnostics, ensure baseline health, start runtime, wait for shutdown, drain (`src/lib.rs`).
+
+### Removed
+- All `#[allow(clippy::too_many_arguments)]` annotations from `src/worker.rs`, `src/coordinator.rs`, `src/control.rs`. These are no longer needed because the argument lists have been replaced by context structs (`src/worker.rs`, `src/coordinator.rs`, `src/control.rs`).
+- `process_event_cached()` free function in `src/worker.rs` — its logic has been absorbed into `WorkerContext::evaluate()`.
+- All inline `std::sync::atomic::Ordering::Relaxed` full-path usage in `src/alert/mod.rs` — replaced by imported `Ordering::Relaxed`.
+
+### Validation
+- `cargo build` succeeds with 0 warnings.
+- `cargo test --all-targets` passes (all 177 tests green, 0 failures).
+- `cargo clippy --all-targets` produces 0 warnings.
+- `cargo fmt --all --check` passes.
+- No `#[allow(clippy::too_many_arguments)]` annotations remain in the modified files.
+- No inline `std::sync::atomic::Ordering::Relaxed` full-path usage remains in the modified files.
+- All security properties preserved: HMAC verification, TOCTOU detection, self-protection logging, audit chain hashing, nonce generation, peer credential logging, clock anomaly detection.
+
 ## [0.26.0] - 2026-04-08
 
 ### Release Summary
