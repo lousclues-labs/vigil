@@ -4,11 +4,15 @@ After=local-fs.target
 
 [Service]
 Type=notify
+NotifyAccess=main
 ExecStart=/usr/bin/vigild
+ExecReload=/bin/kill -HUP $MAINPID
 WatchdogSec=120
+TimeoutStartSec=300
 Restart=on-failure
 RestartSec=5
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
 ProtectSystem=strict
 ReadWritePaths=/var/lib/vigil /run/vigil
 ProtectHome=read-only

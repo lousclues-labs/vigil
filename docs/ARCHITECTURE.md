@@ -141,9 +141,9 @@ src/
 
 These modules are easy to miss. They are core to the runtime.
 
-- `src/lib.rs` defines `Daemon` (config, connections, startup) and `DaemonRuntime` (thread ownership, channel lifecycle). `Daemon::run()` is ~11 lines: harden, record binary hash, start runtime, wait, drain. `DaemonRuntime::start()` wires all channels, spawns all threads, emits `sd_notify(Ready)`. `DaemonRuntime::drain()` joins threads in dependency order.
+- `src/lib.rs` defines `Daemon` (config, connections, startup) and `DaemonRuntime` (thread ownership, channel lifecycle). `Daemon::run()` is ~11 lines: harden, record binary hash, start runtime, wait, drain. `DaemonRuntime::start()` wires all channels, spawns all threads, emits `sd_notify(Ready)`. `DaemonRuntime::drain()` joins threads in dependency order. A `send_watchdog_heartbeat()` helper sends `sd_notify(Watchdog)` guarded by `is_notify_socket_safe()` and is called throughout pre-flight and startup to prevent systemd from killing the daemon before the coordinator thread exists.
 - `src/control.rs` defines `ControlHandler` — a struct holding metrics, state, reload flag, scan trigger, DB path, HMAC key, and auth flag. Methods: `handle_connection` (auth-or-read, dispatch, write), `authenticate_and_read` (challenge-response), `read_request`, `write_response`, `dispatch`. When HMAC signing is enabled, connections are authenticated via nonce-based challenge-response. All `reload` and `scan` commands are logged with peer credentials.
-- `src/coordinator.rs` defines `CoordinatorConfig` (spawn arguments) and `Coordinator` (runtime state). The main loop calls `handle_reload()` on flag and `tick()` every 60 seconds. `tick()` sequences: `check_baseline_db_identity`, `check_audit_db_identity`, `check_mount_evasion`, `detect_clock_anomaly`, `rotate_audit_log`, `write_snapshots`, `check_backpressure`, `check_event_drops`, `maybe_checkpoint_wal`. Watchdog pings systemd on every loop iteration (~1s) via `notify_watchdog()`.
+- `src/coordinator.rs` defines `CoordinatorConfig` (spawn arguments) and `Coordinator` (runtime state). The main loop calls `handle_reload()` on flag and `tick()` every 60 seconds. `tick()` sequences: `check_baseline_db_identity`, `check_audit_db_identity`, `check_mount_evasion`, `notify_watchdog`, `detect_clock_anomaly`, `rotate_audit_log`, `notify_watchdog`, `write_snapshots`, `notify_watchdog`, `check_backpressure`, `check_event_drops`, `maybe_checkpoint_wal`. Watchdog pings are interleaved between expensive sub-methods within `tick()` and also sent on every loop iteration (~1s) via `notify_watchdog()`.
 - `src/worker.rs` defines `WorkerSpawnArgs` (spawn arguments) and `WorkerContext` (per-worker state: connection, config, watch index, metrics, filter, LRU cache, generation tracker). Key methods: `evaluate` (cache lookup + baseline + snapshot + diff + classify), `process_safe` (catch_unwind wrapper), `drain_debounced` (debounced re-check). Logs self-protection warnings when config or HMAC key files are modified.
 - `src/alert/mod.rs` defines `AlertDispatcher` with extracted methods: `record_audit` (DB write + error recovery + retry buffer + DB reopen) and `dispatch_to_sinks` (sink iteration). `run()` is ~17 lines.
 - `src/scan_scheduler.rs` parses cron strings with `croner` and executes scheduled scans.
@@ -372,22 +372,26 @@ The daemon startup path follows two stages: `Daemon::run()` handles pre-flight c
 
 1. `harden_process()` — sets umask, disables ptrace, locks privileges
 2. `raise_nofile_limit()` — attempts to raise `RLIMIT_NOFILE`
-3. `record_binary_hash()` — BLAKE3 hash of `/proc/self/exe`
-4. `log_startup_diagnostics()` — log baseline DB path, existence, file size, readability, and HMAC signing status
-5. `ensure_baseline_health()` — integrity check, emptiness check (with version-upgrade recovery), HMAC verification
+3. `send_watchdog_heartbeat()` — keep systemd alive before slow binary hash
+4. `record_binary_hash()` — BLAKE3 hash of `/proc/self/exe`
+5. `send_watchdog_heartbeat()` — keep systemd alive before baseline health check
+6. `log_startup_diagnostics()` — log baseline DB path, existence, file size, readability, and HMAC signing status
+7. `ensure_baseline_health()` — integrity check, emptiness check (with version-upgrade recovery), HMAC verification. Sends watchdog heartbeats before and after each `build_initial_baseline()` call. The scanner itself sends heartbeats every 5,000 files, after transaction COMMIT, and after HMAC computation.
+8. `send_watchdog_heartbeat()` — keep systemd alive before thread wiring
 
 **`DaemonRuntime::start()` (thread wiring):**
 
-6. Set up signal mask and spawn signal thread
-7. Start monitor backend (fanotify with inotify fallback)
-8. Spawn worker pool (`WorkerSpawnArgs`), baseline writer, alert dispatcher, coordinator (`CoordinatorConfig`), scan scheduler
-9. `sd_notify(Ready)` — signal systemd that startup is complete
-10. Spawn control socket (`ControlHandler`)
+9. Set up signal mask and spawn signal thread
+10. Start monitor backend (fanotify with inotify fallback) + watchdog heartbeat
+11. Spawn worker pool (`WorkerSpawnArgs`), baseline writer, alert dispatcher + watchdog heartbeat
+12. Spawn coordinator (`CoordinatorConfig`) + watchdog heartbeat
+13. `send_watchdog_heartbeat()` + `sd_notify(Ready)` — signal systemd that startup is complete
+14. Spawn control socket (`ControlHandler`)
 
 **`DaemonRuntime::wait_for_shutdown()` + `DaemonRuntime::drain()`:**
 
-11. Block on shutdown signal
-12. Send `sd_notify(Stopping)`, drop senders, join all threads in dependency order, cleanup PID file
+15. Block on shutdown signal
+16. Send `sd_notify(Stopping)`, drop senders, join all threads in dependency order, cleanup PID file
 
 If any step before `sd_notify(Ready)` fails, the daemon exits with the error printed to both tracing and stderr.
 

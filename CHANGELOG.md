@@ -4,6 +4,27 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.27.1] - 2026-04-09
+
+### Release Summary
+- Fix systemd watchdog timeouts that killed the daemon during startup (initial baseline scan) and during coordinator tick blocking under I/O pressure. Adds watchdog heartbeats throughout the pre-flight sequence, baseline initialization, and coordinator tick sub-methods. Increases `WatchdogSec` from 30s to 120s and adds `TimeoutStartSec=300` to both systemd unit files.
+
+### Fixed
+- **daemon:** watchdog starvation during startup pre-flight — the pre-flight sequence (`record_binary_hash()`, `ensure_baseline_health()`, `DaemonRuntime::start()`) runs synchronously on the main thread before the coordinator thread exists. No watchdog heartbeats were sent until the coordinator's loop began iterating. On systems with large monitored file sets, `ensure_baseline_health()` triggers `build_initial_baseline()`, which walks all watched paths, hashes every file, queries package ownership, and writes to SQLite — easily taking 15–60+ seconds. With `WatchdogSec=30`, systemd sent SIGABRT before the coordinator could start. Added `send_watchdog_heartbeat()` helper in `src/lib.rs` (guarded by `is_notify_socket_safe()`) and inserted heartbeat calls at 3 points in `Daemon::run()`, before/after all 4 `build_initial_baseline()` call sites in `ensure_baseline_health()`, and at 4 points in `DaemonRuntime::start()` (`src/lib.rs`).
+- **daemon:** watchdog starvation during long baseline scans — `build_initial_baseline()` walks potentially tens of thousands of files without any watchdog heartbeat. Added heartbeat sends at the existing 5,000-file progress interval, after the `COMMIT` of the baseline transaction, and after HMAC computation over the full baseline (`src/scanner.rs`).
+- **daemon:** watchdog starvation during coordinator tick — the coordinator's `tick()` method calls 8 sub-methods sequentially (`check_baseline_db_identity`, `check_audit_db_identity`, `check_mount_evasion`, `detect_clock_anomaly`, `rotate_audit_log`, `write_snapshots`, `check_backpressure`, `check_event_drops`, `maybe_checkpoint_wal`) without any intermediate heartbeat. If `rotate_audit_log()` (SQL queries) or `write_snapshots()` (opens DBs, runs `COUNT(*)`, filesystem metadata) are slow under I/O pressure, the combined tick time exceeds the watchdog interval. Added 3 interleaved `notify_watchdog()` calls within `tick()`: after security checks, after audit rotation, and after snapshot writes (`src/coordinator.rs`).
+- **systemd:** `WatchdogSec=30` far too aggressive for a daemon that performs filesystem-wide integrity scanning — changed to `WatchdogSec=120` in `systemd/vigild.service`. The `contrib/vigild.service` already had `WatchdogSec=120`; both units are now aligned (`systemd/vigild.service`).
+- **systemd:** no `TimeoutStartSec` configured — systemd's default start timeout could kill the daemon during first-ever baseline initialization on large systems. Added `TimeoutStartSec=300` (5 minutes) to both `systemd/vigild.service` and `contrib/vigild.service`.
+- **systemd:** `contrib/vigild.service` missing security-critical directives — added `NotifyAccess=main` (prevents sd_notify spoofing, addresses VIGIL-VULN-034), `ExecReload=/bin/kill -HUP $MAINPID`, and `AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH` to match the production unit's security posture (`contrib/vigild.service`).
+
+### Validation
+- `cargo build` succeeds with 0 warnings.
+- `cargo test --all-targets` passes (all 173 tests green, 0 failures).
+- `cargo clippy --all-targets -- -D warnings` produces 0 warnings.
+- `cargo fmt --check` passes.
+- All `sd_notify::Watchdog` calls are guarded by `is_notify_socket_safe()` (directly or via `send_watchdog_heartbeat()` / `notify_watchdog()`).
+- Zero behavior changes to monitoring, alerting, or security logic.
+
 ## [0.27.0] - 2026-04-09
 
 ### Release Summary

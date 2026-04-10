@@ -87,6 +87,10 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<Base
                             inserted_entries = total_count,
                             "baseline init progress"
                         );
+                        // Keep systemd watchdog alive during long baseline scans
+                        if crate::coordinator::is_notify_socket_safe() {
+                            let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+                        }
                     }
 
                     let opts = CaptureOpts {
@@ -154,6 +158,10 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<Base
     let groups = match result {
         Ok(groups) => {
             conn.execute_batch("COMMIT")?;
+            // Heartbeat after potentially large transaction commit
+            if crate::coordinator::is_notify_socket_safe() {
+                let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+            }
             groups
         }
         Err(e) => {
@@ -175,6 +183,10 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<Base
                 Err(e) => tracing::warn!(error = %e, "failed to compute baseline HMAC"),
             }
         }
+    }
+    // Heartbeat after HMAC computation over full baseline
+    if crate::coordinator::is_notify_socket_safe() {
+        let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
     }
 
     let db_size_bytes = std::fs::metadata(&config.daemon.db_path)

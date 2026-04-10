@@ -30,7 +30,10 @@ AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
 
 # Watchdog
-WatchdogSec=30
+WatchdogSec=120
+
+# Allow generous startup time for initial baseline scan
+TimeoutStartSec=300
 
 # PID file
 PIDFile=/run/vigil/vigild.pid

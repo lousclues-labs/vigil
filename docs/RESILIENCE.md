@@ -88,6 +88,8 @@ This is expected in real systems with high churn.
 | Failure | Behavior | Recovery |
 |---------|----------|----------|
 | process exits unexpectedly | systemd `Restart=on-failure` restarts service (when managed by unit) | inspect journal, fix root cause |
+| watchdog timeout during startup | daemon killed by SIGABRT before coordinator thread starts | eliminated since v0.27.1 — heartbeats sent throughout pre-flight and startup |
+| watchdog timeout during coordinator tick | slow `rotate_audit_log()` or `write_snapshots()` under I/O pressure starves watchdog | eliminated since v0.27.1 — heartbeats interleaved between expensive tick sub-methods |
 
 Persistence safety:
 - baseline DB remains on disk
@@ -158,6 +160,8 @@ Version upgrades may change the baseline schema or HMAC field coverage.
 | older daemon version crash-loops on upgrade | `process::exit(1)` before sd_notify Ready | upgrade to v0.25.0+ or manually `vigil init --force` |
 | update binary corrupted by mid-write crash | `vigil` or `vigild` binary is truncated or incomplete | eliminated since v0.26.0 — `vigil update` uses atomic copy-then-rename |
 | daemon not responding after update restart | `systemctl start` returns 0 but daemon crashes immediately | `vigil update` now verifies health via control socket (since v0.26.0) |
+| watchdog kills daemon during startup baseline scan | `WatchdogSec=30` too aggressive for large file sets, no heartbeats during pre-flight | eliminated since v0.27.1 — `WatchdogSec=120`, `TimeoutStartSec=300`, heartbeats throughout startup |
+| watchdog kills daemon during coordinator tick | slow DB operations under I/O pressure exceed watchdog interval | eliminated since v0.27.1 — heartbeats interleaved within `tick()` sub-methods |
 
 Startup diagnostics (baseline DB path, size, readability, HMAC status) are logged at `info` level before the health check runs. Use `RUST_LOG=debug` for maximum visibility.
 

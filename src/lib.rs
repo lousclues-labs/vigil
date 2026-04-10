@@ -126,10 +126,13 @@ impl Daemon {
     pub fn run(self) -> Result<()> {
         harden_process();
         raise_nofile_limit(4096);
+        send_watchdog_heartbeat();
         self.record_binary_hash();
+        send_watchdog_heartbeat();
         let cfg = self.config.load();
         self.log_startup_diagnostics(&cfg);
         self.ensure_baseline_health(&cfg)?;
+        send_watchdog_heartbeat();
         let runtime = DaemonRuntime::start(&self)?;
         runtime.wait_for_shutdown();
         runtime.drain()
@@ -170,7 +173,9 @@ impl Daemon {
             tracing::warn!(
                 "Baseline database not found. Auto-initializing from configured watch paths."
             );
+            send_watchdog_heartbeat();
             let result = scanner::build_initial_baseline(&self.baseline_conn, config)?;
+            send_watchdog_heartbeat();
             baseline_ops::set_config_state(&self.baseline_conn, "baseline_initialized", "true")?;
             let group_names: Vec<&str> = result.groups.iter().map(|g| g.name.as_str()).collect();
             let message = format!(
@@ -228,7 +233,9 @@ impl Daemon {
             }
 
             let fresh_conn = db::open_baseline_db(config)?;
+            send_watchdog_heartbeat();
             let result = scanner::build_initial_baseline(&fresh_conn, config)?;
+            send_watchdog_heartbeat();
             let _ = baseline_ops::set_config_state(&fresh_conn, "baseline_initialized", "true");
 
             tracing::error!(
@@ -279,7 +286,9 @@ impl Daemon {
                          Re-initializing baseline.",
                         db_size,
                     );
+                    send_watchdog_heartbeat();
                     let result = scanner::build_initial_baseline(&self.baseline_conn, config)?;
+                    send_watchdog_heartbeat();
                     baseline_ops::set_config_state(
                         &self.baseline_conn,
                         "baseline_initialized",
@@ -317,7 +326,9 @@ impl Daemon {
             }
 
             tracing::warn!("Baseline is empty. Populating from configured watch paths.");
+            send_watchdog_heartbeat();
             let result = scanner::build_initial_baseline(&self.baseline_conn, config)?;
+            send_watchdog_heartbeat();
             baseline_ops::set_config_state(&self.baseline_conn, "baseline_initialized", "true")?;
             notify_desktop(
                 &format!(
@@ -419,6 +430,7 @@ impl DaemonRuntime {
             daemon.watch_index.clone(),
             daemon.metrics.clone(),
         )?;
+        send_watchdog_heartbeat();
 
         // Baseline update channel for auto-rebaselining package changes
         let (baseline_update_tx, baseline_update_rx) = bounded::<worker::BaselineUpdate>(512);
@@ -439,6 +451,7 @@ impl DaemonRuntime {
             backpressure: backpressure.clone(),
             baseline_generation: baseline_generation.clone(),
         });
+        send_watchdog_heartbeat();
 
         // Spawn baseline writer thread
         let baseline_writer = spawn_baseline_writer(
@@ -477,6 +490,7 @@ impl DaemonRuntime {
             startup_baseline_conn: coordinator_baseline_conn,
             startup_audit_conn: coordinator_audit_conn,
         })?;
+        send_watchdog_heartbeat();
 
         let (shutdown_tx, shutdown_rx) = crossbeam_channel::bounded::<()>(1);
 
@@ -497,6 +511,7 @@ impl DaemonRuntime {
             scan_baseline_conn,
         )?;
 
+        send_watchdog_heartbeat();
         if coordinator::is_notify_socket_safe() {
             let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]);
         }
@@ -748,6 +763,14 @@ fn write_pid_file(path: &std::path::Path) -> Result<()> {
 fn cleanup_pid_file(path: &std::path::Path) {
     if let Err(e) = std::fs::remove_file(path) {
         tracing::debug!(path = %path.display(), error = %e, "failed to remove pid file");
+    }
+}
+
+/// Send a watchdog heartbeat if running under systemd.
+/// Safe to call before the coordinator thread exists.
+fn send_watchdog_heartbeat() {
+    if coordinator::is_notify_socket_safe() {
+        let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
     }
 }
 

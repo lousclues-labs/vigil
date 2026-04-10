@@ -108,11 +108,14 @@ impl Coordinator {
             return;
         }
         self.check_mount_evasion();
+        self.notify_watchdog();
         let clock_anomaly = self.detect_clock_anomaly();
         if !clock_anomaly {
             self.rotate_audit_log();
         }
+        self.notify_watchdog();
         self.write_snapshots();
+        self.notify_watchdog();
         self.check_backpressure();
         self.check_event_drops();
         self.maybe_checkpoint_wal();

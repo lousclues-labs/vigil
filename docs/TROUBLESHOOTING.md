@@ -224,6 +224,21 @@ vigil config validate
 vigil doctor
 ```
 
+Look for watchdog timeout messages:
+
+```
+vigild.service: Watchdog timeout (limit 30s)!
+Main process exited, code=killed, status=6/ABRT
+```
+
+If you see watchdog timeouts, ensure you are running v0.27.1+ and using the updated systemd unit with `WatchdogSec=120` and `TimeoutStartSec=300`:
+
+```bash
+sudo cp systemd/vigild.service /etc/systemd/system/vigild.service
+sudo systemctl daemon-reload
+sudo systemctl restart vigild.service
+```
+
 Confirm these paths exist and have correct permissions:
 - `/var/lib/vigil`
 - `/var/log/vigil`
