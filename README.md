@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/badge/CI-GitHub_Actions-success)](.github/workflows/ci.yml)
 [![Security Audit](https://img.shields.io/badge/Security-Audit-success)](.github/workflows/scheduled.yml)
-[![Version](https://img.shields.io/badge/version-0.27.1-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.28.0-blue)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange.svg)](https://www.rust-lang.org/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
 
@@ -78,6 +78,9 @@ I broke the code, found the bugs, and fixed them. Every decision is in the
 |                                                                    |
 | [x] Single-purpose design                                          |
 |     two binaries, one job: file integrity monitoring              |
+|                                                                    |
+| [x] Detection WAL (Write-Ahead Log)                                |
+|     crash-safe detection output, zero loss across restarts        |
 +--------------------------------------------------------------------+
 ```
 

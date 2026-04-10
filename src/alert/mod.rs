@@ -4,7 +4,6 @@ pub mod json_log;
 pub mod remote_syslog;
 pub mod socket;
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -46,7 +45,7 @@ pub struct AlertDispatcher {
     audit_conn: rusqlite::Connection,
     audit_db_path: std::path::PathBuf,
     rate_limiter: Mutex<RateLimiter>,
-    cooldowns: Mutex<HashMap<String, Instant>>,
+    cooldowns: Mutex<lru::LruCache<String, Instant>>,
     cooldown_secs: u64,
     hmac_key: Option<Zeroizing<Vec<u8>>>,
     last_chain_hash: Mutex<String>,
@@ -54,6 +53,7 @@ pub struct AlertDispatcher {
     metrics: Arc<Metrics>,
     hostname: String,
     consecutive_audit_failures: AtomicU32,
+    wal_active: bool,
     /// Bounded buffer for audit entries that failed to write; retried after DB reopen.
     audit_retry_buffer: Mutex<Vec<PendingAuditEntry>>,
 }
@@ -70,6 +70,7 @@ impl AlertDispatcher {
         audit_db_path: &Path,
         metrics: Arc<Metrics>,
         startup_hmac_key: Option<Zeroizing<Vec<u8>>>,
+        wal_active: bool,
     ) -> Result<Self> {
         if let Some(parent) = audit_db_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -144,7 +145,9 @@ impl AlertDispatcher {
                 count: 0,
                 window_start: Instant::now(),
             }),
-            cooldowns: Mutex::new(HashMap::new()),
+            cooldowns: Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(10_000).unwrap(),
+            )),
             cooldown_secs: config.alerts.cooldown_seconds,
             hmac_key,
             last_chain_hash: Mutex::new(last_hash),
@@ -152,6 +155,7 @@ impl AlertDispatcher {
             metrics,
             hostname,
             consecutive_audit_failures: AtomicU32::new(0),
+            wal_active,
             audit_retry_buffer: Mutex::new(Vec::new()),
         })
     }
@@ -162,7 +166,9 @@ impl AlertDispatcher {
                 Ok(payload) => {
                     let suppressed =
                         self.is_suppressed(&payload.change, payload.maintenance_window);
-                    self.record_audit(&payload, suppressed);
+                    if !self.wal_active {
+                        self.record_audit(&payload, suppressed);
+                    }
                     if suppressed {
                         self.metrics
                             .alerts_suppressed
@@ -292,7 +298,7 @@ impl AlertDispatcher {
                 }
             }
             // Only update timestamp when alert is NOT suppressed by cooldown
-            cooldowns.insert(path, now);
+            cooldowns.put(path, now);
         }
 
         {
@@ -438,7 +444,7 @@ mod tests {
 
         let cfg = crate::config::default_config();
         let metrics = Arc::new(crate::metrics::Metrics::new());
-        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, None).unwrap();
+        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, None, false).unwrap();
 
         let payload = AlertPayload {
             change: ChangeResult {
@@ -467,7 +473,7 @@ mod tests {
         cfg.alerts.cooldown_seconds = 10; // 10 second cooldown
 
         let metrics = Arc::new(crate::metrics::Metrics::new());
-        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, None).unwrap();
+        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, None, false).unwrap();
 
         let change = ChangeResult {
             path: std::sync::Arc::new(std::path::PathBuf::from("/tmp/cooldown_test")),
@@ -508,7 +514,7 @@ mod tests {
         cfg.alerts.cooldown_seconds = 0; // disable cooldown for this test
 
         let metrics = Arc::new(crate::metrics::Metrics::new());
-        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, None).unwrap();
+        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, None, false).unwrap();
 
         for i in 0..5 {
             let change = ChangeResult {
@@ -548,7 +554,7 @@ mod tests {
             .ok()
             .map(Zeroizing::new);
         let metrics = Arc::new(crate::metrics::Metrics::new());
-        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, hmac_key).unwrap();
+        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, hmac_key, false).unwrap();
 
         let payload = AlertPayload {
             change: ChangeResult {
@@ -580,7 +586,7 @@ mod tests {
 
         let cfg = crate::config::default_config();
         let metrics = Arc::new(crate::metrics::Metrics::new());
-        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, None).unwrap();
+        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, None, false).unwrap();
 
         let critical_change = ChangeResult {
             path: std::sync::Arc::new(std::path::PathBuf::from("/usr/bin/sudo")),

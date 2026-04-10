@@ -110,6 +110,13 @@ This list matches direct dependencies in `Cargo.toml`.
 | `chrono` | timestamps and UTC handling |
 | `thiserror` | typed error definitions |
 
+### WAL Serialization and Integrity
+
+| Crate | Purpose in Vigil |
+|-------|------------------|
+| `rmp-serde` | MessagePack serialization for WAL entry payloads |
+| `crc32fast` | CRC32 checksums for WAL entry crash recovery |
+
 Removed from this table because they are not direct dependencies:
 - `log`
 - `env_logger`
@@ -153,6 +160,9 @@ It does not:
 | mtime-reset evasion | scheduled scans default to full mode (rehash regardless of mtime) |
 | event channel flooding | event drop detection with coordinator-level alerting |
 | persistence via `/run/` | `/run/*` not blanket-excluded; targeted exclusions only |
+| detection loss during daemon crash | Detection WAL provides crash-safe buffering; AuditWriter replays on restart with deduplication |
+| WAL entry tampering | per-entry HMAC-SHA256 when HMAC signing enabled; entries with invalid HMAC are skipped |
+| WAL file replacement | coordinator periodic TOCTOU check on WAL inode/device; Degraded state on replacement |
 
 ### Out of scope
 

@@ -16,6 +16,7 @@ serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = "0.4"
 hex = "0.4"
+rmp-serde = "1"
 
 [[bin]]
 name = "fuzz_config_parse"
@@ -56,6 +57,12 @@ doc = false
 [[bin]]
 name = "fuzz_xattr_parsing"
 path = "fuzz_targets/fuzz_xattr_parsing.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_wal_recovery"
+path = "fuzz_targets/fuzz_wal_recovery.rs"
 test = false
 doc = false
 

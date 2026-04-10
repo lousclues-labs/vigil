@@ -35,6 +35,10 @@ runtime_dir = "/run/vigil"
 control_socket = "/run/vigil/control.sock"
 debounce_ms = 100
 event_channel_capacity = 4096    # event channel buffer size
+detection_wal = true              # enable Detection WAL for crash-safe detection output
+detection_wal_max_bytes = 67108864  # 64 MiB max WAL size (valid: 1 MiB - 1 GiB)
+detection_wal_persistent = false  # false = tmpfs (/run/vigil), true = alongside baseline DB
+detection_wal_sync = "every"      # every, batched, none — fdatasync after WAL append
 
 [scanner]
 schedule = "0 3 * * *"
@@ -125,6 +129,10 @@ paths = [
 | `control_socket` | path | `/run/vigil/control.sock` | daemon control socket |
 | `debounce_ms` | integer | `100` | per-path debounce window |
 | `event_channel_capacity` | integer | `4096` | event channel buffer size; higher values reduce event drops under I/O load |
+| `detection_wal` | bool | `true` | enable Detection WAL for crash-safe detection output. When false, detections flow through the legacy alert channel. |
+| `detection_wal_max_bytes` | integer | `67108864` | maximum WAL file size in bytes (64 MiB). Valid range: 1,048,576 (1 MiB) to 1,073,741,824 (1 GiB). |
+| `detection_wal_persistent` | bool | `false` | when true, WAL is stored alongside baseline DB (survives reboots); when false, WAL is in `runtime_dir` (tmpfs). |
+| `detection_wal_sync` | enum | `every` | `every` (fdatasync after each append), `batched`, `none`. Use `every` for maximum crash safety. |
 
 ### `[scanner]`
 

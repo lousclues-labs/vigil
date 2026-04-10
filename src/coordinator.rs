@@ -34,6 +34,9 @@ pub struct CoordinatorConfig {
     pub startup_hmac_key: Option<zeroize::Zeroizing<Vec<u8>>>,
     pub startup_baseline_conn: rusqlite::Connection,
     pub startup_audit_conn: rusqlite::Connection,
+    pub reconfigure_tx: Option<crossbeam_channel::Sender<Vec<std::path::PathBuf>>>,
+    pub wal_identity: Option<crate::db::DbFileIdentity>,
+    pub wal_path: Option<std::path::PathBuf>,
 }
 
 struct Coordinator {
@@ -49,6 +52,9 @@ struct Coordinator {
     startup_hmac_key: Option<zeroize::Zeroizing<Vec<u8>>>,
     startup_baseline_conn: rusqlite::Connection,
     startup_audit_conn: rusqlite::Connection,
+    reconfigure_tx: Option<crossbeam_channel::Sender<Vec<std::path::PathBuf>>>,
+    wal_identity: Option<crate::db::DbFileIdentity>,
+    wal_path: Option<std::path::PathBuf>,
     last_config_hash: Option<String>,
     initial_mounts: std::collections::HashSet<std::path::PathBuf>,
     last_tick: std::time::Instant,
@@ -71,6 +77,9 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
         startup_hmac_key: cfg.startup_hmac_key,
         startup_baseline_conn: cfg.startup_baseline_conn,
         startup_audit_conn: cfg.startup_audit_conn,
+        reconfigure_tx: cfg.reconfigure_tx,
+        wal_identity: cfg.wal_identity,
+        wal_path: cfg.wal_path,
         last_config_hash: config_file_hash(),
         initial_mounts: crate::monitor::fanotify::parse_mountinfo()
             .unwrap_or_default()
@@ -105,6 +114,9 @@ impl Coordinator {
             return;
         }
         if !self.check_audit_db_identity() {
+            return;
+        }
+        if !self.check_wal_identity() {
             return;
         }
         self.check_mount_evasion();
@@ -192,6 +204,14 @@ impl Coordinator {
                 self.watch_index
                     .store(Arc::new(WatchGroupIndex::from_config(&new_cfg)));
                 self.last_config_hash = new_config_hash.clone();
+
+                // Notify the monitor to rebuild its Bloom filter with new watch paths
+                if let Some(ref tx) = self.reconfigure_tx {
+                    let new_paths = crate::monitor::collect_watch_paths(&new_cfg);
+                    if let Err(e) = tx.send(new_paths) {
+                        tracing::warn!(error = %e, "failed to send reconfigure to monitor");
+                    }
+                }
             }
             Err(e) => {
                 tracing::error!(error = %e, "config reload failed");
@@ -260,6 +280,34 @@ impl Coordinator {
         true
     }
 
+    /// Returns false if WAL identity check failed and tick should abort.
+    fn check_wal_identity(&mut self) -> bool {
+        let (Some(identity), Some(path)) = (&self.wal_identity, &self.wal_path) else {
+            return true;
+        };
+
+        match identity.is_replaced(path) {
+            Ok(true) => {
+                tracing::error!(
+                    path = %path.display(),
+                    "WAL file replaced — possible tampering. Inode/device changed since startup."
+                );
+                let mut s = self.state.write();
+                *s = DaemonState::Degraded {
+                    reason: "wal_file_replaced".into(),
+                    since: Utc::now(),
+                };
+                self.last_tick = std::time::Instant::now();
+                false
+            }
+            Ok(false) => true,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to stat WAL file for TOCTOU check");
+                true
+            }
+        }
+    }
+
     fn check_mount_evasion(&self) {
         let cfg = self.config.load();
         if let Some(current_mounts) = crate::monitor::fanotify::parse_mountinfo() {
@@ -296,12 +344,14 @@ impl Coordinator {
                 jump_secs = clock_delta,
                 "forward clock anomaly detected — skipping audit rotation to prevent evidence loss"
             );
+            self.last_rotation_timestamp = now_ts;
             true
         } else if clock_delta < -60 {
             tracing::error!(
                 jump_secs = clock_delta,
                 "negative clock jump detected — skipping audit rotation (possible clock manipulation replay)"
             );
+            self.last_rotation_timestamp = now_ts;
             true
         } else {
             false

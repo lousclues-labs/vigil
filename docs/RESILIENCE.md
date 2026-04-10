@@ -90,13 +90,30 @@ This is expected in real systems with high churn.
 | process exits unexpectedly | systemd `Restart=on-failure` restarts service (when managed by unit) | inspect journal, fix root cause |
 | watchdog timeout during startup | daemon killed by SIGABRT before coordinator thread starts | eliminated since v0.27.1 — heartbeats sent throughout pre-flight and startup |
 | watchdog timeout during coordinator tick | slow `rotate_audit_log()` or `write_snapshots()` under I/O pressure starves watchdog | eliminated since v0.27.1 — heartbeats interleaved between expensive tick sub-methods |
+| crash with detections in WAL | AuditWriter `recover()` replays uncommitted entries on next startup | automatic since v0.28.0 — deduplication prevents double-insertion |
 
 Persistence safety:
+- Detection WAL provides crash-safe buffering — detections survive daemon crashes and are replayed on restart
 - baseline DB remains on disk
 - WAL checkpoint runs on clean shutdown path
 - PID file is cleaned during graceful stop path
 
 If stale PID file remains, restart unit and validate status.
+
+---
+
+### Detection WAL Failures (since v0.28.0)
+
+| Failure | Behavior | Recovery |
+|---------|----------|----------|
+| WAL file full (`detection_wal_max_bytes` exceeded) | `append()` returns Err; worker falls back to `alert_tx` channel (pre-WAL path) | `detections_wal_full` metric increments; increase `detection_wal_max_bytes` or reduce WAL retention |
+| WAL file corrupted (partial write, disk error) | `iter_unconsumed()` gap-scans byte-by-byte using CRC32 validation; corrupted entries are skipped, valid entries recovered | automatic — no manual intervention needed |
+| WAL entry HMAC verification failure | entry is skipped by AuditWriter/SinkRunner; `detections_wal_tampered` metric increments | investigate potential tampering; entry is logged at error level |
+| Audit DB write failure during WAL consumption | AuditWriter increments `consecutive_failures`; reopens DB connection after 3 failures | automatic — if DB path is permanently broken, entries accumulate in WAL until recovery |
+| WAL instance nonce mismatch on recovery | AuditWriter `recover()` returns Err; prevents cross-instance replay | clear WAL file and restart daemon; indicates WAL file from a different daemon instance |
+| WAL file replaced (inode/device changed) | coordinator `check_wal_identity()` detects TOCTOU; daemon transitions to Degraded state | investigate file replacement; restart daemon |
+| WAL on tmpfs lost after reboot | non-persistent WAL (default) is on `/run/vigil` (tmpfs) and does not survive kernel panics or reboots | set `detection_wal_persistent = true` to store WAL alongside baseline DB on persistent storage |
+| WAL sequence gap detected | AuditWriter logs gap at error level; `detections_wal_gaps` metric increments | indicates corrupted or missing entries; investigate WAL file integrity |
 
 ---
 
@@ -133,7 +150,13 @@ Did monitoring stop?
 |     `- no -> inspect systemd/journal and restart
 `- no
    Is alert channel failing?
-   |- yes -> check channel-specific config (socket/log/notify)
+   |- yes
+   |  Is WAL enabled?
+   |  |- yes -> check detections_wal_audit_lag / detections_wal_sink_lag metrics
+   |  |  WAL full?
+   |  |  |- yes -> increase detection_wal_max_bytes or investigate consumption backlog
+   |  |  `- no -> check audit DB health (reopen failures in journal)
+   |  `- no -> check channel-specific config (socket/log/notify)
    `- no -> verify watch scope and exclusions
 ```
 
@@ -146,6 +169,9 @@ Did monitoring stop?
 - keep package hooks installed and tested
 - back up `/var/lib/vigil/baseline.db` regularly
 - retain alert logs for incident windows
+- set `detection_wal_persistent = true` on systems where detection loss across reboots is unacceptable
+- monitor `detections_wal_audit_lag` and `detections_wal_sink_lag` gauges for consumption backlog
+- monitor `detections_wal_full` counter for capacity issues
 
 ---
 
@@ -162,6 +188,8 @@ Version upgrades may change the baseline schema or HMAC field coverage.
 | daemon not responding after update restart | `systemctl start` returns 0 but daemon crashes immediately | `vigil update` now verifies health via control socket (since v0.26.0) |
 | watchdog kills daemon during startup baseline scan | `WatchdogSec=30` too aggressive for large file sets, no heartbeats during pre-flight | eliminated since v0.27.1 — `WatchdogSec=120`, `TimeoutStartSec=300`, heartbeats throughout startup |
 | watchdog kills daemon during coordinator tick | slow DB operations under I/O pressure exceed watchdog interval | eliminated since v0.27.1 — heartbeats interleaved within `tick()` sub-methods |
+| detection lost during daemon crash | detections written to alert channel lost if daemon exits before AlertDispatcher processes them | eliminated since v0.28.0 — Detection WAL ensures crash-safe persistence; AuditWriter replays uncommitted entries on restart |
+| audit DB blocked delays alert delivery | single-threaded AlertDispatcher blocks on audit DB write, delaying sink dispatch | eliminated since v0.28.0 — WAL decouples audit persistence (AuditWriter) from alert dispatch (SinkRunner); they run as independent threads |
 
 Startup diagnostics (baseline DB path, size, readability, HMAC status) are logged at `info` level before the health check runs. Use `RUST_LOG=debug` for maximum visibility.
 

@@ -29,6 +29,17 @@ pub struct Metrics {
     pub kernel_queue_overflows: AtomicU64,
     /// Audit entries permanently lost due to buffer overflow.
     pub audit_entries_lost: AtomicU64,
+    pub detections_wal_appends: AtomicU64,
+    pub detections_wal_audit_committed: AtomicU64,
+    pub detections_wal_sink_dispatched: AtomicU64,
+    pub detections_wal_replayed: AtomicU64,
+    pub detections_wal_full: AtomicU64,
+    pub detections_wal_tampered: AtomicU64,
+    pub detections_wal_gaps: AtomicU64,
+    pub detections_wal_bytes: AtomicU64,
+    pub detections_wal_pending: AtomicU64,
+    pub detections_wal_audit_lag: AtomicU64,
+    pub detections_wal_sink_lag: AtomicU64,
     /// Unix timestamp set once at daemon startup.
     pub uptime_start: i64,
 }
@@ -57,6 +68,17 @@ impl Metrics {
             control_commands: AtomicU64::new(0),
             kernel_queue_overflows: AtomicU64::new(0),
             audit_entries_lost: AtomicU64::new(0),
+            detections_wal_appends: AtomicU64::new(0),
+            detections_wal_audit_committed: AtomicU64::new(0),
+            detections_wal_sink_dispatched: AtomicU64::new(0),
+            detections_wal_replayed: AtomicU64::new(0),
+            detections_wal_full: AtomicU64::new(0),
+            detections_wal_tampered: AtomicU64::new(0),
+            detections_wal_gaps: AtomicU64::new(0),
+            detections_wal_bytes: AtomicU64::new(0),
+            detections_wal_pending: AtomicU64::new(0),
+            detections_wal_audit_lag: AtomicU64::new(0),
+            detections_wal_sink_lag: AtomicU64::new(0),
             uptime_start: chrono::Utc::now().timestamp(),
         }
     }
@@ -85,6 +107,21 @@ impl Metrics {
             control_commands: self.control_commands.load(Ordering::Relaxed),
             kernel_queue_overflows: self.kernel_queue_overflows.load(Ordering::Relaxed),
             audit_entries_lost: self.audit_entries_lost.load(Ordering::Relaxed),
+            detections_wal_appends: self.detections_wal_appends.load(Ordering::Relaxed),
+            detections_wal_audit_committed: self
+                .detections_wal_audit_committed
+                .load(Ordering::Relaxed),
+            detections_wal_sink_dispatched: self
+                .detections_wal_sink_dispatched
+                .load(Ordering::Relaxed),
+            detections_wal_replayed: self.detections_wal_replayed.load(Ordering::Relaxed),
+            detections_wal_full: self.detections_wal_full.load(Ordering::Relaxed),
+            detections_wal_tampered: self.detections_wal_tampered.load(Ordering::Relaxed),
+            detections_wal_gaps: self.detections_wal_gaps.load(Ordering::Relaxed),
+            detections_wal_bytes: self.detections_wal_bytes.load(Ordering::Relaxed),
+            detections_wal_pending: self.detections_wal_pending.load(Ordering::Relaxed),
+            detections_wal_audit_lag: self.detections_wal_audit_lag.load(Ordering::Relaxed),
+            detections_wal_sink_lag: self.detections_wal_sink_lag.load(Ordering::Relaxed),
             uptime_start: self.uptime_start,
         }
     }
@@ -120,6 +157,17 @@ pub struct MetricsSnapshot {
     pub control_commands: u64,
     pub kernel_queue_overflows: u64,
     pub audit_entries_lost: u64,
+    pub detections_wal_appends: u64,
+    pub detections_wal_audit_committed: u64,
+    pub detections_wal_sink_dispatched: u64,
+    pub detections_wal_replayed: u64,
+    pub detections_wal_full: u64,
+    pub detections_wal_tampered: u64,
+    pub detections_wal_gaps: u64,
+    pub detections_wal_bytes: u64,
+    pub detections_wal_pending: u64,
+    pub detections_wal_audit_lag: u64,
+    pub detections_wal_sink_lag: u64,
     pub uptime_start: i64,
 }
 
@@ -230,6 +278,72 @@ impl MetricsSnapshot {
             "vigil_audit_entries_lost_total",
             "Audit entries permanently lost due to buffer overflow",
             self.audit_entries_lost,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_detections_wal_appends_total",
+            "Detection entries appended to WAL",
+            self.detections_wal_appends,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_detections_wal_audit_committed_total",
+            "Detection entries committed from WAL to audit DB",
+            self.detections_wal_audit_committed,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_detections_wal_sink_dispatched_total",
+            "Detection entries dispatched from WAL to sinks",
+            self.detections_wal_sink_dispatched,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_detections_wal_replayed_total",
+            "Detection entries replayed during crash recovery",
+            self.detections_wal_replayed,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_detections_wal_full_total",
+            "WAL append attempts rejected because WAL is full",
+            self.detections_wal_full,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_detections_wal_tampered_total",
+            "WAL entries rejected due to invalid entry HMAC",
+            self.detections_wal_tampered,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_detections_wal_gaps_total",
+            "WAL sequence gaps detected during audit commit",
+            self.detections_wal_gaps,
+        );
+        write_prom_gauge(
+            &mut out,
+            "vigil_detections_wal_bytes",
+            "Current WAL file size in bytes",
+            self.detections_wal_bytes,
+        );
+        write_prom_gauge(
+            &mut out,
+            "vigil_detections_wal_pending",
+            "Current number of pending WAL entries",
+            self.detections_wal_pending,
+        );
+        write_prom_gauge(
+            &mut out,
+            "vigil_detections_wal_audit_lag",
+            "Current number of WAL entries pending audit commit",
+            self.detections_wal_audit_lag,
+        );
+        write_prom_gauge(
+            &mut out,
+            "vigil_detections_wal_sink_lag",
+            "Current number of WAL entries pending sink dispatch",
+            self.detections_wal_sink_lag,
         );
 
         let _ = writeln!(out);

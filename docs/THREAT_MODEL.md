@@ -88,6 +88,7 @@ Key boundaries:
 | JSON alert log (`/var/log/vigil/alerts.json`) | forensic record tampering |
 | signal socket path (`hooks.signal_socket`) | local IPC misuse if path permissions weak |
 | control socket (`/run/vigil/control.sock`) | privileged command injection. Mitigated: 0600 permissions, challenge-response authentication, peer credential logging, control command audit trail. |
+| Detection WAL (`/run/vigil/detections.wal` or `/var/lib/vigil/detections.wal`) | WAL entry tampering or deletion. Mitigated: per-entry HMAC-SHA256 when HMAC signing enabled; CRC32 checksums for crash recovery; file permissions 0600; periodic TOCTOU identity check by coordinator; instance nonce prevents cross-instance replay. |
 | monitor backend interfaces (fanotify/inotify) | dropped events or reduced coverage under fallback. Mitigated: event drop detection with coordinator-level alerting. |
 
 ---
@@ -122,6 +123,10 @@ Mitigations in design:
 - `/run/*` not blanket-excluded; targeted exclusions preserve visibility into `/run/systemd/`
 - vigil self-monitoring: config and HMAC key files watched at Critical severity
 - HMAC chain includes previous chain hash to detect mid-chain audit entry deletion
+- Detection WAL ensures zero detection loss across daemon crashes, audit DB failures, and I/O stalls
+- WAL entries protected by per-entry HMAC-SHA256 when HMAC signing enabled; tampered entries are skipped
+- WAL file identity (inode/device) checked periodically by coordinator; replacement triggers Degraded state
+- WAL instance nonce stored in baseline DB; prevents cross-instance replay attacks on crash recovery
 
 ---
 

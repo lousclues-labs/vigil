@@ -12,6 +12,7 @@ use crate::db::baseline_ops;
 use crate::error::{Result, VigilError};
 use crate::metrics::Metrics;
 use crate::types::{DaemonState, ScanMode};
+use zeroize::Zeroizing;
 
 /// Request sent through the scan trigger channel.
 #[derive(Debug)]
@@ -39,7 +40,8 @@ pub struct ControlHandler {
     pub reload_flag: Arc<AtomicBool>,
     pub scan_trigger_tx: crossbeam_channel::Sender<ScanRequest>,
     pub baseline_db_path: PathBuf,
-    pub hmac_key: Option<Vec<u8>>,
+    pub baseline_conn: rusqlite::Connection,
+    pub hmac_key: Option<Zeroizing<Vec<u8>>>,
     pub auth_enabled: bool,
 }
 
@@ -139,7 +141,8 @@ impl ControlHandler {
     ) -> Result<serde_json::Value> {
         let key = self
             .hmac_key
-            .as_deref()
+            .as_ref()
+            .map(|k| k.as_slice())
             .ok_or_else(|| VigilError::Control("auth enabled but no HMAC key".into()))?;
 
         // Generate and send challenge
@@ -283,11 +286,8 @@ impl ControlHandler {
     }
 
     fn handle_baseline_count(&self) -> serde_json::Value {
-        match crate::db::open_baseline_db_readonly(&self.baseline_db_path) {
-            Ok(conn) => match baseline_ops::count(&conn) {
-                Ok(count) => serde_json::json!({"ok": true, "count": count}),
-                Err(e) => serde_json::json!({"ok": false, "error": e.to_string()}),
-            },
+        match baseline_ops::count(&self.baseline_conn) {
+            Ok(count) => serde_json::json!({"ok": true, "count": count}),
             Err(e) => serde_json::json!({"ok": false, "error": e.to_string()}),
         }
     }
@@ -419,6 +419,7 @@ mod tests {
             reload_flag,
             scan_trigger_tx: scan_tx,
             baseline_db_path: db_path.clone(),
+            baseline_conn: crate::db::open_baseline_db_readonly(&db_path).unwrap(),
             hmac_key: None,
             auth_enabled: false,
         };
@@ -530,6 +531,11 @@ mod tests {
             reload_flag,
             scan_trigger_tx: scan_tx,
             baseline_db_path: PathBuf::from("/dev/null"),
+            baseline_conn: {
+                let conn = rusqlite::Connection::open_in_memory().unwrap();
+                crate::db::schema::create_baseline_tables(&conn).unwrap();
+                conn
+            },
             hmac_key: None,
             auth_enabled: false,
         };
@@ -556,6 +562,11 @@ mod tests {
             reload_flag,
             scan_trigger_tx: scan_tx,
             baseline_db_path: PathBuf::from("/dev/null"),
+            baseline_conn: {
+                let conn = rusqlite::Connection::open_in_memory().unwrap();
+                crate::db::schema::create_baseline_tables(&conn).unwrap();
+                conn
+            },
             hmac_key: None,
             auth_enabled: false,
         };

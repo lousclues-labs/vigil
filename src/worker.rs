@@ -20,6 +20,7 @@ use crate::types::{
     BaselineEntry, CaptureOpts, Change, ChangeResult, FsEvent, FsEventType, Severity,
     SnapshotOrDeleted,
 };
+use crate::wal::{DetectionRecord, DetectionSource, DetectionWal};
 use crate::watch_index::WatchGroupIndex;
 
 /// Baseline update sent from workers to the baseline writer thread.
@@ -58,6 +59,7 @@ pub struct WorkerSpawnArgs {
     pub baseline_update_tx: Option<Sender<BaselineUpdate>>,
     pub backpressure: Arc<AtomicBool>,
     pub baseline_generation: Arc<AtomicU64>,
+    pub wal: Option<Arc<DetectionWal>>,
 }
 
 /// Per-worker processing context holding connection, cache, and filter state.
@@ -72,6 +74,7 @@ struct WorkerContext {
     generation: Arc<AtomicU64>,
     drain_counter: u32,
     last_drain: std::time::Instant,
+    wal: Option<Arc<DetectionWal>>,
 }
 
 impl WorkerContext {
@@ -137,7 +140,26 @@ impl WorkerContext {
             }
             Err(_) => {
                 self.metrics.panics_caught.fetch_add(1, Ordering::Relaxed);
-                tracing::error!("panic caught in worker thread");
+                tracing::error!(
+                    path = %event.path.display(),
+                    event_type = ?event.event_type,
+                    "panic caught in worker — event processing failed"
+                );
+                if let Some(ref wal) = self.wal {
+                    let panic_record = DetectionRecord {
+                        timestamp: chrono::Utc::now().timestamp(),
+                        path: event.path.to_string_lossy().to_string(),
+                        changes: vec![],
+                        severity: Severity::Critical,
+                        monitored_group: "unknown".into(),
+                        process: event.process.clone(),
+                        package: None,
+                        package_update: false,
+                        maintenance_window: false,
+                        source: DetectionSource::Panic,
+                    };
+                    let _ = wal.append(&panic_record);
+                }
                 None
             }
         }
@@ -166,10 +188,35 @@ impl WorkerContext {
             };
 
             if let Some(cr) = self.process_safe(&synthetic) {
-                alerts.push(AlertPayload {
-                    change: cr,
-                    maintenance_window: false,
-                });
+                if let Some(ref wal) = self.wal {
+                    let record =
+                        DetectionRecord::from_change_result(&cr, false, DetectionSource::Debounce);
+                    match wal.append(&record) {
+                        Ok(_) => {
+                            self.metrics
+                                .detections_wal_appends
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "WAL append failed for debounced detection; falling back"
+                            );
+                            self.metrics
+                                .detections_wal_full
+                                .fetch_add(1, Ordering::Relaxed);
+                            alerts.push(AlertPayload {
+                                change: cr,
+                                maintenance_window: false,
+                            });
+                        }
+                    }
+                } else {
+                    alerts.push(AlertPayload {
+                        change: cr,
+                        maintenance_window: false,
+                    });
+                }
             }
         }
         alerts
@@ -234,6 +281,7 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
         let update_tx = args.baseline_update_tx.clone();
         let backpressure = args.backpressure.clone();
         let generation = args.baseline_generation.clone();
+        let wal = args.wal.clone();
 
         let handle_result = std::thread::Builder::new()
             .name(format!("vigil-worker-{}", i))
@@ -259,6 +307,7 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
                     generation,
                     drain_counter: 0,
                     last_drain: std::time::Instant::now(),
+                    wal,
                 };
 
                 while !shutdown.load(Ordering::Acquire) {
@@ -279,7 +328,38 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
                             ctx.metrics.events_processed.fetch_add(1, Ordering::Relaxed);
                             if let Some(cr) = ctx.process_safe(&event) {
                                 ctx.try_auto_rebaseline(&cr, &update_tx);
-                                if alert_tx
+                                if let Some(ref wal) = ctx.wal {
+                                    let record = DetectionRecord::from_change_result(
+                                        &cr,
+                                        false,
+                                        DetectionSource::Realtime,
+                                    );
+                                    match wal.append(&record) {
+                                        Ok(_) => {
+                                            ctx.metrics
+                                                .detections_wal_appends
+                                                .fetch_add(1, Ordering::Relaxed);
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                error = %e,
+                                                "WAL append failed; falling back to alert channel"
+                                            );
+                                            ctx.metrics
+                                                .detections_wal_full
+                                                .fetch_add(1, Ordering::Relaxed);
+                                            if alert_tx
+                                                .send(AlertPayload {
+                                                    change: cr,
+                                                    maintenance_window: false,
+                                                })
+                                                .is_err()
+                                            {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                } else if alert_tx
                                     .send(AlertPayload {
                                         change: cr,
                                         maintenance_window: false,

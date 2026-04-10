@@ -4,6 +4,66 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-04-10
+
+### Release Summary
+- Detection WAL (Write-Ahead Log) — a crash-safe, HMAC-authenticated binary log that decouples detection output from audit persistence and alert dispatch. Real-time detections, scheduled scan results, on-demand scan results, debounced re-checks, and worker panic events are now written to a local WAL file before being consumed by two independent background threads: the AuditWriter (audit DB persistence with priority ordering and crash recovery) and the SinkRunner (alert sink dispatch with bounded cooldowns). This eliminates the single-threaded bottleneck where a blocked audit DB write could delay alert delivery, and ensures zero detection loss across daemon crashes, audit DB failures, and I/O stalls. Includes 8 pre-existing bug fixes, 11 new metrics, 4 new config fields, and a new fuzz target. Fully backwards-compatible: the WAL is enabled by default but the daemon falls back to the pre-WAL alert channel path when `detection_wal = false` or when a WAL append fails.
+
+### Added
+- **wal:** new `src/wal/` module — `mod.rs` (WAL core), `audit_writer.rs` (audit DB consumer), `sink_runner.rs` (alert sink consumer). The WAL file format is a 64-byte header followed by variable-length entries. Each entry contains a 4-byte size, 8-byte sequence number, 2-byte flags (audit_done / sink_done), 32-byte per-entry HMAC-SHA256 (or zeros when HMAC signing is disabled), MessagePack-serialized payload, and a 4-byte CRC32 checksum. The header contains magic bytes `VWAL`, version 1, creation timestamp, HMAC key fingerprint (BLAKE3 of key truncated to 16 bytes), and a 32-byte random instance nonce from `/dev/urandom` (`src/wal/mod.rs`).
+- **wal:** `DetectionRecord` struct — the WAL payload type with 10 fields: `timestamp`, `path` (String, not PathBuf), `changes`, `severity`, `monitored_group`, `process`, `package`, `package_update`, `maintenance_window`, `source`. Includes `from_change_result()` and `to_change_result()` conversion methods. Derives `serde::Serialize` and `serde::Deserialize` for MessagePack serialization (`src/wal/mod.rs`).
+- **wal:** `DetectionSource` enum — `Realtime`, `ScheduledScan`, `OnDemandScan`, `Debounce`, `Panic`, `Sentinel`. Derives `Serialize`, `Deserialize`, `Clone`, `Copy`, `PartialEq`, `Eq` (`src/wal/mod.rs`).
+- **wal:** `DetectionWal` struct — the core WAL handle. Fields: `file` (Mutex-wrapped for atomic handle replacement during compaction), `path`, `sequence` (AtomicU64), `file_len` (AtomicU64), `write_lock` (parking_lot::Mutex), `hmac_key` (Option<Zeroizing<Vec<u8>>>), `hmac_key_fingerprint`, `instance_nonce`, `max_size_bytes`, `sync_mode`. Key methods: `open()` / `open_with_sync()` (creates with mode 0o600, validates permissions, recovers sequence from last valid entry), `append()` (serialize + HMAC + CRC + pwrite + fdatasync, with double-checked capacity before/after lock), `iter_unconsumed()` (gap-scanning recovery with byte-by-byte retry on CRC failure), `mark_audit_done()` / `mark_sink_done()` (flag updates with CRC recomputation), `truncate_consumed()` (atomic temp-file compaction or truncate-to-header) (`src/wal/mod.rs`).
+- **wal:** `AuditWriter` — background thread (`vigil-wal-audit`) that consumes WAL entries, writes them to the audit DB with HMAC chain integrity, and handles crash recovery. Features: priority ordering (Critical first, then by sequence), sequence gap detection with metrics, deduplication during recovery (SELECT COUNT before INSERT), consecutive failure counting with DB connection reopen after 3 failures, periodic `truncate_consumed()` every 60 seconds, and complete drain on shutdown. The `build_entry_hmac()` function replicates the full 7-argument `build_audit_hmac_data` call including extraction of `old_hash`/`new_hash` from `ContentModified` changes (`src/wal/audit_writer.rs`).
+- **wal:** `SinkRunner` — background thread (`vigil-wal-sinks`) that consumes WAL entries independently of AuditWriter and dispatches alerts to configured sinks. Uses `lru::LruCache<String, Instant>` bounded to 10,000 entries for path cooldowns (same suppression logic as AlertDispatcher). Suppressed entries are marked `sink_done` immediately (no retry). Sleeps 50ms when idle, 10ms when processing (`src/wal/sink_runner.rs`).
+- **wal:** WAL self-test at startup — appends a Sentinel record, reads it back, verifies it was found, marks it consumed. Failure returns `Err(VigilError::Wal(...))` and prevents daemon startup (`src/lib.rs`).
+- **wal:** WAL instance nonce stored in baseline DB via `set_config_state("wal_instance_nonce", ...)`. AuditWriter `recover()` verifies the nonce matches before replaying entries, preventing cross-instance replay (`src/lib.rs`, `src/wal/audit_writer.rs`).
+- **wal:** WAL file identity tracking — `DbFileIdentity` recorded for WAL file at creation, passed to coordinator for periodic TOCTOU verification. Coordinator's `check_wal_identity()` detects file replacement and transitions to Degraded state (`src/coordinator.rs`).
+- **config:** `detection_wal` (bool, default `true`) — enables/disables the Detection WAL. When disabled, detections flow through the existing alert channel path unchanged (`src/config/mod.rs`).
+- **config:** `detection_wal_max_bytes` (u64, default 64 MiB) — maximum WAL file size. Validated: must be between 1 MiB and 1 GiB. When exceeded, `append()` returns `Err(VigilError::Wal("WAL full"))` and the worker falls back to the alert channel (`src/config/mod.rs`).
+- **config:** `detection_wal_persistent` (bool, default `false`) — when true, WAL is stored alongside the baseline DB (survives reboots); when false, WAL is in `runtime_dir` (tmpfs). `validate_config_deep()` warns when WAL is on tmpfs (`src/config/mod.rs`).
+- **config:** `detection_wal_sync` (enum: `every`/`batched`/`none`, default `every`) — controls fdatasync behavior after WAL appends (`src/config/mod.rs`).
+- **metrics:** 11 new fields in `Metrics` struct — 7 counters (`detections_wal_appends`, `detections_wal_audit_committed`, `detections_wal_sink_dispatched`, `detections_wal_replayed`, `detections_wal_full`, `detections_wal_tampered`, `detections_wal_gaps`) and 4 gauges (`detections_wal_bytes`, `detections_wal_pending`, `detections_wal_audit_lag`, `detections_wal_sink_lag`). All included in `MetricsSnapshot`, all exposed in Prometheus text format with correct counter/gauge types (`src/metrics.rs`).
+- **error:** `VigilError::Wal(String)` variant with `#[error("WAL error: {0}")]` and PartialEq support (`src/error.rs`).
+- **worker:** panic handler in `process_safe()` now creates a `DetectionRecord` with `DetectionSource::Panic`, `Severity::Critical`, empty changes vec, and the event's path/process, then appends it to the WAL (best-effort, errors ignored). The `panics_caught` metric is still incremented (`src/worker.rs`).
+- **worker:** `drain_debounced()` appends debounced detections to WAL with `DetectionSource::Debounce` when WAL is available, falls back to alert channel vec when not (`src/worker.rs`).
+- **fuzz:** `fuzz_wal_recovery` target — feeds arbitrary bytes as a WAL file and calls `iter_unconsumed()` to exercise gap-scanning recovery (`fuzz/fuzz_targets/fuzz_wal_recovery.rs`).
+
+### Changed
+- **worker:** `WorkerSpawnArgs` gains `wal: Option<Arc<DetectionWal>>` field. `WorkerContext` gains matching `wal` field. Worker loop now appends `DetectionRecord` with `DetectionSource::Realtime` to WAL on detection; on WAL append failure, falls back to `alert_tx.send()`. `try_auto_rebaseline` is still called before WAL/alert send (`src/worker.rs`).
+- **alert:** `AlertDispatcher::new()` gains 5th parameter `wal_active: bool`. When `wal_active == true`, `run()` skips `record_audit()` (audit writes are handled by AuditWriter). Sink dispatch for fallback alerts still runs. `cooldowns` changed from `HashMap<String, Instant>` to `lru::LruCache<String, Instant>` bounded to 10,000 entries (`src/alert/mod.rs`).
+- **scan_scheduler:** `spawn()` gains 8th parameter `wal: Option<Arc<DetectionWal>>`. On-demand scan detections appended to WAL with `DetectionSource::OnDemandScan`; scheduled scan detections with `DetectionSource::ScheduledScan`. Falls back to `alert_tx.send()` on WAL append failure (`src/scan_scheduler.rs`).
+- **lib.rs:** `DaemonRuntime` gains `wal: Option<Arc<DetectionWal>>`, `audit_writer_handle: Option<JoinHandle<()>>`, `sink_runner_handle: Option<JoinHandle<()>>`. `start()` initializes WAL when `cfg.daemon.detection_wal == true` (path: runtime_dir or db_path parent depending on `detection_wal_persistent`), stores instance nonce, runs self-test, spawns AuditWriter (with `recover()` called before workers), spawns SinkRunner, passes `wal_active` to AlertDispatcher. `drain()` shutdown ordering: workers → baseline_writer → audit_writer → sink_runner → alert → coordinator → scan_scheduler → final WAL truncation → PID cleanup (`src/lib.rs`).
+- **coordinator:** `CoordinatorConfig` gains `wal_identity: Option<DbFileIdentity>` and `wal_path: Option<PathBuf>`. `Coordinator` struct gains matching fields. `tick()` calls `check_wal_identity()` for TOCTOU detection on the WAL file (`src/coordinator.rs`).
+- **deps:** added `rmp-serde = "1"` (MessagePack serialization) and `crc32fast = "1"` (CRC32 checksums) to `[dependencies]` (`Cargo.toml`).
+
+### Fixed (pre-existing bugs resolved in this release)
+- **control:** `ControlHandler.hmac_key` changed from `Option<Vec<u8>>` to `Option<Zeroizing<Vec<u8>>>` — HMAC key material is now zeroized on drop. `lib.rs` clones the `Zeroizing` wrapper correctly (`src/control.rs`, `src/lib.rs`).
+- **control:** `handle_baseline_count` TOCTOU — `ControlHandler` now holds a startup `Connection` field and uses it directly instead of calling `open_baseline_db_readonly(&path)` on each request (`src/control.rs`).
+- **scanner:** `run_scan_parallel` severity hardcoding — now accepts `watch_index: &WatchGroupIndex` parameter and uses `watch_index.lookup()` for severity and group name instead of hardcoding `Severity::High` / `Severity::Medium` / `"scheduled_scan"` (`src/scanner.rs`).
+- **coordinator:** `detect_clock_anomaly` stale timestamp — after detecting a clock anomaly (forward or backward), `last_rotation_timestamp` is now updated to the current time. Previously, a large forward jump left the timestamp stale, causing repeated false anomaly detections on every subsequent tick (`src/coordinator.rs`).
+- **lib.rs:** baseline writer batch cap — the `while let Ok(extra) = rx.try_recv()` collection loop now breaks at 500 entries to prevent unbounded growth (`src/lib.rs`).
+- **lib.rs:** baseline writer connection reopen — adds `consecutive_failures` counter; attempts DB connection reopen after 3 consecutive write failures (`src/lib.rs`).
+- **coordinator:** bloom filter reload gap — `Coordinator` now has `reconfigure_tx` field; `handle_reload()` sends new watch paths through the reconfigure channel so the monitor rebuilds its Bloom filter (`src/coordinator.rs`).
+- **alert:** cooldown map unbounded growth — `AlertDispatcher.cooldowns` changed from `HashMap<String, Instant>` to `lru::LruCache<String, Instant>` bounded to 10,000 entries. Prevents memory growth proportional to unique paths over daemon lifetime (`src/alert/mod.rs`).
+
+### Tests
+- **wal core (13 tests):** `append_and_read_back`, `concurrent_appends` (8 threads × 1,000 entries), `crc_corruption_detected`, `partial_write_at_eof`, `consumed_flags_independent`, `sequence_resumes_after_reopen`, `wal_full_returns_error`, `truncate_removes_consumed`, `gap_scanning_recovers_after_corruption`, `header_validation`, `entry_hmac_verification`, `instance_nonce_uniqueness`, `sentinel_roundtrip` (`src/wal/mod.rs`).
+- **audit writer (5 tests):** `drain_to_audit_db`, `crash_recovery_dedup`, `sequence_gap_detection`, `priority_ordering`, `audit_db_failure_and_reopen` (`src/wal/audit_writer.rs`).
+- **sink runner (3 tests):** `bounded_cooldown`, `sink_dispatch_independent`, `suppressed_entries_marked_consumed` (`src/wal/sink_runner.rs`).
+- **integration (2 tests):** `panic_produces_detection_record`, `wal_disabled_uses_current_path` (`tests/wal_integration.rs`).
+- **fuzz (1 target):** `fuzz_wal_recovery` (`fuzz/fuzz_targets/fuzz_wal_recovery.rs`).
+
+### Validation
+- `cargo build` succeeds with 0 warnings.
+- `cargo test --all-targets` passes (all 200 tests green, 0 failures).
+- `cargo clippy --all-targets -- -D warnings` produces 0 warnings.
+- `cd fuzz && cargo check` compiles cleanly.
+- `#![deny(unsafe_code)]` remains at crate root; no unsafe blocks in any WAL file.
+- All existing tests pass unchanged (AlertDispatcher::new call sites updated for new `wal_active` parameter).
+- Shutdown ordering verified: workers drain before AuditWriter, AuditWriter drains before SinkRunner, final WAL truncation after all threads joined.
+- Dual-write prevention verified: when WAL is active, AlertDispatcher does NOT write to audit DB; AuditWriter is the sole audit chain writer.
+
 ## [0.27.1] - 2026-04-09
 
 ### Release Summary

@@ -63,6 +63,9 @@ pub enum VigilError {
 
     #[error("glob pattern error: {0}")]
     GlobPattern(#[from] globset::Error),
+
+    #[error("WAL error: {0}")]
+    Wal(String),
 }
 
 pub type Result<T> = std::result::Result<T, VigilError>;
@@ -105,6 +108,7 @@ impl PartialEq for VigilError {
             (VigilError::Path(a), VigilError::Path(b)) => a == b,
             (VigilError::Syslog(a), VigilError::Syslog(b)) => a == b,
             (VigilError::Control(a), VigilError::Control(b)) => a == b,
+            (VigilError::Wal(a), VigilError::Wal(b)) => a == b,
             // TomlParse and Json compare by Display output
             (VigilError::TomlParse(a), VigilError::TomlParse(b)) => a.to_string() == b.to_string(),
             (VigilError::Json(a), VigilError::Json(b)) => a.to_string() == b.to_string(),

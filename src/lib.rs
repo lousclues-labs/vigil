@@ -18,6 +18,7 @@ pub mod package;
 pub mod scan_scheduler;
 pub mod scanner;
 pub mod types;
+pub mod wal;
 pub mod watch_index;
 pub mod worker;
 
@@ -37,6 +38,9 @@ use crate::config::Config;
 use crate::db::baseline_ops;
 use crate::metrics::Metrics;
 use crate::types::{DaemonState, FsEvent};
+use crate::wal::audit_writer::AuditWriter;
+use crate::wal::sink_runner::SinkRunner;
+use crate::wal::{DetectionRecord, DetectionSource, DetectionWal};
 use crate::watch_index::WatchGroupIndex;
 
 /// Vigil daemon runtime. Shared references are lock-free or read-mostly.
@@ -393,11 +397,14 @@ struct DaemonRuntime {
     workers: Vec<JoinHandle<()>>,
     baseline_writer: JoinHandle<()>,
     alert_handle: JoinHandle<()>,
+    audit_writer_handle: Option<JoinHandle<()>>,
+    sink_runner_handle: Option<JoinHandle<()>>,
     coordinator_handle: JoinHandle<()>,
     scan_handle: JoinHandle<()>,
     _control_handle: Option<JoinHandle<()>>,
     _monitor: monitor::MonitorHandle,
     _signal_handle: JoinHandle<()>,
+    wal: Option<Arc<DetectionWal>>,
     shutdown: Arc<AtomicBool>,
     shutdown_tx: crossbeam_channel::Sender<()>,
     event_tx: crossbeam_channel::Sender<FsEvent>,
@@ -432,6 +439,96 @@ impl DaemonRuntime {
         )?;
         send_watchdog_heartbeat();
 
+        let mut wal_identity = None;
+        let mut wal_path_for_coord = None;
+        let wal = if cfg.daemon.detection_wal {
+            let wal_dir = if cfg.daemon.detection_wal_persistent {
+                cfg.daemon
+                    .db_path
+                    .parent()
+                    .unwrap_or(std::path::Path::new("/var/lib/vigil"))
+                    .to_path_buf()
+            } else {
+                cfg.daemon.runtime_dir.clone()
+            };
+            let wal_path = wal_dir.join("detections.wal");
+            let wal = Arc::new(DetectionWal::open_with_sync(
+                &wal_path,
+                daemon.startup_hmac_key.as_ref(),
+                cfg.daemon.detection_wal_max_bytes,
+                cfg.daemon.detection_wal_sync,
+            )?);
+
+            baseline_ops::set_config_state(
+                &daemon.baseline_conn,
+                "wal_instance_nonce",
+                &hex::encode(wal.instance_nonce()),
+            )?;
+
+            let sentinel = DetectionRecord {
+                timestamp: chrono::Utc::now().timestamp(),
+                path: "__vigil_wal_self_test__".into(),
+                changes: vec![],
+                severity: crate::types::Severity::Low,
+                monitored_group: "self_test".into(),
+                process: None,
+                package: None,
+                package_update: false,
+                maintenance_window: false,
+                source: DetectionSource::Sentinel,
+            };
+            let sentinel_seq = wal.append(&sentinel)?;
+            let entries = wal.iter_unconsumed()?;
+            let found = entries.iter().any(|e| e.sequence == sentinel_seq);
+            if !found {
+                return Err(VigilError::Wal(
+                    "WAL self-test failed — appended entry not readable".into(),
+                ));
+            }
+            if let Some(e) = entries.iter().find(|e| e.sequence == sentinel_seq) {
+                wal.mark_audit_done(e.offset)?;
+                wal.mark_sink_done(e.offset)?;
+            }
+
+            daemon
+                .metrics
+                .detections_wal_bytes
+                .store(wal.file_size(), Ordering::Relaxed);
+            daemon
+                .metrics
+                .detections_wal_pending
+                .store(wal.pending_count(), Ordering::Relaxed);
+
+            wal_identity = db::DbFileIdentity::from_path(&wal_path).ok();
+            wal_path_for_coord = Some(wal_path);
+            send_watchdog_heartbeat();
+            Some(wal)
+        } else {
+            None
+        };
+
+        let (audit_writer_handle, sink_runner_handle) = if let Some(ref wal) = wal {
+            let aw_audit_conn = db::open_audit_db(&cfg)?;
+            let aw_baseline_conn = db::open_baseline_db_readonly(&baseline_db_path)?;
+            let mut audit_writer = AuditWriter::new(
+                wal.clone(),
+                aw_audit_conn,
+                audit_db_path.clone(),
+                aw_baseline_conn,
+                daemon.startup_hmac_key.clone(),
+                daemon.metrics.clone(),
+            )?;
+            audit_writer.recover()?;
+            send_watchdog_heartbeat();
+            let aw_handle = audit_writer.spawn(daemon.shutdown.clone())?;
+
+            let sink_runner = SinkRunner::new(wal.clone(), &cfg, daemon.metrics.clone())?;
+            let sr_handle = sink_runner.spawn(daemon.shutdown.clone())?;
+            (Some(aw_handle), Some(sr_handle))
+        } else {
+            (None, None)
+        };
+
         // Baseline update channel for auto-rebaselining package changes
         let (baseline_update_tx, baseline_update_rx) = bounded::<worker::BaselineUpdate>(512);
 
@@ -450,6 +547,7 @@ impl DaemonRuntime {
             baseline_update_tx: Some(baseline_update_tx),
             backpressure: backpressure.clone(),
             baseline_generation: baseline_generation.clone(),
+            wal: wal.clone(),
         });
         send_watchdog_heartbeat();
 
@@ -470,6 +568,7 @@ impl DaemonRuntime {
             &audit_db_path,
             daemon.metrics.clone(),
             daemon.startup_hmac_key.clone(),
+            wal.is_some(),
         )?;
 
         // Open startup connections for coordinator (avoids TOCTOU by never re-opening by path)
@@ -489,6 +588,9 @@ impl DaemonRuntime {
             startup_hmac_key: daemon.startup_hmac_key.clone(),
             startup_baseline_conn: coordinator_baseline_conn,
             startup_audit_conn: coordinator_audit_conn,
+            reconfigure_tx: monitor_handle.reconfigure_tx.clone(),
+            wal_identity,
+            wal_path: wal_path_for_coord,
         })?;
         send_watchdog_heartbeat();
 
@@ -509,6 +611,7 @@ impl DaemonRuntime {
             shutdown_rx,
             scan_trigger_rx,
             scan_baseline_conn,
+            wal.clone(),
         )?;
 
         send_watchdog_heartbeat();
@@ -519,13 +622,15 @@ impl DaemonRuntime {
 
         // Spawn control socket if configured
         let control_handle = if !cfg.daemon.control_socket.as_os_str().is_empty() {
+            let control_baseline_conn = db::open_baseline_db_readonly(&baseline_db_path)?;
             let handler = control::ControlHandler {
                 metrics: daemon.metrics.clone(),
                 state: daemon.state.clone(),
                 reload_flag: daemon.reload_flag.clone(),
                 scan_trigger_tx,
                 baseline_db_path: baseline_db_path.clone(),
-                hmac_key: daemon.startup_hmac_key.as_ref().map(|k| (**k).clone()),
+                baseline_conn: control_baseline_conn,
+                hmac_key: daemon.startup_hmac_key.clone(),
                 auth_enabled: daemon.startup_hmac_key.is_some(),
             };
             Some(control::spawn(
@@ -541,11 +646,14 @@ impl DaemonRuntime {
             workers,
             baseline_writer,
             alert_handle,
+            audit_writer_handle,
+            sink_runner_handle,
             coordinator_handle,
             scan_handle,
             _control_handle: control_handle,
             _monitor: monitor_handle,
             _signal_handle: signal_handle,
+            wal,
             shutdown: daemon.shutdown.clone(),
             shutdown_tx,
             event_tx,
@@ -568,16 +676,29 @@ impl DaemonRuntime {
         // Signal the scan scheduler to wake up and exit
         let _ = self.shutdown_tx.send(());
 
+        // Stop new monitor events and let workers drain what remains.
         drop(self.event_tx);
-        drop(self.alert_tx);
-
         for worker in self.workers {
             let _ = worker.join();
         }
+
+        // No more fallback alerts can be produced after workers exit.
+        drop(self.alert_tx);
+
         let _ = self.baseline_writer.join();
+        if let Some(handle) = self.audit_writer_handle {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.sink_runner_handle {
+            let _ = handle.join();
+        }
         let _ = self.alert_handle.join();
         let _ = self.coordinator_handle.join();
         let _ = self.scan_handle.join();
+
+        if let Some(wal) = self.wal {
+            let _ = wal.truncate_consumed();
+        }
 
         cleanup_pid_file(&self.pid_file);
 
@@ -598,9 +719,11 @@ fn spawn_alert_thread(
     audit_db_path: &std::path::Path,
     metrics: Arc<Metrics>,
     startup_hmac_key: Option<zeroize::Zeroizing<Vec<u8>>>,
+    wal_active: bool,
 ) -> Result<JoinHandle<()>> {
     let cfg = config.load();
-    let dispatcher = AlertDispatcher::new(&cfg, audit_db_path, metrics, startup_hmac_key)?;
+    let dispatcher =
+        AlertDispatcher::new(&cfg, audit_db_path, metrics, startup_hmac_key, wal_active)?;
 
     std::thread::Builder::new()
         .name("vigil-alert".into())
@@ -619,7 +742,7 @@ fn spawn_baseline_writer(
     std::thread::Builder::new()
         .name("vigil-baseline-writer".into())
         .spawn(move || {
-            let conn = match db::open_baseline_db_at_path(&baseline_db_path) {
+            let mut conn = match db::open_baseline_db_at_path(&baseline_db_path) {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::error!(error = %e, "baseline writer failed to open db");
@@ -630,19 +753,37 @@ fn spawn_baseline_writer(
             let mut batch: Vec<worker::BaselineUpdate> = Vec::new();
             let mut last_hmac_update = std::time::Instant::now();
             let mut batch_count = 0u64;
+            let mut consecutive_failures = 0u32;
 
             while !shutdown.load(Ordering::Acquire) {
                 match rx.recv_timeout(Duration::from_millis(500)) {
                     Ok(update) => {
                         batch.push(update);
-                        // Collect more if available
+                        // Collect more if available (bounded to prevent unbounded growth)
                         while let Ok(extra) = rx.try_recv() {
                             batch.push(extra);
+                            if batch.len() >= 500 {
+                                break;
+                            }
                         }
 
                         // Write batch in a single transaction
                         if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
                             tracing::error!(error = %e, "baseline writer begin failed");
+                            consecutive_failures += 1;
+                            if consecutive_failures >= 3 {
+                                tracing::warn!("baseline writer reopening connection after {} consecutive failures", consecutive_failures);
+                                match db::open_baseline_db_at_path(&baseline_db_path) {
+                                    Ok(new_conn) => {
+                                        conn = new_conn;
+                                        consecutive_failures = 0;
+                                        tracing::info!("baseline writer connection reopened successfully");
+                                    }
+                                    Err(e2) => {
+                                        tracing::error!(error = %e2, "baseline writer failed to reopen db");
+                                    }
+                                }
+                            }
                             batch.clear();
                             continue;
                         }
@@ -662,7 +803,9 @@ fn spawn_baseline_writer(
 
                         if let Err(e) = conn.execute_batch("COMMIT") {
                             tracing::error!(error = %e, "baseline writer commit failed");
+                            consecutive_failures += 1;
                         } else if written > 0 {
+                            consecutive_failures = 0;
                             // Increment generation counter to signal workers to invalidate caches
                             baseline_generation.fetch_add(1, Ordering::Release);
 

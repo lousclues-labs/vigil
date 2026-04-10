@@ -308,7 +308,12 @@ where
 
 /// Run a parallel baseline comparison scan (requires `parallel` feature).
 #[cfg(feature = "parallel")]
-pub fn run_scan_parallel(conn: &Connection, config: &Config, mode: ScanMode) -> Result<ScanResult> {
+pub fn run_scan_parallel(
+    conn: &Connection,
+    config: &Config,
+    mode: ScanMode,
+    watch_index: &crate::watch_index::WatchGroupIndex,
+) -> Result<ScanResult> {
     use rayon::prelude::*;
 
     let scan_start = std::time::Instant::now();
@@ -337,26 +342,36 @@ pub fn run_scan_parallel(conn: &Connection, config: &Config, mode: ScanMode) -> 
             };
 
             match crate::types::FileSnapshot::from_path(&entry.path, &opts) {
-                Ok(SnapshotOrDeleted::Deleted) => Some((
-                    true,
-                    Some(ChangeResult::deletion(
-                        &entry.path,
-                        entry,
-                        Severity::High,
-                        "scheduled_scan".into(),
-                    )),
-                    None,
-                )),
+                Ok(SnapshotOrDeleted::Deleted) => {
+                    let (group_name, group_severity) = watch_index
+                        .lookup(&entry.path)
+                        .map(|(g, s)| (g.to_string(), s))
+                        .unwrap_or(("scheduled_scan".into(), Severity::High));
+                    Some((
+                        true,
+                        Some(ChangeResult::deletion(
+                            &entry.path,
+                            entry,
+                            group_severity,
+                            group_name,
+                        )),
+                        None,
+                    ))
+                }
                 Ok(SnapshotOrDeleted::Snapshot(snapshot)) => {
                     let changes = snapshot.diff(entry);
                     if !changes.is_empty() {
+                        let (group_name, group_severity) = watch_index
+                            .lookup(&entry.path)
+                            .map(|(g, s)| (g.to_string(), s))
+                            .unwrap_or(("scheduled_scan".into(), Severity::Medium));
                         Some((
                             true,
                             Some(ChangeResult {
                                 path: std::sync::Arc::new(entry.path.clone()),
                                 changes,
-                                severity: Severity::Medium,
-                                monitored_group: "scheduled_scan".into(),
+                                severity: group_severity,
+                                monitored_group: group_name,
                                 process: None,
                                 package: entry.package.clone(),
                                 package_update: false,

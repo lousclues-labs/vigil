@@ -7,50 +7,58 @@ Vigil has one job. Detect filesystem boundary changes and record them.
 ## Big Picture
 
 ```
-+--------------------------------------------------------------------------------+
-|                                    VIGIL                                       |
-|                                                                                |
-|  +-----------------------------+          +----------------------------------+ |
-|  | CLI process: vigil          |          | Daemon process: vigild           | |
-|  | init, check, diff, status,  |          | long-running monitor             | |
-|  | doctor, audit, log, config  |          |                                  | |
-|  +-------------+---------------+          +----------------+-----------------+ |
-|                |                                         |                    |
-|                | one-shot commands                       | event loop          |
-|                v                                         v                    |
-|      +----------------------+                 +----------------------------+   |
-|      | scanner.rs           |                 | monitor backend            |   |
-|      | baseline scans       |                 | fanotify or inotify        |   |
-|      +----------+-----------+                 +-------------+--------------+   |
-|                 |                                           |                  |
-|                 |                                           v                  |
-|                 |                              +----------------------------+   |
-|                 |                              | worker pool                |   |
-|                 |                              | filter + compare + classify|   |
-|                 |                              +-------------+--------------+   |
-|                 |                                            |                  |
-|                 v                                            v                  |
-|      +----------------------+                 +----------------------------+   |
-|      | baseline.db          |                 | alert dispatcher           |   |
-|      | trusted file state   |                 | audit write + sinks        |   |
-|      +----------+-----------+                 +------+------+------+-------+   |
-|                 |                                     |      |      |          |
-|                 |                                     |      |      +--> socket |
-|                 |                                     |      +---------> JSON   |
-|                 |                                     +---------------> journal |
-|                 v                                                        + DBus |
-|      +----------------------+                                                     |
-|      | audit.db             |                                                     |
-|      | append-only changes  |                                                     |
-|      +----------------------+                                                     |
-|                                                                                |
-|  +------------------------------ control plane --------------------------------+ |
-|  | control.rs listens on daemon.control_socket (default /run/vigil/control.sock) |
-|  | methods: status, baseline_count, reload, scan, metrics_prometheus            |
-|  | authentication: challenge-response with HMAC key when hmac_signing = true    |
-|  | audit: logs peer PID/UID/GID via SO_PEERCRED; counts control_commands metric |
-|  +-------------------------------------------------------------------------------+ |
-+--------------------------------------------------------------------------------+
++------------------------------------------------------------------------------------+
+|                                      VIGIL                                         |
+|                                                                                    |
+|  +-----------------------------+            +----------------------------------+   |
+|  | CLI process: vigil          |            | Daemon process: vigild           |   |
+|  | init, check, diff, status,  |            | long-running monitor             |   |
+|  | doctor, audit, log, config  |            |                                  |   |
+|  +-------------+---------------+            +----------------+-----------------+   |
+|                |                                           |                      |
+|                | one-shot commands                         | event loop            |
+|                v                                           v                      |
+|      +----------------------+                   +----------------------------+     |
+|      | scanner.rs           |                   | monitor backend            |     |
+|      | baseline scans       |                   | fanotify or inotify        |     |
+|      +----------+-----------+                   +-------------+--------------+     |
+|                 |                                             |                    |
+|                 |                                             v                    |
+|                 |                                +----------------------------+     |
+|                 |                                | worker pool                |     |
+|                 |                                | filter + compare + classify|     |
+|                 |                                +-------------+--------------+     |
+|                 |                                              |                    |
+|                 |                                              v                    |
+|                 |                                +----------------------------+     |
+|                 |                                | Detection WAL              |     |
+|                 |                                | detections.wal             |     |
+|                 |                                | crash-safe binary log      |     |
+|                 |                                +------+----------+----------+     |
+|                 |                                       |          |                |
+|                 |                              +--------+--+  +---+----------+     |
+|                 |                              | AuditWriter|  | SinkRunner   |     |
+|                 |                              | -> audit DB |  | -> sinks     |     |
+|                 v                              +------+------+  +--+--+--+----+     |
+|      +----------------------+                        |             |  |  |          |
+|      | baseline.db          |                        |             |  |  +--> socket |
+|      | trusted file state   |                        |             |  +-----> JSON   |
+|      +----------+-----------+                        |             +-------> journal |
+|                 |                                    |                        + DBus |
+|                 v                                    v                              |
+|      +----------------------+              +----------------------+                 |
+|      | audit.db             |              | (fallback: alert_tx  |                 |
+|      | append-only changes  |              |  when WAL disabled   |                 |
+|      +----------------------+              |  or append fails)    |                 |
+|                                            +----------------------+                 |
+|                                                                                    |
+|  +------------------------------- control plane ----------------------------------+ |
+|  | control.rs listens on daemon.control_socket (default /run/vigil/control.sock)  | |
+|  | methods: status, baseline_count, reload, scan, metrics_prometheus              | |
+|  | authentication: challenge-response with HMAC key when hmac_signing = true      | |
+|  | audit: logs peer PID/UID/GID via SO_PEERCRED; counts control_commands metric   | |
+|  +--------------------------------------------------------------------------------+ |
++------------------------------------------------------------------------------------+
 ```
 
 ---
@@ -61,7 +69,10 @@ Vigil has one job. Detect filesystem boundary changes and record them.
 
 - monitor thread in `src/monitor/fanotify.rs` or `src/monitor/inotify.rs`
 - worker thread pool in `src/worker.rs` — each worker holds a `WorkerContext` struct
-- alert dispatcher thread in `src/alert/mod.rs` — runs `AlertDispatcher::run()`
+- WAL audit writer thread (`vigil-wal-audit`) in `src/wal/audit_writer.rs` — drains WAL to audit DB (when WAL enabled)
+- WAL sink runner thread (`vigil-wal-sinks`) in `src/wal/sink_runner.rs` — dispatches alerts from WAL to sinks (when WAL enabled)
+- alert dispatcher thread in `src/alert/mod.rs` — runs `AlertDispatcher::run()` (handles fallback alerts; skips audit writes when WAL active)
+- baseline writer thread in `src/lib.rs` — batches auto-rebaseline writes
 - coordinator thread in `src/coordinator.rs` — runs a `Coordinator` struct's tick loop
 - scan scheduler thread in `src/scan_scheduler.rs`
 - control socket thread in `src/control.rs` — dispatches via a `ControlHandler` struct
@@ -116,6 +127,11 @@ src/
 |   |-- security.rs         # SecurityInfo.
 |   `-- snapshot.rs         # FileSnapshot capture and diff logic.
 |
+|-- wal/
+|   |-- mod.rs              # Detection WAL: file format, DetectionWal, DetectionRecord.
+|   |-- audit_writer.rs     # AuditWriter: WAL -> audit DB consumer thread.
+|   `-- sink_runner.rs      # SinkRunner: WAL -> alert sink dispatch thread.
+|
 |-- bloom.rs                # Bloom filter for fast path membership reject.
 |-- cli.rs                  # clap command tree and flags.
 |-- control.rs              # Unix control socket. ControlHandler struct dispatches methods.
@@ -141,7 +157,10 @@ src/
 
 These modules are easy to miss. They are core to the runtime.
 
-- `src/lib.rs` defines `Daemon` (config, connections, startup) and `DaemonRuntime` (thread ownership, channel lifecycle). `Daemon::run()` is ~11 lines: harden, record binary hash, start runtime, wait, drain. `DaemonRuntime::start()` wires all channels, spawns all threads, emits `sd_notify(Ready)`. `DaemonRuntime::drain()` joins threads in dependency order. A `send_watchdog_heartbeat()` helper sends `sd_notify(Watchdog)` guarded by `is_notify_socket_safe()` and is called throughout pre-flight and startup to prevent systemd from killing the daemon before the coordinator thread exists.
+- `src/lib.rs` defines `Daemon` (config, connections, startup) and `DaemonRuntime` (thread ownership, channel lifecycle). `Daemon::run()` is ~11 lines: harden, record binary hash, start runtime, wait, drain. `DaemonRuntime::start()` wires all channels, spawns all threads (including WAL AuditWriter and SinkRunner when `detection_wal = true`), runs WAL self-test, calls `AuditWriter::recover()`, emits `sd_notify(Ready)`. `DaemonRuntime::drain()` joins threads in dependency order: workers → baseline_writer → audit_writer → sink_runner → alert → coordinator → scan_scheduler → final WAL truncation. A `send_watchdog_heartbeat()` helper sends `sd_notify(Watchdog)` guarded by `is_notify_socket_safe()` and is called throughout pre-flight and startup to prevent systemd from killing the daemon before the coordinator thread exists.
+- `src/wal/mod.rs` defines `DetectionWal` — the crash-safe binary WAL for detection records. The WAL decouples detection output from audit persistence and alert dispatch. Workers, scan scheduler, and debounce write `DetectionRecord` entries via `append()` (pwrite + fdatasync). Two independent consumer threads read entries via `iter_unconsumed()` with gap-scanning recovery: the AuditWriter persists to the audit DB with priority ordering; the SinkRunner dispatches to alert sinks with bounded cooldowns. Entries have independent `audit_done` / `sink_done` flags. The WAL uses CRC32 checksums for crash recovery and optional per-entry HMAC-SHA256 for tamper detection. File permissions are enforced at 0o600. When the WAL is disabled or full, detections fall back to the pre-WAL `alert_tx` channel.
+- `src/wal/audit_writer.rs` defines `AuditWriter` — the `vigil-wal-audit` background thread. Consumes WAL entries sorted by severity (Critical first), writes to audit DB with HMAC chain integrity. Features: sequence gap detection (`detections_wal_gaps` metric), crash recovery with deduplication, DB connection reopen after 3 consecutive failures, periodic compaction every 60s. On shutdown, drains completely before exiting — no entries can be lost.
+- `src/wal/sink_runner.rs` defines `SinkRunner` — the `vigil-wal-sinks` background thread. Consumes WAL entries sorted by sequence, dispatches to configured alert sinks. Uses an `LruCache<String, Instant>` bounded to 10,000 entries for path cooldowns. Suppressed entries are marked `sink_done` immediately (no infinite retry). Operates independently of AuditWriter.
 - `src/control.rs` defines `ControlHandler` — a struct holding metrics, state, reload flag, scan trigger, DB path, HMAC key, and auth flag. Methods: `handle_connection` (auth-or-read, dispatch, write), `authenticate_and_read` (challenge-response), `read_request`, `write_response`, `dispatch`. When HMAC signing is enabled, connections are authenticated via nonce-based challenge-response. All `reload` and `scan` commands are logged with peer credentials.
 - `src/coordinator.rs` defines `CoordinatorConfig` (spawn arguments) and `Coordinator` (runtime state). The main loop calls `handle_reload()` on flag and `tick()` every 60 seconds. `tick()` sequences: `check_baseline_db_identity`, `check_audit_db_identity`, `check_mount_evasion`, `notify_watchdog`, `detect_clock_anomaly`, `rotate_audit_log`, `notify_watchdog`, `write_snapshots`, `notify_watchdog`, `check_backpressure`, `check_event_drops`, `maybe_checkpoint_wal`. Watchdog pings are interleaved between expensive sub-methods within `tick()` and also sent on every loop iteration (~1s) via `notify_watchdog()`.
 - `src/worker.rs` defines `WorkerSpawnArgs` (spawn arguments) and `WorkerContext` (per-worker state: connection, config, watch index, metrics, filter, LRU cache, generation tracker). Key methods: `evaluate` (cache lookup + baseline + snapshot + diff + classify), `process_safe` (catch_unwind wrapper), `drain_debounced` (debounced re-check). Logs self-protection warnings when config or HMAC key files are modified.
@@ -183,11 +202,26 @@ filesystem event
      -> process_event_inner()
      -> FileSnapshot::from_fd() or FileSnapshot::from_path()
      -> FileSnapshot::diff(&baseline_entry)
-  -> AlertDispatcher::record_audit() (always)
-  -> AlertDispatcher::dispatch_to_sinks() (if not suppressed)
+  -> try_auto_rebaseline() (if package update detected)
+  -> DetectionWal::append() (when WAL enabled)
+     |
+     +-> AuditWriter thread (vigil-wal-audit)
+     |   -> priority sort (Critical first)
+     |   -> insert_audit_entry() with HMAC chain
+     |   -> mark_audit_done()
+     |
+     +-> SinkRunner thread (vigil-wal-sinks)
+         -> suppression check (cooldown + rate limit)
+         -> dispatch_to_sinks() (journal, JSON, desktop, socket)
+         -> mark_sink_done()
+
+  [fallback when WAL disabled or append fails]:
+  -> alert_tx.send(AlertPayload)
+  -> AlertDispatcher::record_audit() + dispatch_to_sinks()
 ```
 
 Comparison and classification run in `src/worker.rs` (`WorkerContext`) and `src/types/snapshot.rs`.
+The WAL decouples detection from persistence — a blocked audit DB write cannot delay alert delivery.
 
 ### 3) Scheduled Scan Pipeline
 
@@ -196,9 +230,11 @@ scan_scheduler::spawn()
   -> parse scanner.schedule with croner
   -> scanner::run_scan()
   -> diff against baseline
-  -> enqueue alert payloads
+  -> DetectionWal::append() with DetectionSource::ScheduledScan (when WAL enabled)
+  -> fallback: alert_tx.send(AlertPayload)
 ```
 
+On-demand scans (via control socket) use `DetectionSource::OnDemandScan`.
 Scheduled scans use `scanner.scheduled_mode`.
 
 ### 4) Control Socket Pipeline
@@ -309,6 +345,7 @@ Known keys:
 | `baseline_initialized` | `"true"` after first successful init; prevents silent auto-reinit on empty baseline |
 | `baseline_hmac` | HMAC of all baseline entries for at-rest tamper detection |
 | `config_file_hmac` | HMAC of config file contents for reload integrity verification |
+| `wal_instance_nonce` | hex-encoded 32-byte nonce from the current WAL file; used by AuditWriter crash recovery to prevent cross-instance replay |
 
 ---
 
@@ -344,6 +381,18 @@ It is used in alert suppression state and daemon state.
 Channels carry events and scan triggers between threads.
 The flow stays explicit and easy to trace.
 
+### 7) Detection WAL for crash-safe detection output
+
+The Detection WAL (`src/wal/mod.rs`) decouples detection writes from audit DB persistence and alert dispatch. Workers write `DetectionRecord` entries to a binary log with CRC32 checksums and optional per-entry HMAC. Two independent background threads consume entries: AuditWriter (priority-ordered audit persistence with crash recovery) and SinkRunner (alert dispatch with bounded cooldowns). This architecture eliminates the single-threaded bottleneck where a blocked audit write could delay alerts, and ensures zero detection loss across daemon crashes, DB failures, and transient I/O stalls.
+
+### 8) `rmp-serde` for WAL payload serialization
+
+MessagePack is compact, fast, and schema-flexible. WAL entries use `rmp_serde::to_vec()` for serialization and `rmp_serde::from_slice()` for deserialization. This keeps entries small and parsing fast during gap-scanning recovery.
+
+### 9) `crc32fast` for WAL entry integrity
+
+CRC32 (ISO 3309) with hardware acceleration. Each WAL entry includes a trailing CRC32 over all preceding bytes. Gap-scanning recovery uses CRC validation to skip corrupted entries and find the next valid entry by advancing byte-by-byte.
+
 ---
 
 ## File Locations
@@ -354,6 +403,8 @@ The flow stays explicit and easy to trace.
 | User config | `~/.config/vigil/vigil.toml` |
 | Baseline database | `/var/lib/vigil/baseline.db` |
 | Audit database | `/var/lib/vigil/audit.db` |
+| Detection WAL (non-persistent) | `/run/vigil/detections.wal` |
+| Detection WAL (persistent) | `/var/lib/vigil/detections.wal` |
 | Runtime dir | `/run/vigil` |
 | PID file | `/run/vigil/vigild.pid` |
 | Control socket | `/run/vigil/control.sock` |
@@ -383,15 +434,25 @@ The daemon startup path follows two stages: `Daemon::run()` handles pre-flight c
 
 9. Set up signal mask and spawn signal thread
 10. Start monitor backend (fanotify with inotify fallback) + watchdog heartbeat
-11. Spawn worker pool (`WorkerSpawnArgs`), baseline writer, alert dispatcher + watchdog heartbeat
-12. Spawn coordinator (`CoordinatorConfig`) + watchdog heartbeat
-13. `send_watchdog_heartbeat()` + `sd_notify(Ready)` — signal systemd that startup is complete
-14. Spawn control socket (`ControlHandler`)
+11. Open Detection WAL (when `detection_wal = true`): create file with 0o600 perms, write header, store instance nonce in baseline DB, run self-test (append sentinel, read back, verify, mark consumed) + watchdog heartbeat
+12. Spawn AuditWriter: open audit DB connection, call `recover()` (nonce verification + dedup replay) + watchdog heartbeat
+13. Spawn SinkRunner with configured alert sinks
+14. Spawn worker pool (`WorkerSpawnArgs` with WAL handle), baseline writer, alert dispatcher (with `wal_active` flag) + watchdog heartbeat
+15. Spawn coordinator (`CoordinatorConfig` with WAL identity for TOCTOU checking) + watchdog heartbeat
+16. `send_watchdog_heartbeat()` + `sd_notify(Ready)` — signal systemd that startup is complete
+17. Spawn control socket (`ControlHandler`)
 
 **`DaemonRuntime::wait_for_shutdown()` + `DaemonRuntime::drain()`:**
 
-15. Block on shutdown signal
-16. Send `sd_notify(Stopping)`, drop senders, join all threads in dependency order, cleanup PID file
+18. Block on shutdown signal
+19. Send `sd_notify(Stopping)`, signal scan scheduler
+20. Drop event_tx → join workers (no more WAL appends after this)
+21. Drop alert_tx → join baseline writer
+22. Join AuditWriter (drains all remaining WAL entries to audit DB)
+23. Join SinkRunner (dispatches all remaining WAL entries to sinks)
+24. Join alert dispatcher, coordinator, scan scheduler
+25. Final `wal.truncate_consumed()` — compact or reset WAL file
+26. Cleanup PID file
 
 If any step before `sd_notify(Ready)` fails, the daemon exits with the error printed to both tracing and stderr.
 

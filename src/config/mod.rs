@@ -126,6 +126,14 @@ pub enum SyncMode {
     Extra,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DetectionWalSync {
+    Every,
+    Batched,
+    None,
+}
+
 impl std::fmt::Display for SyncMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -201,6 +209,14 @@ pub struct DaemonConfig {
     /// Event channel capacity. Higher values reduce event drops under load.
     #[serde(default = "default_event_channel_capacity")]
     pub event_channel_capacity: usize,
+    #[serde(default = "default_true")]
+    pub detection_wal: bool,
+    #[serde(default = "default_detection_wal_max_bytes")]
+    pub detection_wal_max_bytes: u64,
+    #[serde(default)]
+    pub detection_wal_persistent: bool,
+    #[serde(default = "default_detection_wal_sync")]
+    pub detection_wal_sync: DetectionWalSync,
 }
 
 impl Default for DaemonConfig {
@@ -216,6 +232,10 @@ impl Default for DaemonConfig {
             control_socket: default_control_socket(),
             debounce_ms: default_debounce_ms(),
             event_channel_capacity: default_event_channel_capacity(),
+            detection_wal: default_true(),
+            detection_wal_max_bytes: default_detection_wal_max_bytes(),
+            detection_wal_persistent: false,
+            detection_wal_sync: default_detection_wal_sync(),
         }
     }
 }
@@ -257,6 +277,14 @@ fn default_debounce_ms() -> u64 {
 
 fn default_event_channel_capacity() -> usize {
     4096
+}
+
+fn default_detection_wal_max_bytes() -> u64 {
+    67_108_864
+}
+
+fn default_detection_wal_sync() -> DetectionWalSync {
+    DetectionWalSync::Every
 }
 
 fn default_monitor_backend() -> MonitorBackend {
@@ -728,6 +756,14 @@ pub fn validate_config(config: &Config) -> Result<()> {
         )));
     }
 
+    if config.daemon.detection_wal_max_bytes < 1_048_576
+        || config.daemon.detection_wal_max_bytes > 1_073_741_824
+    {
+        return Err(VigilError::Config(
+            "detection_wal_max_bytes must be between 1MB and 1GB".into(),
+        ));
+    }
+
     Ok(())
 }
 
@@ -784,6 +820,13 @@ pub fn validate_config_deep(config: &Config) -> Result<Vec<String>> {
     });
     if !config_covered {
         warnings.push("vigil config file is not covered by any watch group".into());
+    }
+
+    if config.daemon.detection_wal && !config.daemon.detection_wal_persistent {
+        warnings.push(
+            "detection_wal is enabled with detection_wal_persistent=false; WAL on tmpfs does not survive kernel panics"
+                .into(),
+        );
     }
 
     Ok(warnings)

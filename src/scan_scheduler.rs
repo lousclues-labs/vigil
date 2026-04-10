@@ -10,7 +10,9 @@ use crate::alert::AlertPayload;
 use crate::config::Config;
 use crate::control::{ScanRequest, ScanResponse};
 use crate::metrics::Metrics;
+use crate::wal::{DetectionRecord, DetectionSource, DetectionWal};
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     config: Arc<ArcSwap<Config>>,
     shutdown: Arc<AtomicBool>,
@@ -19,6 +21,7 @@ pub fn spawn(
     shutdown_rx: crossbeam_channel::Receiver<()>,
     scan_trigger_rx: crossbeam_channel::Receiver<ScanRequest>,
     baseline_conn: rusqlite::Connection,
+    wal: Option<Arc<DetectionWal>>,
 ) -> crate::Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name("vigil-scan-scheduler".into())
@@ -31,10 +34,35 @@ pub fn spawn(
                         match crate::scanner::run_scan(&baseline_conn, &cfg, request.mode) {
                             Ok(scan_result) => {
                                 for change in scan_result.changes {
-                                    let _ = alert_tx.send(AlertPayload {
-                                        change,
-                                        maintenance_window: false,
-                                    });
+                                    if let Some(ref wal) = wal {
+                                        let record = DetectionRecord::from_change_result(
+                                            &change,
+                                            false,
+                                            DetectionSource::OnDemandScan,
+                                        );
+                                        match wal.append(&record) {
+                                            Ok(_) => {
+                                                metrics
+                                                    .detections_wal_appends
+                                                    .fetch_add(1, Ordering::Relaxed);
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    error = %e,
+                                                    "WAL append failed for on-demand scan detection"
+                                                );
+                                                let _ = alert_tx.send(AlertPayload {
+                                                    change,
+                                                    maintenance_window: false,
+                                                });
+                                            }
+                                        }
+                                    } else {
+                                        let _ = alert_tx.send(AlertPayload {
+                                            change,
+                                            maintenance_window: false,
+                                        });
+                                    }
                                 }
                                 metrics
                                     .changes_detected
@@ -110,10 +138,35 @@ pub fn spawn(
                     {
                         Ok(scan_result) => {
                             for change in scan_result.changes {
-                                let _ = alert_tx.send(AlertPayload {
-                                    change,
-                                    maintenance_window: false,
-                                });
+                                if let Some(ref wal) = wal {
+                                    let record = DetectionRecord::from_change_result(
+                                        &change,
+                                        false,
+                                        DetectionSource::ScheduledScan,
+                                    );
+                                    match wal.append(&record) {
+                                        Ok(_) => {
+                                            metrics
+                                                .detections_wal_appends
+                                                .fetch_add(1, Ordering::Relaxed);
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                error = %e,
+                                                "WAL append failed for scheduled scan detection"
+                                            );
+                                            let _ = alert_tx.send(AlertPayload {
+                                                change,
+                                                maintenance_window: false,
+                                            });
+                                        }
+                                    }
+                                } else {
+                                    let _ = alert_tx.send(AlertPayload {
+                                        change,
+                                        maintenance_window: false,
+                                    });
+                                }
                             }
                             metrics
                                 .changes_detected
