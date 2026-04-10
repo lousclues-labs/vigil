@@ -648,9 +648,7 @@ mod tests {
             });
             for entry in pending {
                 if entry.sequence > writer.expected_next_sequence {
-                    metrics
-                        .detections_wal_gaps
-                        .fetch_add(1, Ordering::Relaxed);
+                    metrics.detections_wal_gaps.fetch_add(1, Ordering::Relaxed);
                 }
                 writer.commit_entry(&entry).unwrap();
                 writer.expected_next_sequence = entry.sequence + 1;

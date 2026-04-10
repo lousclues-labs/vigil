@@ -262,11 +262,7 @@ mod tests {
     use super::*;
     use crate::types::{Change, Severity};
 
-    fn mk_sink_record(
-        idx: usize,
-        severity: Severity,
-        path: &str,
-    ) -> super::super::DetectionRecord {
+    fn mk_sink_record(idx: usize, severity: Severity, path: &str) -> super::super::DetectionRecord {
         super::super::DetectionRecord {
             timestamp: 1_700_000_000 + idx as i64,
             path: path.to_string(),
@@ -345,7 +341,11 @@ mod tests {
 
         // Verify entries are still visible (not fully consumed)
         let still_visible = wal.iter_unconsumed().unwrap();
-        assert_eq!(still_visible.len(), 5, "entries with only audit_done should still be visible");
+        assert_eq!(
+            still_visible.len(),
+            5,
+            "entries with only audit_done should still be visible"
+        );
 
         // Create SinkRunner and process entries
         let mut cfg = crate::config::default_config();
@@ -382,9 +382,15 @@ mod tests {
 
         // Verify all 5 entries now have sink_done
         let remaining = wal.iter_unconsumed().unwrap();
-        assert_eq!(remaining.len(), 0, "all entries should be fully consumed now");
         assert_eq!(
-            metrics.detections_wal_sink_dispatched.load(Ordering::Relaxed),
+            remaining.len(),
+            0,
+            "all entries should be fully consumed now"
+        );
+        assert_eq!(
+            metrics
+                .detections_wal_sink_dispatched
+                .load(Ordering::Relaxed),
             5,
             "all 5 entries should have been dispatched"
         );

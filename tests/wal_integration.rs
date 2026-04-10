@@ -114,7 +114,10 @@ fn wal_disabled_uses_current_path() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 1, "detection should go through alert channel to audit DB");
+    assert_eq!(
+        count, 1,
+        "detection should go through alert channel to audit DB"
+    );
 
     // Verify no WAL file was created
     assert!(
