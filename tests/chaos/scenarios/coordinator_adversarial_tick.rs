@@ -56,13 +56,18 @@ fn run_coordinator_adversarial(seed: u64) {
         "Baseline DB falsely detected as replaced before swap",
     );
 
-    // Swap inode: copy, remove, copy back.
+    // Swap inode: write to a temp path, delete original, create blocker to occupy
+    // the freed inode slot, then rename temp over original. This guarantees a
+    // different inode even on filesystems that aggressively reuse inode numbers.
     {
         let backup = dir.path().join("baseline_backup.db");
+        let blocker = dir.path().join("baseline_blocker");
         std::fs::copy(&baseline_path, &backup).unwrap();
         std::fs::remove_file(&baseline_path).unwrap();
+        std::fs::write(&blocker, b"blocker").unwrap(); // occupy freed inode
         std::fs::copy(&backup, &baseline_path).unwrap();
         std::fs::remove_file(&backup).unwrap();
+        std::fs::remove_file(&blocker).unwrap();
     }
 
     // I12: Inode replacement detected.
@@ -90,10 +95,13 @@ fn run_coordinator_adversarial(seed: u64) {
 
     {
         let backup = dir.path().join("audit_backup.db");
+        let blocker = dir.path().join("audit_blocker");
         std::fs::copy(&audit_path, &backup).unwrap();
         std::fs::remove_file(&audit_path).unwrap();
+        std::fs::write(&blocker, b"blocker").unwrap();
         std::fs::copy(&backup, &audit_path).unwrap();
         std::fs::remove_file(&backup).unwrap();
+        std::fs::remove_file(&blocker).unwrap();
     }
 
     engine.check(
@@ -116,10 +124,13 @@ fn run_coordinator_adversarial(seed: u64) {
 
     {
         let backup = dir.path().join("wal_backup.wal");
+        let blocker = dir.path().join("wal_blocker");
         std::fs::copy(&wal_path, &backup).unwrap();
         std::fs::remove_file(&wal_path).unwrap();
+        std::fs::write(&blocker, b"blocker").unwrap();
         std::fs::copy(&backup, &wal_path).unwrap();
         std::fs::remove_file(&backup).unwrap();
+        std::fs::remove_file(&blocker).unwrap();
     }
 
     engine.check(
@@ -152,10 +163,13 @@ fn run_coordinator_adversarial(seed: u64) {
     // Swap the baseline inode BEFORE coordinator starts — the first tick should detect it.
     {
         let backup = dir.path().join("baseline2_backup.db");
+        let blocker = dir.path().join("baseline2_blocker");
         std::fs::copy(&baseline_path2, &backup).unwrap();
         std::fs::remove_file(&baseline_path2).unwrap();
+        std::fs::write(&blocker, b"blocker").unwrap();
         std::fs::copy(&backup, &baseline_path2).unwrap();
         std::fs::remove_file(&backup).unwrap();
+        std::fs::remove_file(&blocker).unwrap();
     }
 
     let mut cfg = chaos_config(dir.path());
