@@ -1,0 +1,11 @@
+# cargo-audit configuration
+# See: https://github.com/rustsec/rustsec/tree/main/cargo-audit
+
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0097: rand 0.9.x unsoundness with custom logger using rand::rng().
+    # Only reachable via proptest (dev-dependency, test-only). proptest does not use
+    # rand::rng() with a custom logger. No patched proptest release available yet
+    # (proptest 1.11.0 pins rand 0.9.x). Remove when proptest upgrades to rand 0.10.x.
+    "RUSTSEC-2026-0097",
+]
