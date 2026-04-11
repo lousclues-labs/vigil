@@ -319,14 +319,14 @@ impl DetectionWal {
 
     /// Mark the audit-done flag on the entry at `offset`.
     ///
-    /// See [`mark_flag`](Self::mark_flag) for concurrency constraints.
+    /// See `mark_flag` for concurrency constraints.
     pub fn mark_audit_done(&self, offset: u64) -> Result<()> {
         self.mark_flag(offset, FLAG_AUDIT_DONE)
     }
 
     /// Mark the sink-done flag on the entry at `offset`.
     ///
-    /// See [`mark_flag`](Self::mark_flag) for concurrency constraints.
+    /// See `mark_flag` for concurrency constraints.
     pub fn mark_sink_done(&self, offset: u64) -> Result<()> {
         self.mark_flag(offset, FLAG_SINK_DONE)
     }

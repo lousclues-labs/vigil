@@ -172,6 +172,7 @@ Did monitoring stop?
 - set `detection_wal_persistent = true` on systems where detection loss across reboots is unacceptable
 - monitor `detections_wal_audit_lag` and `detections_wal_sink_lag` gauges for consumption backlog
 - monitor `detections_wal_full` counter for capacity issues
+- run `CHAOS_TIER=B cargo test --test chaos` before deploying upgrades to verify resilience under compound stress
 
 ---
 
@@ -190,6 +191,7 @@ Version upgrades may change the baseline schema or HMAC field coverage.
 | watchdog kills daemon during coordinator tick | slow DB operations under I/O pressure exceed watchdog interval | eliminated since v0.27.1 — heartbeats interleaved within `tick()` sub-methods |
 | detection lost during daemon crash | detections written to alert channel lost if daemon exits before AlertDispatcher processes them | eliminated since v0.28.0 — Detection WAL ensures crash-safe persistence; AuditWriter replays uncommitted entries on restart |
 | audit DB blocked delays alert delivery | single-threaded AlertDispatcher blocks on audit DB write, delaying sink dispatch | eliminated since v0.28.0 — WAL decouples audit persistence (AuditWriter) from alert dispatch (SinkRunner); they run as independent threads |
+| compound environmental faults (fs races + DB flapping + clock jitter + config reload + concurrent load) | untested prior to v0.29.0 | validated since v0.29.0 — chaos engineering suite exercises 8 compound-fault scenarios with 13 machine-checked invariants across all subsystems |
 
 Startup diagnostics (baseline DB path, size, readability, HMAC status) are logged at `info` level before the health check runs. Use `RUST_LOG=debug` for maximum visibility.
 

@@ -153,6 +153,19 @@ tests/
 |-- alert_dispatcher_tests.rs
 |-- audit_chain_tests.rs
 |-- baseline_json_tests.rs
+|-- chaos.rs                     # chaos engineering entry point
+|-- chaos/                       # chaos test suite (~2,800 lines)
+|   |-- chaos_common.rs
+|   |-- harness.rs
+|   `-- scenarios/
+|       |-- wal_concurrency.rs
+|       |-- pipeline_recovery.rs
+|       |-- coordinator_adversarial_tick.rs
+|       |-- worker_pool_chaos.rs
+|       |-- config_reload_storm.rs
+|       |-- sink_determinism.rs
+|       |-- clock_warfare.rs
+|       `-- coordinated_attack.rs
 |-- daemon_smoke_tests.rs
 |-- exclusion_filter_tests.rs
 |-- filter_self_paths_tests.rs
@@ -190,6 +203,14 @@ Run specific integration files:
 cargo test --test audit_chain_tests
 cargo test --test hmac_chain_tamper_tests
 cargo test --test snapshot_diff_tests
+```
+
+Run chaos engineering suite:
+
+```bash
+cargo test --test chaos                          # default tier (Tier A)
+CHAOS_SEED=12345 cargo test --test chaos         # specific seed
+CHAOS_TIER=B cargo test --test chaos             # nightly tier (10 seeds)
 ```
 
 ---
