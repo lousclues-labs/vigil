@@ -163,6 +163,7 @@ It does not:
 | detection loss during daemon crash | Detection WAL provides crash-safe buffering; AuditWriter replays on restart with deduplication |
 | WAL entry tampering | per-entry HMAC-SHA256 when HMAC signing enabled; entries with invalid HMAC are skipped |
 | WAL file replacement | coordinator periodic TOCTOU check on WAL inode/device; Degraded state on replacement |
+| WAL gap scanning DoS | `MAX_GAP_BYTES` (64KB) bounds gap scanning; scanner stops after limit, preventing adversarial CPU exhaustion via large zeroed regions |
 
 ### Out of scope
 

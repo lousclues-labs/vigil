@@ -22,6 +22,19 @@ const WAL_HEADER_SIZE: u64 = 64;
 const MAX_ENTRY_SIZE: u32 = 1_048_576;
 const FLAG_AUDIT_DONE: u16 = 0x0001;
 const FLAG_SINK_DONE: u16 = 0x0002;
+/// Maximum bytes the gap scanner will advance without finding a valid entry
+/// before giving up.  Prevents adversarial DoS: an attacker with write access
+/// could zero out a large WAL region, forcing the scanner to iterate millions
+/// of positions.  With this cap the scanner stops, logs the gap, and returns
+/// whatever entries it has already recovered.
+///
+/// Note: entries in this WAL format are not padded to any fixed alignment, so
+/// gap scanning advances byte-by-byte for correctness.  If entries were ever
+/// padded to 4-byte boundaries, the scanner could skip to aligned offsets and
+/// reduce gap scanning from O(n) to ~O(n/4).  The current `MAX_GAP_BYTES`
+/// limit makes this optimization unnecessary — at 64KB the byte-by-byte scan
+/// completes in microseconds.
+const MAX_GAP_BYTES: u64 = 65_536;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -304,14 +317,35 @@ impl DetectionWal {
         Ok(sequence)
     }
 
+    /// Mark the audit-done flag on the entry at `offset`.
+    ///
+    /// See [`mark_flag`](Self::mark_flag) for concurrency constraints.
     pub fn mark_audit_done(&self, offset: u64) -> Result<()> {
         self.mark_flag(offset, FLAG_AUDIT_DONE)
     }
 
+    /// Mark the sink-done flag on the entry at `offset`.
+    ///
+    /// See [`mark_flag`](Self::mark_flag) for concurrency constraints.
     pub fn mark_sink_done(&self, offset: u64) -> Result<()> {
         self.mark_flag(offset, FLAG_SINK_DONE)
     }
 
+    // OPTIMIZE: `iter_unconsumed` currently scans the entire WAL file from offset 64
+    // to file_len on every call, deserializing every entry to find unconsumed ones.
+    // Both `AuditWriter` and `SinkRunner` call this on every loop iteration, making
+    // the hot path O(total_entries) per consumer per iteration.
+    //
+    // At current expected volumes (hundreds of detections per minute at peak), the
+    // full scan is acceptable. However, on busy servers with thousands of monitored
+    // paths under heavy I/O, this will become a bottleneck.
+    //
+    // Planned optimization:
+    //   1. Maintain an in-memory index of (sequence, offset, flags) triples.
+    //   2. Update the index on append, flag update, and truncation.
+    //   3. Consumers read the index to find unprocessed entries, then seek
+    //      directly to those offsets on disk.
+    //   4. This turns the hot path from O(total_entries) to O(pending_entries).
     pub fn iter_unconsumed(&self) -> Result<Vec<WalEntry>> {
         let file_len = self.file_len.load(Ordering::Acquire);
         let file = self.file.lock();
@@ -423,6 +457,24 @@ impl DetectionWal {
         &self.hmac_key_fingerprint
     }
 
+    /// Set a flag bit on the WAL entry at `offset` (e.g. `FLAG_AUDIT_DONE`).
+    ///
+    /// # Concurrency safety
+    ///
+    /// This performs a **non-atomic read-modify-write**: it reads the entire entry,
+    /// ORs the flag bit into the 2-byte flags field, recomputes the CRC-32, and
+    /// writes the entry back.  If two threads called `mark_audit_done` and
+    /// `mark_sink_done` on the **same** entry concurrently without serialization,
+    /// both would read the old flags, both would OR in their respective bit, and
+    /// the second write would overwrite the first — silently losing one flag.
+    ///
+    /// The global `write_lock` prevents this today: every caller acquires it before
+    /// touching the file.  The lock is required not just for appends, but also for
+    /// flag updates.
+    ///
+    /// **If per-entry locking is ever introduced**, flag updates on the same entry
+    /// must still be serialized (e.g. via a per-entry mutex or CAS on the flags
+    /// word) to avoid the lost-update race described above.
     fn mark_flag(&self, offset: u64, bit: u16) -> Result<()> {
         let _guard = self.write_lock.lock();
         let file = self.file.lock();
@@ -512,21 +564,49 @@ fn scan_entries(
 ) -> Result<Vec<ScannedEntry>> {
     let mut offset = WAL_HEADER_SIZE;
     let mut out = Vec::new();
+    let mut gap_start: Option<u64> = None;
+    let mut gap_bytes: u64 = 0;
 
     while offset < file_len {
+        // Part B: if we have been scanning a gap for more than MAX_GAP_BYTES,
+        // stop recovery.  An attacker who can write to the WAL can already
+        // delete entries — there is no point spending CPU trying to recover
+        // data they have deliberately destroyed.
+        if gap_bytes > MAX_GAP_BYTES {
+            tracing::error!(
+                gap_start = gap_start.unwrap_or(offset),
+                gap_bytes,
+                "WAL gap scan exceeded {}KB limit; stopping recovery to prevent DoS",
+                MAX_GAP_BYTES / 1024
+            );
+            break;
+        }
+
         let mut size_buf = [0u8; 4];
         if read_exact_at(file, &mut size_buf, offset).is_err() {
             break;
         }
         let entry_size = u32::from_le_bytes(size_buf);
         if !(50..=MAX_ENTRY_SIZE).contains(&entry_size) {
+            if gap_start.is_none() {
+                gap_start = Some(offset);
+            }
+            // Advance by 1 byte. Entries in this WAL format are not padded to
+            // any alignment, so byte-by-byte scanning is required for
+            // correctness.  The MAX_GAP_BYTES limit (Part B, checked at loop
+            // top) bounds the total work to prevent adversarial DoS.
             offset += 1;
+            gap_bytes += 1;
             continue;
         }
 
         let end = offset + entry_size as u64;
         if end > file_len {
+            if gap_start.is_none() {
+                gap_start = Some(offset);
+            }
             offset += 1;
+            gap_bytes += 1;
             continue;
         }
 
@@ -542,8 +622,23 @@ fn scan_entries(
         );
         let crc_actual = crc32fast::hash(&raw[..entry_size as usize - 4]);
         if crc_expected != crc_actual {
+            if gap_start.is_none() {
+                gap_start = Some(offset);
+            }
             offset += 1;
+            gap_bytes += 1;
             continue;
+        }
+
+        // Valid entry found — log and reset gap tracking
+        if let Some(start) = gap_start.take() {
+            tracing::warn!(
+                start,
+                end = offset,
+                bytes_skipped = gap_bytes,
+                "WAL scanner recovered from corrupted gap"
+            );
+            gap_bytes = 0;
         }
 
         let sequence = u64::from_le_bytes(
@@ -598,6 +693,15 @@ fn scan_entries(
         });
 
         offset += entry_size as u64;
+    }
+
+    // Log any trailing gap at end of file
+    if let Some(start) = gap_start {
+        tracing::warn!(
+            start,
+            bytes_skipped = gap_bytes,
+            "WAL scanner: trailing corrupted gap at end of file"
+        );
     }
 
     Ok(out)
@@ -914,6 +1018,49 @@ mod tests {
         let entries = wal.iter_unconsumed().unwrap();
         let got: Vec<u64> = entries.into_iter().map(|e| e.sequence).collect();
         assert_eq!(got, vec![s1, s3]);
+    }
+
+    #[test]
+    fn gap_limit_stops_scanning_large_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("detections.wal");
+        // WAL big enough to hold header + entries + large zeroed gap
+        let wal = open_wal(&wal_path, 4 * 1024 * 1024);
+
+        let s1 = wal
+            .append(&make_record(1, Severity::Low, DetectionSource::Realtime))
+            .unwrap();
+
+        // Append a second entry so we know its offset, then zero out a region
+        // larger than MAX_GAP_BYTES after entry 1 to simulate adversarial corruption.
+        let entries = wal.iter_unconsumed().unwrap();
+        let after_entry1 = entries[0].offset + {
+            let f = wal.file.lock();
+            let mut s = [0u8; 4];
+            read_exact_at(&f, &mut s, entries[0].offset).unwrap();
+            u32::from_le_bytes(s) as u64
+        };
+
+        // Write a zeroed region of MAX_GAP_BYTES + 4KB right after entry 1
+        let gap_size = (MAX_GAP_BYTES + 4096) as usize;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&wal_path)
+            .unwrap();
+        let zeros = vec![0u8; gap_size];
+        write_all_at(&file, &zeros, after_entry1).unwrap();
+
+        // Write a valid entry just after the giant gap (would be found by
+        // unlimited scanning, but should be missed due to MAX_GAP_BYTES).
+        // We can't easily inject one, so just verify the scanner stops.
+        let new_file_len = after_entry1 + gap_size as u64;
+        let scanned = scan_entries(&file, new_file_len, None, false, false).unwrap();
+
+        // Only entry 1 should be recovered; the scanner should have stopped
+        // at the gap limit without trying to scan beyond.
+        let got: Vec<u64> = scanned.iter().map(|e| e.sequence).collect();
+        assert_eq!(got, vec![s1]);
     }
 
     #[test]

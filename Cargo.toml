@@ -1,6 +1,6 @@
 [package]
 name = "vigil"
-version = "0.28.0"
+version = "0.28.1"
 edition = "2021"
 description = "Lightweight file integrity monitor for Linux desktops"
 # Vigil is dual-licensed: GPL-3.0-only for open-source use,

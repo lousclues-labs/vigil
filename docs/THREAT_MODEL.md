@@ -127,6 +127,7 @@ Mitigations in design:
 - WAL entries protected by per-entry HMAC-SHA256 when HMAC signing enabled; tampered entries are skipped
 - WAL file identity (inode/device) checked periodically by coordinator; replacement triggers Degraded state
 - WAL instance nonce stored in baseline DB; prevents cross-instance replay attacks on crash recovery
+- WAL gap scanning bounded by `MAX_GAP_BYTES` (64KB); prevents adversarial DoS via large zeroed/corrupted regions
 
 ---
 

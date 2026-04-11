@@ -107,7 +107,7 @@ If stale PID file remains, restart unit and validate status.
 | Failure | Behavior | Recovery |
 |---------|----------|----------|
 | WAL file full (`detection_wal_max_bytes` exceeded) | `append()` returns Err; worker falls back to `alert_tx` channel (pre-WAL path) | `detections_wal_full` metric increments; increase `detection_wal_max_bytes` or reduce WAL retention |
-| WAL file corrupted (partial write, disk error) | `iter_unconsumed()` gap-scans byte-by-byte using CRC32 validation; corrupted entries are skipped, valid entries recovered | automatic — no manual intervention needed |
+| WAL file corrupted (partial write, disk error) | `iter_unconsumed()` gap-scans byte-by-byte using CRC32 validation; corrupted entries are skipped, valid entries recovered. Gap scanning is bounded by `MAX_GAP_BYTES` (64KB) to prevent adversarial DoS — if the scanner exceeds this limit without finding a valid entry, it stops and returns entries recovered so far | automatic — no manual intervention needed |
 | WAL entry HMAC verification failure | entry is skipped by AuditWriter/SinkRunner; `detections_wal_tampered` metric increments | investigate potential tampering; entry is logged at error level |
 | Audit DB write failure during WAL consumption | AuditWriter increments `consecutive_failures`; reopens DB connection after 3 failures | automatic — if DB path is permanently broken, entries accumulate in WAL until recovery |
 | WAL instance nonce mismatch on recovery | AuditWriter `recover()` returns Err; prevents cross-instance replay | clear WAL file and restart daemon; indicates WAL file from a different daemon instance |

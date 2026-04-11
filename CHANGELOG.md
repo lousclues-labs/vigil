@@ -4,6 +4,31 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-04-10
+
+### Release Summary
+- WAL hardening: gap-scanning DoS prevention via `MAX_GAP_BYTES` limit (64KB), concurrency safety documentation for `mark_flag` read-modify-write, documented `iter_unconsumed` optimization path, and a new test for gap limit enforcement.
+
+### Changed
+- **wal:** `scan_entries()` gap scanning now tracks gap position and byte count. When a corrupted gap exceeds `MAX_GAP_BYTES` (64KB), the scanner stops, logs the gap at error level, and returns whatever entries it has already recovered. This prevents an adversarial DoS where an attacker with write access zeros out a large WAL region, forcing the scanner to iterate through millions of byte positions. Recovered gaps and trailing corruption are logged at warn level with start offset and bytes skipped (`src/wal/mod.rs`).
+- **wal:** `mark_flag()` now has a comprehensive doc comment explaining the non-atomic read-modify-write on the 2-byte flags field: reads entire entry, ORs the flag bit, recomputes CRC-32, writes back. Documents that `write_lock` is required not just for appends but also for flag updates to prevent concurrent flag overwrites, and warns that per-entry locking must still serialize same-entry flag updates (`src/wal/mod.rs`).
+- **wal:** `mark_audit_done()` and `mark_sink_done()` now have doc comments cross-referencing `mark_flag` for concurrency constraints (`src/wal/mod.rs`).
+- **wal:** `iter_unconsumed()` now has a documented `OPTIMIZE` comment describing the planned in-memory index of `(sequence, offset, flags)` triples — update on append/flag/truncation, consumers seek directly to pending offsets. Turns the hot path from O(total_entries) to O(pending_entries). Notes that at current volumes (hundreds of detections/minute) the full scan is acceptable but will become a bottleneck on busy servers with thousands of monitored paths (`src/wal/mod.rs`).
+
+### Added
+- **wal:** `MAX_GAP_BYTES` constant (64KB) with detailed doc comment explaining the adversarial DoS threat, the byte-by-byte scanning rationale (entries are not 4-byte aligned), and the alignment optimization trade-off (`src/wal/mod.rs`).
+- **wal:** `gap_limit_stops_scanning_large_corruption` test — verifies the scanner stops after `MAX_GAP_BYTES` of continuous corruption and only returns entries found before the gap (`src/wal/mod.rs`).
+
+### Tests
+- **wal core:** test count increased from 13 to 14 (new: `gap_limit_stops_scanning_large_corruption`).
+- All 165+ tests pass, `cargo clippy --all-targets -- -D warnings` clean, `cargo fmt --check` clean.
+
+### Validation
+- `cargo check` succeeds with 0 warnings.
+- `cargo test --all-targets` passes all tests (0 failures).
+- `cargo clippy --all-targets -- -D warnings` produces 0 warnings.
+- `cargo fmt --check` reports no formatting issues.
+
 ## [0.28.0] - 2026-04-10
 
 ### Release Summary

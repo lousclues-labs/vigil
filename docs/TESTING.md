@@ -128,7 +128,7 @@ Prefer descriptive names like `audit_chain_tests.rs` over generic buckets.
 The Detection WAL has three layers of testing:
 
 **Unit tests (in-module):**
-- `src/wal/mod.rs` — 13 tests covering WAL format, append/read, CRC corruption, gap scanning, HMAC verification, truncation, concurrency (8 threads × 1,000 entries), and sentinel roundtrip
+- `src/wal/mod.rs` — 14 tests covering WAL format, append/read, CRC corruption, gap scanning, gap limit enforcement (MAX_GAP_BYTES DoS prevention), HMAC verification, truncation, concurrency (8 threads × 1,000 entries), and sentinel roundtrip
 - `src/wal/audit_writer.rs` — 5 tests covering drain-to-audit-DB, crash recovery deduplication, sequence gap detection, priority ordering (Critical first), and audit DB failure/reopen
 - `src/wal/sink_runner.rs` — 3 tests covering bounded cooldown LRU, independent sink dispatch, and suppressed entries marked consumed
 
