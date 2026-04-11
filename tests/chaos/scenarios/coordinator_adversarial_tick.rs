@@ -130,7 +130,10 @@ fn run_coordinator_adversarial(seed: u64) {
 
     // --- Part 2: Coordinator with pre-swapped inode triggers Degraded ---
     engine.set_step(4);
-    artifacts.record(4, "Testing coordinator Degraded transition on pre-swapped baseline");
+    artifacts.record(
+        4,
+        "Testing coordinator Degraded transition on pre-swapped baseline",
+    );
 
     // Re-create fresh DBs for coordinator.
     let baseline_path2 = dir.path().join("baseline2.db");

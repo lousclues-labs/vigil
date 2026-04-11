@@ -49,12 +49,7 @@ fn run_sink_determinism(seed: u64) {
             DetectionSource::Realtime
         };
         let path = format!("/chaos/sink/{}", i);
-        records.push(make_record_at(
-            &path,
-            severity,
-            source,
-            1000000 + i as i64,
-        ));
+        records.push(make_record_at(&path, severity, source, 1000000 + i as i64));
     }
 
     // Append identical records to both WALs.
@@ -63,7 +58,10 @@ fn run_sink_determinism(seed: u64) {
         wal2.append(rec).unwrap();
     }
 
-    artifacts.record(0, format!("Appended {} identical records to both WALs", num_records));
+    artifacts.record(
+        0,
+        format!("Appended {} identical records to both WALs", num_records),
+    );
 
     // Create identical configs.
     let cfg1 = chaos_config(dir1.path());
@@ -113,16 +111,17 @@ fn run_sink_determinism(seed: u64) {
     let dispatched2 = metrics2.alerts_dispatched.load(Ordering::Relaxed);
     let suppressed1 = metrics1.alerts_suppressed.load(Ordering::Relaxed);
     let suppressed2 = metrics2.alerts_suppressed.load(Ordering::Relaxed);
-    let sink_dispatched1 = metrics1.detections_wal_sink_dispatched.load(Ordering::Relaxed);
-    let sink_dispatched2 = metrics2.detections_wal_sink_dispatched.load(Ordering::Relaxed);
+    let sink_dispatched1 = metrics1
+        .detections_wal_sink_dispatched
+        .load(Ordering::Relaxed);
+    let sink_dispatched2 = metrics2
+        .detections_wal_sink_dispatched
+        .load(Ordering::Relaxed);
 
     engine.check_ctx(
         InvariantId::I6SentinelExcludedFromDurability,
         dispatched1 == dispatched2,
-        format!(
-            "Dispatch counts differ: {} vs {}",
-            dispatched1, dispatched2
-        ),
+        format!("Dispatch counts differ: {} vs {}", dispatched1, dispatched2),
         vec![
             ("dispatched1", dispatched1.to_string()),
             ("dispatched2", dispatched2.to_string()),
@@ -132,10 +131,7 @@ fn run_sink_determinism(seed: u64) {
     engine.check_ctx(
         InvariantId::I6SentinelExcludedFromDurability,
         suppressed1 == suppressed2,
-        format!(
-            "Suppress counts differ: {} vs {}",
-            suppressed1, suppressed2
-        ),
+        format!("Suppress counts differ: {} vs {}", suppressed1, suppressed2),
         vec![
             ("suppressed1", suppressed1.to_string()),
             ("suppressed2", suppressed2.to_string()),
@@ -165,11 +161,7 @@ fn run_sink_determinism(seed: u64) {
         ),
     );
 
-    artifacts.set_wal_summary(
-        wal1.file_size(),
-        wal1.pending_count(),
-        num_records as u64,
-    );
+    artifacts.set_wal_summary(wal1.file_size(), wal1.pending_count(), num_records as u64);
     artifacts.write_on_failure(dir1.path(), &engine);
     engine.assert_ok();
 }

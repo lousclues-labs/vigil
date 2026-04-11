@@ -72,9 +72,7 @@ fn run_worker_pool_chaos(seed: u64) {
     let baseline_generation = Arc::new(AtomicU64::new(0));
 
     // Create WAL.
-    let wal = Arc::new(
-        DetectionWal::open(&wal_path, None, 64 * 1024 * 1024).unwrap(),
-    );
+    let wal = Arc::new(DetectionWal::open(&wal_path, None, 64 * 1024 * 1024).unwrap());
 
     // Create channels.
     let (event_tx, event_rx) = bounded::<FsEvent>(2048);

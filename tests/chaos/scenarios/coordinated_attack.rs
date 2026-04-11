@@ -16,8 +16,7 @@ use vigil::db::{self, DbFileIdentity};
 use vigil::metrics::Metrics;
 use vigil::types::{DaemonState, FsEvent, FsEventType, Severity};
 use vigil::wal::{
-    audit_writer::AuditWriter, sink_runner::SinkRunner, DetectionSource,
-    DetectionWal,
+    audit_writer::AuditWriter, sink_runner::SinkRunner, DetectionSource, DetectionWal,
 };
 use vigil::watch_index::WatchGroupIndex;
 use vigil::worker::{self, WorkerSpawnArgs};
@@ -57,9 +56,7 @@ fn run_coordinated_attack(seed: u64) {
     db::schema::create_audit_tables(&audit_conn_coord).unwrap();
 
     // WAL.
-    let wal = Arc::new(
-        DetectionWal::open(&wal_path, None, 64 * 1024 * 1024).unwrap(),
-    );
+    let wal = Arc::new(DetectionWal::open(&wal_path, None, 64 * 1024 * 1024).unwrap());
 
     // Config and shared state.
     let mut cfg = chaos_config(dir.path());
@@ -235,7 +232,9 @@ fn run_coordinated_attack(seed: u64) {
             );
             if wal.append(&rec).is_ok() {
                 // Account for direct WAL appends in the appends metric.
-                metrics.detections_wal_appends.fetch_add(1, Ordering::Relaxed);
+                metrics
+                    .detections_wal_appends
+                    .fetch_add(1, Ordering::Relaxed);
             }
             last_scan_inject = Instant::now();
             artifacts.record(step, "On-demand scan WAL append");
@@ -246,7 +245,10 @@ fn run_coordinated_attack(seed: u64) {
         std::thread::sleep(Duration::from_millis(5));
     }
 
-    artifacts.record(step, format!("Attack phase complete, {} events sent", total_events_sent));
+    artifacts.record(
+        step,
+        format!("Attack phase complete, {} events sent", total_events_sent),
+    );
 
     // Ensure DB is writable before shutdown.
     db_toggler.ensure_writable();
@@ -313,7 +315,9 @@ fn run_coordinated_attack(seed: u64) {
     // Metric consistency: wal_appends >= wal_audit_committed + wal_pending
     // (accounting for recovered entries that increment committed but not appends).
     let wal_appends = metrics.detections_wal_appends.load(Ordering::Relaxed);
-    let wal_committed = metrics.detections_wal_audit_committed.load(Ordering::Relaxed);
+    let wal_committed = metrics
+        .detections_wal_audit_committed
+        .load(Ordering::Relaxed);
     let wal_replayed = metrics.detections_wal_replayed.load(Ordering::Relaxed);
     let wal_pending = wal.pending_count();
     // Recovered entries add to committed without adding to appends, so adjust.

@@ -36,9 +36,7 @@ fn run_pipeline_recovery(seed: u64) {
     let baseline_path = dir.path().join("baseline.db");
 
     // Create WAL and populate with N detection records.
-    let wal = Arc::new(
-        DetectionWal::open(&wal_path, None, 64 * 1024 * 1024).unwrap(),
-    );
+    let wal = Arc::new(DetectionWal::open(&wal_path, None, 64 * 1024 * 1024).unwrap());
 
     let num_records = scale.records;
     let mut non_sentinel_count = 0u64;
@@ -57,10 +55,13 @@ fn run_pipeline_recovery(seed: u64) {
         wal.append(&rec).unwrap();
     }
 
-    artifacts.record(0, format!(
-        "Appended {} records ({} non-sentinel)",
-        num_records, non_sentinel_count
-    ));
+    artifacts.record(
+        0,
+        format!(
+            "Appended {} records ({} non-sentinel)",
+            num_records, non_sentinel_count
+        ),
+    );
 
     // Simulate crash-restart cycles.
     // We run AuditWriter, let it process some entries, stop it, then restart.
@@ -168,11 +169,9 @@ fn run_pipeline_recovery(seed: u64) {
     // I6: Sentinel entries are excluded from audit DB durability counts.
     // Sentinels should not appear in audit_log.
     let sentinel_in_audit: i64 = verify_conn
-        .query_row(
-            "SELECT COUNT(*) FROM audit_log WHERE path = ''",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM audit_log WHERE path = ''", [], |r| {
+            r.get(0)
+        })
         .unwrap_or(0);
     engine.check(
         InvariantId::I6SentinelExcludedFromDurability,
@@ -237,16 +236,8 @@ fn run_pipeline_recovery(seed: u64) {
         format!("WAL mode {:o}", mode),
     );
 
-    artifacts.set_wal_summary(
-        wal.file_size(),
-        wal.pending_count(),
-        num_records as u64,
-    );
-    artifacts.set_audit_summary(
-        audit_entry_count,
-        breaks.is_empty(),
-        breaks.len(),
-    );
+    artifacts.set_wal_summary(wal.file_size(), wal.pending_count(), num_records as u64);
+    artifacts.set_audit_summary(audit_entry_count, breaks.is_empty(), breaks.len());
     artifacts.write_on_failure(dir.path(), &engine);
     engine.assert_ok();
 }

@@ -37,9 +37,7 @@ impl ChaosRng {
     }
 
     pub fn next_u64(&mut self) -> u64 {
-        let result = (self.s[1].wrapping_mul(5))
-            .rotate_left(7)
-            .wrapping_mul(9);
+        let result = (self.s[1].wrapping_mul(5)).rotate_left(7).wrapping_mul(9);
         let t = self.s[1] << 17;
         self.s[2] ^= self.s[0];
         self.s[3] ^= self.s[1];
@@ -118,7 +116,10 @@ pub enum FaultAction {
     /// Force a WAL recovery cycle.
     ForceRecovery,
     /// Simulate a crash at a specific failpoint.
-    CrashAt { failpoint: CrashFailpoint, iteration: u32 },
+    CrashAt {
+        failpoint: CrashFailpoint,
+        iteration: u32,
+    },
     /// Inject slow-path processing.
     SlowPath { delay_ms: u64 },
     /// Trigger config reload.
@@ -129,14 +130,27 @@ pub enum FaultAction {
 
 #[derive(Debug, Clone)]
 pub enum FsMutation {
-    Create { content: Vec<u8> },
-    Modify { content: Vec<u8> },
+    Create {
+        content: Vec<u8>,
+    },
+    Modify {
+        content: Vec<u8>,
+    },
     Delete,
-    Rename { new_name: String },
-    Chmod { mode: u32 },
-    SymlinkReplace { target: PathBuf },
+    Rename {
+        new_name: String,
+    },
+    Chmod {
+        mode: u32,
+    },
+    SymlinkReplace {
+        target: PathBuf,
+    },
     InodeReuse,
-    PartialWrite { content: Vec<u8>, write_bytes: usize },
+    PartialWrite {
+        content: Vec<u8>,
+        write_bytes: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -424,12 +438,7 @@ impl InvariantEngine {
     }
 
     /// Record a check — if condition is false, record failure.
-    pub fn check(
-        &mut self,
-        id: InvariantId,
-        condition: bool,
-        message: impl Into<String>,
-    ) {
+    pub fn check(&mut self, id: InvariantId, condition: bool, message: impl Into<String>) {
         if !condition {
             self.failures.push(InvariantFailure {
                 id,
@@ -449,10 +458,7 @@ impl InvariantEngine {
         ctx: Vec<(&str, String)>,
     ) {
         if !condition {
-            let context = ctx
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect();
+            let context = ctx.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
             self.failures.push(InvariantFailure {
                 id,
                 step: self.current_step,
@@ -620,20 +626,12 @@ impl ArtifactWriter {
     }
 
     /// Write artifact to a file if there are failures.
-    pub fn write_on_failure(
-        &self,
-        dir: &Path,
-        invariant_engine: &InvariantEngine,
-    ) {
+    pub fn write_on_failure(&self, dir: &Path, invariant_engine: &InvariantEngine) {
         if !invariant_engine.has_failures() {
             return;
         }
         let report = self.to_report(invariant_engine);
-        let fname = format!(
-            "chaos_{}_{}.txt",
-            self.scenario,
-            self.seed
-        );
+        let fname = format!("chaos_{}_{}.txt", self.scenario, self.seed);
         let path = dir.join(fname);
         fs::write(&path, &report).ok();
         eprintln!("Artifact written to: {}", path.display());

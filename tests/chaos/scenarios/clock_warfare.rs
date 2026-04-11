@@ -37,9 +37,7 @@ fn run_clock_warfare(seed: u64) {
     // --- Part 1: WAL under clock anomalies (injected clock) ---
 
     let clock = InjectedClock::new();
-    let wal = Arc::new(
-        DetectionWal::open(&wal_path, None, 64 * 1024 * 1024).unwrap(),
-    );
+    let wal = Arc::new(DetectionWal::open(&wal_path, None, 64 * 1024 * 1024).unwrap());
 
     // Append records with various clock scenarios.
     let scenarios: Vec<(&str, ClockFault)> = vec![
@@ -79,7 +77,10 @@ fn run_clock_warfare(seed: u64) {
 
     clock.reset();
 
-    artifacts.record(scenarios.len() + 1, format!("Appended {} records with clock faults", timestamps.len()));
+    artifacts.record(
+        scenarios.len() + 1,
+        format!("Appended {} records with clock faults", timestamps.len()),
+    );
 
     // Under injected clock mode, check timestamp non-decreasing (within one boot epoch).
     engine.set_step(scenarios.len() + 2);
@@ -107,14 +108,20 @@ fn run_clock_warfare(seed: u64) {
         engine.check(
             InvariantId::I1UniqueMonotonicSeq,
             w[1] > w[0],
-            format!("Non-monotonic seq after clock warfare: {} >= {}", w[0], w[1]),
+            format!(
+                "Non-monotonic seq after clock warfare: {} >= {}",
+                w[0], w[1]
+            ),
         );
     }
 
     // --- Part 2: Coordinator clock anomaly detection ---
 
     engine.set_step(scenarios.len() + 3);
-    artifacts.record(scenarios.len() + 3, "Testing coordinator clock anomaly detection");
+    artifacts.record(
+        scenarios.len() + 3,
+        "Testing coordinator clock anomaly detection",
+    );
 
     let baseline_path = dir.path().join("baseline.db");
     let audit_path = dir.path().join("audit.db");
@@ -179,7 +186,10 @@ fn run_clock_warfare(seed: u64) {
     // --- Part 3: Debounce eventually releases queued events ---
 
     engine.set_step(scenarios.len() + 4);
-    artifacts.record(scenarios.len() + 4, "Verifying debounce release under clock jitter");
+    artifacts.record(
+        scenarios.len() + 4,
+        "Verifying debounce release under clock jitter",
+    );
 
     // Under heavy jitter, debounce timers should still eventually fire.
     // We test this by creating an EventFilter and verifying drain_pending works.

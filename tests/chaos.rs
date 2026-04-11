@@ -10,20 +10,19 @@ mod chaos_common;
 #[path = "chaos/harness.rs"]
 mod harness;
 
-#[path = "chaos/scenarios/wal_concurrency.rs"]
-mod wal_concurrency;
-#[path = "chaos/scenarios/pipeline_recovery.rs"]
-mod pipeline_recovery;
-#[path = "chaos/scenarios/coordinator_adversarial_tick.rs"]
-mod coordinator_adversarial_tick;
-#[path = "chaos/scenarios/worker_pool_chaos.rs"]
-mod worker_pool_chaos;
-#[path = "chaos/scenarios/config_reload_storm.rs"]
-mod config_reload_storm;
-#[path = "chaos/scenarios/sink_determinism.rs"]
-mod sink_determinism;
 #[path = "chaos/scenarios/clock_warfare.rs"]
 mod clock_warfare;
+#[path = "chaos/scenarios/config_reload_storm.rs"]
+mod config_reload_storm;
 #[path = "chaos/scenarios/coordinated_attack.rs"]
 mod coordinated_attack;
-
+#[path = "chaos/scenarios/coordinator_adversarial_tick.rs"]
+mod coordinator_adversarial_tick;
+#[path = "chaos/scenarios/pipeline_recovery.rs"]
+mod pipeline_recovery;
+#[path = "chaos/scenarios/sink_determinism.rs"]
+mod sink_determinism;
+#[path = "chaos/scenarios/wal_concurrency.rs"]
+mod wal_concurrency;
+#[path = "chaos/scenarios/worker_pool_chaos.rs"]
+mod worker_pool_chaos;
