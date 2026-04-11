@@ -4,6 +4,25 @@ All notable changes to Vigil will be documented in this file.
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-04-11
+
+### Release Summary
+- CI stabilization for the chaos engineering test suite: fixes inode-reuse flakiness on container/overlay filesystems that caused `coordinator_adversarial_tick` to fail in GitHub Actions, and applies `cargo fmt` formatting corrections to satisfy CI's rustfmt version.
+
+### Fixed
+- **chaos/coordinator_adversarial_tick:** inode swap test failed on CI container filesystems (overlayfs, Docker overlay2) where `delete → create` reuses the same inode number. `DbFileIdentity::is_replaced()` returned `false` because the new file received the same inode as the deleted one. Fix: after deleting the original file, a "blocker" file is created to occupy the freed inode slot before the target file is recreated, guaranteeing a different inode. Applied to all four swap locations: baseline DB, audit DB, WAL file, and the coordinator pre-swap test (`tests/chaos/scenarios/coordinator_adversarial_tick.rs`).
+
+### Changed
+- **chaos:** applied `cargo fmt` formatting to all chaos test files to match CI's rustfmt edition. Affected files: `tests/chaos.rs`, `tests/chaos/harness.rs`, and all 8 scenario files under `tests/chaos/scenarios/`. Module declarations in `tests/chaos.rs` reordered alphabetically by rustfmt (`tests/chaos.rs`, `tests/chaos/harness.rs`, `tests/chaos/scenarios/*.rs`).
+
+### Validation
+- `cargo fmt --all --check` passes.
+- `cargo clippy --all-targets -- -D warnings` produces 0 errors and 0 warnings.
+- `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features` succeeds.
+- `cargo test --all-targets` passes all 209 tests (0 failures).
+- `CHAOS_SEED=42`, `CHAOS_SEED=12345`, `CHAOS_SEED=99999` all pass at Tier A.
+- Coordinator adversarial tick test verified with single-inode-number pressure (blocker file pattern).
+
 ## [0.29.0] - 2026-04-10
 
 ### Release Summary
