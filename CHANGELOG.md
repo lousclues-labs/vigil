@@ -1,8 +1,13 @@
 # Changelog
 
-All notable changes to Vigil will be documented in this file.
+All notable changes to VigilBaseline will be documented in this file.
 
 ## [Unreleased]
+
+## [0.29.2] - 2026-04-11
+
+### Changed
+- License and project metadata update.
 
 ## [0.29.1] - 2026-04-11
 

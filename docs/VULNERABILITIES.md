@@ -1,8 +1,8 @@
 # Remediated Vulnerabilities
 
-This document lists all security vulnerabilities identified and fixed in Vigil, organized by tracking ID. Each entry includes the severity, the release that shipped the fix, and a description of the issue and remediation.
+This document lists all security vulnerabilities identified and fixed in VigilBaseline, organized by tracking ID. Each entry includes the severity, the release that shipped the fix, and a description of the issue and remediation.
 
-Use this as a reference when assessing Vigil's security posture or auditing specific fixes.
+Use this as a reference when assessing VigilBaseline's security posture or auditing specific fixes.
 
 ---
 
@@ -53,8 +53,8 @@ Use this as a reference when assessing Vigil's security posture or auditing spec
 | VIGIL-VULN-030 | High | 0.23.0 | Bind mount over monitored directory evades fanotify detection |
 | VIGIL-VULN-031 | High | 0.23.0 | fanotify kernel queue overflow (FAN_Q_OVERFLOW) silently ignored |
 | VIGIL-VULN-032 | High | 0.23.0 | Baseline HMAC only covers 5 of 13 security-relevant fields |
-| VIGIL-VULN-033 | Medium | 0.23.0 | Vigil's own binary not in self-monitoring watch group |
-| VIGIL-VULN-034 | Medium | 0.23.0 | sd_notify socket spoofable — systemd kept happy while Vigil frozen |
+| VIGIL-VULN-033 | Medium | 0.23.0 | VigilBaseline's own binary not in self-monitoring watch group |
+| VIGIL-VULN-034 | Medium | 0.23.0 | sd_notify socket spoofable — systemd kept happy while VigilBaseline frozen |
 | VIGIL-VULN-035 | Low | 0.23.0 | Process attribution via /proc/[pid]/exe raceable (PID recycling) |
 | VIGIL-VULN-036 | Medium | 0.23.0 | Negative clock jump not detected — enables clock manipulation replay |
 | VIGIL-VULN-037 | Medium | 0.23.0 | Scanner follows symlinks without recording resolution chain |
@@ -80,7 +80,7 @@ Use this as a reference when assessing Vigil's security posture or auditing spec
 
 **Fixed in:** 0.21.0
 
-Vigil did not monitor its own config file (`/etc/vigil/vigil.toml`) or HMAC key file (`/etc/vigil/hmac.key`). An attacker who modified either file would not trigger an alert.
+VigilBaseline did not monitor its own config file (`/etc/vigil/vigil.toml`) or HMAC key file (`/etc/vigil/hmac.key`). An attacker who modified either file would not trigger an alert.
 
 **Remediation:** Default config now includes a `vigil_self` watch group at `Critical` severity covering both files. `validate_config_deep()` warns if no watch group covers the config file path. Real-time events on these files log at `tracing::error!` for immediate visibility.
 
@@ -172,7 +172,7 @@ The event channel capacity was hardcoded to 2048, which was not tunable for high
 
 The `/run/*` system exclusion was a blanket pattern that excluded all of `/run/`. Attackers could persist via transient systemd units in `/run/systemd/transient/` without detection.
 
-**Remediation:** Replaced with targeted exclusions: `/run/user/*`, `/run/lock/*`, `/run/utmp`. Vigil's own runtime directory (`/run/vigil/`) is excluded via the self-paths mechanism.
+**Remediation:** Replaced with targeted exclusions: `/run/user/*`, `/run/lock/*`, `/run/utmp`. VigilBaseline's own runtime directory (`/run/vigil/`) is excluded via the self-paths mechanism.
 
 ---
 
@@ -182,7 +182,7 @@ The `/run/*` system exclusion was a blanket pattern that excluded all of `/run/`
 
 If the baseline was previously initialized but later found empty (e.g., truncated by an attacker), the daemon would silently auto-reinitialize it. This allowed an attacker to clear the baseline and have it rebuilt from potentially compromised files.
 
-**Remediation:** A `baseline_initialized` flag is set in `config_state` after the first successful initialization. If the baseline is later found empty but was previously initialized, Vigil refuses to auto-reinitialize and returns an error with a desktop notification.
+**Remediation:** A `baseline_initialized` flag is set in `config_state` after the first successful initialization. If the baseline is later found empty but was previously initialized, VigilBaseline refuses to auto-reinitialize and returns an error with a desktop notification.
 
 ---
 
@@ -350,7 +350,7 @@ The database directory was created via `create_dir_all` without verifying owners
 
 **Fixed in:** 0.23.0
 
-The `VIGIL_CONFIG` environment variable was unconditionally trusted for config path resolution. An attacker who could set environment variables (e.g., via systemd override, `/proc/pid/environ` manipulation, or PAM modules) could redirect Vigil to a weakened configuration file.
+The `VIGIL_CONFIG` environment variable was unconditionally trusted for config path resolution. An attacker who could set environment variables (e.g., via systemd override, `/proc/pid/environ` manipulation, or PAM modules) could redirect VigilBaseline to a weakened configuration file.
 
 **Remediation:** `VIGIL_CONFIG` is only unrestricted in test/debug builds (`#[cfg(any(test, debug_assertions))]`). In release builds, the target file must be owned by root (uid 0) with mode ≤ 0644. Applied consistently across `config_search_paths()`, `config_file_content()`, and `config_search_paths_for_hash()`.
 
@@ -380,7 +380,7 @@ fanotify with `FAN_MARK_MOUNT` monitors a specific mount. An attacker who bind-m
 
 **Fixed in:** 0.23.0
 
-When the kernel's fanotify event queue overflowed, the `FAN_Q_OVERFLOW` flag was set on events but never checked. Vigil silently missed an unknown number of filesystem events, creating a detection gap an attacker could exploit by generating high I/O to force overflow.
+When the kernel's fanotify event queue overflowed, the `FAN_Q_OVERFLOW` flag was set on events but never checked. VigilBaseline silently missed an unknown number of filesystem events, creating a detection gap an attacker could exploit by generating high I/O to force overflow.
 
 **Remediation:** Before the `event.fd >= 0` check, the event loop now checks for `FAN_Q_OVERFLOW` (mask `0x4000`). Overflow events are logged at error level, increment the new `kernel_queue_overflows` metric counter, and continue without attempting fd operations.
 
@@ -396,11 +396,11 @@ When the kernel's fanotify event queue overflowed, the `FAN_Q_OVERFLOW` flag was
 
 ---
 
-### VIGIL-VULN-033 — Vigil binary not in self-monitoring watch group (Medium)
+### VIGIL-VULN-033 — VigilBaseline binary not in self-monitoring watch group (Medium)
 
 **Fixed in:** 0.23.0
 
-The `vigil_self` watch group only covered config and HMAC key files. The Vigil binaries themselves (`/usr/bin/vigil`, `/usr/bin/vigild`) were not monitored. An attacker who replaced the binary would not trigger an alert.
+The `vigil_self` watch group only covered config and HMAC key files. The VigilBaseline binaries themselves (`/usr/bin/vigil`, `/usr/bin/vigild`) were not monitored. An attacker who replaced the binary would not trigger an alert.
 
 **Remediation:** `/usr/bin/vigil` and `/usr/bin/vigild` are added to the default `vigil_self` watch group. On startup, the BLAKE3 hash of `/proc/self/exe` is computed, logged at info level, and stored in `config_state` key `binary_hash`.
 
@@ -410,7 +410,7 @@ The `vigil_self` watch group only covered config and HMAC key files. The Vigil b
 
 **Fixed in:** 0.23.0
 
-The systemd unit file did not set `NotifyAccess=main`. By default, systemd may accept `sd_notify` messages from any process in the service's cgroup. An attacker could send fake `READY=1` and `WATCHDOG=1` messages to keep systemd satisfied while the actual Vigil process is frozen or killed.
+The systemd unit file did not set `NotifyAccess=main`. By default, systemd may accept `sd_notify` messages from any process in the service's cgroup. An attacker could send fake `READY=1` and `WATCHDOG=1` messages to keep systemd satisfied while the actual VigilBaseline process is frozen or killed.
 
 **Remediation:** Added `NotifyAccess=main` to restrict sd_notify to the main process PID only. Changed `ProtectHome=read-only` to `ProtectHome=true` and removed `/var/log/vigil` from `ReadWritePaths`.
 
@@ -452,7 +452,7 @@ When the scanner encountered a symlink pointing to a regular file, it followed t
 
 Only the baseline DB had inode/device identity checks. The coordinator opened `audit.db` by path on housekeeping ticks, while the alert dispatcher could continue writing to an older connection after replacement. An attacker could atomically replace `audit.db` and make operator-facing reads use the attacker-controlled file.
 
-**Remediation:** Vigil now records `audit.db` inode/device identity at startup and verifies it on coordinator ticks alongside baseline identity. If either DB identity changes, Vigil enters degraded state and refuses housekeeping operations that rely on replaced storage.
+**Remediation:** VigilBaseline now records `audit.db` inode/device identity at startup and verifies it on coordinator ticks alongside baseline identity. If either DB identity changes, VigilBaseline enters degraded state and refuses housekeeping operations that rely on replaced storage.
 
 ---
 
@@ -482,7 +482,7 @@ Periodic WAL checkpoints opened baseline/audit DB by path inside coordinator hou
 
 Multiple components loaded `/etc/vigil/hmac.key` at different times. A root attacker replacing the key could poison future HMAC calculations and verification flows after startup.
 
-**Remediation:** Vigil now loads HMAC key material once at startup into zeroizing memory (`Zeroizing<Vec<u8>>`) and passes it to all runtime consumers (coordinator, baseline writer, alert dispatcher, control socket). Runtime code paths no longer re-read HMAC key from disk.
+**Remediation:** VigilBaseline now loads HMAC key material once at startup into zeroizing memory (`Zeroizing<Vec<u8>>`) and passes it to all runtime consumers (coordinator, baseline writer, alert dispatcher, control socket). Runtime code paths no longer re-read HMAC key from disk.
 
 ---
 
@@ -560,9 +560,9 @@ Config reload verification opened baseline DB by path for `config_file_hmac` loo
 
 **Fixed in:** 0.24.0
 
-Vigil sent lifecycle/watchdog notifications without validating `NOTIFY_SOCKET`, allowing information leakage to attacker-controlled sockets via environment injection.
+VigilBaseline sent lifecycle/watchdog notifications without validating `NOTIFY_SOCKET`, allowing information leakage to attacker-controlled sockets via environment injection.
 
-**Remediation:** Vigil now validates `NOTIFY_SOCKET` before `sd_notify`, accepting only `/run/systemd/` paths and abstract sockets.
+**Remediation:** VigilBaseline now validates `NOTIFY_SOCKET` before `sd_notify`, accepting only `/run/systemd/` paths and abstract sockets.
 
 ---
 

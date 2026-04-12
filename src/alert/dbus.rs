@@ -61,7 +61,7 @@ impl AlertSink for DbusSink {
         };
 
         let title = format!(
-            "Vigil — {} {}",
+            "VigilBaseline — {} {}",
             alert.severity.to_string().to_uppercase(),
             alert.change_type,
         );
@@ -83,7 +83,7 @@ impl AlertSink for DbusSink {
         body.push_str("\nRun 'vigil audit show --last 5' for details.");
 
         let status = Command::new("notify-send")
-            .arg("--app-name=Vigil")
+            .arg("--app-name=VigilBaseline")
             .arg(format!("--urgency={}", urgency))
             .arg(&title)
             .arg(&body)

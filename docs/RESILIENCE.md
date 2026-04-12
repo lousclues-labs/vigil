@@ -1,6 +1,6 @@
 # Resilience
 
-Failure modes happen. Vigil is designed to fail open, fail loud, and keep forensic truth.
+Failure modes happen. VigilBaseline is designed to fail open, fail loud, and keep forensic truth.
 
 ---
 
@@ -22,7 +22,7 @@ This is Principle X (Fail Open, Fail Loud) and Principle XIII (Audit Trail Never
 
 | Failure | Behavior | Recovery |
 |---------|----------|----------|
-| fanotify init/mark fails (capability or kernel constraints) | Vigil logs warning and starts inotify fallback | run with needed capability or accept degraded mode |
+| fanotify init/mark fails (capability or kernel constraints) | VigilBaseline logs warning and starts inotify fallback | run with needed capability or accept degraded mode |
 
 Known blind spots in fallback (logged by daemon):
 - cannot watch some paths owned by other users
@@ -199,8 +199,8 @@ Startup diagnostics (baseline DB path, size, readability, HMAC status) are logge
 
 ## What Resilience Means Here
 
-Vigil does not promise perfect detection under total system compromise.
-Vigil promises explicit degradation signals and preserved audit truth under normal failure modes.
+VigilBaseline does not promise perfect detection under total system compromise.
+VigilBaseline promises explicit degradation signals and preserved audit truth under normal failure modes.
 
 That is the point.
 

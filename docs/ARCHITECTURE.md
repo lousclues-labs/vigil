@@ -1,6 +1,6 @@
 # Architecture
 
-Vigil has one job. Detect filesystem boundary changes and record them.
+VigilBaseline has one job. Detect filesystem boundary changes and record them.
 
 ---
 
@@ -8,7 +8,7 @@ Vigil has one job. Detect filesystem boundary changes and record them.
 
 ```
 +------------------------------------------------------------------------------------+
-|                                      VIGIL                                         |
+|                                      VIGILBASELINE                                |
 |                                                                                    |
 |  +-----------------------------+            +----------------------------------+   |
 |  | CLI process: vigil          |            | Daemon process: vigild           |   |
@@ -256,7 +256,7 @@ control socket request
 
 ## Comparison Model
 
-Vigil compares current state to baseline with a file-descriptor-first pipeline.
+VigilBaseline compares current state to baseline with a file-descriptor-first pipeline.
 
 ```
 open(path)
@@ -275,7 +275,7 @@ This model reduces TOCTOU exposure because metadata and hash come from the same 
 
 ## Database Schema
 
-Vigil uses two SQLite files in practice.
+VigilBaseline uses two SQLite files in practice.
 
 - baseline data in `baseline.db`
 - audit data in `audit.db`
@@ -464,4 +464,4 @@ If any step before `sd_notify(Ready)` fails, the daemon exits with the error pri
 
 ---
 
-Vigil architecture is intentionally small. You should be able to trace any alert from event source to audit row.
+VigilBaseline architecture is intentionally small. You should be able to trace any alert from event source to audit row.

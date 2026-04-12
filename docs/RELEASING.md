@@ -1,4 +1,4 @@
-# Releasing Vigil
+# Releasing VigilBaseline
 
 Release process for maintainers.
 Keep it boring, repeatable, and verifiable.
@@ -7,7 +7,7 @@ Keep it boring, repeatable, and verifiable.
 
 ## Version Format
 
-Vigil uses Semantic Versioning (`MAJOR.MINOR.PATCH`).
+VigilBaseline uses Semantic Versioning (`MAJOR.MINOR.PATCH`).
 
 Examples:
 - `0.18.0`

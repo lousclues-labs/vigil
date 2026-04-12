@@ -4,9 +4,9 @@
 
 ## Purpose
 
-Vigil is dual-licensed under GPL-3.0-only for open-source use and a [Commercial License](LICENSE-COMMERCIAL.md) for proprietary use. Every dependency must be compatible with both licenses. This document provides a framework for evaluating dependencies and maintaining license compliance.
+VigilBaseline is dual-licensed under GPL-3.0-only for open-source use and a [Commercial License](LICENSE-COMMERCIAL.md) for proprietary use. Every dependency must be compatible with both licenses. This document provides a framework for evaluating dependencies and maintaining license compliance.
 
-> **Note on commercial license compatibility:** The "Commercial License Compatible?" column in the tables below tracks whether each dependency can be redistributed under Vigil's Commercial License. See [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) for full terms.
+> **Note on commercial license compatibility:** The "Commercial License Compatible?" column in the tables below tracks whether each dependency can be redistributed under VigilBaseline's Commercial License. See [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) for full terms.
 
 ## License Compatibility Reference
 
@@ -37,7 +37,7 @@ Vigil is dual-licensed under GPL-3.0-only for open-source use and a [Commercial 
 
 1. **Permissive licenses (MIT, Apache-2.0, BSD, ISC, etc.) are always safe.** They impose minimal obligations and are compatible with both the GPL-3.0 and Commercial licenses.
 
-2. **Copyleft licenses (GPL, LGPL, AGPL) are GPL-compatible but block commercial licensing.** If a dependency is GPL-licensed, it cannot be redistributed under the Commercial License. Vigil avoids copyleft dependencies to maintain compatibility with both licenses.
+2. **Copyleft licenses (GPL, LGPL, AGPL) are GPL-compatible but block commercial licensing.** If a dependency is GPL-licensed, it cannot be redistributed under the Commercial License. VigilBaseline avoids copyleft dependencies to maintain compatibility with both licenses.
 
 3. **Weak copyleft (LGPL, MPL) requires care.** These can work with commercial licensing if the dependency is dynamically linked (LGPL) or if the copyleft is file-scoped (MPL). Since Rust links statically by default, LGPL dependencies are generally **not compatible** with the Commercial License without careful structuring.
 
@@ -96,7 +96,7 @@ Use the compatibility table above. If the license is:
 
 - **Green (MIT, Apache-2.0, BSD, etc.):** Proceed without concern.
 - **Yellow (LGPL, MPL):** Stop and evaluate. In most cases, LGPL is incompatible with the Commercial License due to Rust's static linking. Consult this document's compatibility table and consider alternatives.
-- **Red (GPL, AGPL, SSPL, proprietary):** Evaluate carefully. GPL dependencies are compatible with Vigil's GPL-3.0-only license but block distribution under the Commercial License. Find a permissive alternative if possible.
+- **Red (GPL, AGPL, SSPL, proprietary):** Evaluate carefully. GPL dependencies are compatible with VigilBaseline's GPL-3.0-only license but block distribution under the Commercial License. Find a permissive alternative if possible.
 
 ### 3. Check Transitive Dependencies
 
@@ -165,7 +165,7 @@ The following tools are useful for license auditing in Rust projects:
 
 ### cargo-deny Configuration
 
-Vigil uses `deny.toml` for automated CI enforcement of license policy. The current configuration:
+VigilBaseline uses `deny.toml` for automated CI enforcement of license policy. The current configuration:
 
 ```toml
 [licenses]
@@ -191,4 +191,4 @@ See [deny.toml](../deny.toml) for the complete policy configuration.
 
 ## Questions
 
-For questions about dependency licensing, open an issue in the [Vigil repository](https://github.com/loujr/vigil) or contact Louis Nelson Jr. ([@loujr](https://github.com/loujr)).
+For questions about dependency licensing, open an issue in the [VigilBaseline repository](https://github.com/loujr/vigil) or contact Louis Nelson Jr. ([@loujr](https://github.com/loujr)).

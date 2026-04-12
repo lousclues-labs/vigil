@@ -69,9 +69,9 @@ pub enum Command {
         format: Option<OutputFormat>,
     },
 
-    /// Update Vigil from a local git repository
+    /// Update VigilBaseline from a local git repository
     Update {
-        /// Path to the Vigil git repository (defaults to current directory)
+        /// Path to the VigilBaseline git repository (defaults to current directory)
         #[arg(long)]
         repo: Option<PathBuf>,
     },

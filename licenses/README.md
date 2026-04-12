@@ -1,6 +1,6 @@
 # Licensing Documents
 
-This directory is the legal map for Vigil. Every licensing, attribution, and compliance document lives here.
+This directory is the legal map for VigilBaseline. Every licensing, attribution, and compliance document lives here.
 
 | Document | Purpose |
 |----------|---------|
@@ -17,7 +17,7 @@ Root-level legal documents:
 |----------|---------|
 | [../LICENSE](../LICENSE) | GNU General Public License v3.0 (full text) |
 | [../NOTICE](../NOTICE) | Project identity, attribution, and license summary |
-| [../TRADEMARKS.md](../TRADEMARKS.md) | Trademark usage policy for "Vigil" and "lousclues" marks |
+| [../TRADEMARKS.md](../TRADEMARKS.md) | Trademark usage policy for "VigilBaseline" and "lousclues" marks |
 | [../GOVERNANCE.md](../GOVERNANCE.md) | Project governance, succession, and decision model |
 | [../THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) | Third-party notice policy and dependency hygiene |
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ── Vigil setup script ─────────────────────────────────────────────
-# One-command install, uninstall, and pre-flight check for Vigil.
+# ── VigilBaseline setup script ─────────────────────────────────────────────
+# One-command install, uninstall, and pre-flight check for VigilBaseline.
 #
 # Usage:
 #   ./setup.sh              # Full install
 #   ./setup.sh --check      # Dry run: show what would happen
-#   ./setup.sh --uninstall  # Remove Vigil (preserves data)
+#   ./setup.sh --uninstall  # Remove VigilBaseline (preserves data)
 #   ./setup.sh --uninstall --purge  # Full removal including data
 
 readonly VIGIL_BIN="/usr/local/bin/vigil"
@@ -130,7 +130,7 @@ do_uninstall() {
     fi
 
     echo ""
-    echo "✓ Vigil uninstalled."
+    echo "✓ VigilBaseline uninstalled."
 }
 
 # ── Check mode helpers ────────────────────────────────────────────
@@ -407,7 +407,7 @@ step_summary() {
     fi
 
     echo ""
-    echo "✓ Vigil installed and watching."
+    echo "✓ VigilBaseline installed and watching."
     echo "  Daemon:    vigild.service (running)"
     if [ -n "$timer_next" ]; then
         echo "  Timer:     vigil-scan.timer (active, next: ${timer_next})"
@@ -423,7 +423,7 @@ step_summary() {
 # ── Main ──────────────────────────────────────────────────────────
 
 main() {
-    echo "Vigil setup"
+    echo "VigilBaseline setup"
     echo "==========="
 
     case "$MODE" in

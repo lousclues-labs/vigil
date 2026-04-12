@@ -8,7 +8,7 @@ One maintainer. Explicit succession path.
 
 ## Current Governance
 
-Vigil is a single-maintainer project.
+VigilBaseline is a single-maintainer project.
 
 Project decisions, release authority, and project direction are currently maintained by:
 
@@ -86,11 +86,11 @@ When designated, this section includes:
 
 ## License Continuity (GPL Irrevocability)
 
-Vigil source code is GPL-3.0-only.
+VigilBaseline source code is GPL-3.0-only.
 Published GPL grants remain in force for released versions.
 No future governance change can revoke already-granted GPL rights for existing releases.
 
-Vigil is dual-licensed at the project level.
+VigilBaseline is dual-licensed at the project level.
 Commercial licensing terms are defined separately in `licenses/LICENSE-COMMERCIAL.md`.
 
 ---

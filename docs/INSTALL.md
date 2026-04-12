@@ -1,6 +1,6 @@
 # Installation
 
-Install Vigil from source on Linux.
+Install VigilBaseline from source on Linux.
 No container, no network service, no cloud account.
 
 ---
@@ -17,7 +17,7 @@ Optional but recommended:
 - systemd (daemon + scheduled scans)
 - `CAP_SYS_ADMIN` for fanotify backend
 
-Without `CAP_SYS_ADMIN`, Vigil falls back to inotify automatically.
+Without `CAP_SYS_ADMIN`, VigilBaseline falls back to inotify automatically.
 
 ---
 
@@ -178,7 +178,7 @@ Options:
 
 ### inotify fallback
 
-If fanotify is unavailable, Vigil logs the reason and falls back to inotify.
+If fanotify is unavailable, VigilBaseline logs the reason and falls back to inotify.
 This keeps monitoring available with reduced coverage.
 
 Verify backend in use:

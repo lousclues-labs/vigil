@@ -1,11 +1,11 @@
 # Threat Model
 
-Vigil is a filesystem integrity witness.
+VigilBaseline is a filesystem integrity witness.
 It detects structural changes. It does not interpret intent.
 
 ---
 
-## What Vigil Detects
+## What VigilBaseline Detects
 
 | Detection | Example |
 |-----------|---------|
@@ -24,14 +24,14 @@ How it does this:
 
 ---
 
-## What Vigil Does NOT Detect
+## What VigilBaseline Does NOT Detect
 
 | Not Detected | Why |
 |--------------|-----|
 | kernel rootkits that forge syscall output | user-space monitor depends on kernel truth |
-| memory-only process tampering | Vigil is file integrity, not process introspection |
+| memory-only process tampering | VigilBaseline is file integrity, not process introspection |
 | runtime behavior anomalies | no heuristics, no ML, no behavior scoring |
-| attacks outside watch scope | Vigil only sees configured paths |
+| attacks outside watch scope | VigilBaseline only sees configured paths |
 | physical tampering while host offline | outside runtime software boundary |
 
 ---
@@ -43,7 +43,7 @@ Assumed adversary capabilities:
 - may attempt to replace files atomically
 - may try to hide changes during package updates
 
-Not assumed as defendable by Vigil alone:
+Not assumed as defendable by VigilBaseline alone:
 - kernel-level compromise
 - full root control of host with binary/key replacement
 
@@ -133,13 +133,13 @@ Mitigations in design:
 
 ## Operational Reality
 
-Vigil is strongest when:
+VigilBaseline is strongest when:
 - watch groups are scoped to high-value paths
 - baseline is initialized on known-good system state
 - package hooks are installed
 - alert channels are monitored and audit log is retained
 
-Vigil is not a silver bullet.
+VigilBaseline is not a silver bullet.
 It is a high-signal boundary witness.
 
 *No heuristics. No guessing. Changed or unchanged.*

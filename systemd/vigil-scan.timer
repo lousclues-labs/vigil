@@ -1,5 +1,5 @@
 [Unit]
-Description=Vigil scheduled integrity scan
+Description=VigilBaseline scheduled integrity scan
 Documentation=man:vigil(1)
 
 [Timer]

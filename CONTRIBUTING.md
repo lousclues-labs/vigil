@@ -1,4 +1,4 @@
-# Contributing to Vigil
+# Contributing to VigilBaseline
 
 You want to help. Good.
 Read the principles first, then ship clean changes.
@@ -20,7 +20,7 @@ By submitting a contribution, you agree to:
 - [licenses/CONTRIBUTOR-LICENSE.md](licenses/CONTRIBUTOR-LICENSE.md)
 - [licenses/LICENSING.md](licenses/LICENSING.md)
 
-Trademark usage (the "Vigil" and "lousclues" names) is governed separately by [TRADEMARKS.md](TRADEMARKS.md).
+Trademark usage (the "VigilBaseline" and "lousclues" names) is governed separately by [TRADEMARKS.md](TRADEMARKS.md).
 
 This keeps source licensing, documentation licensing, and trademark rights explicit.
 
@@ -37,7 +37,7 @@ These are not decoration. They are contribution filters.
 | III. Determinism Over Heuristics | no ML/heuristic scoring logic |
 | IV. Structure Over Behavior | file-state facts, not behavior interpretation |
 | V. Alerts Must Be Actionable | clear path/severity/change-type in outputs |
-| VIII. Vigil Stands Alone | avoid unnecessary external coupling |
+| VIII. VigilBaseline Stands Alone | avoid unnecessary external coupling |
 | X. Fail Open, Fail Loud | explicit fallback and degradation signals |
 | XI. Complexity Is a Vulnerability | justify every dependency and feature |
 | XIII. Audit Trail Never Lies | suppression must not hide audit truth |
@@ -108,7 +108,7 @@ These are intentional non-goals.
 
 | Feature Request | Why Rejected |
 |-----------------|--------------|
-| GUI frontend | Vigil is CLI/systemd-first |
+| GUI frontend | VigilBaseline is CLI/systemd-first |
 | cloud integration/telemetry | violates Principle XIV |
 | behavioral analysis/ML scoring | violates Principles III and IV |
 | auto-remediation/quarantine | violates Principle I |
@@ -208,7 +208,7 @@ If behavior changes, add tests in same PR.
 
 ### Snapshot Tests
 
-Vigil uses [insta](https://insta.rs/) for snapshot testing of critical output formats.
+VigilBaseline uses [insta](https://insta.rs/) for snapshot testing of critical output formats.
 When a snapshot changes:
 
 ```bash
@@ -223,7 +223,7 @@ Review snapshot changes carefully. They indicate a change in alert, baseline exp
 
 ## AI Transparency
 
-Vigil is built with AI.
+VigilBaseline is built with AI.
 Contributions are reviewed with the same standards regardless of tooling: tests, lint, review, and clear reasoning.
 
 ---
@@ -236,4 +236,4 @@ Contributions are reviewed with the same standards regardless of tooling: tests,
 
 Be direct. Be respectful. Keep it technical.
 
-*Good contributions make Vigil quieter and more truthful.*
+*Good contributions make VigilBaseline quieter and more truthful.*

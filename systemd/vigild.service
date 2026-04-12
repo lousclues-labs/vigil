@@ -1,5 +1,5 @@
 [Unit]
-Description=Vigil — Lightweight File Integrity Monitor
+Description=VigilBaseline — Lightweight File Integrity Monitor
 Documentation=man:vigild(8)
 After=local-fs.target
 

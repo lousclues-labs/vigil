@@ -1,4 +1,4 @@
-NOTICE — Vigil
+NOTICE — VigilBaseline
 
 ================================================================================
 
@@ -22,7 +22,7 @@ individual.
 2. Project Information
 ================================================================================
 
-  Project Name:   Vigil
+  Project Name:   VigilBaseline
   Description:    Lightweight file integrity monitor for Linux desktops
   Repository:     https://github.com/loujr/vigil
   Brand Website:  https://lousclues.com
@@ -48,7 +48,7 @@ individual.
 4. Third-Party Attribution
 ================================================================================
 
-Vigil uses third-party open-source dependencies that are compiled and linked
+VigilBaseline uses third-party open-source dependencies that are compiled and linked
 via Cargo (Rust's package manager). These dependencies are not modified or
 vendored. Each dependency retains its original license.
 
@@ -66,7 +66,7 @@ For the full transitive dependency tree, run:
 5. Trademark Notice
 ================================================================================
 
-"Vigil" and "lousclues" are trademarks of Louis Nelson Jr. The GPL license
+"VigilBaseline" and "lousclues" are trademarks of Louis Nelson Jr. The GPL license
 grants rights to the source code but does not grant rights to use these
 trademarks. See TRADEMARKS.md for the full trademark usage policy.
 

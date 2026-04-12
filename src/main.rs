@@ -126,7 +126,7 @@ fn cmd_init(config_path: Option<&Path>, force: bool) -> vigil::Result<()> {
     let result = vigil::scanner::build_initial_baseline(&conn, &cfg)?;
     vigil::db::baseline_ops::set_config_state(&conn, "baseline_initialized", "true")?;
 
-    print_header("Vigil — Baseline Initialized");
+    print_header("VigilBaseline — Baseline Initialized");
 
     println!(
         "  Building baseline from {} watch groups...",
@@ -216,7 +216,7 @@ fn cmd_check(
         let _ = std::io::stderr().flush();
     }
 
-    print_header(&format!("Vigil — {} Integrity Check", mode_label));
+    print_header(&format!("VigilBaseline — {} Integrity Check", mode_label));
 
     println!("  Files checked   {}", format_count(result.total_checked));
     println!(
@@ -419,7 +419,7 @@ fn cmd_diff(config_path: Option<&Path>, file_path: &Path) -> vigil::Result<()> {
 
     match vigil::types::FileSnapshot::from_path(&canonical, &opts)? {
         vigil::types::SnapshotOrDeleted::Deleted => {
-            print_header(&format!("Vigil — Diff: {}", canonical.display()));
+            print_header(&format!("VigilBaseline — Diff: {}", canonical.display()));
             println!("  ✗ File has been deleted from the filesystem.");
             println!(
                 "    Last known hash: {}",
@@ -432,7 +432,7 @@ fn cmd_diff(config_path: Option<&Path>, file_path: &Path) -> vigil::Result<()> {
         }
         vigil::types::SnapshotOrDeleted::Snapshot(snapshot) => {
             let changes = snapshot.diff(&baseline);
-            print_header(&format!("Vigil — Diff: {}", canonical.display()));
+            print_header(&format!("VigilBaseline — Diff: {}", canonical.display()));
 
             if changes.is_empty() {
                 println!("  ● No changes. File matches baseline.");
@@ -553,7 +553,10 @@ fn cmd_check_live(config_path: Option<&Path>, full: bool) -> vigil::Result<()> {
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
 
-        print_header(&format!("Vigil — {} Integrity Check (live)", mode_label));
+        print_header(&format!(
+            "VigilBaseline — {} Integrity Check (live)",
+            mode_label
+        ));
 
         println!("  Files checked   {}", format_count(checked));
         println!("  Duration        {:.1}s", duration as f64 / 1000.0);
@@ -595,7 +598,7 @@ fn cmd_status(config_path: Option<&Path>, format: OutputFormat) -> vigil::Result
                 return Ok(());
             }
 
-            print_header("Vigil — Daemon Status (live)");
+            print_header("VigilBaseline — Daemon Status (live)");
 
             // ── Daemon ──
             println!("  Daemon");
@@ -798,7 +801,7 @@ fn cmd_status(config_path: Option<&Path>, format: OutputFormat) -> vigil::Result
         return Ok(());
     }
 
-    print_header("Vigil — Daemon Status");
+    print_header("VigilBaseline — Daemon Status");
 
     // ── Daemon ──
     println!("  Daemon");
@@ -868,7 +871,10 @@ fn cmd_doctor(config_path: Option<&Path>, format: OutputFormat) -> vigil::Result
     }
 
     println!();
-    println!("Vigil v{} — System Health Check", env!("CARGO_PKG_VERSION"));
+    println!(
+        "VigilBaseline v{} — System Health Check",
+        env!("CARGO_PKG_VERSION")
+    );
     println!("════════════════════════════════════");
 
     // ── Runtime ──
@@ -948,7 +954,7 @@ fn cmd_doctor(config_path: Option<&Path>, format: OutputFormat) -> vigil::Result
 
     if failures == 0 && warnings == 0 {
         println!(
-            "  {}/{} checks passed. Vigil is watching.",
+            "  {}/{} checks passed. VigilBaseline is watching.",
             ok_count,
             checks.len()
         );
@@ -1125,7 +1131,7 @@ fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
         "restart failed"
     };
 
-    print_header("Vigil — Update Complete");
+    print_header("VigilBaseline — Update Complete");
 
     println!("  ✓ {} → {}", current_version, new_version);
     println!("  Daemon:   {}", daemon_status);
@@ -1225,13 +1231,13 @@ fn cmd_audit(
 
             if filter_parts.is_empty() {
                 print_header(&format!(
-                    "Vigil — Audit Log ({} of {} entries)",
+                    "VigilBaseline — Audit Log ({} of {} entries)",
                     entries.len(),
                     total
                 ));
             } else {
                 print_header(&format!(
-                    "Vigil — Audit Log ({} match{})",
+                    "VigilBaseline — Audit Log ({} match{})",
                     entries.len(),
                     if entries.len() == 1 { "" } else { "es" }
                 ));
@@ -1330,7 +1336,10 @@ fn cmd_audit(
                 _ => &period,
             };
 
-            print_header(&format!("Vigil — Audit Statistics ({})", period_label));
+            print_header(&format!(
+                "VigilBaseline — Audit Statistics ({})",
+                period_label
+            ));
 
             let period_count = match since_ts {
                 Some(ts) => vigil::db::audit_ops::count_since(&conn, ts)?,
@@ -1386,7 +1395,7 @@ fn cmd_audit(
         AuditAction::Verify => {
             let (total, valid, breaks, missing) = vigil::db::audit_ops::verify_chain(&conn)?;
 
-            print_header("Vigil — Audit Chain Verification");
+            print_header("VigilBaselineBaseline — Audit Chain Verification");
 
             println!("  Total entries    {}", format_count(total));
             println!("  Valid links      {}", format_count(valid));
@@ -1726,8 +1735,8 @@ fn validate_vigil_repo(repo: &Path) -> vigil::Result<()> {
     let cargo_toml = repo.join("Cargo.toml");
     if !cargo_toml.exists() {
         return Err(vigil::VigilError::Config(format!(
-            "current directory is not a Vigil repository: {}\n\
-             hint: run from the Vigil source directory, or use: vigil update --repo /path/to/vigil",
+            "current directory is not a VigilBaseline repository: {}\n\
+             hint: run from the VigilBaseline source directory, or use: vigil update --repo /path/to/vigil",
             repo.display()
         )));
     }
@@ -1741,10 +1750,10 @@ fn validate_vigil_repo(repo: &Path) -> vigil::Result<()> {
         .and_then(|p| p.get("name"))
         .and_then(|n| n.as_str());
 
-    if package_name != Some("vigil") {
+    if package_name != Some("vigilbaseline") && package_name != Some("vigil") {
         return Err(vigil::VigilError::Config(format!(
-            "current directory is not a Vigil repository: {}\n\
-             hint: run from the Vigil source directory, or use: vigil update --repo /path/to/vigil",
+            "current directory is not a VigilBaseline repository: {}\n\
+             hint: run from the VigilBaseline source directory, or use: vigil update --repo /path/to/vigil",
             repo.display()
         )));
     }
@@ -1804,8 +1813,8 @@ fn discover_vigil_repo() -> vigil::Result<PathBuf> {
         .join("\n");
 
     Err(vigil::VigilError::Config(format!(
-        "could not locate Vigil source repository\n  checked:\n{}\n  \
-         hint: run from the Vigil source directory, or use: vigil update --repo /path/to/vigil",
+        "could not locate VigilBaseline source repository\n  checked:\n{}\n  \
+         hint: run from the VigilBaseline source directory, or use: vigil update --repo /path/to/vigil",
         checked
     )))
 }
@@ -2266,7 +2275,7 @@ mod tests {
             &cargo_toml,
             r#"
                 [package]
-                name = "vigil"
+                name = "vigilbaseline"
                 version = "0.0.1"
                 edition = "2021"
             "#,
@@ -2275,6 +2284,25 @@ mod tests {
 
         let result = validate_vigil_repo(dir.path());
         assert!(result.is_ok(), "expected valid vigil repository");
+    }
+
+    #[test]
+    fn validate_vigil_repo_accepts_legacy_package_name() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let cargo_toml = dir.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            r#"
+                [package]
+                name = "vigil"
+                version = "0.0.1"
+                edition = "2021"
+            "#,
+        )
+        .expect("write Cargo.toml");
+
+        let result = validate_vigil_repo(dir.path());
+        assert!(result.is_ok(), "expected legacy vigil name to be accepted");
     }
 
     #[test]

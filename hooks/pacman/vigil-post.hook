@@ -10,6 +10,6 @@ Target = etc/*
 Target = boot/*
 
 [Action]
-Description = Vigil: refreshing baseline...
+Description = VigilBaseline: refreshing baseline...
 When = PostTransaction
 Exec = /bin/sh -c '/usr/bin/vigil baseline refresh --quiet && /usr/bin/vigil maintenance exit --quiet'

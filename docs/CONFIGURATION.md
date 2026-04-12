@@ -1,12 +1,12 @@
 # Configuration
 
-Vigil configuration is TOML. Fields map directly to `src/config/mod.rs`.
+VigilBaseline configuration is TOML. Fields map directly to `src/config/mod.rs`.
 
 ---
 
 ## Load Order
 
-Vigil loads from lowest priority to highest priority.
+VigilBaseline loads from lowest priority to highest priority.
 
 | Priority | Source |
 |----------|--------|
@@ -15,7 +15,7 @@ Vigil loads from lowest priority to highest priority.
 | 3 | `$VIGIL_CONFIG` |
 | 4 | `--config <PATH>` |
 
-If no file exists, Vigil uses built-in defaults.
+If no file exists, VigilBaseline uses built-in defaults.
 
 ---
 
@@ -150,7 +150,7 @@ paths = [
 
 | Option | Type | Default | Notes |
 |--------|------|---------|-------|
-| `desktop_notifications` | bool | `true` | enables desktop notification sink (via `notify-send` with `--app-name=Vigil` and severity-based urgency) |
+| `desktop_notifications` | bool | `true` | enables desktop notification sink (via `notify-send` with `--app-name=VigilBaseline` and severity-based urgency) |
 | `syslog` | bool | `true` | enables journald/syslog sink |
 | `log_file` | path | `/var/log/vigil/alerts.json` | JSON alert sink path |
 | `webhook_url` | string | empty | reserved field |
@@ -227,7 +227,7 @@ paths = [
 
 ## Validation Rules
 
-Vigil rejects config when these rules fail.
+VigilBaseline rejects config when these rules fail.
 
 - no watch groups are defined
 - exclusion pattern is not a valid glob

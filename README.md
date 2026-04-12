@@ -1,4 +1,4 @@
-# Vigil
+# VigilBaseline
 
 [![CI](https://img.shields.io/badge/CI-GitHub_Actions-success)](.github/workflows/ci.yml)
 [![Security Audit](https://img.shields.io/badge/Security-Audit-success)](.github/workflows/scheduled.yml)
@@ -18,22 +18,22 @@ Most security tools want to be smart. They scan your files, apply heuristics,
 consult cloud databases, compute risk scores, and then tell you something
 is "potentially suspicious." You nod. You ignore it. You move on.
 
-Vigil doesn't do any of that. I built it specifically to not do any of that.
+VigilBaseline doesn't do any of that. I built it specifically to not do any of that.
 
-**We watch, we don't act.** Vigil compares hashes. Hashes match or they
+**We watch, we don't act.** VigilBaseline compares hashes. Hashes match or they
 don't. Permissions changed or they didn't. The inode is the same or it was
 replaced. There is no "maybe." There is no gradient.
 
 **We are silent by default.** A healthy system produces zero alerts. If
-Vigil is making noise during a normal day, either your system is compromised
+VigilBaseline is making noise during a normal day, either your system is compromised
 or your configuration is wrong. Fix the configuration first.
 
 **We stay local.** No telemetry. No update checks. No cloud lookups. No
-DNS queries. No outbound connections. Disconnect the network cable. Vigil
+DNS queries. No outbound connections. Disconnect the network cable. VigilBaseline
 works identically.
 
-**We don't quarantine. We don't execute. We don't remediate.** Vigil is a
-witness, not a guard. When something changes that shouldn't have, Vigil
+**We don't quarantine. We don't execute. We don't remediate.** VigilBaseline is a
+witness, not a guard. When something changes that shouldn't have, VigilBaseline
 tells you. Immediately, clearly, and only once. What you do about it is
 your decision.
 
@@ -45,7 +45,7 @@ what we're about.
 ## How It Gets Built
 
 I chose Rust because the compiler enforces the kind of promises security
-tools need to keep. I built Vigil with AI. I'm not going to pretend
+tools need to keep. I built VigilBaseline with AI. I'm not going to pretend
 otherwise, because pretending would violate the same principles this tool
 is built on.
 
@@ -134,7 +134,7 @@ vigil check --accept               # Show changes, then update baseline to curre
 vigil check --accept --path '/etc/*'  # Accept only changes matching a glob
 ```
 
-After package updates, `vigil check --accept` is the way to tell Vigil
+After package updates, `vigil check --accept` is the way to tell VigilBaseline
 "yes, I know these files changed, that's fine." The pacman/apt hooks in
 `hooks/` do this automatically.
 
@@ -173,7 +173,7 @@ vigil setup socket --disable       # Disable alert socket
 
 ## Configuration
 
-Vigil keeps its config in `/etc/vigil/vigil.toml` (system) or
+VigilBaseline keeps its config in `/etc/vigil/vigil.toml` (system) or
 `~/.config/vigil/vigil.toml` (user). Here's what matters:
 
 ```toml
@@ -189,7 +189,7 @@ hash_algorithm = "blake3"          # the only option that makes sense
 max_file_size = 2147483648         # 2 GB -- skip larger files
 
 [alerts]
-desktop_notifications = true       # D-Bus via notify-send (with --app-name=Vigil and urgency mapping)
+desktop_notifications = true       # D-Bus via notify-send (with --app-name=VigilBaseline and urgency mapping)
 cooldown_seconds = 300             # per-path alert cooldown (5 min)
 rate_limit = 10                    # max alerts per minute
 
@@ -225,7 +225,7 @@ See [Configuration](docs/CONFIGURATION.md) for the full reference.
 | [Configuration](docs/CONFIGURATION.md) | The config file explained |
 | [Architecture](docs/ARCHITECTURE.md) | How it's built |
 | [Security](docs/SECURITY.md) | Security model, dependency justification |
-| [Threat Model](docs/THREAT_MODEL.md) | What Vigil detects and what it doesn't |
+| [Threat Model](docs/THREAT_MODEL.md) | What VigilBaseline detects and what it doesn't |
 | [Testing](docs/TESTING.md) | Test suite, fuzz targets, coverage |
 | [Development](docs/DEVELOPMENT.md) | Dev setup, building, debugging |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | When things go wrong |
@@ -259,7 +259,7 @@ That's really it. SQLite is bundled. No system libraries required.
 
 Copyright (C) 2026 **Louis Nelson Jr.** -- a [lousclues](https://lousclues.com) project.
 
-Vigil is dual-licensed:
+VigilBaseline is dual-licensed:
 
 | Component | License | File |
 |-----------|---------|------|
@@ -267,16 +267,16 @@ Vigil is dual-licensed:
 | Documentation | Creative Commons Attribution 4.0 (CC BY 4.0) | [LICENSE-DOCS.md](licenses/LICENSE-DOCS.md) |
 | Third-Party Dependencies | MIT, Apache-2.0, and other permissive licenses | [THIRD-PARTY-LICENSES](licenses/THIRD-PARTY-LICENSES) |
 
-**For most users:** The GPL covers you completely. Use Vigil, monitor your files, run the daemon. No restrictions beyond the GPL.
+**For most users:** The GPL covers you completely. Use VigilBaseline, monitor your files, run the daemon. No restrictions beyond the GPL.
 
-**For proprietary/commercial use:** If you need to embed Vigil in closed-source products or redistribute without GPL obligations, a [commercial license](licenses/LICENSE-COMMERCIAL.md) is available. Contact [@loujr](https://github.com/loujr) for terms.
+**For proprietary/commercial use:** If you need to embed VigilBaseline in closed-source products or redistribute without GPL obligations, a [commercial license](licenses/LICENSE-COMMERCIAL.md) is available. Contact [@loujr](https://github.com/loujr) for terms.
 
 **For contributors:** By submitting a pull request, you agree to the [Contributor License Agreement](licenses/CONTRIBUTOR-LICENSE.md). You keep your copyright. You grant the project permission to use your contribution under both licenses.
 
-**Trademarks:** "Vigil" and "lousclues" are trademarks of Louis Nelson Jr. See [TRADEMARKS.md](TRADEMARKS.md). The GPL does not grant trademark rights.
+**Trademarks:** "VigilBaseline" and "lousclues" are the project name and publisher mark respectively. See [TRADEMARKS.md](TRADEMARKS.md). Neither "Vigil" nor "Baseline" is individually claimed as a trademark.
 
 For the complete licensing framework, see [LICENSING.md](licenses/LICENSING.md). For project governance and succession planning, see [GOVERNANCE.md](GOVERNANCE.md).
 
 ---
 
-*Vigil: Your filesystem has a witness. It never looks away.*
+*VigilBaseline: Your filesystem has a witness. It never looks away.*
