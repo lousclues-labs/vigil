@@ -1,6 +1,6 @@
 # Testing
 
-VigilBaseline tests deterministic behavior. Claims need runnable checks.
+Vigil Baseline tests deterministic behavior. Claims need runnable checks.
 
 ---
 

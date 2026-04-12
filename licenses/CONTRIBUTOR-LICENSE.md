@@ -4,9 +4,9 @@
 
 ## Purpose
 
-VigilBaseline is licensed under the [GNU General Public License v3.0 only](../LICENSE) for open-source use. To maintain the project's licensing integrity and to preserve flexibility for potential future license evolution, the project maintainer needs clear legal rights over all contributions.
+Vigil Baseline is licensed under the [GNU General Public License v3.0 only](../LICENSE) for open-source use. To maintain the project's licensing integrity and to preserve flexibility for potential future license evolution, the project maintainer needs clear legal rights over all contributions.
 
-This Contributor License Agreement ("CLA") establishes the terms under which you ("Contributor") grant rights to **Louis Nelson Jr.** ("Maintainer"), the sole copyright holder and maintainer of the VigilBaseline project.
+This Contributor License Agreement ("CLA") establishes the terms under which you ("Contributor") grant rights to **Louis Nelson Jr.** ("Maintainer"), the sole copyright holder and maintainer of the Vigil Baseline project.
 
 ## Plain-Language Summary
 
@@ -24,9 +24,9 @@ Here's what you're agreeing to, in plain English:
 
 ### 1. Definitions
 
-- **"Contribution"** means any original work of authorship, including modifications to existing work, that you intentionally submit to the VigilBaseline project for inclusion. This includes code, documentation, configuration files, and related materials submitted via pull request, patch, issue, email, or any other method of communication with the project.
+- **"Contribution"** means any original work of authorship, including modifications to existing work, that you intentionally submit to the Vigil Baseline project for inclusion. This includes code, documentation, configuration files, and related materials submitted via pull request, patch, issue, email, or any other method of communication with the project.
 - **"Submit"** means any form of electronic or written communication sent to the project, including pull requests on GitHub, patches, commits, issues, and messages on project forums or mailing lists.
-- **"Project"** means the VigilBaseline software project, maintained at https://github.com/loujr/vigil.
+- **"Project"** means the Vigil Baseline software project, maintained at https://github.com/loujr/vigil.
 
 ### 2. Grant of Copyright License
 
@@ -77,7 +77,7 @@ Your Contribution is provided "AS IS," without warranty of any kind, express or 
 
 ### Method: Submission Implies Agreement
 
-By submitting a Contribution to the VigilBaseline project (via pull request, patch, or any other submission method), you signify your agreement to the terms of this CLA.
+By submitting a Contribution to the Vigil Baseline project (via pull request, patch, or any other submission method), you signify your agreement to the terms of this CLA.
 
 We also recommend (but do not require) including a sign-off line in your commit messages:
 
@@ -91,7 +91,7 @@ This follows the [Developer Certificate of Origin](https://developercertificate.
 
 For substantial contributions (new modules, architectural changes, or contributions involving third-party code), the Maintainer may request explicit CLA acknowledgment via a GitHub issue comment of the form:
 
-> I have read and agree to the VigilBaseline Contributor License Agreement (CONTRIBUTOR-LICENSE.md).
+> I have read and agree to the Vigil Baseline Contributor License Agreement (CONTRIBUTOR-LICENSE.md).
 
 ## Governing Law
 
@@ -101,7 +101,7 @@ This CLA shall be governed by and construed in accordance with the laws of the C
 
 If you have questions about this CLA before submitting a contribution, please:
 
-- Open an issue in the [VigilBaseline repository](https://github.com/loujr/vigil)
+- Open an issue in the [Vigil Baseline repository](https://github.com/loujr/vigil)
 - Contact Louis Nelson Jr. via GitHub ([@loujr](https://github.com/loujr))
 
 We're happy to clarify any terms before you contribute.

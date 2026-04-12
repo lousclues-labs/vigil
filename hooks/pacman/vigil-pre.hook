@@ -10,6 +10,6 @@ Target = etc/*
 Target = boot/*
 
 [Action]
-Description = VigilBaseline: entering maintenance window...
+Description = Vigil Baseline: entering maintenance window...
 When = PreTransaction
 Exec = /usr/bin/vigil maintenance enter --quiet

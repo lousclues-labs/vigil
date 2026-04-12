@@ -4,7 +4,7 @@
 
 ## Trademark Disclaimer
 
-**"VigilBaseline"** is the composite project name for this software. It is **not** claimed as a registered or common-law trademark by Louis Nelson Jr. or the project.
+**"Vigil Baseline"** is the composite project name for this software. It is **not** claimed as a registered or common-law trademark by Louis Nelson Jr. or the project.
 
 Neither the word **"Vigil"** nor the word **"Baseline"** is individually claimed as a trademark by this project. These are common English words and this project asserts no exclusive rights over either word separately or in combination.
 
@@ -16,7 +16,7 @@ The following mark **is** owned by **Louis Nelson Jr.**:
 
 ## Relationship to Source Code License
 
-The [GNU General Public License v3.0](LICENSE) grants rights to use, modify, and redistribute the **source code** of VigilBaseline. It does **not** grant rights to use the lousclues trademark.
+The [GNU General Public License v3.0](LICENSE) grants rights to use, modify, and redistribute the **source code** of Vigil Baseline. It does **not** grant rights to use the lousclues trademark.
 
 Trademark rights and copyright/source-code rights are legally distinct:
 
@@ -27,29 +27,29 @@ You may freely exercise all rights granted by the GPL without using the lousclue
 
 ## Permitted Uses
 
-The following uses of the VigilBaseline project name and lousclues trademark are **permitted without prior written permission**:
+The following uses of the Vigil Baseline project name and lousclues trademark are **permitted without prior written permission**:
 
 ### 1. Descriptive Reference
 
-You may use "VigilBaseline" to accurately describe this software in documentation, articles, blog posts, presentations, academic papers, and similar works. Examples:
+You may use "Vigil Baseline" to accurately describe this software in documentation, articles, blog posts, presentations, academic papers, and similar works. Examples:
 
-- "This tool is compatible with VigilBaseline."
-- "Built on the VigilBaseline file integrity monitor."
-- "An analysis of the VigilBaseline monitoring architecture."
+- "This tool is compatible with Vigil Baseline."
+- "Built on the Vigil Baseline file integrity monitor."
+- "An analysis of the Vigil Baseline monitoring architecture."
 
 ### 2. Attribution
 
-You may (and should) credit "VigilBaseline" by name when attributing the origin of code or documentation derived from this project, as required by the GPL and CC BY 4.0 licenses.
+You may (and should) credit "Vigil Baseline" by name when attributing the origin of code or documentation derived from this project, as required by the GPL and CC BY 4.0 licenses.
 
 ### 3. Linking to the Project
 
-You may use the name "VigilBaseline" when linking to the official repository:
+You may use the name "Vigil Baseline" when linking to the official repository:
 
 - https://github.com/loujr/vigil
 
 ### 4. Academic and Research Use
 
-You may reference "VigilBaseline" and "lousclues" in academic papers, conference talks, and research publications without prior permission.
+You may reference "Vigil Baseline" and "lousclues" in academic papers, conference talks, and research publications without prior permission.
 
 ### 5. Package Naming in Distribution
 
@@ -61,7 +61,7 @@ The following uses of the **lousclues** trademark are **not permitted** without 
 
 ### 1. Implied Endorsement
 
-You may not use the lousclues trademark in a manner that implies endorsement, sponsorship, or affiliation with Louis Nelson Jr. or the VigilBaseline project, unless such a relationship actually exists.
+You may not use the lousclues trademark in a manner that implies endorsement, sponsorship, or affiliation with Louis Nelson Jr. or the Vigil Baseline project, unless such a relationship actually exists.
 
 ### 2. Domain Names
 
@@ -73,26 +73,26 @@ You may not use the lousclues trademark on merchandise (clothing, stickers, phys
 
 ## Forks and Derivative Works
 
-The GPL explicitly permits forking and creating derivative works from VigilBaseline's source code. When doing so:
+The GPL explicitly permits forking and creating derivative works from Vigil Baseline's source code. When doing so:
 
 ### Required
 
-1. **Use a different name** for your fork if it diverges significantly. Acceptable patterns: "MyProject (based on VigilBaseline)" or an entirely new name.
+1. **Use a different name** for your fork if it diverges significantly. Acceptable patterns: "MyProject (based on Vigil Baseline)" or an entirely new name.
 
-2. **Clearly indicate** that your fork is a derivative work and not the official VigilBaseline project. A notice in your README is sufficient:
-   > "This project is a fork of [VigilBaseline](https://github.com/loujr/vigil), originally created by Louis Nelson Jr."
+2. **Clearly indicate** that your fork is a derivative work and not the official Vigil Baseline project. A notice in your README is sufficient:
+   > "This project is a fork of [Vigil Baseline](https://github.com/loujr/vigil), originally created by Louis Nelson Jr."
 
 3. **Preserve attribution** as required by the GPL and CC BY 4.0 licenses. This includes copyright notices, SPDX headers, and the NOTICE file.
 
 ### Permitted
 
-- You may state that your fork is "based on VigilBaseline" or "derived from VigilBaseline". This is descriptive fair use.
-- You may include the original VigilBaseline copyright notices and attribution (you must, under the GPL).
-- You may link to the original VigilBaseline repository for reference.
+- You may state that your fork is "based on Vigil Baseline" or "derived from Vigil Baseline". This is descriptive fair use.
+- You may include the original Vigil Baseline copyright notices and attribution (you must, under the GPL).
+- You may link to the original Vigil Baseline repository for reference.
 
 ## Logo and Visual Identity
 
-VigilBaseline does not currently have logos, icons, or other visual brand assets. If such assets are created in the future:
+Vigil Baseline does not currently have logos, icons, or other visual brand assets. If such assets are created in the future:
 
 - They will be the proprietary property of Louis Nelson Jr.
 - They will **not** be covered by the GPL or CC BY 4.0 licenses.

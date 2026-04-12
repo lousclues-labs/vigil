@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-VigilBaseline depends on third-party open source crates.
+Vigil Baseline depends on third-party open source crates.
 This file states policy and attribution. No guesswork.
 
 ---
@@ -45,7 +45,7 @@ cargo audit --deny warnings
 
 ## Attribution and Compliance
 
-VigilBaseline includes and distributes third-party software under their respective licenses.
+Vigil Baseline includes and distributes third-party software under their respective licenses.
 
 Compliance rules:
 1. keep dependency graph auditable (`Cargo.lock` committed)
@@ -63,7 +63,7 @@ When adding a dependency:
 ## Warranty Boundary
 
 Third-party components are provided under their own licenses and warranty terms.
-VigilBaseline does not override those upstream terms.
+Vigil Baseline does not override those upstream terms.
 
 ---
 

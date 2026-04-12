@@ -2,7 +2,7 @@
 
 *Last updated: April 2026*
 
-This document provides a comprehensive overview of how licensing applies to every file and file type in the VigilBaseline project. It serves as the canonical reference for contributors, users, and anyone evaluating VigilBaseline's licensing for compatibility or compliance.
+This document provides a comprehensive overview of how licensing applies to every file and file type in the Vigil Baseline project. It serves as the canonical reference for contributors, users, and anyone evaluating Vigil Baseline's licensing for compatibility or compliance.
 
 ## Copyright Holder
 
@@ -17,7 +17,7 @@ See the [NOTICE](../NOTICE) file for the full identity mapping (Louis Nelson Jr.
 | GNU GPL v3.0 only **or** Commercial License | `GPL-3.0-only` | Source code, scripts, build files, tests, configs | [LICENSE](../LICENSE), [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) |
 | CC BY 4.0 | `CC-BY-4.0` | Documentation | [LICENSE-DOCS.md](LICENSE-DOCS.md) |
 
-VigilBaseline is dual-licensed. A Commercial License is available for organizations whose use cases are incompatible with the GPL. See [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) for full terms.
+Vigil Baseline is dual-licensed. A Commercial License is available for organizations whose use cases are incompatible with the GPL. See [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) for full terms.
 
 ---
 

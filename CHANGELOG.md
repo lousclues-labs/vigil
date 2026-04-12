@@ -1,8 +1,13 @@
 # Changelog
 
-All notable changes to VigilBaseline will be documented in this file.
+All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
+
+## [0.29.3] - 2026-04-11
+
+### Changed
+- Project display name formatting update.
 
 ## [0.29.2] - 2026-04-11
 

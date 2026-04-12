@@ -14,22 +14,22 @@ Use `check` for scheduled or manual verification.
 
 ---
 
-## Does VigilBaseline need root?
+## Does Vigil Baseline need root?
 
 Not always.
 
 - fanotify backend usually needs elevated capability (`CAP_SYS_ADMIN`), so daemon deployments commonly run as root/systemd service.
-- if fanotify is unavailable, VigilBaseline falls back to inotify with reduced coverage.
+- if fanotify is unavailable, Vigil Baseline falls back to inotify with reduced coverage.
 
-So root improves coverage, but VigilBaseline can still run without it.
+So root improves coverage, but Vigil Baseline can still run without it.
 
 ---
 
-## Does VigilBaseline phone home?
+## Does Vigil Baseline phone home?
 
 No.
 
-VigilBaseline performs no built-in telemetry, update checks, DNS lookups, or outbound network reporting.
+Vigil Baseline performs no built-in telemetry, update checks, DNS lookups, or outbound network reporting.
 All core behavior is local.
 
 ---
@@ -47,12 +47,12 @@ Audit records still retain detected changes.
 
 ---
 
-## Can VigilBaseline detect rootkits?
+## Can Vigil Baseline detect rootkits?
 
 It can detect filesystem-level artifacts that rootkits leave on disk.
 It cannot reliably detect a kernel-level rootkit that controls syscall truth.
 
-VigilBaseline is a user-space integrity observer, not kernel attestation.
+Vigil Baseline is a user-space integrity observer, not kernel attestation.
 
 ---
 
@@ -60,7 +60,7 @@ VigilBaseline is a user-space integrity observer, not kernel attestation.
 
 Performance and determinism.
 
-VigilBaseline hashes a lot of files, repeatedly. BLAKE3 is faster for this workload while preserving strong integrity properties.
+Vigil Baseline hashes a lot of files, repeatedly. BLAKE3 is faster for this workload while preserving strong integrity properties.
 Faster hashing means less monitoring overhead and tighter scan windows.
 
 ---
@@ -76,11 +76,11 @@ If HMAC signing is enabled, signatures add another integrity layer.
 
 ---
 
-## Can I use VigilBaseline on a server with no desktop?
+## Can I use Vigil Baseline on a server with no desktop?
 
 Yes.
 
-Desktop notifications are optional. They use `--app-name=VigilBaseline` and map alert severity to `notify-send` urgency levels (critical, normal, low). On headless hosts, rely on:
+Desktop notifications are optional. They use `--app-name=Vigil Baseline` and map alert severity to `notify-send` urgency levels (critical, normal, low). On headless hosts, rely on:
 - journald/syslog
 - JSON alert file
 - optional signal socket integration
@@ -101,12 +101,12 @@ If noise/perf is high, tighten watch groups and exclusions.
 
 ---
 
-## Does VigilBaseline block attacks automatically?
+## Does Vigil Baseline block attacks automatically?
 
 No.
 
 Principle I is explicit: Watch, Don't Act.
-VigilBaseline reports boundary violations. Operator decides response.
+Vigil Baseline reports boundary violations. Operator decides response.
 
 ---
 
@@ -114,9 +114,9 @@ VigilBaseline reports boundary violations. Operator decides response.
 
 No.
 
-VigilBaseline focuses on deterministic file integrity monitoring.
+Vigil Baseline focuses on deterministic file integrity monitoring.
 It does not do behavioral analysis, malware classification, quarantine, or remediation.
 
 ---
 
-*VigilBaseline answers one question very well: did this file boundary change?*
+*Vigil Baseline answers one question very well: did this file boundary change?*

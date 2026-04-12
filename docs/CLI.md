@@ -61,7 +61,7 @@ vigil --config /etc/vigil/vigil.toml init
 
 ## `watch`
 
-Start VigilBaseline monitor in foreground mode.
+Start Vigil Baseline monitor in foreground mode.
 
 ```bash
 vigil watch
@@ -148,13 +148,13 @@ What it checks:
 - signal socket configuration
 - control socket configuration
 
-If VigilBaseline runs as a root-owned systemd service (default), running `vigil doctor` as an unprivileged user may show reduced-coverage checks. Run `sudo vigil doctor` for full database-level diagnostics.
+If Vigil Baseline runs as a root-owned systemd service (default), running `vigil doctor` as an unprivileged user may show reduced-coverage checks. Run `sudo vigil doctor` for full database-level diagnostics.
 
 ---
 
 ## `update`
 
-Build and install VigilBaseline from a local git repository. Performs atomic binary
+Build and install Vigil Baseline from a local git repository. Performs atomic binary
 replacement, step-by-step progress reporting, and post-update health verification.
 
 ```bash
@@ -163,9 +163,9 @@ vigil update [--repo <PATH>]
 
 | Option | Description |
 |--------|-------------|
-| `--repo <PATH>` | path to the VigilBaseline git repository (skips auto-discovery) |
+| `--repo <PATH>` | path to the Vigil Baseline git repository (skips auto-discovery) |
 
-When `--repo` is not provided, VigilBaseline automatically searches for the source
+When `--repo` is not provided, Vigil Baseline automatically searches for the source
 repository in order: current directory, binary-relative parent directories,
 `~/vigil`, `~/src/vigil`, `~/projects/vigil`, and `/opt/vigil`.
 
@@ -202,7 +202,7 @@ Updating: v0.25.1 → v0.26.0
   Starting vigild.service...
   ✓ Daemon started
 
-VigilBaseline — Update Complete
+Vigil Baseline — Update Complete
 ═══════════════════════
 
   ✓ v0.25.1 → v0.26.0
@@ -454,7 +454,7 @@ Details:
 
 ## Output Format Examples
 
-VigilBaseline accepts `--format human|json` globally.
+Vigil Baseline accepts `--format human|json` globally.
 
 ### Human
 
@@ -465,7 +465,7 @@ vigil --format human status
 Example:
 
 ```text
-VigilBaseline Status
+Vigil Baseline Status
   Baseline entries:    1234
   Last refresh:        1712039200
   Database:            /var/lib/vigil/baseline.db

@@ -1,5 +1,5 @@
 [Unit]
-Description=VigilBaseline File Integrity Monitor
+Description=Vigil Baseline File Integrity Monitor
 After=local-fs.target
 
 [Service]

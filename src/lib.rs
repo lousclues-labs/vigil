@@ -976,9 +976,9 @@ fn notify_desktop(message: &str, urgency: NotifyUrgency) {
     };
 
     let status = std::process::Command::new("notify-send")
-        .arg("--app-name=VigilBaseline")
+        .arg("--app-name=Vigil Baseline")
         .arg(format!("--urgency={}", urgency_str))
-        .arg("VigilBaseline")
+        .arg("Vigil Baseline")
         .arg(message)
         .status();
 

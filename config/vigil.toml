@@ -1,5 +1,5 @@
 # /etc/vigil/vigil.toml
-# VigilBaseline — Lightweight File Integrity Monitor
+# Vigil Baseline — Lightweight File Integrity Monitor
 
 [daemon]
 pid_file = "/run/vigil/vigild.pid"

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Run the complete VigilBaseline test suite.
+# Run the complete Vigil Baseline test suite.
 set -euo pipefail
 
 printf '%s\n' "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-printf '%s\n' "  VigilBaseline Test Suite"
+printf '%s\n' "  Vigil Baseline Test Suite"
 printf '%s\n' "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 printf '\n'
 

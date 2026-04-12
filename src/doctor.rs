@@ -264,10 +264,10 @@ pub fn diagnostics_verdict(checks: &[DiagnosticCheck]) -> String {
         .count();
 
     if failures == 0 && warnings == 0 {
-        "All systems nominal. VigilBaseline is watching.".to_string()
+        "All systems nominal. Vigil Baseline is watching.".to_string()
     } else if failures == 0 {
         format!(
-            "{} {}. VigilBaseline is running with reduced coverage.",
+            "{} {}. Vigil Baseline is running with reduced coverage.",
             warnings,
             if warnings == 1 { "warning" } else { "warnings" }
         )

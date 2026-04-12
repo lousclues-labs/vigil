@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Use this page when VigilBaseline behavior is unclear or degraded.
+Use this page when Vigil Baseline behavior is unclear or degraded.
 
 ---
 

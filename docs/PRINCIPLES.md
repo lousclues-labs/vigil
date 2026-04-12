@@ -8,7 +8,7 @@ is wrong or the principle needs updating. We should talk about it.
 
 ---
 
-## The Soul of VigilBaseline
+## The Soul of Vigil Baseline
 
 You download things. People send you files. You torrent. You install packages
 from repositories you half-trust. You live in the real world of untrusted
@@ -18,23 +18,23 @@ Your fear was never "malware" in the abstract. Your fear was invisible
 intrusion — something slipping in, changing what shouldn't change, and you
 never knowing it happened.
 
-VigilBaseline exists because of one truth:
+Vigil Baseline exists because of one truth:
 
 > **No one tiptoes through your system without leaving footprints behind.**
 
-VigilBaseline is the gatekeeper that refuses to let anything cross the threshold
+Vigil Baseline is the gatekeeper that refuses to let anything cross the threshold
 silently. Not a guard who fights. A witness who never looks away.
 
 ---
 
 ## I. Watch, Don't Act
 
-VigilBaseline is a watchman. It watches, compares, and reports.
+Vigil Baseline is a watchman. It watches, compares, and reports.
 
 It does not kill processes. It does not quarantine files. It does not modify
 permissions. It does not block execution. It does not remediate threats.
 
-When something changes that shouldn't have, VigilBaseline tells you — immediately,
+When something changes that shouldn't have, Vigil Baseline tells you — immediately,
 clearly, and only once. What you do about it is your decision.
 
 A tool that watches *and* acts will eventually act wrong. A tool that only
@@ -45,22 +45,22 @@ mode is testable, fixable, and honest.
 
 A healthy system produces zero alerts.
 
-VigilBaseline emits nothing during normal operation. No informational noise. No
+Vigil Baseline emits nothing during normal operation. No informational noise. No
 advisory warnings. No "everything is fine" status messages. Quiet means
 the boundaries are intact.
 
 If you're receiving alerts during a normal day, either your system is
-compromised or VigilBaseline is poorly configured. Fix the configuration before
+compromised or Vigil Baseline is poorly configured. Fix the configuration before
 you investigate the system.
 
-**The test:** Run VigilBaseline for seven days on a clean Arch install with normal
+**The test:** Run Vigil Baseline for seven days on a clean Arch install with normal
 desktop use and package manager hooks installed. If it produces more than
 one alert per day that does not correspond to a real filesystem change,
 the tool has failed.
 
 ## III. Determinism Over Heuristics
 
-VigilBaseline does not guess. It does not infer. It does not predict. It does not
+Vigil Baseline does not guess. It does not infer. It does not predict. It does not
 use heuristics, machine learning, behavioral analysis, or statistical models.
 
 It compares. Hashes match or they don't. Permissions changed or they didn't.
@@ -71,20 +71,20 @@ on training data, threat intelligence feeds, vendor cloud lookups, or
 statistical distributions.
 
 **The test:** Given the same file, the same path, the same permissions, and
-the same baseline entry, does VigilBaseline always produce the same result? If yes,
+the same baseline entry, does Vigil Baseline always produce the same result? If yes,
 it belongs. If no, it doesn't.
 
 ## IV. Structure Over Behavior
 
 Behavioral signals require judgment. Structural signals require only comparison.
-VigilBaseline compares. It does not judge.
+Vigil Baseline compares. It does not judge.
 
 - "The hash of `/usr/bin/sudo` does not match the baseline." — Structural. Binary fact.
 - "A new `.desktop` file appeared in `~/.config/autostart/`." — Structural. Binary fact.
 - "The file at this path has a different inode." — Structural. Binary fact.
 - "This process is accessing files suspiciously." — Behavioral. Does not belong.
 
-Every detection in VigilBaseline can be expressed as a simple conditional statement
+Every detection in Vigil Baseline can be expressed as a simple conditional statement
 that a non-engineer could read and understand.
 
 ## V. Every Alert Must Be Rare, Clear, Actionable, Explainable, and Unambiguous
@@ -118,11 +118,11 @@ The truth is on disk:
 Package managers are trusted because they are local: `pacman -Qo /usr/bin/sudo`
 answers from `/var/lib/pacman/`, not from a cloud API.
 
-**The test:** Disconnect the network cable. Does VigilBaseline work? If yes, it passes.
+**The test:** Disconnect the network cable. Does Vigil Baseline work? If yes, it passes.
 
 ## VII. Boundaries, Not Intelligence
 
-VigilBaseline enforces the state boundary: *has anything changed that shouldn't have?*
+Vigil Baseline enforces the state boundary: *has anything changed that shouldn't have?*
 
 It does not try to be smart. It does not classify malware families. It does
 not attribute attacks to threat actors. It does not compute risk scores that
@@ -131,24 +131,24 @@ fade into ambiguity.
 A file's hash matches its baseline, or it doesn't. The boundary is crossed
 or it is not. There is no gradient.
 
-## VIII. VigilBaseline Stands Alone
+## VIII. Vigil Baseline Stands Alone
 
-VigilBaseline is independently useful. It works without any other tool installed.
+Vigil Baseline is independently useful. It works without any other tool installed.
 It can be built, tested, and deployed in isolation.
 
-No tool imports VigilBaseline. VigilBaseline imports no tool. No tool reads VigilBaseline's database.
-VigilBaseline reads no tool's database. If every other security tool on the system
-vanishes, VigilBaseline still compiles, runs, and fulfills its core function.
+No tool imports Vigil Baseline. Vigil Baseline imports no tool. No tool reads Vigil Baseline's database.
+Vigil Baseline reads no tool's database. If every other security tool on the system
+vanishes, Vigil Baseline still compiles, runs, and fulfills its core function.
 
 A user who runs `vigil init && vigil watch` with zero other tools installed
 is meaningfully more secure than they were before.
 
-**The test:** Uninstall everything else. Does VigilBaseline still work? If not,
+**The test:** Uninstall everything else. Does Vigil Baseline still work? If not,
 there's a dependency that shouldn't exist.
 
 ## IX. No Configuration Required for Correct Operation
 
-VigilBaseline ships with sensible defaults that provide real security out of the box.
+Vigil Baseline ships with sensible defaults that provide real security out of the box.
 Configuration exists to tune, not to enable.
 
 The default watched paths cover the attack surfaces that matter:
@@ -163,19 +163,19 @@ with zero arguments. Is the user protected? If not, the defaults are wrong.
 
 ## X. Fail Open, Fail Loud
 
-When VigilBaseline encounters an error, two things happen:
+When Vigil Baseline encounters an error, two things happen:
 
 **Fail open:** The system does not freeze, hang, or prevent the user from
 working. A missed detection is recoverable. A frozen desktop is not.
 
-**Fail loud:** The failure is visible. If fanotify is unavailable and VigilBaseline
+**Fail loud:** The failure is visible. If fanotify is unavailable and Vigil Baseline
 falls back to inotify, it lists every path it cannot watch. If a file
 disappears between event and hash, it logs the transient error. Silent
 degradation is a security vulnerability.
 
 The user must know their blind spots.
 
-**The test:** Remove `CAP_SYS_ADMIN`. Start VigilBaseline. Does it clearly communicate
+**The test:** Remove `CAP_SYS_ADMIN`. Start Vigil Baseline. Does it clearly communicate
 that it fell back to inotify and which paths have reduced coverage?
 
 ## XI. Complexity Is a Vulnerability
@@ -183,15 +183,15 @@ that it fell back to inotify and which paths have reduced coverage?
 Every line of code is a potential bug. Every dependency is a potential supply
 chain attack. Every configuration option is a potential misconfiguration.
 
-VigilBaseline is small. It hashes files, compares metadata, and writes alerts.
+Vigil Baseline is small. It hashes files, compares metadata, and writes alerts.
 That's it. When deciding whether to add a feature, ask:
 
-- Does this make VigilBaseline better at watching the filesystem?
-- Or does this make VigilBaseline do a second job?
+- Does this make Vigil Baseline better at watching the filesystem?
+- Or does this make Vigil Baseline do a second job?
 
 If it's a second job, it's a second tool. Or it doesn't exist.
 
-**The test:** Can you explain VigilBaseline's entire architecture in a single ASCII
+**The test:** Can you explain Vigil Baseline's entire architecture in a single ASCII
 diagram that fits on one terminal screen? If not, simplify.
 
 ## XII. The Baseline Is Sacred
@@ -223,25 +223,25 @@ truth is always written down.
 
 ## XIV. No Network I/O
 
-VigilBaseline operates entirely locally. No telemetry. No update checks. No cloud
+Vigil Baseline operates entirely locally. No telemetry. No update checks. No cloud
 lookups. No license validation. No DNS queries. No outbound connections.
 
 The webhook feature is optional, off by default, and outbound-only. It
 exists for users who choose to send alerts somewhere. It never activates
 without explicit configuration.
 
-**The test:** Disconnect the network cable. Does VigilBaseline work identically?
+**The test:** Disconnect the network cable. Does Vigil Baseline work identically?
 
 ## XV. The User Is the Operator
 
-VigilBaseline is designed for someone who understands their system, reads alerts
+Vigil Baseline is designed for someone who understands their system, reads alerts
 and acts on them, and trusts their own judgment.
 
 No confirmation prompts. No "are you sure?" dialogs. No safety rails
 except the ones that prevent unrecoverable damage (like `vigil init`
 warning before overwriting an existing baseline).
 
-VigilBaseline provides information, not opinions. The operator decides.
+Vigil Baseline provides information, not opinions. The operator decides.
 
 ---
 
@@ -250,24 +250,24 @@ VigilBaseline provides information, not opinions. The operator decides.
 When in doubt about any design decision — a new feature, a new detection,
 a new output format — ask:
 
-> **"Does this make VigilBaseline quieter or noisier?"**
+> **"Does this make Vigil Baseline quieter or noisier?"**
 
-If it makes VigilBaseline quieter by removing false positives, eliminating ambiguity,
+If it makes Vigil Baseline quieter by removing false positives, eliminating ambiguity,
 or suppressing redundant information — it belongs.
 
-If it makes VigilBaseline noisier by adding uncertain signals, soft thresholds,
+If it makes Vigil Baseline noisier by adding uncertain signals, soft thresholds,
 or informational messages — it doesn't belong.
 
 ---
 
-## VigilBaseline's Promise
+## Vigil Baseline's Promise
 
-**VigilBaseline promises: *You know when something changes that shouldn't have.***
+**Vigil Baseline promises: *You know when something changes that shouldn't have.***
 
-When VigilBaseline is silent, your boundaries are intact — because you tested the
+When Vigil Baseline is silent, your boundaries are intact — because you tested the
 conditions under which it alerts, and none of those conditions are present.
 
-When VigilBaseline speaks, something real has happened — because every detection is
+When Vigil Baseline speaks, something real has happened — because every detection is
 deterministic, every rule is structural, and every source of noise has been
 eliminated.
 

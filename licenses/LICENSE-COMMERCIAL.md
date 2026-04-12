@@ -1,27 +1,27 @@
-# VigilBaseline Commercial License
+# Vigil Baseline Commercial License
 
 *Version 1.0 -- April 2026*
 
 ## Overview
 
-VigilBaseline is dual-licensed. The source code is freely available under the [GNU General Public License v3.0 only](../LICENSE) for open-source use. This Commercial License is an alternative for organizations and individuals whose use cases are incompatible with the GPL's requirements.
+Vigil Baseline is dual-licensed. The source code is freely available under the [GNU General Public License v3.0 only](../LICENSE) for open-source use. This Commercial License is an alternative for organizations and individuals whose use cases are incompatible with the GPL's requirements.
 
-The Commercial License is granted by **Louis Nelson Jr.** ("Licensor"), the sole copyright holder of the VigilBaseline project.
+The Commercial License is granted by **Louis Nelson Jr.** ("Licensor"), the sole copyright holder of the Vigil Baseline project.
 
 ## When You Need a Commercial License
 
 You need a commercial license if you intend to:
 
-- **Embed in proprietary software** -- Incorporate VigilBaseline (or substantial portions of it) into closed-source products or services without disclosing your source code as required by the GPL.
-- **Redistribute without GPL obligations** -- Distribute modified versions of VigilBaseline to customers or end users without extending GPL rights or providing source code.
+- **Embed in proprietary software** -- Incorporate Vigil Baseline (or substantial portions of it) into closed-source products or services without disclosing your source code as required by the GPL.
+- **Redistribute without GPL obligations** -- Distribute modified versions of Vigil Baseline to customers or end users without extending GPL rights or providing source code.
 - **Comply with organizational policy** -- Your organization requires non-copyleft licensing for all software dependencies.
-- **Offer VigilBaseline as a service** -- Build a hosted service or managed offering around VigilBaseline without GPL source-disclosure obligations.
+- **Offer Vigil Baseline as a service** -- Build a hosted service or managed offering around Vigil Baseline without GPL source-disclosure obligations.
 
 ## When You Do NOT Need a Commercial License
 
-- **Using VigilBaseline as an end user** -- Running VigilBaseline to monitor your own file integrity is fully covered by the GPL. No commercial license is needed.
-- **Internal use with source availability** -- Using VigilBaseline within your organization, even in production, is covered by GPL as long as you comply with its terms when distributing.
-- **Contributing to VigilBaseline** -- Contributing to the project is governed by the [Contributor License Agreement](CONTRIBUTOR-LICENSE.md), not this commercial license.
+- **Using Vigil Baseline as an end user** -- Running Vigil Baseline to monitor your own file integrity is fully covered by the GPL. No commercial license is needed.
+- **Internal use with source availability** -- Using Vigil Baseline within your organization, even in production, is covered by GPL as long as you comply with its terms when distributing.
+- **Contributing to Vigil Baseline** -- Contributing to the project is governed by the [Contributor License Agreement](CONTRIBUTOR-LICENSE.md), not this commercial license.
 
 ---
 
@@ -40,23 +40,23 @@ Subject to the terms of this agreement and payment of applicable fees, the Licen
 
 right to:
 
-**(a)** Use VigilBaseline in the Licensee's products and services without GPL obligations.
+**(a)** Use Vigil Baseline in the Licensee's products and services without GPL obligations.
 
-**(b)** Modify VigilBaseline's source code for the Licensee's internal use and for incorporation into the Licensee's products.
+**(b)** Modify Vigil Baseline's source code for the Licensee's internal use and for incorporation into the Licensee's products.
 
-**(c)** Distribute VigilBaseline (in modified or unmodified form) as part of the Licensee's products, without source-disclosure requirements.
+**(c)** Distribute Vigil Baseline (in modified or unmodified form) as part of the Licensee's products, without source-disclosure requirements.
 
-**(d)** Sublicense VigilBaseline to the Licensee's end users as part of a larger product, subject to the terms of this agreement.
+**(d)** Sublicense Vigil Baseline to the Licensee's end users as part of a larger product, subject to the terms of this agreement.
 
 ### 2. Restrictions
 
 The Commercial License does **not** grant the right to:
 
-**(a)** **Redistribute VigilBaseline as a standalone product** -- You may not resell or redistribute VigilBaseline itself. It must be incorporated into a larger product or service.
+**(a)** **Redistribute Vigil Baseline as a standalone product** -- You may not resell or redistribute Vigil Baseline itself. It must be incorporated into a larger product or service.
 
-**(b)** **Use the VigilBaseline or lousclues trademarks** -- Trademark rights are separate. See [TRADEMARKS.md](../TRADEMARKS.md) for trademark usage. A separate trademark license may be negotiated if needed.
+**(b)** **Use the Vigil Baseline or lousclues trademarks** -- Trademark rights are separate. See [TRADEMARKS.md](../TRADEMARKS.md) for trademark usage. A separate trademark license may be negotiated if needed.
 
-**(c)** **Claim authorship** -- You may not represent yourself as the author or copyright holder of the VigilBaseline software.
+**(c)** **Claim authorship** -- You may not represent yourself as the author or copyright holder of the Vigil Baseline software.
 
 **(d)** **Remove copyright notices** -- All copyright notices, SPDX identifiers, and attribution must be preserved in source code and documentation, even in modified versions.
 
@@ -64,7 +64,7 @@ The Commercial License does **not** grant the right to:
 
 Commercial license fees are determined on a case-by-case basis, considering:
 
-- Number of products/services incorporating VigilBaseline
+- Number of products/services incorporating Vigil Baseline
 - Distribution volume (number of end users/deployments)
 - Level of modification
 - Whether support or maintenance is included
@@ -97,13 +97,13 @@ THE LICENSOR'S TOTAL LIABILITY SHALL NOT EXCEED THE AMOUNT PAID BY THE LICENSEE 
 
 **(a)** The Licensor may terminate this license if the Licensee breaches any material term and fails to cure the breach within thirty (30) days of written notice.
 
-**(b)** Upon termination, the Licensee must cease all use and distribution of VigilBaseline under the Commercial License. The Licensee may continue to use VigilBaseline under the GPL-3.0-only license if they comply with its terms.
+**(b)** Upon termination, the Licensee must cease all use and distribution of Vigil Baseline under the Commercial License. The Licensee may continue to use Vigil Baseline under the GPL-3.0-only license if they comply with its terms.
 
 **(c)** Sections 5 (Warranty Disclaimer), 6 (Limitation of Liability), and 9 (Governing Law) survive termination.
 
 ### 8. Audit Rights
 
-The Licensor reserves the right, upon reasonable notice (no less than 30 days), to verify that the Licensee's use of VigilBaseline complies with the terms of the Commercial License. The Licensee shall provide reasonable cooperation for such verification.
+The Licensor reserves the right, upon reasonable notice (no less than 30 days), to verify that the Licensee's use of Vigil Baseline complies with the terms of the Commercial License. The Licensee shall provide reasonable cooperation for such verification.
 
 ### 9. Governing Law
 
@@ -111,7 +111,7 @@ This agreement shall be governed by and construed in accordance with the laws of
 
 ### 10. Entire Agreement
 
-This document, together with any negotiated addendum or order form, constitutes the entire agreement between the parties regarding the commercial licensing of VigilBaseline. It supersedes all prior agreements, understandings, and communications (written or oral) relating to its subject matter.
+This document, together with any negotiated addendum or order form, constitutes the entire agreement between the parties regarding the commercial licensing of Vigil Baseline. It supersedes all prior agreements, understandings, and communications (written or oral) relating to its subject matter.
 
 ---
 
@@ -135,7 +135,7 @@ Please include:
 
 ## Relationship to Open-Source License
 
-This Commercial License is an alternative to, not a replacement for, the GPL-3.0-only license. The open-source release of VigilBaseline under the GPL is not affected by the existence or terms of commercial licenses. The same source code is available under both licenses. The choice of license is made by each user based on their use case and obligations.
+This Commercial License is an alternative to, not a replacement for, the GPL-3.0-only license. The open-source release of Vigil Baseline under the GPL is not affected by the existence or terms of commercial licenses. The same source code is available under both licenses. The choice of license is made by each user based on their use case and obligations.
 
 ---
 

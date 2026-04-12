@@ -126,7 +126,7 @@ fn cmd_init(config_path: Option<&Path>, force: bool) -> vigil::Result<()> {
     let result = vigil::scanner::build_initial_baseline(&conn, &cfg)?;
     vigil::db::baseline_ops::set_config_state(&conn, "baseline_initialized", "true")?;
 
-    print_header("VigilBaseline — Baseline Initialized");
+    print_header("Vigil Baseline — Baseline Initialized");
 
     println!(
         "  Building baseline from {} watch groups...",
@@ -216,7 +216,7 @@ fn cmd_check(
         let _ = std::io::stderr().flush();
     }
 
-    print_header(&format!("VigilBaseline — {} Integrity Check", mode_label));
+    print_header(&format!("Vigil Baseline — {} Integrity Check", mode_label));
 
     println!("  Files checked   {}", format_count(result.total_checked));
     println!(
@@ -419,7 +419,7 @@ fn cmd_diff(config_path: Option<&Path>, file_path: &Path) -> vigil::Result<()> {
 
     match vigil::types::FileSnapshot::from_path(&canonical, &opts)? {
         vigil::types::SnapshotOrDeleted::Deleted => {
-            print_header(&format!("VigilBaseline — Diff: {}", canonical.display()));
+            print_header(&format!("Vigil Baseline — Diff: {}", canonical.display()));
             println!("  ✗ File has been deleted from the filesystem.");
             println!(
                 "    Last known hash: {}",
@@ -432,7 +432,7 @@ fn cmd_diff(config_path: Option<&Path>, file_path: &Path) -> vigil::Result<()> {
         }
         vigil::types::SnapshotOrDeleted::Snapshot(snapshot) => {
             let changes = snapshot.diff(&baseline);
-            print_header(&format!("VigilBaseline — Diff: {}", canonical.display()));
+            print_header(&format!("Vigil Baseline — Diff: {}", canonical.display()));
 
             if changes.is_empty() {
                 println!("  ● No changes. File matches baseline.");
@@ -554,7 +554,7 @@ fn cmd_check_live(config_path: Option<&Path>, full: bool) -> vigil::Result<()> {
             .unwrap_or(0);
 
         print_header(&format!(
-            "VigilBaseline — {} Integrity Check (live)",
+            "Vigil Baseline — {} Integrity Check (live)",
             mode_label
         ));
 
@@ -598,7 +598,7 @@ fn cmd_status(config_path: Option<&Path>, format: OutputFormat) -> vigil::Result
                 return Ok(());
             }
 
-            print_header("VigilBaseline — Daemon Status (live)");
+            print_header("Vigil Baseline — Daemon Status (live)");
 
             // ── Daemon ──
             println!("  Daemon");
@@ -801,7 +801,7 @@ fn cmd_status(config_path: Option<&Path>, format: OutputFormat) -> vigil::Result
         return Ok(());
     }
 
-    print_header("VigilBaseline — Daemon Status");
+    print_header("Vigil Baseline — Daemon Status");
 
     // ── Daemon ──
     println!("  Daemon");
@@ -872,7 +872,7 @@ fn cmd_doctor(config_path: Option<&Path>, format: OutputFormat) -> vigil::Result
 
     println!();
     println!(
-        "VigilBaseline v{} — System Health Check",
+        "Vigil Baseline v{} — System Health Check",
         env!("CARGO_PKG_VERSION")
     );
     println!("════════════════════════════════════");
@@ -954,7 +954,7 @@ fn cmd_doctor(config_path: Option<&Path>, format: OutputFormat) -> vigil::Result
 
     if failures == 0 && warnings == 0 {
         println!(
-            "  {}/{} checks passed. VigilBaseline is watching.",
+            "  {}/{} checks passed. Vigil Baseline is watching.",
             ok_count,
             checks.len()
         );
@@ -1131,7 +1131,7 @@ fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
         "restart failed"
     };
 
-    print_header("VigilBaseline — Update Complete");
+    print_header("Vigil Baseline — Update Complete");
 
     println!("  ✓ {} → {}", current_version, new_version);
     println!("  Daemon:   {}", daemon_status);
@@ -1231,13 +1231,13 @@ fn cmd_audit(
 
             if filter_parts.is_empty() {
                 print_header(&format!(
-                    "VigilBaseline — Audit Log ({} of {} entries)",
+                    "Vigil Baseline — Audit Log ({} of {} entries)",
                     entries.len(),
                     total
                 ));
             } else {
                 print_header(&format!(
-                    "VigilBaseline — Audit Log ({} match{})",
+                    "Vigil Baseline — Audit Log ({} match{})",
                     entries.len(),
                     if entries.len() == 1 { "" } else { "es" }
                 ));
@@ -1337,7 +1337,7 @@ fn cmd_audit(
             };
 
             print_header(&format!(
-                "VigilBaseline — Audit Statistics ({})",
+                "Vigil Baseline — Audit Statistics ({})",
                 period_label
             ));
 
@@ -1395,7 +1395,7 @@ fn cmd_audit(
         AuditAction::Verify => {
             let (total, valid, breaks, missing) = vigil::db::audit_ops::verify_chain(&conn)?;
 
-            print_header("VigilBaselineBaseline — Audit Chain Verification");
+            print_header("Vigil BaselineBaseline — Audit Chain Verification");
 
             println!("  Total entries    {}", format_count(total));
             println!("  Valid links      {}", format_count(valid));
@@ -1735,8 +1735,8 @@ fn validate_vigil_repo(repo: &Path) -> vigil::Result<()> {
     let cargo_toml = repo.join("Cargo.toml");
     if !cargo_toml.exists() {
         return Err(vigil::VigilError::Config(format!(
-            "current directory is not a VigilBaseline repository: {}\n\
-             hint: run from the VigilBaseline source directory, or use: vigil update --repo /path/to/vigil",
+            "current directory is not a Vigil Baseline repository: {}\n\
+             hint: run from the Vigil Baseline source directory, or use: vigil update --repo /path/to/vigil",
             repo.display()
         )));
     }
@@ -1752,8 +1752,8 @@ fn validate_vigil_repo(repo: &Path) -> vigil::Result<()> {
 
     if package_name != Some("vigilbaseline") && package_name != Some("vigil") {
         return Err(vigil::VigilError::Config(format!(
-            "current directory is not a VigilBaseline repository: {}\n\
-             hint: run from the VigilBaseline source directory, or use: vigil update --repo /path/to/vigil",
+            "current directory is not a Vigil Baseline repository: {}\n\
+             hint: run from the Vigil Baseline source directory, or use: vigil update --repo /path/to/vigil",
             repo.display()
         )));
     }
@@ -1813,8 +1813,8 @@ fn discover_vigil_repo() -> vigil::Result<PathBuf> {
         .join("\n");
 
     Err(vigil::VigilError::Config(format!(
-        "could not locate VigilBaseline source repository\n  checked:\n{}\n  \
-         hint: run from the VigilBaseline source directory, or use: vigil update --repo /path/to/vigil",
+        "could not locate Vigil Baseline source repository\n  checked:\n{}\n  \
+         hint: run from the Vigil Baseline source directory, or use: vigil update --repo /path/to/vigil",
         checked
     )))
 }

@@ -18,7 +18,7 @@ Use this index when you need answers fast.
 | Document | What's Inside |
 |----------|---------------|
 | [Architecture](ARCHITECTURE.md) | System design, data flow, module structure |
-| [Threat Model](THREAT_MODEL.md) | What VigilBaseline detects, what it doesn't, adversary assumptions |
+| [Threat Model](THREAT_MODEL.md) | What Vigil Baseline detects, what it doesn't, adversary assumptions |
 | [Resilience](RESILIENCE.md) | Failure modes, fallback behavior, recovery procedures |
 | [Security](SECURITY.md) | Security policy, dependency justification, trust model |
 | [Vulnerabilities](VULNERABILITIES.md) | All remediated vulnerabilities with VIGIL-VULN tracking IDs |
@@ -28,15 +28,15 @@ Use this index when you need answers fast.
 | Document | What's Inside |
 |----------|---------------|
 | [Troubleshooting](TROUBLESHOOTING.md) | Common problems and their solutions |
-| [FAQ](FAQ.md) | "Why is VigilBaseline doing X?" answered |
+| [FAQ](FAQ.md) | "Why is Vigil Baseline doing X?" answered |
 
-## Understanding VigilBaseline
+## Understanding Vigil Baseline
 
 | Document | What's Inside |
 |----------|---------------|
 | [Principles](PRINCIPLES.md) | The 15 engineering principles that drive every decision |
 | [Architecture](ARCHITECTURE.md) | How it's built, why it's built that way |
-| [Threat Model](THREAT_MODEL.md) | Honest assessment of what VigilBaseline can and cannot do |
+| [Threat Model](THREAT_MODEL.md) | Honest assessment of what Vigil Baseline can and cannot do |
 
 ## Contributing & Development
 
@@ -54,7 +54,7 @@ Use this index when you need answers fast.
 |----------|---------------|
 | [License Text](../LICENSE) | GPL-3.0-only full text |
 | [NOTICE](../NOTICE) | Project identity, attribution, and license summary |
-| [Trademarks](../TRADEMARKS.md) | Trademark usage policy for VigilBaseline and lousclues marks |
+| [Trademarks](../TRADEMARKS.md) | Trademark usage policy for Vigil Baseline and lousclues marks |
 | [Licensing Guide](../licenses/LICENSING.md) | File-level license coverage map |
 | [Dependency Audit](../licenses/DEPENDENCY-AUDIT.md) | Dependency license compatibility framework |
 | [Third-Party Licenses](../licenses/THIRD-PARTY-LICENSES) | Direct dependency attribution list |

@@ -1,6 +1,6 @@
 # Security Policy
 
-This document defines how to report issues and what security guarantees VigilBaseline does and does not make.
+This document defines how to report issues and what security guarantees Vigil Baseline does and does not make.
 
 ---
 
@@ -57,7 +57,7 @@ This list matches direct dependencies in `Cargo.toml`.
 
 ### Hashing and Integrity
 
-| Crate | Purpose in VigilBaseline |
+| Crate | Purpose in Vigil Baseline |
 |-------|------------------|
 | `blake3` | baseline and chain hash computation |
 | `hmac` | keyed signing of audit records |
@@ -66,7 +66,7 @@ This list matches direct dependencies in `Cargo.toml`.
 
 ### Database and Data Model
 
-| Crate | Purpose in VigilBaseline |
+| Crate | Purpose in Vigil Baseline |
 |-------|------------------|
 | `rusqlite` | baseline and audit persistence |
 | `serde` | typed serialization and deserialization |
@@ -76,7 +76,7 @@ This list matches direct dependencies in `Cargo.toml`.
 
 ### CLI and Logging
 
-| Crate | Purpose in VigilBaseline |
+| Crate | Purpose in Vigil Baseline |
 |-------|------------------|
 | `clap` | command parsing and help output |
 | `tracing` | structured logging facade |
@@ -84,7 +84,7 @@ This list matches direct dependencies in `Cargo.toml`.
 
 ### Linux Integration
 
-| Crate | Purpose in VigilBaseline |
+| Crate | Purpose in Vigil Baseline |
 |-------|------------------|
 | `nix` | fanotify and inotify wrappers and signal helpers |
 | `libc` | low-level syscalls |
@@ -93,7 +93,7 @@ This list matches direct dependencies in `Cargo.toml`.
 
 ### Matching, Concurrency, and Runtime State
 
-| Crate | Purpose in VigilBaseline |
+| Crate | Purpose in Vigil Baseline |
 |-------|------------------|
 | `globset` | compiled glob matching for exclusions |
 | `crossbeam-channel` | thread communication |
@@ -105,14 +105,14 @@ This list matches direct dependencies in `Cargo.toml`.
 
 ### Utility
 
-| Crate | Purpose in VigilBaseline |
+| Crate | Purpose in Vigil Baseline |
 |-------|------------------|
 | `chrono` | timestamps and UTC handling |
 | `thiserror` | typed error definitions |
 
 ### WAL Serialization and Integrity
 
-| Crate | Purpose in VigilBaseline |
+| Crate | Purpose in Vigil Baseline |
 |-------|------------------|
 | `rmp-serde` | MessagePack serialization for WAL entry payloads |
 | `crc32fast` | CRC32 checksums for WAL entry crash recovery |
@@ -127,7 +127,7 @@ Removed from this table because they are not direct dependencies:
 
 ## Security Model
 
-VigilBaseline is a local integrity monitor.
+Vigil Baseline is a local integrity monitor.
 
 It does:
 - detect filesystem state changes against baseline
@@ -171,8 +171,8 @@ It does not:
 |--------|------------------|
 | kernel compromise | user-space observer loses trust base |
 | physical device compromise | not a physical control |
-| process behavior analytics | VigilBaseline tracks structure, not behavior |
-| exploit prevention | VigilBaseline reports, it does not block |
+| process behavior analytics | Vigil Baseline tracks structure, not behavior |
+| exploit prevention | Vigil Baseline reports, it does not block |
 
 ---
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=VigilBaseline scheduled integrity scan
+Description=Vigil Baseline scheduled integrity scan
 
 [Service]
 Type=oneshot

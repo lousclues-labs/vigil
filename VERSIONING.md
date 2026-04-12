@@ -1,7 +1,7 @@
 # Versioning Policy
 
 Version numbers are behavior contracts.
-VigilBaseline uses Semantic Versioning with explicit pre-1.0 rules.
+Vigil Baseline uses Semantic Versioning with explicit pre-1.0 rules.
 
 ---
 

@@ -1,4 +1,4 @@
-/// VigilBaseline Chaos Engineering Test Suite
+/// Vigil Baseline Chaos Engineering Test Suite
 ///
 /// Validates resilience under real environmental faults:
 /// filesystem churn, time anomalies, resource starvation, and crash recovery.
