@@ -22,7 +22,7 @@ pub mod wal;
 pub mod watch_index;
 pub mod worker;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -61,6 +61,10 @@ pub struct Daemon {
     pub audit_db_identity: Option<db::DbFileIdentity>,
     /// HMAC key loaded once at startup; never re-read from disk.
     pub startup_hmac_key: Option<zeroize::Zeroizing<Vec<u8>>>,
+    /// Whether a maintenance window is currently active.
+    pub maintenance_active: Arc<AtomicBool>,
+    /// Timestamp (epoch seconds) when maintenance window was entered; 0 if inactive.
+    pub maintenance_entered_at: Arc<AtomicI64>,
 }
 
 impl Daemon {
@@ -124,6 +128,8 @@ impl Daemon {
             baseline_db_identity,
             audit_db_identity,
             startup_hmac_key,
+            maintenance_active: Arc::new(AtomicBool::new(false)),
+            maintenance_entered_at: Arc::new(AtomicI64::new(0)),
         })
     }
 
@@ -548,6 +554,7 @@ impl DaemonRuntime {
             backpressure: backpressure.clone(),
             baseline_generation: baseline_generation.clone(),
             wal: wal.clone(),
+            maintenance_active: daemon.maintenance_active.clone(),
         });
         send_watchdog_heartbeat();
 
@@ -591,6 +598,8 @@ impl DaemonRuntime {
             reconfigure_tx: monitor_handle.reconfigure_tx.clone(),
             wal_identity,
             wal_path: wal_path_for_coord,
+            maintenance_active: daemon.maintenance_active.clone(),
+            maintenance_entered_at: daemon.maintenance_entered_at.clone(),
         })?;
         send_watchdog_heartbeat();
 
@@ -612,6 +621,7 @@ impl DaemonRuntime {
             scan_trigger_rx,
             scan_baseline_conn,
             wal.clone(),
+            daemon.maintenance_active.clone(),
         )?;
 
         send_watchdog_heartbeat();
@@ -632,6 +642,8 @@ impl DaemonRuntime {
                 baseline_conn: control_baseline_conn,
                 hmac_key: daemon.startup_hmac_key.clone(),
                 auth_enabled: daemon.startup_hmac_key.is_some(),
+                maintenance_active: daemon.maintenance_active.clone(),
+                maintenance_entered_at: daemon.maintenance_entered_at.clone(),
             };
             Some(control::spawn(
                 cfg.daemon.control_socket.clone(),

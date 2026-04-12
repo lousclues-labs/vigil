@@ -65,6 +65,9 @@ Package hooks were missing or failed.
 # After a package update that triggered many alerts:
 vigil check --accept
 
+# Or refresh the baseline to match current state:
+vigil baseline refresh
+
 # Or if you want a full baseline rebuild:
 vigil init --force
 ```
@@ -81,11 +84,20 @@ If hooks fail and package operations already ran, use this recovery path.
 # After package update with missing hooks:
 vigil check --accept
 
+# Or refresh the baseline:
+vigil baseline refresh
+
 # Or full baseline rebuild:
 vigil init --force
 ```
 
 Then install hooks from `hooks/` so this does not repeat.
+
+You can verify the current maintenance window state with:
+
+```bash
+vigil maintenance status
+```
 
 ---
 

@@ -1,7 +1,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -43,6 +43,8 @@ pub struct ControlHandler {
     pub baseline_conn: rusqlite::Connection,
     pub hmac_key: Option<Zeroizing<Vec<u8>>>,
     pub auth_enabled: bool,
+    pub maintenance_active: Arc<AtomicBool>,
+    pub maintenance_entered_at: Arc<AtomicI64>,
 }
 
 pub fn spawn(
@@ -238,7 +240,10 @@ impl ControlHandler {
 
     fn dispatch(&self, method: &str, request: &serde_json::Value) -> serde_json::Value {
         // Log and count security-relevant control socket commands
-        if matches!(method, "reload" | "scan") {
+        if matches!(
+            method,
+            "reload" | "scan" | "maintenance_enter" | "maintenance_exit" | "baseline_refresh"
+        ) {
             log_control_action(method, &self.metrics);
         }
 
@@ -248,6 +253,9 @@ impl ControlHandler {
             "reload" => self.handle_reload(),
             "scan" => self.handle_scan(request),
             "metrics_prometheus" => self.handle_metrics_prometheus(),
+            "maintenance_enter" => self.handle_maintenance_enter(),
+            "maintenance_exit" => self.handle_maintenance_exit(),
+            "baseline_refresh" => self.handle_baseline_refresh(),
             _ => serde_json::json!({"ok": false, "error": format!("unknown method: {}", method)}),
         }
     }
@@ -265,6 +273,7 @@ impl ControlHandler {
                 "state": state_str,
                 "uptime_seconds": uptime_seconds,
                 "version": env!("CARGO_PKG_VERSION"),
+                "maintenance_window": self.maintenance_active.load(Ordering::Acquire),
             },
             "metrics": {
                 "events_received": snap.events_received,
@@ -335,6 +344,41 @@ impl ControlHandler {
             "ok": true,
             "text": snap.to_prometheus(),
         })
+    }
+
+    fn handle_maintenance_enter(&self) -> serde_json::Value {
+        self.maintenance_active.store(true, Ordering::Release);
+        self.maintenance_entered_at
+            .store(chrono::Utc::now().timestamp(), Ordering::Release);
+        serde_json::json!({"ok": true, "message": "maintenance window entered"})
+    }
+
+    fn handle_maintenance_exit(&self) -> serde_json::Value {
+        self.maintenance_active.store(false, Ordering::Release);
+        self.maintenance_entered_at.store(0, Ordering::Release);
+        serde_json::json!({"ok": true, "message": "maintenance window exited"})
+    }
+
+    fn handle_baseline_refresh(&self) -> serde_json::Value {
+        let cfg = match crate::config::load_config(None) {
+            Ok(c) => c,
+            Err(e) => {
+                return serde_json::json!({"ok": false, "error": format!("config load failed: {}", e)});
+            }
+        };
+        match crate::scanner::refresh_baseline(&self.baseline_conn, &cfg) {
+            Ok(result) => {
+                serde_json::json!({
+                    "ok": true,
+                    "message": "baseline refreshed",
+                    "total_count": result.total_count,
+                    "duration_ms": result.duration.as_millis() as u64,
+                })
+            }
+            Err(e) => {
+                serde_json::json!({"ok": false, "error": format!("baseline refresh failed: {}", e)})
+            }
+        }
     }
 }
 
@@ -422,6 +466,8 @@ mod tests {
             baseline_conn: crate::db::open_baseline_db_readonly(&db_path).unwrap(),
             hmac_key: None,
             auth_enabled: false,
+            maintenance_active: Arc::new(AtomicBool::new(false)),
+            maintenance_entered_at: Arc::new(AtomicI64::new(0)),
         };
         let handle = spawn(socket_path.clone(), handler, shutdown.clone()).unwrap();
 
@@ -538,6 +584,8 @@ mod tests {
             },
             hmac_key: None,
             auth_enabled: false,
+            maintenance_active: Arc::new(AtomicBool::new(false)),
+            maintenance_entered_at: Arc::new(AtomicI64::new(0)),
         };
 
         let result = handler.dispatch("status", &serde_json::json!({"method": "status"}));
@@ -569,6 +617,8 @@ mod tests {
             },
             hmac_key: None,
             auth_enabled: false,
+            maintenance_active: Arc::new(AtomicBool::new(false)),
+            maintenance_entered_at: Arc::new(AtomicI64::new(0)),
         };
 
         handler.dispatch("reload", &serde_json::json!({"method": "reload"}));

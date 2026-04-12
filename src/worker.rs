@@ -60,6 +60,7 @@ pub struct WorkerSpawnArgs {
     pub backpressure: Arc<AtomicBool>,
     pub baseline_generation: Arc<AtomicU64>,
     pub wal: Option<Arc<DetectionWal>>,
+    pub maintenance_active: Arc<AtomicBool>,
 }
 
 /// Per-worker processing context holding connection, cache, and filter state.
@@ -75,6 +76,7 @@ struct WorkerContext {
     drain_counter: u32,
     last_drain: std::time::Instant,
     wal: Option<Arc<DetectionWal>>,
+    maintenance_active: Arc<AtomicBool>,
 }
 
 impl WorkerContext {
@@ -155,7 +157,7 @@ impl WorkerContext {
                         process: event.process.clone(),
                         package: None,
                         package_update: false,
-                        maintenance_window: false,
+                        maintenance_window: self.maintenance_active.load(Ordering::Acquire),
                         source: DetectionSource::Panic,
                     };
                     let _ = wal.append(&panic_record);
@@ -190,7 +192,7 @@ impl WorkerContext {
             if let Some(cr) = self.process_safe(&synthetic) {
                 if let Some(ref wal) = self.wal {
                     let record =
-                        DetectionRecord::from_change_result(&cr, false, DetectionSource::Debounce);
+                        DetectionRecord::from_change_result(&cr, self.maintenance_active.load(Ordering::Acquire), DetectionSource::Debounce);
                     match wal.append(&record) {
                         Ok(_) => {
                             self.metrics
@@ -207,14 +209,14 @@ impl WorkerContext {
                                 .fetch_add(1, Ordering::Relaxed);
                             alerts.push(AlertPayload {
                                 change: cr,
-                                maintenance_window: false,
+                                maintenance_window: self.maintenance_active.load(Ordering::Acquire),
                             });
                         }
                     }
                 } else {
                     alerts.push(AlertPayload {
                         change: cr,
-                        maintenance_window: false,
+                        maintenance_window: self.maintenance_active.load(Ordering::Acquire),
                     });
                 }
             }
@@ -282,6 +284,7 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
         let backpressure = args.backpressure.clone();
         let generation = args.baseline_generation.clone();
         let wal = args.wal.clone();
+        let maintenance_active = args.maintenance_active.clone();
 
         let handle_result = std::thread::Builder::new()
             .name(format!("vigil-worker-{}", i))
@@ -308,6 +311,7 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
                     drain_counter: 0,
                     last_drain: std::time::Instant::now(),
                     wal,
+                    maintenance_active,
                 };
 
                 while !shutdown.load(Ordering::Acquire) {
@@ -331,7 +335,7 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
                                 if let Some(ref wal) = ctx.wal {
                                     let record = DetectionRecord::from_change_result(
                                         &cr,
-                                        false,
+                                        ctx.maintenance_active.load(Ordering::Acquire),
                                         DetectionSource::Realtime,
                                     );
                                     match wal.append(&record) {
@@ -351,7 +355,7 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
                                             if alert_tx
                                                 .send(AlertPayload {
                                                     change: cr,
-                                                    maintenance_window: false,
+                                                    maintenance_window: ctx.maintenance_active.load(Ordering::Acquire),
                                                 })
                                                 .is_err()
                                             {
@@ -362,7 +366,7 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
                                 } else if alert_tx
                                     .send(AlertPayload {
                                         change: cr,
-                                        maintenance_window: false,
+                                        maintenance_window: ctx.maintenance_active.load(Ordering::Acquire),
                                     })
                                     .is_err()
                                 {

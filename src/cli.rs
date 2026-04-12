@@ -100,6 +100,18 @@ pub enum Command {
         action: LogAction,
     },
 
+    /// Maintenance window operations (for package manager hooks)
+    Maintenance {
+        #[command(subcommand)]
+        action: MaintenanceAction,
+    },
+
+    /// Baseline operations
+    Baseline {
+        #[command(subcommand)]
+        action: BaselineAction,
+    },
+
     /// Print version
     Version,
 }
@@ -224,6 +236,34 @@ pub enum LogAction {
         /// Show only entries after this time (e.g. '1h', '30m', '2026-04-07')
         #[arg(long)]
         since: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum MaintenanceAction {
+    /// Enter maintenance window (suppress low-severity package alerts)
+    Enter {
+        /// Suppress output
+        #[arg(long)]
+        quiet: bool,
+    },
+    /// Exit maintenance window
+    Exit {
+        /// Suppress output
+        #[arg(long)]
+        quiet: bool,
+    },
+    /// Show current maintenance window status
+    Status,
+}
+
+#[derive(Subcommand)]
+pub enum BaselineAction {
+    /// Refresh baseline from configured watch paths
+    Refresh {
+        /// Suppress output
+        #[arg(long)]
+        quiet: bool,
     },
 }
 
@@ -482,6 +522,66 @@ mod tests {
                 assert_eq!(period, "7d");
             }
             _ => panic!("expected audit stats"),
+        }
+    }
+
+    #[test]
+    fn maintenance_enter_quiet_parses() {
+        let cli = Cli::try_parse_from(["vigil", "maintenance", "enter", "--quiet"])
+            .expect("parse maintenance enter --quiet");
+        match cli.command {
+            Command::Maintenance {
+                action: MaintenanceAction::Enter { quiet },
+            } => assert!(quiet),
+            _ => panic!("expected maintenance enter"),
+        }
+    }
+
+    #[test]
+    fn maintenance_exit_parses() {
+        let cli =
+            Cli::try_parse_from(["vigil", "maintenance", "exit"]).expect("parse maintenance exit");
+        match cli.command {
+            Command::Maintenance {
+                action: MaintenanceAction::Exit { quiet },
+            } => assert!(!quiet),
+            _ => panic!("expected maintenance exit"),
+        }
+    }
+
+    #[test]
+    fn maintenance_status_parses() {
+        let cli = Cli::try_parse_from(["vigil", "maintenance", "status"])
+            .expect("parse maintenance status");
+        match cli.command {
+            Command::Maintenance {
+                action: MaintenanceAction::Status,
+            } => {}
+            _ => panic!("expected maintenance status"),
+        }
+    }
+
+    #[test]
+    fn baseline_refresh_quiet_parses() {
+        let cli = Cli::try_parse_from(["vigil", "baseline", "refresh", "--quiet"])
+            .expect("parse baseline refresh --quiet");
+        match cli.command {
+            Command::Baseline {
+                action: BaselineAction::Refresh { quiet },
+            } => assert!(quiet),
+            _ => panic!("expected baseline refresh"),
+        }
+    }
+
+    #[test]
+    fn baseline_refresh_parses() {
+        let cli = Cli::try_parse_from(["vigil", "baseline", "refresh"])
+            .expect("parse baseline refresh");
+        match cli.command {
+            Command::Baseline {
+                action: BaselineAction::Refresh { quiet },
+            } => assert!(!quiet),
+            _ => panic!("expected baseline refresh"),
         }
     }
 }

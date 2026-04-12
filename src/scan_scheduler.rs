@@ -22,6 +22,7 @@ pub fn spawn(
     scan_trigger_rx: crossbeam_channel::Receiver<ScanRequest>,
     baseline_conn: rusqlite::Connection,
     wal: Option<Arc<DetectionWal>>,
+    maintenance_active: Arc<AtomicBool>,
 ) -> crate::Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name("vigil-scan-scheduler".into())
@@ -37,7 +38,7 @@ pub fn spawn(
                                     if let Some(ref wal) = wal {
                                         let record = DetectionRecord::from_change_result(
                                             &change,
-                                            false,
+                                            maintenance_active.load(Ordering::Acquire),
                                             DetectionSource::OnDemandScan,
                                         );
                                         match wal.append(&record) {
@@ -53,14 +54,14 @@ pub fn spawn(
                                                 );
                                                 let _ = alert_tx.send(AlertPayload {
                                                     change,
-                                                    maintenance_window: false,
+                                                    maintenance_window: maintenance_active.load(Ordering::Acquire),
                                                 });
                                             }
                                         }
                                     } else {
                                         let _ = alert_tx.send(AlertPayload {
                                             change,
-                                            maintenance_window: false,
+                                            maintenance_window: maintenance_active.load(Ordering::Acquire),
                                         });
                                     }
                                 }
@@ -141,7 +142,7 @@ pub fn spawn(
                                 if let Some(ref wal) = wal {
                                     let record = DetectionRecord::from_change_result(
                                         &change,
-                                        false,
+                                        maintenance_active.load(Ordering::Acquire),
                                         DetectionSource::ScheduledScan,
                                     );
                                     match wal.append(&record) {
@@ -157,14 +158,14 @@ pub fn spawn(
                                             );
                                             let _ = alert_tx.send(AlertPayload {
                                                 change,
-                                                maintenance_window: false,
+                                                maintenance_window: maintenance_active.load(Ordering::Acquire),
                                             });
                                         }
                                     }
                                 } else {
                                     let _ = alert_tx.send(AlertPayload {
                                         change,
-                                        maintenance_window: false,
+                                        maintenance_window: maintenance_active.load(Ordering::Acquire),
                                     });
                                 }
                             }

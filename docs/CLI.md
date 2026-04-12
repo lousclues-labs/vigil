@@ -33,6 +33,8 @@ vigil [GLOBAL_OPTIONS] <COMMAND> [COMMAND_OPTIONS]
 | `config` | show or validate config |
 | `setup` | HMAC key and socket configuration |
 | `log` | show daemon log entries (errors, warnings, operational messages) |
+| `maintenance` | maintenance window operations (for package manager hooks) |
+| `baseline` | baseline operations (refresh) |
 | `version` | print version string |
 
 ---
@@ -418,6 +420,131 @@ Notes:
 - Both subcommands require access to the systemd journal. Use `sudo` if your user is not in the `systemd-journal` group.
 - Output uses `journalctl -o short-iso` format.
 - `--follow` streams output until interrupted with Ctrl+C.
+
+---
+
+## `maintenance`
+
+Maintenance window operations. Used by package manager hooks to suppress
+low-severity alerts during system upgrades.
+
+```bash
+vigil maintenance <SUBCOMMAND>
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `enter` | enter maintenance window (suppress low-severity package alerts) |
+| `exit` | exit maintenance window |
+| `status` | show current maintenance window status |
+
+### `maintenance enter`
+
+Enter maintenance window on the running daemon. During maintenance,
+Low and Medium severity alerts for package-owned files are suppressed.
+Critical and High alerts still pass through with `maintenance_window=true`.
+
+```bash
+vigil maintenance enter [--quiet]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--quiet` | suppress all output; exit 0 even if the daemon is not running |
+
+Examples:
+
+```bash
+vigil maintenance enter
+vigil maintenance enter --quiet
+```
+
+### `maintenance exit`
+
+Exit maintenance window on the running daemon.
+
+```bash
+vigil maintenance exit [--quiet]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--quiet` | suppress all output; exit 0 even if the daemon is not running |
+
+Examples:
+
+```bash
+vigil maintenance exit
+vigil maintenance exit --quiet
+```
+
+### `maintenance status`
+
+Show whether a maintenance window is currently active.
+
+```bash
+vigil maintenance status
+```
+
+Example output:
+
+```
+Maintenance window: active
+Maintenance window: inactive
+```
+
+Notes:
+- `--quiet` mode is designed for package manager hooks. Hooks must never
+  block package operations — if the daemon is down, the command exits 0
+  silently instead of producing an error.
+- A safety timeout automatically exits maintenance after 30 minutes if
+  the post-hook fails or the package manager crashes.
+- The maintenance window state is visible in `vigil status` output under
+  the `daemon.maintenance_window` field.
+
+---
+
+## `baseline`
+
+Baseline operations.
+
+```bash
+vigil baseline <SUBCOMMAND>
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `refresh` | refresh baseline from configured watch paths |
+
+### `baseline refresh`
+
+Rebuild the baseline from all configured watch paths. If the daemon is
+running, uses the control socket for a live refresh. If the daemon is not
+running, falls back to direct database access.
+
+```bash
+vigil baseline refresh [--quiet]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--quiet` | suppress all output; exit 0 even if both daemon and DB access fail |
+
+Examples:
+
+```bash
+vigil baseline refresh
+vigil baseline refresh --quiet
+```
+
+Notes:
+- When invoked via control socket, the refresh uses the daemon's existing
+  database connection (no TOCTOU risk from re-opening by path).
+- When falling back to direct DB access, opens the baseline database,
+  calls `build_initial_baseline()`, and recomputes the HMAC if signing
+  is enabled.
+- `--quiet` mode is designed for package manager hooks. On any failure,
+  the command exits 0 silently.
 
 ---
 

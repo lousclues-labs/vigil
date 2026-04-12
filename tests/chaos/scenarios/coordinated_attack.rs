@@ -110,6 +110,8 @@ fn run_coordinated_attack(seed: u64) {
         reconfigure_tx: None,
         wal_identity: DbFileIdentity::from_path(&wal_path).ok(),
         wal_path: Some(wal_path.clone()),
+        maintenance_active: Arc::new(AtomicBool::new(false)),
+        maintenance_entered_at: Arc::new(std::sync::atomic::AtomicI64::new(0)),
     };
     let coord_handle = coordinator::spawn(coord_cfg).unwrap();
 
@@ -127,6 +129,7 @@ fn run_coordinated_attack(seed: u64) {
         backpressure: backpressure.clone(),
         baseline_generation: baseline_generation.clone(),
         wal: Some(wal.clone()),
+        maintenance_active: Arc::new(AtomicBool::new(false)),
     };
     let worker_handles = worker::spawn_workers(worker_args);
 

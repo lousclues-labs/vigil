@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,6 +37,8 @@ pub struct CoordinatorConfig {
     pub reconfigure_tx: Option<crossbeam_channel::Sender<Vec<std::path::PathBuf>>>,
     pub wal_identity: Option<crate::db::DbFileIdentity>,
     pub wal_path: Option<std::path::PathBuf>,
+    pub maintenance_active: Arc<AtomicBool>,
+    pub maintenance_entered_at: Arc<AtomicI64>,
 }
 
 struct Coordinator {
@@ -55,6 +57,8 @@ struct Coordinator {
     reconfigure_tx: Option<crossbeam_channel::Sender<Vec<std::path::PathBuf>>>,
     wal_identity: Option<crate::db::DbFileIdentity>,
     wal_path: Option<std::path::PathBuf>,
+    maintenance_active: Arc<AtomicBool>,
+    maintenance_entered_at: Arc<AtomicI64>,
     last_config_hash: Option<String>,
     initial_mounts: std::collections::HashSet<std::path::PathBuf>,
     last_tick: std::time::Instant,
@@ -80,6 +84,8 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
         reconfigure_tx: cfg.reconfigure_tx,
         wal_identity: cfg.wal_identity,
         wal_path: cfg.wal_path,
+        maintenance_active: cfg.maintenance_active,
+        maintenance_entered_at: cfg.maintenance_entered_at,
         last_config_hash: config_file_hash(),
         initial_mounts: crate::monitor::fanotify::parse_mountinfo()
             .unwrap_or_default()
@@ -131,6 +137,7 @@ impl Coordinator {
         self.check_backpressure();
         self.check_event_drops();
         self.maybe_checkpoint_wal();
+        self.check_maintenance_timeout();
         self.last_tick = std::time::Instant::now();
     }
 
@@ -459,6 +466,27 @@ impl Coordinator {
     fn notify_watchdog(&self) {
         if is_notify_socket_safe() {
             let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+        }
+    }
+
+    fn check_maintenance_timeout(&self) {
+        if !self.maintenance_active.load(Ordering::Acquire) {
+            return;
+        }
+        let entered_at = self.maintenance_entered_at.load(Ordering::Acquire);
+        if entered_at == 0 {
+            return;
+        }
+        let now = Utc::now().timestamp();
+        let elapsed_secs = now - entered_at;
+        // Auto-exit maintenance after 30 minutes (safety timeout)
+        if elapsed_secs > 1800 {
+            tracing::warn!(
+                elapsed_secs = elapsed_secs,
+                "maintenance window exceeded 30-minute safety timeout — auto-exiting"
+            );
+            self.maintenance_active.store(false, Ordering::Release);
+            self.maintenance_entered_at.store(0, Ordering::Release);
         }
     }
 }

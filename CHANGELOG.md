@@ -4,6 +4,48 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-04-12
+
+### Release Summary
+- Reconnects the `vigil maintenance` and `vigil baseline` CLI subcommands that were removed during a documentation cleanup (v0.18.1) but are still invoked by every package manager hook (`hooks/pacman/vigil-pre.hook`, `hooks/pacman/vigil-post.hook`, `hooks/apt/99vigil`). Previously, every `pacman -Syu` or `apt upgrade` on a system with Vigil hooks installed produced `error: unrecognized subcommand 'maintenance'` / `error: unrecognized subcommand 'baseline'`. The internal maintenance window suppression logic and baseline refresh infrastructure already existed but were completely disconnected from the CLI. This release wires them together: a shared `maintenance_active` atomic flag flows from the daemon through workers, scan scheduler, and coordinator; control socket methods (`maintenance_enter`, `maintenance_exit`, `baseline_refresh`) expose the flag to the CLI; and the CLI handlers implement graceful degradation (`--quiet` mode exits 0 on any failure) so hooks never block package operations. A 30-minute safety timeout auto-exits stuck maintenance windows.
+
+### Added
+- **cli:** `vigil maintenance enter [--quiet]` — enters maintenance window on the running daemon via control socket. During maintenance, the existing `AlertDispatcher::is_suppressed()` logic suppresses Low/Medium package-owned changes while passing Critical/High through with `maintenance_window=true`. With `--quiet`, exits 0 silently on any failure (daemon not running, no control socket, etc.) so package manager hooks never block upgrades (`src/cli.rs`, `src/main.rs`).
+- **cli:** `vigil maintenance exit [--quiet]` — exits maintenance window on the running daemon. Same `--quiet` graceful degradation semantics (`src/cli.rs`, `src/main.rs`).
+- **cli:** `vigil maintenance status` — queries daemon status via control socket and reports whether a maintenance window is currently active. Uses the existing `status` control method's new `maintenance_window` field (`src/cli.rs`, `src/main.rs`).
+- **cli:** `vigil baseline refresh [--quiet]` — refreshes the baseline from configured watch paths. Tries the running daemon's control socket first (`baseline_refresh` method); if the daemon is not running, falls back to direct database access via `scanner::refresh_baseline()`. With `--quiet`, exits 0 silently on any failure. This dual-path design means hooks work both when the daemon is running and when it isn't (`src/cli.rs`, `src/main.rs`).
+- **control:** `maintenance_enter` method — sets the shared `maintenance_active` atomic flag to `true` and records the entry timestamp in `maintenance_entered_at`. Security-logged via `log_control_action()` (`src/control.rs`).
+- **control:** `maintenance_exit` method — clears `maintenance_active` and resets `maintenance_entered_at` to 0. Security-logged via `log_control_action()` (`src/control.rs`).
+- **control:** `baseline_refresh` method — loads config and calls `scanner::refresh_baseline()` using the control handler's startup database connection. Returns entry count and duration. Security-logged via `log_control_action()` (`src/control.rs`).
+- **daemon:** `maintenance_active: Arc<AtomicBool>` and `maintenance_entered_at: Arc<AtomicI64>` fields added to `Daemon` struct. Initialized to `false`/`0` in `Daemon::from_config()`. Threaded through `DaemonRuntime::start()` to `ControlHandler`, `WorkerSpawnArgs`, `scan_scheduler::spawn()`, and `CoordinatorConfig` (`src/lib.rs`).
+- **coordinator:** maintenance timeout safety mechanism — `check_maintenance_timeout()` runs on every coordinator tick (every 60 seconds). If `maintenance_active` has been `true` for longer than 30 minutes, auto-exits maintenance and logs a warning. Prevents stuck maintenance windows when a post-hook fails or the package manager crashes (`src/coordinator.rs`).
+
+### Changed
+- **worker:** `WorkerSpawnArgs` and `WorkerContext` gain `maintenance_active: Arc<AtomicBool>` field. All 5 hardcoded `maintenance_window: false` values in the worker event processing paths (panic handler, debounce WAL append, debounce alert fallback, realtime WAL append, realtime alert fallback) replaced with `self.maintenance_active.load(Ordering::Acquire)` / `ctx.maintenance_active.load(Ordering::Acquire)`. When the daemon enters a maintenance window, all detection records and alert payloads produced by workers now correctly carry `maintenance_window: true` (`src/worker.rs`).
+- **scan_scheduler:** `spawn()` gains `maintenance_active: Arc<AtomicBool>` parameter. All 4 hardcoded `maintenance_window: false` values (on-demand scan WAL append, on-demand scan alert fallback, scheduled scan WAL append, scheduled scan alert fallback) replaced with maintenance flag reads. All `DetectionRecord::from_change_result()` calls pass the flag value instead of `false` (`src/scan_scheduler.rs`).
+- **control:** `ControlHandler` gains `maintenance_active: Arc<AtomicBool>` and `maintenance_entered_at: Arc<AtomicI64>` fields. `dispatch()` now logs `maintenance_enter`, `maintenance_exit`, and `baseline_refresh` as security-relevant commands alongside `reload` and `scan` (`src/control.rs`).
+- **control:** `handle_status()` response now includes `"maintenance_window": <bool>` in the `daemon` object, enabling `vigil maintenance status` and enriching `vigil status` output (`src/control.rs`).
+- **coordinator:** `CoordinatorConfig` and `Coordinator` structs gain `maintenance_active` and `maintenance_entered_at` fields. `tick()` now calls `check_maintenance_timeout()` after existing checks (`src/coordinator.rs`).
+
+### Fixed
+- **hooks:** `vigil maintenance enter --quiet`, `vigil baseline refresh --quiet`, and `vigil maintenance exit --quiet` now work. Previously, every `pacman -Syu` and `apt upgrade` on systems with Vigil hooks installed failed with `error: unrecognized subcommand`. The hooks themselves (`hooks/pacman/vigil-pre.hook`, `hooks/pacman/vigil-post.hook`, `hooks/apt/99vigil`) were correct and required no changes — only the CLI subcommands were missing.
+- **worker:** detection records during maintenance windows now correctly set `maintenance_window: true`. Previously, all worker-produced records hardcoded `maintenance_window: false` regardless of daemon state, meaning the existing suppression logic in `AlertDispatcher::is_suppressed()` and `SinkRunner::is_suppressed()` could never activate during real maintenance windows.
+- **scan_scheduler:** same fix as workers — scan-produced detection records now carry the correct maintenance window state instead of hardcoded `false`.
+
+### Tests
+- **cli (5 new tests):** `maintenance_enter_quiet_parses`, `maintenance_exit_parses`, `maintenance_status_parses`, `baseline_refresh_quiet_parses`, `baseline_refresh_parses` — verify `Cli::try_parse_from` for all new subcommand forms (`src/cli.rs`).
+- **chaos (5 files updated):** `coordinator_adversarial_tick`, `clock_warfare`, `config_reload_storm`, `coordinated_attack`, `worker_pool_chaos` — updated `CoordinatorConfig` and `WorkerSpawnArgs` constructors with new `maintenance_active` / `maintenance_entered_at` fields (`tests/chaos/scenarios/`).
+- All 215 tests pass (up from 209), `cargo clippy --all-targets -- -D warnings` clean, `cd fuzz && cargo check` clean.
+
+### Validation
+- `cargo check` succeeds with 0 warnings.
+- `cargo test --all-targets` passes all 215 tests (0 failures).
+- `cargo clippy --all-targets -- -D warnings` produces 0 errors and 0 warnings.
+- `cd fuzz && cargo check` compiles cleanly.
+- Package manager hooks verified: `hooks/pacman/vigil-pre.hook` calls `vigil maintenance enter --quiet`, `hooks/pacman/vigil-post.hook` calls `vigil baseline refresh --quiet && vigil maintenance exit --quiet`, `hooks/apt/99vigil` calls both sequences. All commands now parse and dispatch correctly.
+- Existing maintenance window suppression infrastructure (`AlertDispatcher::is_suppressed`, `SinkRunner::is_suppressed`, desktop notification `[during maintenance window]` suffix, audit DB `maintenance`/`suppressed` columns) is now reachable via the CLI.
+- VIGIL-VULN-014 safety invariant preserved: Critical/High alerts are never fully suppressed during maintenance — they pass through with `maintenance_window=true`.
+
 ## [0.29.3] - 2026-04-11
 
 ### Changed

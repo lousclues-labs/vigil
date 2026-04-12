@@ -79,6 +79,8 @@ fn run_config_reload_storm(seed: u64) {
         reconfigure_tx: None,
         wal_identity: None,
         wal_path: None,
+        maintenance_active: Arc::new(AtomicBool::new(false)),
+        maintenance_entered_at: Arc::new(std::sync::atomic::AtomicI64::new(0)),
     };
 
     let handle = coordinator::spawn(coord_cfg).unwrap();

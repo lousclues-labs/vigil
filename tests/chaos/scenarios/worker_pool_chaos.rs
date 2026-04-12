@@ -91,6 +91,7 @@ fn run_worker_pool_chaos(seed: u64) {
         backpressure: backpressure.clone(),
         baseline_generation: baseline_generation.clone(),
         wal: Some(wal.clone()),
+        maintenance_active: Arc::new(AtomicBool::new(false)),
     };
 
     // Spawn workers.

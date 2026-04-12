@@ -7,7 +7,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use clap::Parser;
 
-use vigil::cli::{AuditAction, Cli, Command, ConfigAction, LogAction, SetupAction};
+use vigil::cli::{AuditAction, BaselineAction, Cli, Command, ConfigAction, LogAction, MaintenanceAction, SetupAction};
 use vigil::doctor;
 use vigil::types::{Change, OutputFormat, ScanMode};
 
@@ -90,6 +90,14 @@ fn run(cli: Cli) -> vigil::Result<i32> {
         }
         Command::Log { action } => {
             cmd_log(action)?;
+            Ok(0)
+        }
+        Command::Maintenance { action } => {
+            cmd_maintenance(config_path.as_deref(), action)?;
+            Ok(0)
+        }
+        Command::Baseline { action } => {
+            cmd_baseline(config_path.as_deref(), action)?;
             Ok(0)
         }
         Command::Version => {
@@ -1944,6 +1952,146 @@ fn command_exists(cmd: &str) -> bool {
     std::env::var_os("PATH")
         .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(cmd).is_file()))
         .unwrap_or(false)
+}
+
+fn cmd_maintenance(config_path: Option<&Path>, action: MaintenanceAction) -> vigil::Result<()> {
+    let quiet = match &action {
+        MaintenanceAction::Enter { quiet } => *quiet,
+        MaintenanceAction::Exit { quiet } => *quiet,
+        MaintenanceAction::Status => false,
+    };
+
+    let method = match &action {
+        MaintenanceAction::Enter { .. } => "maintenance_enter",
+        MaintenanceAction::Exit { .. } => "maintenance_exit",
+        MaintenanceAction::Status => "status",
+    };
+
+    let cfg = match vigil::config::load_config(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            if quiet {
+                return Ok(());
+            }
+            return Err(e);
+        }
+    };
+
+    if cfg.daemon.control_socket.as_os_str().is_empty() {
+        if quiet {
+            return Ok(());
+        }
+        return Err(vigil::VigilError::Config(
+            "control_socket not configured".into(),
+        ));
+    }
+
+    let request = format!(r#"{{"method":"{}"}}"#, method);
+    match query_control_socket(&cfg.daemon.control_socket, &request) {
+        Ok(response) => {
+            if !quiet {
+                match &action {
+                    MaintenanceAction::Enter { .. } => {
+                        println!("Maintenance window entered.");
+                    }
+                    MaintenanceAction::Exit { .. } => {
+                        println!("Maintenance window exited.");
+                    }
+                    MaintenanceAction::Status => {
+                        let maint = response
+                            .pointer("/daemon/maintenance_window")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        if maint {
+                            println!("Maintenance window: active");
+                        } else {
+                            println!("Maintenance window: inactive");
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if quiet {
+                // Hooks must not block package operations
+                return Ok(());
+            }
+            Err(vigil::VigilError::Daemon(format!(
+                "cannot connect to daemon: {} (is vigild running?)",
+                e
+            )))
+        }
+    }
+}
+
+fn cmd_baseline(config_path: Option<&Path>, action: BaselineAction) -> vigil::Result<()> {
+    match action {
+        BaselineAction::Refresh { quiet } => cmd_baseline_refresh(config_path, quiet),
+    }
+}
+
+fn cmd_baseline_refresh(config_path: Option<&Path>, quiet: bool) -> vigil::Result<()> {
+    let cfg = match vigil::config::load_config(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            if quiet {
+                return Ok(());
+            }
+            return Err(e);
+        }
+    };
+
+    // Try control socket first (daemon is running)
+    if !cfg.daemon.control_socket.as_os_str().is_empty() {
+        let request = r#"{"method":"baseline_refresh"}"#;
+        match query_control_socket(&cfg.daemon.control_socket, request) {
+            Ok(response) => {
+                if !quiet {
+                    let count = response
+                        .get("total_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    println!("Baseline refreshed ({} files).", format_count(count));
+                }
+                return Ok(());
+            }
+            Err(_) => {
+                // Daemon not running — fall through to direct DB access
+            }
+        }
+    }
+
+    // Fallback: direct DB access (daemon not running)
+    let conn = match vigil::db::open_baseline_db(&cfg) {
+        Ok(c) => c,
+        Err(e) => {
+            if quiet {
+                return Ok(());
+            }
+            return Err(e);
+        }
+    };
+
+    match vigil::scanner::refresh_baseline(&conn, &cfg) {
+        Ok(result) => {
+            vigil::db::baseline_ops::set_config_state(&conn, "baseline_initialized", "true")?;
+            if !quiet {
+                println!(
+                    "Baseline refreshed ({} files in {:.1}s).",
+                    format_count(result.total_count),
+                    result.duration.as_secs_f64()
+                );
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if quiet {
+                return Ok(());
+            }
+            Err(e)
+        }
+    }
 }
 
 fn query_control_socket(
