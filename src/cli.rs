@@ -575,8 +575,8 @@ mod tests {
 
     #[test]
     fn baseline_refresh_parses() {
-        let cli = Cli::try_parse_from(["vigil", "baseline", "refresh"])
-            .expect("parse baseline refresh");
+        let cli =
+            Cli::try_parse_from(["vigil", "baseline", "refresh"]).expect("parse baseline refresh");
         match cli.command {
             Command::Baseline {
                 action: BaselineAction::Refresh { quiet },

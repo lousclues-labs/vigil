@@ -54,14 +54,16 @@ pub fn spawn(
                                                 );
                                                 let _ = alert_tx.send(AlertPayload {
                                                     change,
-                                                    maintenance_window: maintenance_active.load(Ordering::Acquire),
+                                                    maintenance_window: maintenance_active
+                                                        .load(Ordering::Acquire),
                                                 });
                                             }
                                         }
                                     } else {
                                         let _ = alert_tx.send(AlertPayload {
                                             change,
-                                            maintenance_window: maintenance_active.load(Ordering::Acquire),
+                                            maintenance_window: maintenance_active
+                                                .load(Ordering::Acquire),
                                         });
                                     }
                                 }
@@ -158,14 +160,16 @@ pub fn spawn(
                                             );
                                             let _ = alert_tx.send(AlertPayload {
                                                 change,
-                                                maintenance_window: maintenance_active.load(Ordering::Acquire),
+                                                maintenance_window: maintenance_active
+                                                    .load(Ordering::Acquire),
                                             });
                                         }
                                     }
                                 } else {
                                     let _ = alert_tx.send(AlertPayload {
                                         change,
-                                        maintenance_window: maintenance_active.load(Ordering::Acquire),
+                                        maintenance_window: maintenance_active
+                                            .load(Ordering::Acquire),
                                     });
                                 }
                             }

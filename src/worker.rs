@@ -191,8 +191,11 @@ impl WorkerContext {
 
             if let Some(cr) = self.process_safe(&synthetic) {
                 if let Some(ref wal) = self.wal {
-                    let record =
-                        DetectionRecord::from_change_result(&cr, self.maintenance_active.load(Ordering::Acquire), DetectionSource::Debounce);
+                    let record = DetectionRecord::from_change_result(
+                        &cr,
+                        self.maintenance_active.load(Ordering::Acquire),
+                        DetectionSource::Debounce,
+                    );
                     match wal.append(&record) {
                         Ok(_) => {
                             self.metrics
@@ -355,7 +358,9 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
                                             if alert_tx
                                                 .send(AlertPayload {
                                                     change: cr,
-                                                    maintenance_window: ctx.maintenance_active.load(Ordering::Acquire),
+                                                    maintenance_window: ctx
+                                                        .maintenance_active
+                                                        .load(Ordering::Acquire),
                                                 })
                                                 .is_err()
                                             {
@@ -366,7 +371,9 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
                                 } else if alert_tx
                                     .send(AlertPayload {
                                         change: cr,
-                                        maintenance_window: ctx.maintenance_active.load(Ordering::Acquire),
+                                        maintenance_window: ctx
+                                            .maintenance_active
+                                            .load(Ordering::Acquire),
                                     })
                                     .is_err()
                                 {

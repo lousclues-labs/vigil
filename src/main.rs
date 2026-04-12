@@ -7,7 +7,10 @@ use std::sync::Arc;
 use chrono::Utc;
 use clap::Parser;
 
-use vigil::cli::{AuditAction, BaselineAction, Cli, Command, ConfigAction, LogAction, MaintenanceAction, SetupAction};
+use vigil::cli::{
+    AuditAction, BaselineAction, Cli, Command, ConfigAction, LogAction, MaintenanceAction,
+    SetupAction,
+};
 use vigil::doctor;
 use vigil::types::{Change, OutputFormat, ScanMode};
 
