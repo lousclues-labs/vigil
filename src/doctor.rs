@@ -1502,21 +1502,11 @@ fn systemctl_show(unit: &str, property: &str) -> Option<String> {
 }
 
 fn format_count(value: u64) -> String {
-    let s = value.to_string();
-    let mut out = String::with_capacity(s.len() + (s.len() / 3));
-
-    for (i, ch) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-
-    out.chars().rev().collect()
+    crate::display::fmt_count(value)
 }
 
 fn format_size(bytes: u64) -> String {
-    format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    crate::display::fmt_size(bytes)
 }
 
 fn format_age(age_secs: i64) -> String {

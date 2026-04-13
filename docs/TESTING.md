@@ -167,6 +167,52 @@ The Detection WAL has three layers of testing:
 
 ---
 
+## Display Module Test Coverage (since v0.31.0)
+
+The display module (`src/display/`) has comprehensive unit tests across all 6 files:
+
+**Format tests (`src/display/format.rs`):**
+- ANSI styling: `styled_emits_ansi_when_tty`, `styled_no_ansi_when_piped`, `severity_style_mapping`
+- Number formatting: `format_count_basic`, `format_size_basic`, `format_age_intervals`
+- Hash/fingerprint: `truncate_hash_basic`, `format_fingerprint_basic`, `format_fingerprint_short_input`
+- Path truncation: `truncate_path_short_unchanged`, `truncate_path_long_gets_ellipsis`, `truncate_path_preserves_filename`
+- Exit codes: `exit_code_descriptions`
+
+**Explain tests (`src/display/explain.rs`):**
+- Permission changes: `setuid_added`, `setuid_removed`, `world_writable`
+- Content changes: `shadow_content`, `ssh_authorized_keys`
+- Capability changes: `capabilities_added`
+- Ownership changes: `owner_changed_from_root`, `no_explanation_for_owner_in_non_system_path`
+- Negative cases: `no_explanation_for_simple_content`
+
+**Check report tests (`src/display/check.rs`):**
+- Report construction: `severity_histogram_counts`, `package_grouping_threshold`
+- Exit code mapping: `exit_code_mapping`
+
+**Widget tests (`src/display/widgets.rs`):**
+- Histogram: `empty_histogram`, `single_severity`, `multiple_severities`
+- Change rendering: `oneline_content_change`
+
+**Terminal tests (`src/display/term.rs`):**
+- Detection: `detect_produces_valid_dimensions`, `fallback_defaults`
+
+**CLI tests (`src/cli.rs`):**
+- New flag parsing: `check_dry_run_requires_accept`, `check_accept_filters_parse`, `check_since_parses`
+
+**DB tests (`src/db/audit_ops.rs`):**
+- Audit path queries: `get_recent_for_path_is_exact_match`, `get_path_window_state_reports_latest_and_window`
+
+Run display-specific tests:
+
+```bash
+cargo test display::
+cargo test check_since_parses
+cargo test get_recent_for_path
+cargo test get_path_window_state
+```
+
+---
+
 ## Chaos Engineering Suite (since v0.29.0)
 
 The chaos suite validates resilience under real environmental faults: filesystem churn, time anomalies, resource starvation, and crash recovery. It is deterministic and seed-reproducible.

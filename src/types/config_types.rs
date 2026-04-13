@@ -131,6 +131,7 @@ pub enum OutputFormat {
     Human,
     Json,
     Table,
+    Brief,
 }
 
 // ── Scan Mode ──────────────────────────────────────────────

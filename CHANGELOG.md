@@ -4,6 +4,72 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-04-12
+
+### Release Summary
+- Reimagined display system — a new `src/display/` module (~1,960 lines across 6 files) that replaces the ad-hoc inline formatting in `main.rs` with a consolidated rendering layer. `vigil check` now produces layered, severity-triaged output with a visual histogram, progressive disclosure (≤5 changes: full detail; ≤20: expanded investigate/attention; >20: grouped benign), structural "why" explanations (e.g. "setuid bit added — investigate", "SSH authorized keys changed"), package-aware grouping for LOW-severity changes, and self-documenting exit codes. `vigil init` gains a baseline profile panel (executables, setuid, config files, package-owned percentages) and guided next-step commands. `vigil check --since` is now functional — it filters current scan results against audit DB timestamps to show only changes with evidence in the specified time window, while keeping paths with no audit history visible (fail loud, Principle X). `vigil diff` now includes a recent per-path audit history panel showing the last 8 audit entries for the inspected file. Terminal rendering respects `NO_COLOR`, detects TTY/width/height via ioctl with environment fallback, and auto-pages through `$PAGER` when output exceeds terminal height. Accept flow gains `--dry-run`, `--accept-severity`, and `--accept-group` filters with preview and fingerprint receipts. JSON output maintains backward compatibility with the original `ScanResult` shape.
+
+### Added
+- **display:** new `src/display/` module with 6 files — `mod.rs` (public API surface, `CheckReport`/`InitReport`/`BaselineProfile` structs, `render_check`/`render_init` dispatch), `check.rs` (report construction, human/brief/JSON renderers, init renderers, severity triage, package grouping), `format.rs` (ANSI color system with `Style`/`Styled`, `format_count`/`format_size`/`format_age`/`format_fingerprint`/`truncate_hash`/`truncate_path`, exit code descriptions), `explain.rs` (structural change explanations mapping changes to human-readable "why" lines), `term.rs` (`TermInfo` terminal capability detection), `widgets.rs` (severity histogram, change comparison tables) (`src/display/`).
+- **display:** `CheckReport` struct — enriched report built from `ScanResult` + baseline metadata via `CheckReport::from_scan(scan, CheckReportMeta)`. Contains: baseline fingerprint, HMAC status, scan mode, delta composition (modified/created/deleted/unchanged counts), severity histogram (`BTreeMap<Severity, u64>`), triage grouping (investigate/attention/benign), package grouping, temporal context (previous check age/outcome), and DB path (`src/display/mod.rs`).
+- **display:** `CheckReportMeta` struct — builder metadata passed to `CheckReport::from_scan()` containing mode, fingerprint, established timestamp, HMAC status, baseline count, previous check state, and DB path (`src/display/mod.rs`).
+- **display:** `InitReport` struct — enriched report for `vigil init` with baseline fingerprint, HMAC status, DB path, and optional `BaselineProfile` (`src/display/mod.rs`).
+- **display:** `BaselineProfile` struct — classification of baselined files by property: total, executables, setuid, setgid, config files, keys/certs, package-owned, unpackaged. Computed via SQL aggregation in `baseline_ops::compute_baseline_profile()` (`src/display/mod.rs`, `src/db/baseline_ops.rs`).
+- **display:** `explain::explain(change, path)` — pure function mapping structural changes to human-readable explanations. Covers: setuid/setgid bit changes, world-writable permissions, capability changes, root ownership changes on system binaries, content changes to high-value files (`/etc/shadow`, `/etc/passwd`, `/etc/sudoers`, SSH keys, cron, systemd units), file deletion/creation in system paths, and SELinux/AppArmor security context changes. No heuristics — every explanation maps to a binary structural fact (Principle III) (`src/display/explain.rs`).
+- **display:** `TermInfo::detect()` — terminal capability detection: TTY via `IsTerminal`, `NO_COLOR` environment variable, width/height from `$COLUMNS`/`$LINES` with `ioctl(TIOCGWINSZ)` fallback, defaults to 80×24 on failure (Principle X: fail open) (`src/display/term.rs`).
+- **display:** severity histogram widget — horizontal bar chart in Unicode box-drawing frame, adapts bar width to terminal width, colored by severity (`src/display/widgets.rs`).
+- **display:** `render_check()` dispatch — single function routing to human/brief/JSON renderers based on `OutputFormat`. No trait indirection (`src/display/mod.rs`).
+- **display:** `render_init()` dispatch — routes to human/brief/JSON init renderers (`src/display/mod.rs`).
+- **display:** human check renderer — layered output with baseline identity line, scan summary, HMAC status, coverage stats, temporal context (previous check age with stale warning >24h), severity histogram, progressive disclosure by change count, "why" explanation lines, scan issues section with guidance, next-step commands, and self-documenting exit code line (`src/display/check.rs`).
+- **display:** brief check renderer — single-line output: `● ok (N files, Xs)` when clean, `✗ N critical · M high (N files, Xs)` when changes detected (`src/display/check.rs`).
+- **display:** JSON check renderer — backward-compatible with original `ScanResult` shape: `total_checked`, `changes_found`, `errors`, `warnings`, `changes`, `duration_ms` (`src/display/check.rs`).
+- **display:** human init renderer — baseline fingerprint, HMAC status, per-group file counts, total with throughput, DB size, baseline profile panel (when available), next-step commands including systemd enable hint and HMAC setup suggestion (`src/display/check.rs`).
+- **display:** package grouping for LOW-severity changes — groups by package name when `package_update` flag is set or when ≥3 files share the same package. Grouped changes show collapsed path prefix summary. Ungrouped LOW changes render individually (`src/display/check.rs`).
+- **check:** `--since <TIME>` flag is now functional — parses time expressions (`24h`, `7d`, `today`, `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS`, unix timestamp), opens audit DB, queries per-path audit window state via `get_path_window_state()`, keeps changes with audit evidence in the time window, keeps changes with no audit history (fail loud — Principle X), drops changes whose last audit evidence predates the window. Emits informational scan warnings documenting what was filtered and why. Rejects `--since` with `--now` (requires local audit DB access) (`src/main.rs`, `src/cli.rs`).
+- **check:** `--dry-run` flag (requires `--accept`) — previews what would be accepted without mutating the baseline. Shows accept preview with filter summary and condensed change list, then exits with "Baseline was not modified" (`src/cli.rs`, `src/main.rs`).
+- **check:** `--accept-severity <LEVEL>` flag (requires `--accept`) — filters accept candidates by severity level (`src/cli.rs`, `src/main.rs`).
+- **check:** `--accept-group <NAME>` flag (requires `--accept`) — filters accept candidates by watch group name (`src/cli.rs`, `src/main.rs`).
+- **check:** accept flow preview — before mutating baseline, shows condensed preview of selected changes (up to 10 lines with "... and N more"), active filter summary, and baseline fingerprint receipt (old → new) after acceptance (`src/main.rs`).
+- **check:** pager support — pipes output through `$PAGER` (defaulting to `less -R`) when output exceeds terminal height. Disabled for brief mode, JSON output, and accept flow (operator must see receipts directly). Falls back to direct print on empty/invalid pager or spawn failure (`src/main.rs`).
+- **check:** exit code semantics — 0 = no changes, 1 = low/medium severity, 2 = high severity, 3 = critical. Self-documenting exit code line in TTY output when code ≠ 0 (`src/display/check.rs`, `src/display/format.rs`).
+- **check:** temporal context — displays previous check age and outcome (clean / N changes) in check header. Shows "⚠ stale" warning when previous check is >24h old (`src/display/check.rs`).
+- **check:** scan issues section — renders scan errors/warnings with severity markers, per-path detail, and actionable guidance (permission denied → run as root, file too large → raise max_file_size, transient disappearance → normal on active systems). Coverage reduction warning when errors present (`src/display/check.rs`).
+- **diff:** audit history panel — `vigil diff` now opens `audit.db` and renders a "Recent audit history" section showing the last 8 audit entries for the inspected path. Each entry shows timestamp, severity, change type summary, and maintenance/suppression flags. Falls back gracefully if audit DB cannot be opened (`src/main.rs`).
+- **db:** `audit_ops::get_recent_for_path(conn, path, limit)` — exact-match path query returning most recent audit entries for a single file. Uses `WHERE path = ?1` (not LIKE) for precision (`src/db/audit_ops.rs`).
+- **db:** `audit_ops::AuditPathWindowState` struct and `get_path_window_state(conn, path, since, until)` — returns the latest audit timestamp for a path overall and within a specified time window. Used by `--since` filtering to determine whether a change has audit evidence in the requested window (`src/db/audit_ops.rs`).
+- **db:** `baseline_ops::get_baseline_fingerprint(conn)` — reads `baseline_hmac` from `config_state` and formats as `xxxx·xxxx·xxxx·xxxx` via `display::format_fingerprint()` (`src/db/baseline_ops.rs`).
+- **db:** `baseline_ops::get_baseline_established(conn)` — reads the `updated_at` timestamp for the `baseline_hmac` config_state key (`src/db/baseline_ops.rs`).
+- **db:** `baseline_ops::compute_baseline_profile(conn)` — SQL aggregation query computing file classification counts: executables (mode & 0o111), setuid (mode & 0o4000), setgid (mode & 0o2000), config files (/etc/%), keys/certs (.ssh/% or .gnupg/%), package-owned vs unpackaged (`src/db/baseline_ops.rs`).
+- **types:** `OutputFormat::Brief` variant added for single-line summary output (`src/types/config_types.rs`).
+
+### Changed
+- **main:** `cmd_check()` rewritten — now builds `CheckReport::from_scan()` with `CheckReportMeta`, uses `display::render_check()` for output, supports pager, handles `--since` filtering against audit DB, handles `--dry-run`/`--accept-severity`/`--accept-group` in accept flow, persists `last_check_at`/`last_check_changes` in config_state for temporal context, returns exit code based on highest severity (`src/main.rs`).
+- **main:** `cmd_init()` rewritten — now accepts `format: OutputFormat`, builds `display::InitReport` with baseline fingerprint, HMAC status, and baseline profile, uses `display::render_init()` for output (`src/main.rs`).
+- **main:** `cmd_diff()` extended — opens audit DB alongside baseline DB, renders per-path audit history panel after baseline comparison (`src/main.rs`).
+- **main:** `parse_time_filter()` hardened — now trims whitespace, normalizes case, accepts `all` case-insensitively. New `parse_time_filter_strict()` wrapper provides error messages with flag name context for CLI validation (`src/main.rs`).
+- **main:** formatting helpers deduplicated — `format_count()`, `format_size()`, `truncate_hash()` in `main.rs` now delegate to `display::fmt_count()`, `display::fmt_size()`, `display::truncate_hash()` (`src/main.rs`).
+- **doctor:** `format_count()` and `format_size()` deduplicated — now delegate to `crate::display::fmt_count()` and `crate::display::fmt_size()` (`src/doctor.rs`).
+- **cli:** `check` subcommand gains `--verbose`, `--brief`, `--no-pager`, `--dry-run`, `--accept-severity`, `--accept-group`, and functional `--since` flags (`src/cli.rs`).
+- **cli:** `--since` help text updated from "reserved for future use" to describe actual behavior (`src/cli.rs`).
+
+### Tests
+- **display (11 new tests):** `severity_histogram_counts`, `package_grouping_threshold`, `exit_code_mapping` (check.rs); `setuid_added`, `setuid_removed`, `world_writable`, `shadow_content`, `ssh_authorized_keys`, `capabilities_added`, `owner_changed_from_root`, `no_explanation_for_simple_content` (explain.rs); `styled_emits_ansi_when_tty`, `styled_no_ansi_when_piped`, `severity_style_mapping`, `format_count_basic`, `format_size_basic`, `format_age_intervals`, `truncate_hash_basic`, `format_fingerprint_basic`, `format_fingerprint_short_input`, `truncate_path_short_unchanged`, `truncate_path_long_gets_ellipsis`, `truncate_path_preserves_filename`, `exit_code_descriptions` (format.rs); `detect_produces_valid_dimensions`, `fallback_defaults` (term.rs); `empty_histogram`, `single_severity`, `multiple_severities`, `oneline_content_change` (widgets.rs) (`src/display/`).
+- **cli (3 new tests):** `check_dry_run_requires_accept`, `check_accept_filters_parse`, `check_since_parses` (`src/cli.rs`).
+- **db (2 new tests):** `get_recent_for_path_is_exact_match`, `get_path_window_state_reports_latest_and_window` (`src/db/audit_ops.rs`).
+- All 251 tests pass (up from 215), `cargo clippy -- -D warnings` clean, `cd fuzz && cargo check` clean.
+
+### Validation
+- `cargo check` succeeds with 0 warnings.
+- `cargo test --all-targets` passes all 251 tests (0 failures).
+- `cargo clippy -- -D warnings` produces 0 errors and 0 warnings.
+- `cd fuzz && cargo check` compiles cleanly.
+- `NO_COLOR=1 vigil check` produces unstyled output.
+- `--since` correctly queries audit DB and emits informational warnings about filtering decisions.
+- `vigil diff` renders audit history panel when entries exist, shows "No audit entries found" when none.
+- JSON output maintains backward compatibility with `ScanResult` shape.
+- Accept flow with `--dry-run` does not mutate baseline.
+- Pager respects `$PAGER`, falls back to `less -R`, disabled during accept flow.
+
 ## [0.30.0] - 2026-04-12
 
 ### Release Summary

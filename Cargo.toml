@@ -1,6 +1,6 @@
 [package]
 name = "vigilbaseline"
-version = "0.30.0"
+version = "0.31.0"
 edition = "2021"
 description = "Lightweight file integrity monitor for Linux desktops"
 # Vigil Baseline is dual-licensed: GPL-3.0-only for open-source use,

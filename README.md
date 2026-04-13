@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/badge/CI-GitHub_Actions-success)](.github/workflows/ci.yml)
 [![Security Audit](https://img.shields.io/badge/Security-Audit-success)](.github/workflows/scheduled.yml)
-[![Version](https://img.shields.io/badge/version-0.30.0-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.31.0-blue)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange.svg)](https://www.rust-lang.org/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
 
@@ -124,7 +124,9 @@ sudo systemctl start vigild        # Start as systemd daemon
 vigil check                        # Incremental check (mtime-changed files only)
 vigil check --full                 # Full scan (re-hash everything)
 vigil check --now                  # Trigger scan on running daemon via control socket
-vigil diff /etc/passwd             # Compare a single file against its baseline
+vigil check --since 24h            # Show only changes with recent audit evidence
+vigil check --brief                # Single-line summary output
+vigil diff /etc/passwd             # Compare file against baseline + audit history
 ```
 
 ### Accepting Changes
@@ -132,6 +134,8 @@ vigil diff /etc/passwd             # Compare a single file against its baseline
 ```bash
 vigil check --accept               # Show changes, then update baseline to current state
 vigil check --accept --path '/etc/*'  # Accept only changes matching a glob
+vigil check --accept --dry-run     # Preview what would be accepted without mutating
+vigil check --accept --accept-severity low  # Accept only low-severity changes
 ```
 
 After package updates, `vigil check --accept` is the way to tell Vigil Baseline

@@ -105,6 +105,14 @@ src/
 |   |-- audit_ops.rs        # Audit queries, chain verification, statistics.
 |   `-- migrate.rs          # Baseline migration v1 JSON blobs to v2 flat columns.
 |
+|-- display/
+|   |-- mod.rs              # Display API: CheckReport, InitReport, render dispatch.
+|   |-- check.rs            # Check/init report construction + human/brief/JSON renderers.
+|   |-- explain.rs          # Structural change explanations ("why" lines).
+|   |-- format.rs           # ANSI colors, number/size/age/hash/path formatting.
+|   |-- term.rs             # Terminal capability detection (TermInfo).
+|   `-- widgets.rs          # Severity histogram, change comparison tables.
+|
 |-- filter/
 |   |-- mod.rs              # Event filter: debounce, self-exclusion, path matching.
 |   `-- exclusion.rs        # globset-based exclusion engine.
@@ -156,6 +164,8 @@ src/
 ## Component Notes
 
 These modules are easy to miss. They are core to the runtime.
+
+- `src/display/` is the consolidated rendering layer for all CLI output (~1,960 lines across 6 files). `mod.rs` defines the public API: `CheckReport`, `CheckReportMeta`, `InitReport`, `BaselineProfile` structs and `render_check()`/`render_init()` dispatch functions. `check.rs` builds `CheckReport` from `ScanResult` + metadata, renders human/brief/JSON output for both check and init commands, with severity triage, progressive disclosure, and package grouping. `format.rs` provides the shared ANSI color system (`Style`/`Styled`), number formatting (`format_count`, `format_size`, `format_age`), hash/fingerprint display, smart path truncation with `$HOME` collapse, and exit code descriptions. `explain.rs` maps structural changes to human-readable "why" lines (e.g. setuid bit → "setuid bit added — investigate") — pure function, no heuristics (Principle III). `term.rs` detects terminal capabilities (`TermInfo`): TTY status, `NO_COLOR`, width/height via ioctl with env fallback. `widgets.rs` renders the severity histogram and change comparison tables. Doctor and main.rs delegate formatting to display via re-exports (`fmt_count`, `fmt_size`, `truncate_hash`, `format_fingerprint`).
 
 - `src/lib.rs` defines `Daemon` (config, connections, startup) and `DaemonRuntime` (thread ownership, channel lifecycle). `Daemon::run()` is ~11 lines: harden, record binary hash, start runtime, wait, drain. `DaemonRuntime::start()` wires all channels, spawns all threads (including WAL AuditWriter and SinkRunner when `detection_wal = true`), runs WAL self-test, calls `AuditWriter::recover()`, emits `sd_notify(Ready)`. `DaemonRuntime::drain()` joins threads in dependency order: workers → baseline_writer → audit_writer → sink_runner → alert → coordinator → scan_scheduler → final WAL truncation. A `send_watchdog_heartbeat()` helper sends `sd_notify(Watchdog)` guarded by `is_notify_socket_safe()` and is called throughout pre-flight and startup to prevent systemd from killing the daemon before the coordinator thread exists.
 - `src/wal/mod.rs` defines `DetectionWal` — the crash-safe binary WAL for detection records. The WAL decouples detection output from audit persistence and alert dispatch. Workers, scan scheduler, and debounce write `DetectionRecord` entries via `append()` (pwrite + fdatasync). Two independent consumer threads read entries via `iter_unconsumed()` with gap-scanning recovery: the AuditWriter persists to the audit DB with priority ordering; the SinkRunner dispatches to alert sinks with bounded cooldowns. Entries have independent `audit_done` / `sink_done` flags — flag updates via `mark_flag()` are non-atomic read-modify-write operations protected by the global `write_lock` to prevent concurrent flag overwrites. The WAL uses CRC32 checksums for crash recovery and optional per-entry HMAC-SHA256 for tamper detection. Gap scanning is bounded by `MAX_GAP_BYTES` (64KB) to prevent adversarial DoS via large zeroed regions. File permissions are enforced at 0o600. When the WAL is disabled or full, detections fall back to the pre-WAL `alert_tx` channel.

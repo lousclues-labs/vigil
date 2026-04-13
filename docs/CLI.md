@@ -79,7 +79,7 @@ For systemd-managed background operation, use `vigild` with the provided service
 Run one-shot integrity check.
 
 ```bash
-vigil check [--full] [--now] [--accept] [--path <GLOB>]
+vigil check [OPTIONS]
 ```
 
 | Option | Description |
@@ -88,6 +88,18 @@ vigil check [--full] [--now] [--accept] [--path <GLOB>]
 | `--now` | trigger scan on running daemon via control socket |
 | `--accept` | after showing changes, update baseline to accept current state |
 | `--path <GLOB>` | only accept changes matching this glob pattern (requires `--accept`) |
+| `--dry-run` | preview what would be accepted without mutating baseline (requires `--accept`) |
+| `--accept-severity <LEVEL>` | accept only changes of this severity: low, medium, high, critical (requires `--accept`) |
+| `--accept-group <NAME>` | accept only changes from this watch group (requires `--accept`) |
+| `-v`, `--verbose` | show expanded detail for all changes |
+| `--brief` | single-line summary output |
+| `--no-pager` | disable automatic paging of long output |
+| `--since <TIME>` | show only current changes with audit evidence since this time (`24h`, `7d`, `today`, `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS`, unix timestamp) |
+
+The `--since` flag filters current scan results against the audit database. Only changes
+with audit evidence in the specified time window are shown. Changes with no prior audit
+history are kept visible to avoid hiding blind spots (Principle X: fail loud). The flag
+cannot be used with `--now` because time-bound filtering requires local audit DB access.
 
 Examples:
 
@@ -97,13 +109,74 @@ vigil check --full
 vigil check --now
 vigil check --accept
 vigil check --accept --path '/etc/*'
+vigil check --accept --dry-run
+vigil check --accept --accept-severity low --accept-group user_config
+vigil check --since 24h
+vigil check --since 7d --verbose
+vigil check --brief
 ```
+
+### Check Output Modes
+
+**Human (default):** Layered, severity-triaged output with baseline identity,
+scan summary, severity histogram, progressive disclosure (≤5 changes: full
+detail; ≤20: expanded investigate/attention; >20: grouped benign), structural
+"why" explanations, scan issues with guidance, and next-step commands.
+
+**Brief (`--brief`):** Single-line summary: `● ok (N files, Xs)` or
+`✗ N critical · M high (N files, Xs)`.
+
+**JSON (`--format json`):** Backward-compatible with original `ScanResult` shape.
+
+### Check Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | no changes detected |
+| `1` | changes found (low or medium severity) |
+| `2` | high-severity changes found |
+| `3` | critical changes found |
+
+The exit code line is self-documenting in TTY output when the code is non-zero.
+
+### Accept Workflow
+
+The `--accept` flag shows changes first, then updates the baseline. Filters
+narrow which changes are accepted:
+
+```bash
+# Preview without mutating
+vigil check --accept --dry-run
+
+# Accept only low-severity changes from user_config group
+vigil check --accept --accept-severity low --accept-group user_config
+
+# Accept only changes matching a path glob
+vigil check --accept --path '/usr/lib/modules/*'
+```
+
+The accept flow shows a condensed preview (up to 10 changes) with active
+filters, then prints a baseline fingerprint receipt (old → new) after
+acceptance. Pager is disabled during accept so the operator sees the
+receipt directly.
 
 ---
 
 ## `diff`
 
 Compare a single file against its baseline entry.
+
+Output includes:
+- Current vs baseline comparison (hash, permissions, ownership, inode, etc.)
+- Structural change details with old → new values
+- Package attribution when available
+- **Recent audit history panel** — the last 8 audit entries for this path
+  from `audit.db`, showing timestamp, severity, change type summary, and
+  maintenance/suppression flags
+
+The audit history panel opens `audit.db` automatically. If the audit database
+cannot be opened, the panel is disabled with a warning and the baseline
+comparison still works.
 
 ```bash
 vigil diff <PATH>
@@ -114,6 +187,25 @@ Example:
 ```bash
 vigil diff /etc/passwd
 vigil diff /usr/bin/sudo
+```
+
+Example output (with audit history):
+
+```
+Vigil Baseline — Diff: /etc/passwd
+══════════════════════════════════
+
+  ⚠ 1 change detected:
+
+    content: 9c7ae3f182bd04a6 → a1b2c3d4e5f6a7b8
+
+    package: filesystem
+
+  Recent audit history
+  ────────────────────
+    today 14:32:01 HIGH     content_modified
+    yesterday 09:15:22 LOW  permissions_changed (maintenance)
+    showing 2 most recent entries for this path.
 ```
 
 ---
@@ -568,12 +660,14 @@ vigil 0.19.0
 
 | Code | Meaning |
 |------|---------|
-| `0` | command completed successfully |
-| `1` | command failed (runtime/config/DB/validation error) |
-| `2` | `doctor` found one or more failed checks |
+| `0` | command completed successfully / no changes detected (`check`) |
+| `1` | command failed, or changes found with low/medium severity (`check`) |
+| `2` | `doctor` found failures, or high-severity changes found (`check`) |
+| `3` | critical changes found (`check`) |
 
 Details:
 - `main` exits with `1` on any propagated error.
+- `check` exit codes are severity-based: 0 (clean), 1 (low/medium), 2 (high), 3 (critical). The exit code is self-documented in TTY output.
 - `doctor` uses explicit health exit codes: `0` (all OK), `1` (warnings only), `2` (failures present).
 - `config validate` exits with `1` on validation failure.
 

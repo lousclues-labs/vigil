@@ -265,6 +265,53 @@ pub fn compute_baseline_hmac(conn: &Connection, key: &[u8]) -> Result<String> {
     crate::hmac::compute_hmac(key, canonical.as_bytes())
 }
 
+/// Get the baseline fingerprint formatted as xxxx·xxxx·xxxx·xxxx.
+/// Reads the baseline_hmac from config_state.
+pub fn get_baseline_fingerprint(conn: &Connection) -> Option<String> {
+    let hmac = get_config_state(conn, "baseline_hmac").ok()??;
+    Some(crate::display::format_fingerprint(&hmac))
+}
+
+/// Get the baseline established timestamp from config_state.
+pub fn get_baseline_established(conn: &Connection) -> Option<i64> {
+    conn.query_row(
+        "SELECT updated_at FROM config_state WHERE key = 'baseline_hmac'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .ok()
+}
+
+/// Classification of baselined files by property.
+pub fn compute_baseline_profile(conn: &Connection) -> Result<crate::display::BaselineProfile> {
+    let row = conn.query_row(
+        "SELECT
+            COUNT(*) as total,
+            SUM(CASE WHEN (mode & 73) != 0 THEN 1 ELSE 0 END) as executables,
+            SUM(CASE WHEN (mode & 2048) != 0 THEN 1 ELSE 0 END) as setuid,
+            SUM(CASE WHEN (mode & 1024) != 0 THEN 1 ELSE 0 END) as setgid,
+            SUM(CASE WHEN path LIKE '/etc/%' THEN 1 ELSE 0 END) as config_files,
+            SUM(CASE WHEN path LIKE '%/.ssh/%' OR path LIKE '%/.gnupg/%' THEN 1 ELSE 0 END) as keys_certs,
+            SUM(CASE WHEN package IS NOT NULL THEN 1 ELSE 0 END) as package_owned,
+            SUM(CASE WHEN package IS NULL THEN 1 ELSE 0 END) as unpackaged
+         FROM baseline",
+        [],
+        |row| {
+            Ok(crate::display::BaselineProfile {
+                total: row.get::<_, i64>(0)? as u64,
+                executables: row.get::<_, i64>(1)? as u64,
+                setuid: row.get::<_, i64>(2)? as u64,
+                setgid: row.get::<_, i64>(3)? as u64,
+                config_files: row.get::<_, i64>(4)? as u64,
+                keys_certs: row.get::<_, i64>(5)? as u64,
+                package_owned: row.get::<_, i64>(6)? as u64,
+                unpackaged: row.get::<_, i64>(7)? as u64,
+            })
+        },
+    )?;
+    Ok(row)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

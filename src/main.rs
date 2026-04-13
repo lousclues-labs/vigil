@@ -11,8 +11,9 @@ use vigil::cli::{
     AuditAction, BaselineAction, Cli, Command, ConfigAction, LogAction, MaintenanceAction,
     SetupAction,
 };
+use vigil::display;
 use vigil::doctor;
-use vigil::types::{Change, OutputFormat, ScanMode};
+use vigil::types::{Change, OutputFormat, ScanMode, Severity};
 
 fn main() {
     init_tracing();
@@ -40,7 +41,7 @@ fn run(cli: Cli) -> vigil::Result<i32> {
 
     match cli.command {
         Command::Init { force } => {
-            cmd_init(config_path.as_deref(), force)?;
+            cmd_init(config_path.as_deref(), format, force)?;
             Ok(0)
         }
         Command::Watch => {
@@ -52,17 +53,43 @@ fn run(cli: Cli) -> vigil::Result<i32> {
             now,
             accept,
             path: accept_path,
+            dry_run,
+            accept_severity,
+            accept_group,
+            verbose,
+            brief,
+            no_pager,
+            since,
         } => {
             if now && accept {
                 eprintln!("error: --accept cannot be used with --now (baseline updates require direct database access)");
                 return Ok(1);
             }
+            if now && since.is_some() {
+                eprintln!(
+                    "error: --since cannot be used with --now (time-bound filtering needs local audit DB access)"
+                );
+                return Ok(1);
+            }
             if now {
                 cmd_check_live(config_path.as_deref(), full)?;
+                Ok(0)
             } else {
-                cmd_check(config_path.as_deref(), full, accept, accept_path)?;
+                cmd_check(CheckOpts {
+                    config_path: config_path.clone(),
+                    format,
+                    full,
+                    accept,
+                    accept_path,
+                    accept_dry_run: dry_run,
+                    accept_severity,
+                    accept_group,
+                    verbose,
+                    brief,
+                    no_pager,
+                    since,
+                })
             }
-            Ok(0)
         }
         Command::Diff { path } => {
             cmd_diff(config_path.as_deref(), &path)?;
@@ -110,7 +137,7 @@ fn run(cli: Cli) -> vigil::Result<i32> {
     }
 }
 
-fn cmd_init(config_path: Option<&Path>, force: bool) -> vigil::Result<()> {
+fn cmd_init(config_path: Option<&Path>, format: OutputFormat, force: bool) -> vigil::Result<()> {
     let cfg = vigil::config::load_config(config_path)?;
     let conn = vigil::db::open_baseline_db(&cfg)?;
 
@@ -118,7 +145,7 @@ fn cmd_init(config_path: Option<&Path>, force: bool) -> vigil::Result<()> {
     if existing > 0 && !force {
         println!(
             "⚠ Existing baseline found ({} entries).",
-            format_count(existing as u64)
+            display::fmt_count(existing as u64)
         );
         println!("  Reinitializing will trust the current filesystem state as truth.");
         print!("  Proceed? [y/N] ");
@@ -137,49 +164,22 @@ fn cmd_init(config_path: Option<&Path>, force: bool) -> vigil::Result<()> {
     let result = vigil::scanner::build_initial_baseline(&conn, &cfg)?;
     vigil::db::baseline_ops::set_config_state(&conn, "baseline_initialized", "true")?;
 
-    print_header("Vigil Baseline — Baseline Initialized");
+    // Gather baseline metadata for report
+    let baseline_fingerprint = vigil::db::baseline_ops::get_baseline_fingerprint(&conn);
+    let hmac_signed = cfg.security.hmac_signing;
+    let profile = vigil::db::baseline_ops::compute_baseline_profile(&conn).ok();
 
-    println!(
-        "  Building baseline from {} watch groups...",
-        result.groups.len()
-    );
-    println!();
+    let init_report = display::InitReport {
+        result,
+        baseline_fingerprint,
+        hmac_signed,
+        db_path: cfg.daemon.db_path.clone(),
+        profile,
+    };
 
-    for group in &result.groups {
-        let paths = if group.paths.is_empty() {
-            "(no paths configured)".to_string()
-        } else {
-            group.paths.join(", ")
-        };
-
-        println!("    {:<16} {}", group.name, paths);
-        if group.errors > 0 {
-            println!(
-                "                     {} files baselined ({} capture errors)",
-                format_count(group.file_count),
-                group.errors
-            );
-        } else {
-            println!(
-                "                     {} files baselined",
-                format_count(group.file_count)
-            );
-        }
-        println!();
-    }
-
-    println!(
-        "  Total: {} files in {:.1}s",
-        format_count(result.total_count),
-        result.duration.as_secs_f64()
-    );
-    println!(
-        "  Database: {} ({})",
-        cfg.daemon.db_path.display(),
-        format_size(result.db_size_bytes)
-    );
-    println!();
-    println!("  Your filesystem has a witness now.");
+    let term = display::term::TermInfo::detect();
+    let output = display::render_init(&init_report, format, &term);
+    print!("{}", output);
 
     Ok(())
 }
@@ -190,118 +190,313 @@ fn cmd_watch(config_path: Option<&Path>) -> vigil::Result<()> {
     vigil::Daemon::from_config(cfg)?.run()
 }
 
-fn cmd_check(
-    config_path: Option<&Path>,
+struct CheckOpts {
+    config_path: Option<PathBuf>,
+    format: OutputFormat,
     full: bool,
     accept: bool,
     accept_path: Option<String>,
-) -> vigil::Result<()> {
-    let cfg = vigil::config::load_config(config_path)?;
+    accept_dry_run: bool,
+    accept_severity: Option<Severity>,
+    accept_group: Option<String>,
+    verbose: bool,
+    brief: bool,
+    no_pager: bool,
+    since: Option<String>,
+}
+
+fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
+    let cfg = vigil::config::load_config(opts.config_path.as_deref())?;
     let conn = vigil::db::open_baseline_db(&cfg)?;
 
-    let mode = if full {
+    let mode = if opts.full {
         ScanMode::Full
     } else {
         ScanMode::Incremental
     };
 
-    let mode_label = if full { "Full" } else { "Incremental" };
+    let since_ts = match opts.since.as_deref() {
+        Some(value) => parse_time_filter_strict(value, "--since")?,
+        None => None,
+    };
 
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
-
-    let result = vigil::scanner::run_scan_with_progress(&conn, &cfg, mode, |checked, total| {
-        if is_tty && total > 0 {
-            let pct = (checked as f64 / total as f64 * 100.0).min(100.0);
-            eprint!(
-                "\r  Scanning... {}/{} files ({:.0}%)",
-                format_count(checked),
-                format_count(total),
-                pct
-            );
-            let _ = std::io::stderr().flush();
-        }
-    })?;
+    let mut result =
+        vigil::scanner::run_scan_with_progress(&conn, &cfg, mode, |checked, total| {
+            if is_tty && total > 0 {
+                let pct = (checked as f64 / total as f64 * 100.0).min(100.0);
+                eprint!(
+                    "\r  Scanning... {}/{} files ({:.0}%)",
+                    display::fmt_count(checked),
+                    display::fmt_count(total),
+                    pct
+                );
+                let _ = std::io::stderr().flush();
+            }
+        })?;
+    let scan_finished_at = chrono::Utc::now().timestamp();
 
     if is_tty {
         eprint!("\r\x1b[2K");
         let _ = std::io::stderr().flush();
     }
 
-    print_header(&format!("Vigil Baseline — {} Integrity Check", mode_label));
+    if let Some(since_ts) = since_ts {
+        if since_ts > scan_finished_at {
+            return Err(vigil::VigilError::Config(
+                "--since resolves to a future timestamp".into(),
+            ));
+        }
 
-    println!("  Files checked   {}", format_count(result.total_checked));
-    println!(
-        "  Duration        {:.1}s",
-        result.duration_ms as f64 / 1000.0
-    );
-    println!("  Errors          {}", result.errors);
-    println!();
+        let audit_conn = vigil::db::open_audit_db(&cfg)?;
+        let total_before = result.changes.len() as u64;
+        let mut filtered = Vec::with_capacity(result.changes.len());
+        let mut dropped_before_window = 0u64;
+        let mut no_history = 0u64;
+        let mut lookup_failures = 0u64;
 
-    if result.changes.is_empty() {
-        println!("  ● No changes detected. Boundaries intact.");
-    } else {
-        let (marker, _) = severity_display_for_count(&result.changes);
-        println!(
-            "  {} {} change{} detected:",
-            marker,
-            result.changes_found,
-            if result.changes_found == 1 { "" } else { "s" }
-        );
-
-        for change in &result.changes {
-            println!();
-            let (marker, label) = severity_display(&change.severity);
-            println!("  {} {} {}", marker, label, change.path.display());
-            for c in &change.changes {
-                print_change_detail(c);
-            }
-            if let Some(ref pkg) = change.package {
-                println!("    package: {}", pkg);
+        for change in result.changes.drain(..) {
+            let path = change.path.to_string_lossy();
+            match vigil::db::audit_ops::get_path_window_state(
+                &audit_conn,
+                path.as_ref(),
+                since_ts,
+                scan_finished_at,
+            ) {
+                Ok(state) => {
+                    if state.latest_in_window.is_some() {
+                        filtered.push(change);
+                    } else if state.latest_any.is_some() {
+                        dropped_before_window += 1;
+                    } else {
+                        // Keep unknown-history paths visible to avoid hiding blind spots.
+                        no_history += 1;
+                        filtered.push(change);
+                    }
+                }
+                Err(e) => {
+                    lookup_failures += 1;
+                    result.warnings.push(vigil::error::ScanWarning {
+                        path: change.path.as_ref().clone(),
+                        detail: format!(
+                            "audit lookup failed while applying --since: {}; showing this change",
+                            e
+                        ),
+                        severity: vigil::error::WarningSeverity::Warning,
+                    });
+                    filtered.push(change);
+                }
             }
         }
 
-        if result.changes.len() > 100 {
-            println!();
-            println!("  Run vigil audit show for full history.");
+        result.changes = filtered;
+        result.changes_found = result.changes.len() as u64;
+
+        result.warnings.push(vigil::error::ScanWarning {
+            path: PathBuf::from("audit.db"),
+            detail: format!(
+                "--since={} kept {} of {} current change{} (window {}..{})",
+                opts.since.as_deref().unwrap_or("all"),
+                result.changes_found,
+                total_before,
+                if total_before == 1 { "" } else { "s" },
+                since_ts,
+                scan_finished_at
+            ),
+            severity: vigil::error::WarningSeverity::Info,
+        });
+
+        if dropped_before_window > 0 {
+            result.warnings.push(vigil::error::ScanWarning {
+                path: PathBuf::from("audit.db"),
+                detail: format!(
+                    "{} change{} excluded because last audit evidence was before --since",
+                    dropped_before_window,
+                    if dropped_before_window == 1 { "" } else { "s" }
+                ),
+                severity: vigil::error::WarningSeverity::Info,
+            });
+        }
+
+        if no_history > 0 {
+            result.warnings.push(vigil::error::ScanWarning {
+                path: PathBuf::from("audit.db"),
+                detail: format!(
+                    "{} change{} kept without prior audit history (coverage gap)",
+                    no_history,
+                    if no_history == 1 { "" } else { "s" }
+                ),
+                severity: vigil::error::WarningSeverity::Warning,
+            });
+        }
+
+        if lookup_failures > 0 {
+            result.warnings.push(vigil::error::ScanWarning {
+                path: PathBuf::from("audit.db"),
+                detail: format!(
+                    "{} path lookup{} failed while applying --since",
+                    lookup_failures,
+                    if lookup_failures == 1 { "" } else { "s" }
+                ),
+                severity: vigil::error::WarningSeverity::Warning,
+            });
         }
     }
 
-    if accept && !result.changes.is_empty() {
-        let path_filter: Option<globset::GlobMatcher> = accept_path.as_ref().map(|pattern| {
+    // Gather baseline metadata
+    let baseline_fingerprint = vigil::db::baseline_ops::get_baseline_fingerprint(&conn);
+    let baseline_established = vigil::db::baseline_ops::get_baseline_established(&conn);
+    let hmac_signed = cfg.security.hmac_signing;
+    let total_baseline_entries = vigil::db::baseline_ops::count(&conn).unwrap_or(0) as u64;
+    let previous_check_at = vigil::db::baseline_ops::get_config_state(&conn, "last_check_at")
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse::<i64>().ok());
+    let previous_check_changes =
+        vigil::db::baseline_ops::get_config_state(&conn, "last_check_changes")
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse::<u64>().ok());
+
+    // Build the report
+    let report = display::CheckReport::from_scan(
+        result,
+        display::CheckReportMeta {
+            mode,
+            baseline_fingerprint,
+            baseline_established,
+            hmac_signed,
+            total_baseline_entries,
+            previous_check_at,
+            previous_check_changes,
+            db_path: cfg.daemon.db_path.clone(),
+        },
+    );
+
+    // Compute exit code before rendering
+    let code = report.exit_code();
+
+    // Render output
+    let term = display::term::TermInfo::detect();
+    let output = display::render_check(&report, opts.format, &term, opts.verbose, opts.brief);
+
+    // Pager support: pipe through $PAGER when output exceeds terminal height.
+    // Never auto-page when mutating baseline (accept flow) so the operator sees receipts directly.
+    let line_count = output.lines().count();
+    let use_pager = !opts.no_pager
+        && !opts.brief
+        && !opts.accept
+        && opts.format == OutputFormat::Human
+        && term.is_tty
+        && line_count > term.height as usize;
+
+    if use_pager {
+        pipe_to_pager(&output);
+    } else {
+        print!("{}", output);
+    }
+
+    // Handle --accept
+    if opts.accept && !report.scan.changes.is_empty() {
+        let path_filter: Option<globset::GlobMatcher> = opts.accept_path.as_ref().map(|pattern| {
             globset::Glob::new(pattern)
                 .unwrap_or_else(|_| globset::Glob::new("*").unwrap())
                 .compile_matcher()
         });
 
-        let changes_to_accept: Vec<_> = result
+        let severity_filter = opts.accept_severity;
+        let group_filter = opts.accept_group.as_deref();
+
+        let changes_to_accept: Vec<_> = report
+            .scan
             .changes
             .iter()
-            .filter(|c| match &path_filter {
-                Some(matcher) => matcher.is_match(c.path.as_ref()),
-                None => true,
+            .filter(|c| {
+                let path_ok = match &path_filter {
+                    Some(matcher) => matcher.is_match(c.path.as_ref()),
+                    None => true,
+                };
+                let severity_ok = match severity_filter {
+                    Some(sev) => c.severity == sev,
+                    None => true,
+                };
+                let group_ok = match group_filter {
+                    Some(group) => c.monitored_group == group,
+                    None => true,
+                };
+                path_ok && severity_ok && group_ok
             })
             .collect();
 
         println!();
         if !changes_to_accept.is_empty() {
-            if let Some(ref pattern) = accept_path {
+            println!(
+                "  Accept preview: {} of {} change{} selected.",
+                changes_to_accept.len(),
+                report.scan.changes_found,
+                if report.scan.changes_found == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            );
+
+            if let Some(ref pattern) = opts.accept_path {
+                println!("    path filter: '{}'", pattern);
+            }
+            if let Some(sev) = opts.accept_severity {
+                println!("    severity filter: {}", sev);
+            }
+            if let Some(ref group) = opts.accept_group {
+                println!("    group filter: {}", group);
+            }
+
+            // Show condensed preview lines before mutating baseline.
+            for change in changes_to_accept.iter().take(10) {
                 println!(
-                    "  Accepting {} of {} changes matching '{}'...",
-                    changes_to_accept.len(),
-                    result.changes_found,
-                    pattern
-                );
-            } else {
-                println!(
-                    "  Accepting {} change{} into baseline...",
-                    changes_to_accept.len(),
-                    if changes_to_accept.len() == 1 {
-                        ""
-                    } else {
-                        "s"
-                    }
+                    "    - [{}] {} ({})",
+                    change.severity,
+                    change.path.display(),
+                    change.monitored_group
                 );
             }
+            if changes_to_accept.len() > 10 {
+                println!(
+                    "    ... and {} more",
+                    changes_to_accept.len().saturating_sub(10)
+                );
+            }
+
+            if opts.accept_dry_run {
+                println!();
+                println!("  Dry run only. Baseline was not modified.");
+                println!("  To apply: rerun without --dry-run");
+
+                let _ = vigil::db::baseline_ops::set_config_state(
+                    &conn,
+                    "last_check_at",
+                    &chrono::Utc::now().timestamp().to_string(),
+                );
+                let _ = vigil::db::baseline_ops::set_config_state(
+                    &conn,
+                    "last_check_changes",
+                    &report.scan.changes_found.to_string(),
+                );
+                return Ok(code);
+            }
+
+            let old_fingerprint = vigil::db::baseline_ops::get_baseline_fingerprint(&conn);
+
+            println!();
+            println!(
+                "  Accepting {} change{} into baseline...",
+                changes_to_accept.len(),
+                if changes_to_accept.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            );
 
             let now = chrono::Utc::now().timestamp();
             let mut accepted = 0u64;
@@ -382,7 +577,16 @@ fn cmd_check(
                 }
             }
 
-            let not_accepted = result.changes.len() - changes_to_accept.len();
+            let new_fingerprint = vigil::db::baseline_ops::get_baseline_fingerprint(&conn);
+            println!();
+            println!("  Accept receipt:");
+            println!(
+                "    Baseline fingerprint: {} → {}",
+                old_fingerprint.unwrap_or_else(|| "(none)".into()),
+                new_fingerprint.unwrap_or_else(|| "(none)".into())
+            );
+
+            let not_accepted = report.scan.changes.len() - changes_to_accept.len();
             if not_accepted > 0 {
                 println!(
                     "  {} change{} not accepted.",
@@ -390,19 +594,84 @@ fn cmd_check(
                     if not_accepted == 1 { " was" } else { "s were" }
                 );
             }
-        } else if accept_path.is_some() {
-            println!("  No changes matched the filter pattern. Nothing to accept.");
+        } else {
+            println!("  No changes matched the accept filters. Nothing to accept.");
         }
     }
 
-    println!();
+    // Persist last-check metadata for temporal context in future runs.
+    let _ = vigil::db::baseline_ops::set_config_state(
+        &conn,
+        "last_check_at",
+        &chrono::Utc::now().timestamp().to_string(),
+    );
+    let _ = vigil::db::baseline_ops::set_config_state(
+        &conn,
+        "last_check_changes",
+        &report.scan.changes_found.to_string(),
+    );
 
-    Ok(())
+    Ok(code)
+}
+
+/// Pipe output through $PAGER (defaulting to `less -R`) for long output.
+fn pipe_to_pager(output: &str) {
+    if output.is_empty() {
+        return;
+    }
+
+    let pager = std::env::var("PAGER").unwrap_or_else(|_| "less".into());
+    let pager = pager.trim();
+    if pager.is_empty() {
+        print!("{}", output);
+        return;
+    }
+
+    let mut parts: Vec<&str> = pager.split_whitespace().collect();
+    if parts.is_empty() {
+        print!("{}", output);
+        return;
+    }
+
+    let cmd = parts.remove(0);
+    let mut args = parts;
+
+    // Add -R to preserve ANSI colors in less
+    if cmd == "less" && !args.iter().any(|a| a.contains('R')) {
+        args.push("-R");
+    }
+
+    match ProcessCommand::new(cmd)
+        .args(&args)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(mut child) => {
+            if let Some(ref mut stdin) = child.stdin {
+                let _ = stdin.write_all(output.as_bytes());
+            }
+            let _ = child.wait();
+        }
+        Err(_) => {
+            // Pager failed — fall back to direct print
+            print!("{}", output);
+        }
+    }
 }
 
 fn cmd_diff(config_path: Option<&Path>, file_path: &Path) -> vigil::Result<()> {
     let cfg = vigil::config::load_config(config_path)?;
     let conn = vigil::db::open_baseline_db(&cfg)?;
+    let audit_conn = match vigil::db::open_audit_db(&cfg) {
+        Ok(conn) => Some(conn),
+        Err(e) => {
+            eprintln!(
+                "warning: failed to open audit database (history panel disabled): {}",
+                e
+            );
+            None
+        }
+    };
 
     let canonical = std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
     let path_str = canonical.to_string_lossy();
@@ -481,7 +750,86 @@ fn cmd_diff(config_path: Option<&Path>, file_path: &Path) -> vigil::Result<()> {
         }
     }
 
+    if let Some(conn) = audit_conn.as_ref() {
+        render_diff_history_panel(conn, canonical.as_path())?;
+    }
+
     Ok(())
+}
+
+fn render_diff_history_panel(conn: &rusqlite::Connection, path: &Path) -> vigil::Result<()> {
+    let path_str = path.to_string_lossy();
+    let entries = vigil::db::audit_ops::get_recent_for_path(conn, path_str.as_ref(), 8)?;
+
+    println!("  Recent audit history");
+    println!("  ────────────────────");
+
+    if entries.is_empty() {
+        println!("    No audit entries found for this path.");
+        println!();
+        return Ok(());
+    }
+
+    for entry in &entries {
+        let mut flags = Vec::new();
+        if entry.maintenance {
+            flags.push("maintenance");
+        }
+        if entry.suppressed {
+            flags.push("suppressed");
+        }
+
+        let suffix = if flags.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", flags.join(", "))
+        };
+
+        println!(
+            "    {} {:<8} {}{}",
+            format_audit_timestamp(entry.timestamp),
+            entry.severity.to_uppercase(),
+            summarize_audit_changes(&entry.changes_json),
+            suffix
+        );
+    }
+
+    println!(
+        "    showing {} most recent entr{} for this path.",
+        entries.len(),
+        if entries.len() == 1 { "y" } else { "ies" }
+    );
+    println!();
+
+    Ok(())
+}
+
+fn summarize_audit_changes(changes_json: &str) -> String {
+    let changes = match serde_json::from_str::<Vec<Change>>(changes_json) {
+        Ok(parsed) => parsed,
+        Err(_) => return "unparseable change set".to_string(),
+    };
+
+    if changes.is_empty() {
+        return "(no change details)".to_string();
+    }
+
+    let mut labels: Vec<String> = Vec::new();
+    for change in &changes {
+        let label = change.to_string();
+        if !labels.iter().any(|existing| existing == &label) {
+            labels.push(label);
+        }
+    }
+
+    let shown: Vec<String> = labels.iter().take(3).cloned().collect();
+    let mut summary = shown.join(", ");
+
+    if labels.len() > shown.len() {
+        summary.push_str(&format!(", +{} more", labels.len() - shown.len()));
+    }
+
+    summary
 }
 
 fn cmd_check_live(config_path: Option<&Path>, full: bool) -> vigil::Result<()> {
@@ -1497,18 +1845,37 @@ fn format_audit_timestamp(ts: i64) -> String {
         .unwrap_or_else(|| ts.to_string())
 }
 
+fn parse_time_filter_strict(input: &str, flag_name: &str) -> vigil::Result<Option<i64>> {
+    let trimmed = input.trim();
+    if trimmed.eq_ignore_ascii_case("all") {
+        return Ok(None);
+    }
+
+    parse_time_filter(trimmed)
+        .map(Some)
+        .ok_or_else(|| {
+            vigil::VigilError::Config(format!(
+                "invalid {} value '{}'; expected 24h, 7d, today, YYYY-MM-DD, YYYY-MM-DDTHH:MM:SS, or unix timestamp",
+                flag_name, input
+            ))
+        })
+}
+
 fn parse_time_filter(input: &str) -> Option<i64> {
-    if let Some(hours) = input.strip_suffix('h').and_then(|n| n.parse::<i64>().ok()) {
+    let input = input.trim();
+    let lower = input.to_ascii_lowercase();
+
+    if let Some(hours) = lower.strip_suffix('h').and_then(|n| n.parse::<i64>().ok()) {
         return Some(chrono::Utc::now().timestamp() - (hours * 3600));
     }
-    if let Some(days) = input.strip_suffix('d').and_then(|n| n.parse::<i64>().ok()) {
+    if let Some(days) = lower.strip_suffix('d').and_then(|n| n.parse::<i64>().ok()) {
         return Some(chrono::Utc::now().timestamp() - (days * 86400));
     }
-    if input == "today" {
+    if lower == "today" {
         let today = chrono::Local::now().date_naive().and_hms_opt(0, 0, 0)?;
         return Some(today.and_local_timezone(chrono::Local).unwrap().timestamp());
     }
-    if input == "all" {
+    if lower == "all" {
         return None;
     }
     if let Ok(date) = chrono::NaiveDate::parse_from_str(input, "%Y-%m-%d") {
@@ -2199,21 +2566,7 @@ fn query_control_socket_authenticated(
 }
 
 fn format_count(value: u64) -> String {
-    let s = value.to_string();
-    let mut out = String::with_capacity(s.len() + (s.len() / 3));
-
-    for (i, ch) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-
-    out.chars().rev().collect()
-}
-
-fn format_size(bytes: u64) -> String {
-    format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    display::fmt_count(value)
 }
 
 /// Print a section header with Unicode box-drawing separator.
@@ -2226,33 +2579,7 @@ fn print_header(title: &str) {
 
 /// Truncate a hash to 16 hex chars for display.
 fn truncate_hash(hash: &str) -> &str {
-    if hash.len() > 16 {
-        &hash[..16]
-    } else {
-        hash
-    }
-}
-
-/// Format a severity for display: returns (marker, label).
-fn severity_display(severity: &vigil::types::Severity) -> (&'static str, &'static str) {
-    match severity {
-        vigil::types::Severity::Critical => ("✗", "CRITICAL"),
-        vigil::types::Severity::High => ("✗", "HIGH"),
-        vigil::types::Severity::Medium => ("⚠", "MEDIUM"),
-        vigil::types::Severity::Low => ("○", "LOW"),
-    }
-}
-
-/// Pick the highest-severity marker for a set of changes.
-fn severity_display_for_count(
-    changes: &[vigil::types::ChangeResult],
-) -> (&'static str, &'static str) {
-    let max_severity = changes
-        .iter()
-        .map(|c| c.severity)
-        .max()
-        .unwrap_or(vigil::types::Severity::Medium);
-    severity_display(&max_severity)
+    display::truncate_hash(hash)
 }
 
 /// Print detail lines for a single Change variant.

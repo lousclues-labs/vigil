@@ -481,6 +481,73 @@ pub fn query(conn: &Connection, q: &AuditQuery) -> Result<Vec<AuditEntry>> {
     Ok(out)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuditPathWindowState {
+    pub latest_any: Option<i64>,
+    pub latest_in_window: Option<i64>,
+}
+
+/// Return the latest timestamp for `path` overall and within the provided window.
+pub fn get_path_window_state(
+    conn: &Connection,
+    path: &str,
+    since: i64,
+    until: i64,
+) -> Result<AuditPathWindowState> {
+    let state = conn.query_row(
+        "SELECT
+            MAX(timestamp) AS latest_any,
+            MAX(CASE WHEN timestamp >= ?2 AND timestamp <= ?3 THEN timestamp END) AS latest_in_window
+         FROM audit_log
+         WHERE path = ?1",
+        params![path, since, until],
+        |row| {
+            Ok(AuditPathWindowState {
+                latest_any: row.get(0)?,
+                latest_in_window: row.get(1)?,
+            })
+        },
+    )?;
+
+    Ok(state)
+}
+
+/// Fetch most recent audit entries for a single exact path.
+pub fn get_recent_for_path(conn: &Connection, path: &str, limit: u32) -> Result<Vec<AuditEntry>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, timestamp, path, changes_json, severity,
+                monitored_group, process_json, package,
+                maintenance, suppressed, hmac, chain_hash
+         FROM audit_log
+         WHERE path = ?1
+         ORDER BY timestamp DESC
+         LIMIT ?2",
+    )?;
+
+    let rows = stmt.query_map(params![path, limit], |row| {
+        Ok(AuditEntry {
+            id: row.get(0)?,
+            timestamp: row.get(1)?,
+            path: row.get(2)?,
+            changes_json: row.get(3)?,
+            severity: row.get(4)?,
+            monitored_group: row.get(5)?,
+            process_json: row.get(6)?,
+            package: row.get(7)?,
+            maintenance: row.get::<_, i32>(8)? != 0,
+            suppressed: row.get::<_, i32>(9)? != 0,
+            hmac: row.get(10)?,
+            chain_hash: row.get(11)?,
+        })
+    })?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
 pub fn count(conn: &Connection) -> Result<u64> {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?;
     Ok(count.max(0) as u64)
@@ -798,5 +865,50 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].0, "test");
         assert_eq!(groups[0].1, 1);
+    }
+
+    #[test]
+    fn get_recent_for_path_is_exact_match() {
+        let conn = test_conn();
+        let genesis = blake3::hash(b"vigil-audit-chain-genesis")
+            .to_hex()
+            .to_string();
+
+        let c1 = sample_change("/etc/passwd");
+        let h1 = insert_audit_entry(&conn, &c1, false, false, None, &genesis).unwrap();
+
+        let c2 = sample_change("/etc/passwd.bak");
+        let _ = insert_audit_entry(&conn, &c2, false, false, None, &h1).unwrap();
+
+        let entries = get_recent_for_path(&conn, "/etc/passwd", 10).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "/etc/passwd");
+    }
+
+    #[test]
+    fn get_path_window_state_reports_latest_and_window() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO audit_log (timestamp, path, changes_json, severity, chain_hash)
+             VALUES (?1, ?2, '[]', 'high', 'h1')",
+            params![100_i64, "/etc/passwd"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO audit_log (timestamp, path, changes_json, severity, chain_hash)
+             VALUES (?1, ?2, '[]', 'high', 'h2')",
+            params![300_i64, "/etc/passwd"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO audit_log (timestamp, path, changes_json, severity, chain_hash)
+             VALUES (?1, ?2, '[]', 'high', 'h3')",
+            params![500_i64, "/etc/passwd"],
+        )
+        .unwrap();
+
+        let state = get_path_window_state(&conn, "/etc/passwd", 200, 400).unwrap();
+        assert_eq!(state.latest_any, Some(500));
+        assert_eq!(state.latest_in_window, Some(300));
     }
 }

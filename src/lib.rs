@@ -7,6 +7,7 @@ pub mod config;
 pub mod control;
 pub mod coordinator;
 pub mod db;
+pub mod display;
 pub mod doctor;
 pub mod error;
 pub mod filter;

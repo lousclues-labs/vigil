@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use crate::types::OutputFormat;
+use crate::types::{OutputFormat, Severity};
 
 #[derive(Parser)]
 #[command(
@@ -51,6 +51,34 @@ pub enum Command {
         /// Only accept changes matching this glob pattern (requires --accept)
         #[arg(long, requires = "accept")]
         path: Option<String>,
+
+        /// Preview what would be accepted without mutating baseline (requires --accept)
+        #[arg(long, requires = "accept")]
+        dry_run: bool,
+
+        /// Accept only changes of this severity (requires --accept)
+        #[arg(long = "accept-severity", requires = "accept")]
+        accept_severity: Option<Severity>,
+
+        /// Accept only changes from this watch group (requires --accept)
+        #[arg(long = "accept-group", requires = "accept")]
+        accept_group: Option<String>,
+
+        /// Show expanded detail for all changes
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Single-line summary output
+        #[arg(long, conflicts_with = "verbose")]
+        brief: bool,
+
+        /// Disable automatic paging of output
+        #[arg(long)]
+        no_pager: bool,
+
+        /// Show only current changes with audit evidence since this time (e.g. 24h, 7d, today, 2026-04-07)
+        #[arg(long)]
+        since: Option<String>,
     },
 
     /// Compare a single file against its baseline entry
@@ -375,6 +403,7 @@ mod tests {
                 full,
                 now,
                 path,
+                ..
             } => {
                 assert!(accept);
                 assert!(!full);
@@ -415,6 +444,43 @@ mod tests {
     }
 
     #[test]
+    fn check_dry_run_requires_accept() {
+        let result = Cli::try_parse_from(["vigil", "check", "--dry-run"]);
+        assert!(result.is_err(), "--dry-run without --accept should fail");
+    }
+
+    #[test]
+    fn check_accept_filters_parse() {
+        let cli = Cli::try_parse_from([
+            "vigil",
+            "check",
+            "--accept",
+            "--dry-run",
+            "--accept-severity",
+            "low",
+            "--accept-group",
+            "user_config",
+        ])
+        .expect("parse accept filters");
+
+        match cli.command {
+            Command::Check {
+                accept,
+                dry_run,
+                accept_severity,
+                accept_group,
+                ..
+            } => {
+                assert!(accept);
+                assert!(dry_run);
+                assert_eq!(accept_severity, Some(Severity::Low));
+                assert_eq!(accept_group.as_deref(), Some("user_config"));
+            }
+            _ => panic!("expected check command"),
+        }
+    }
+
+    #[test]
     fn check_accept_with_path_parses() {
         let cli = Cli::try_parse_from(["vigil", "check", "--accept", "--path", "/usr/bin/vigil*"])
             .expect("parse");
@@ -422,6 +488,17 @@ mod tests {
             Command::Check { accept, path, .. } => {
                 assert!(accept);
                 assert_eq!(path, Some("/usr/bin/vigil*".to_string()));
+            }
+            _ => panic!("expected check command"),
+        }
+    }
+
+    #[test]
+    fn check_since_parses() {
+        let cli = Cli::try_parse_from(["vigil", "check", "--since", "24h"]).expect("parse");
+        match cli.command {
+            Command::Check { since, .. } => {
+                assert_eq!(since.as_deref(), Some("24h"));
             }
             _ => panic!("expected check command"),
         }
