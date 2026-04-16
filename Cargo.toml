@@ -12,6 +12,26 @@ homepage = "https://github.com/lousclues-labs/vigil"
 readme = "README.md"
 keywords = ["file-integrity", "linux", "security", "monitoring", "baseline"]
 categories = ["command-line-utilities", "filesystem"]
+exclude = [
+    "aur/",
+    ".github/",
+    "contrib/",
+    "docs/",
+    "fuzz/",
+    "hooks/",
+    "scripts/",
+    "systemd/",
+    "deny.toml",
+    "setup.sh",
+    "CONTRIBUTING.md",
+    "GOVERNANCE.md",
+    "TRADEMARKS.md",
+    "VERSIONING.md",
+    "THIRD_PARTY_NOTICES.md",
+    "licenses/",
+    "/config/",
+    "vigil-baseline-*",
+]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin)'] }
