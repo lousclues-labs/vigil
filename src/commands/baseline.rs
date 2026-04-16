@@ -4,7 +4,10 @@ use vigil::cli::BaselineAction;
 
 use super::common::{format_count, query_control_socket};
 
-pub(crate) fn cmd_baseline(config_path: Option<&Path>, action: BaselineAction) -> vigil::Result<()> {
+pub(crate) fn cmd_baseline(
+    config_path: Option<&Path>,
+    action: BaselineAction,
+) -> vigil::Result<()> {
     match action {
         BaselineAction::Refresh { quiet } => cmd_baseline_refresh(config_path, quiet),
     }

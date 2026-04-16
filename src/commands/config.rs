@@ -1,6 +1,9 @@
 use std::path::Path;
 
-pub(crate) fn cmd_config(config_path: Option<&Path>, action: vigil::cli::ConfigAction) -> vigil::Result<()> {
+pub(crate) fn cmd_config(
+    config_path: Option<&Path>,
+    action: vigil::cli::ConfigAction,
+) -> vigil::Result<()> {
     let cfg = vigil::config::load_config(config_path)?;
 
     match action {

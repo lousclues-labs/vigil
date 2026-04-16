@@ -33,9 +33,7 @@ pub fn dispatch_detection(
             }
             Err(e) => {
                 tracing::error!(error = %e, "WAL append failed; falling back to alert channel");
-                metrics
-                    .detections_wal_full
-                    .fetch_add(1, Ordering::Relaxed);
+                metrics.detections_wal_full.fetch_add(1, Ordering::Relaxed);
             }
         }
     }

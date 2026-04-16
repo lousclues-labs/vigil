@@ -87,8 +87,7 @@ impl Metrics {
         self.changes_detected
             .fetch_add(changes_found, Ordering::Relaxed);
         self.scan_duration_ms.store(duration_ms, Ordering::Relaxed);
-        self.last_scan_total
-            .store(total_checked, Ordering::Relaxed);
+        self.last_scan_total.store(total_checked, Ordering::Relaxed);
     }
 
     /// Take a point-in-time snapshot of all counters for serialization.

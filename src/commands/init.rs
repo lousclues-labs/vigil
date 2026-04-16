@@ -4,7 +4,11 @@ use std::path::Path;
 use vigil::display;
 use vigil::types::OutputFormat;
 
-pub(crate) fn cmd_init(config_path: Option<&Path>, format: OutputFormat, force: bool) -> vigil::Result<()> {
+pub(crate) fn cmd_init(
+    config_path: Option<&Path>,
+    format: OutputFormat,
+    force: bool,
+) -> vigil::Result<()> {
     let cfg = vigil::config::load_config(config_path)?;
     let conn = vigil::db::open_baseline_db(&cfg)?;
 

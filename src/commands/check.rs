@@ -6,9 +6,7 @@ use std::sync::Arc;
 use vigil::display;
 use vigil::types::{OutputFormat, ScanMode, Severity};
 
-use super::common::{
-    format_count, parse_time_filter_strict, pipe_to_pager, print_header,
-};
+use super::common::{format_count, parse_time_filter_strict, pipe_to_pager, print_header};
 
 pub(crate) struct CheckOpts {
     pub config_path: Option<PathBuf>,

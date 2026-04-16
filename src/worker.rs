@@ -196,8 +196,7 @@ impl WorkerContext {
             };
 
             if let Some(cr) = self.process_safe(&synthetic) {
-                let maintenance_window =
-                    self.maintenance_active.load(Ordering::Acquire);
+                let maintenance_window = self.maintenance_active.load(Ordering::Acquire);
                 if let Some(ref wal) = self.wal {
                     let record = DetectionRecord::from_change_result(
                         &cr,

@@ -6,8 +6,8 @@ use vigil::cli::{Cli, Command};
 
 mod commands;
 use commands::{
-    cmd_audit, cmd_baseline, cmd_check, cmd_check_live, cmd_config, cmd_diff, cmd_doctor,
-    cmd_init, cmd_log, cmd_maintenance, cmd_setup, cmd_status, cmd_update, cmd_watch, CheckOpts,
+    cmd_audit, cmd_baseline, cmd_check, cmd_check_live, cmd_config, cmd_diff, cmd_doctor, cmd_init,
+    cmd_log, cmd_maintenance, cmd_setup, cmd_status, cmd_update, cmd_watch, CheckOpts,
 };
 
 fn main() {

@@ -247,11 +247,7 @@ where
             force_hash,
             max_file_size,
             mmap_threshold,
-            baseline_mtime: if !force_hash {
-                Some(entry.mtime)
-            } else {
-                None
-            },
+            baseline_mtime: if !force_hash { Some(entry.mtime) } else { None },
             baseline_hash: if !force_hash {
                 Some(entry.content.hash.clone())
             } else {

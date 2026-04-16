@@ -2,10 +2,7 @@ use std::path::Path;
 
 use vigil::types::Change;
 
-use super::common::{
-    format_audit_timestamp, print_change_detail, print_header,
-    truncate_hash,
-};
+use super::common::{format_audit_timestamp, print_change_detail, print_header, truncate_hash};
 
 pub(crate) fn cmd_diff(config_path: Option<&Path>, file_path: &Path) -> vigil::Result<()> {
     let cfg = vigil::config::load_config(config_path)?;

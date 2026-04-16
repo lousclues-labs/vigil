@@ -4,7 +4,10 @@ use super::common::query_control_socket;
 
 use vigil::cli::MaintenanceAction;
 
-pub(crate) fn cmd_maintenance(config_path: Option<&Path>, action: MaintenanceAction) -> vigil::Result<()> {
+pub(crate) fn cmd_maintenance(
+    config_path: Option<&Path>,
+    action: MaintenanceAction,
+) -> vigil::Result<()> {
     let quiet = match &action {
         MaintenanceAction::Enter { quiet } => *quiet,
         MaintenanceAction::Exit { quiet } => *quiet,
