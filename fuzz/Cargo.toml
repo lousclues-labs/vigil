@@ -1,5 +1,5 @@
 [package]
-name = "vigilbaseline-fuzz"
+name = "vigil-baseline-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-vigil = { path = "..", package = "vigilbaseline" }
+vigil = { path = "..", package = "vigil-baseline" }
 arbitrary = { version = "1", features = ["derive"] }
 toml = "0.8"
 serde_json = "1"

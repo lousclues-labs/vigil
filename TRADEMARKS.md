@@ -45,7 +45,7 @@ You may (and should) credit "Vigil Baseline" by name when attributing the origin
 
 You may use the name "Vigil Baseline" when linking to the official repository:
 
-- https://github.com/loujr/vigil
+- https://github.com/lousclues-labs/vigil
 
 ### 4. Academic and Research Use
 
@@ -80,7 +80,7 @@ The GPL explicitly permits forking and creating derivative works from Vigil Base
 1. **Use a different name** for your fork if it diverges significantly. Acceptable patterns: "MyProject (based on Vigil Baseline)" or an entirely new name.
 
 2. **Clearly indicate** that your fork is a derivative work and not the official Vigil Baseline project. A notice in your README is sufficient:
-   > "This project is a fork of [Vigil Baseline](https://github.com/loujr/vigil), originally created by Louis Nelson Jr."
+   > "This project is a fork of [Vigil Baseline](https://github.com/lousclues-labs/vigil), originally created by Louis Nelson Jr."
 
 3. **Preserve attribution** as required by the GPL and CC BY 4.0 licenses. This includes copyright notices, SPDX headers, and the NOTICE file.
 
@@ -102,7 +102,7 @@ Vigil Baseline does not currently have logos, icons, or other visual brand asset
 
 If you believe someone is using the lousclues trademark in violation of this policy, please report it:
 
-- **GitHub:** Open an issue at [loujr/vigil](https://github.com/loujr/vigil)
+- **GitHub:** Open an issue at [loujr/vigil](https://github.com/lousclues-labs/vigil)
 - **Contact:** Louis Nelson Jr. ([@loujr](https://github.com/loujr)). See GitHub profile for current contact information.
 
 ## Trademark Licensing

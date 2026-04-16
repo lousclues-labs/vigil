@@ -4,6 +4,20 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [0.32.2] - 2026-04-15
+
+### Changed
+- **package:** renamed crate from `vigilbaseline` to `vigil-baseline` for crates.io publishing. Binary names (`vigil`, `vigild`) and library name (`vigil`) are unchanged (`Cargo.toml`).
+- **package:** added crates.io metadata — `repository`, `homepage`, `readme`, `keywords`, `categories` (`Cargo.toml`).
+- **fuzz:** renamed fuzz crate from `vigilbaseline-fuzz` to `vigil-baseline-fuzz` and updated dependency to `package = "vigil-baseline"` (`fuzz/Cargo.toml`).
+- **update:** `validate_vigil_repo()` now accepts `vigil-baseline` as a valid Cargo.toml package name alongside legacy names `vigilbaseline` and `vigil` (`src/commands/update.rs`).
+- **docs:** updated all repository URLs from `github.com/loujr/vigil` to `github.com/lousclues-labs/vigil` across 6 files — `CONTRIBUTING.md`, `TRADEMARKS.md`, `docs/DEVELOPMENT.md`, `docs/INSTALL.md`, `licenses/CONTRIBUTOR-LICENSE.md`, `licenses/DEPENDENCY-AUDIT.md`.
+
+### Added
+- **aur:** `aur/PKGBUILD` — Arch Linux AUR package build script for `vigil-baseline`. Installs binaries, systemd units, documentation, and example config (`aur/PKGBUILD`).
+- **aur:** `aur/vigil-baseline.install` — pacman install hook with quickstart instructions, upgrade guidance, and clean service stop/disable on removal (`aur/vigil-baseline.install`).
+- **ci:** `.github/workflows/release.yml` — automated release workflow triggered by version tags. Validates Cargo.toml version matches tag, runs tests, builds release binaries, strips them, creates GitHub Release with tarball + checksum, and publishes to crates.io (`.github/workflows/release.yml`).
+
 ## [0.32.1] - 2026-04-15
 
 ### Fixed

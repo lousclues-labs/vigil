@@ -191,4 +191,4 @@ See [deny.toml](../deny.toml) for the complete policy configuration.
 
 ## Questions
 
-For questions about dependency licensing, open an issue in the [Vigil Baseline repository](https://github.com/loujr/vigil) or contact Louis Nelson Jr. ([@loujr](https://github.com/loujr)).
+For questions about dependency licensing, open an issue in the [Vigil Baseline repository](https://github.com/lousclues-labs/vigil) or contact Louis Nelson Jr. ([@loujr](https://github.com/loujr)).

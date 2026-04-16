@@ -38,7 +38,7 @@ Optional runtime tools:
 ## Clone and Build
 
 ```bash
-git clone https://github.com/loujr/vigil.git
+git clone https://github.com/lousclues-labs/vigil.git
 cd vigil
 cargo build
 cargo build --release

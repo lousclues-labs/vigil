@@ -68,7 +68,7 @@ Notes:
 ## Build From Source
 
 ```bash
-git clone https://github.com/loujr/vigil.git
+git clone https://github.com/lousclues-labs/vigil.git
 cd vigil
 cargo build --release
 ```

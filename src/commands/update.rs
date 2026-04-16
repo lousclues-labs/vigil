@@ -202,7 +202,10 @@ fn validate_vigil_repo(repo: &Path) -> vigil::Result<()> {
         .and_then(|p| p.get("name"))
         .and_then(|n| n.as_str());
 
-    if package_name != Some("vigilbaseline") && package_name != Some("vigil") {
+    if package_name != Some("vigil-baseline")
+        && package_name != Some("vigilbaseline")
+        && package_name != Some("vigil")
+    {
         return Err(vigil::VigilError::Config(format!(
             "current directory is not a Vigil Baseline repository: {}\n\
              hint: run from the Vigil Baseline source directory, or use: vigil update --repo /path/to/vigil",
@@ -410,7 +413,7 @@ mod tests {
             &cargo_toml,
             r#"
                 [package]
-                name = "vigilbaseline"
+                name = "vigil-baseline"
                 version = "0.0.1"
                 edition = "2021"
             "#,
