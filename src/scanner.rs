@@ -73,6 +73,9 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<Base
     let result = (|| -> Result<Vec<GroupInitResult>> {
         let mut groups = Vec::with_capacity(config.watch.len());
 
+        let base_max_file_size = config.scanner.max_file_size;
+        let base_mmap_threshold = config.scanner.mmap_threshold;
+
         for (group_name, group) in &config.watch {
             let mut group_count = 0u64;
             let mut group_errors = 0u64;
@@ -95,8 +98,8 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<Base
 
                     let opts = CaptureOpts {
                         force_hash: true,
-                        max_file_size: config.scanner.max_file_size,
-                        mmap_threshold: config.scanner.mmap_threshold,
+                        max_file_size: base_max_file_size,
+                        mmap_threshold: base_mmap_threshold,
                         baseline_mtime: None,
                         baseline_hash: None,
                     };
@@ -226,6 +229,9 @@ where
     let scan_start = std::time::Instant::now();
     let mut result = ScanResult::default();
     let total = baseline_ops::count(conn)?.max(0) as u64;
+    let force_hash = mode == ScanMode::Full;
+    let max_file_size = config.scanner.max_file_size;
+    let mmap_threshold = config.scanner.mmap_threshold;
 
     // Build watch group index for severity lookup during scheduled scans
     let watch_index = crate::watch_index::WatchGroupIndex::from_config(config);
@@ -238,15 +244,15 @@ where
         }
 
         let opts = CaptureOpts {
-            force_hash: mode == ScanMode::Full,
-            max_file_size: config.scanner.max_file_size,
-            mmap_threshold: config.scanner.mmap_threshold,
-            baseline_mtime: if mode != ScanMode::Full {
+            force_hash,
+            max_file_size,
+            mmap_threshold,
+            baseline_mtime: if !force_hash {
                 Some(entry.mtime)
             } else {
                 None
             },
-            baseline_hash: if mode != ScanMode::Full {
+            baseline_hash: if !force_hash {
                 Some(entry.content.hash.clone())
             } else {
                 None
@@ -415,23 +421,6 @@ pub fn run_scan_parallel(
 
     result.duration_ms = scan_start.elapsed().as_millis() as u64;
     Ok(result)
-}
-
-/// Collect all file paths from watch groups for parallel processing.
-#[cfg(feature = "parallel")]
-pub fn collect_all_paths(config: &Config) -> Vec<std::path::PathBuf> {
-    let exclusions = crate::filter::exclusion::ExclusionFilter::new(config);
-    let mut all_paths = Vec::new();
-    for group in config.watch.values() {
-        let roots = crate::config::expand_user_paths(&group.paths);
-        for root in roots {
-            let _ = walk_files(&root, &exclusions, &mut |path| {
-                all_paths.push(path.to_path_buf());
-                Ok(())
-            });
-        }
-    }
-    all_paths
 }
 
 fn walk_files<F>(

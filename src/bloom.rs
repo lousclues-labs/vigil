@@ -1,4 +1,3 @@
-/// A Bloom filter for fast-reject of unmonitored paths (Item 21).
 /// Uses BLAKE3-derived hash functions for probabilistic membership testing.
 pub struct BloomFilter {
     bits: Vec<u8>,
@@ -92,7 +91,7 @@ impl BloomFilter {
         let mut prefix = std::path::PathBuf::new();
         for component in path.components() {
             prefix.push(component);
-            if self.might_contain(prefix.to_string_lossy().as_bytes()) {
+            if self.might_contain(prefix.as_os_str().as_encoded_bytes()) {
                 return true;
             }
         }
@@ -112,7 +111,7 @@ impl BloomFilter {
             let mut prefix = std::path::PathBuf::new();
             for component in path.components() {
                 prefix.push(component);
-                bloom.insert(prefix.to_string_lossy().as_bytes());
+                bloom.insert(prefix.as_os_str().as_encoded_bytes());
             }
         }
 

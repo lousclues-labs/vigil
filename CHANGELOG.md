@@ -4,6 +4,46 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-04-15
+
+### Release Summary
+- Comprehensive code quality audit — the single biggest maintainability change since the project began. The 2,810-line `main.rs` monolith — which contained every CLI command handler — has been decomposed into a `src/commands/` module with 15 focused submodules (one per command). A new `src/detection.rs` module extracts the WAL-or-alert dispatch pattern that was copy-pasted 5 times across `worker.rs` and `scan_scheduler.rs`. Silent error swallowing on security-critical paths (WAL append for panic records, config HMAC storage) now logs at error level. The hardcoded `/etc/vigil/vigil.toml` in worker self-protection is replaced with dynamic config path lookup. Duplicate buffered-reader code in `hash.rs` is extracted into a shared helper. Hot-path allocations are reduced: `Cow<str>` replaces `to_string_lossy().to_string()` in the worker event loop, `as_encoded_bytes()` replaces `to_string_lossy().as_bytes()` in the Bloom filter. Dead code removed, API surface tightened, comments cleaned. README rewritten with sharper voice and structural clarity. Zero warnings from `cargo clippy --all-targets -- -D warnings`. All 250+ tests pass.
+
+### Added
+- **detection:** new `src/detection.rs` module with `dispatch_detection()` helper — shared WAL-or-alert dispatch logic extracted from 5 duplicate sites across `worker.rs` and `scan_scheduler.rs`. Tries WAL append first, falls back to alert channel on failure, logs at error level if the alert channel is disconnected (detection would be lost). Returns `bool` indicating channel disconnect for caller shutdown logic (`src/detection.rs`).
+- **commands:** new `src/commands/` module directory with 15 submodules — `mod.rs` (re-exports), `common.rs` (shared helpers: `print_header`, `format_count`, `truncate_hash`, `print_change_detail`, `pipe_to_pager`, `parse_time_filter`, `parse_time_filter_strict`, `resolve_config_path`, `update_config_toml`, `format_audit_timestamp`, `query_control_socket`), `init.rs` (`cmd_init`), `check.rs` (`cmd_check`, `cmd_check_live`, `CheckOpts`), `watch.rs` (`cmd_watch`), `diff.rs` (`cmd_diff`, `render_diff_history_panel`, `summarize_audit_changes`), `status.rs` (`cmd_status`), `doctor.rs` (`cmd_doctor`, `print_check`), `audit.rs` (`cmd_audit`, `entries_to_json`), `config.rs` (`cmd_config`), `setup.rs` (`cmd_setup`, `cmd_setup_hmac`, `cmd_setup_socket`), `log.rs` (`cmd_log`), `maintenance.rs` (`cmd_maintenance`), `baseline.rs` (`cmd_baseline`, `cmd_baseline_refresh`), `update.rs` (`cmd_update`, `validate_vigil_repo`, `discover_vigil_repo`, `atomic_install`, and related helpers) (`src/commands/`).
+- **metrics:** `Metrics::record_scan(changes_found, duration_ms, total_checked)` method — consolidates the 6-line scan metric update pattern that was duplicated between on-demand and scheduled scan paths in `scan_scheduler.rs` (`src/metrics.rs`).
+- **config:** `config_search_paths()` made `pub` — exposes the config file resolution logic for use in worker self-protection checks, replacing the hardcoded `/etc/vigil/vigil.toml` path (`src/config/mod.rs`).
+- **hash:** `hash_buffered(file, hasher)` helper — extracted from the identical mmap-fallback and non-mmap buffered reader paths in `blake3_hash_fd()`, eliminating verbatim code duplication (`src/hash.rs`).
+
+### Changed
+- **main:** reduced from 2,810 lines to ~120 lines — now contains only `main()`, `init_tracing()`, and the `run()` match dispatch calling into `commands::*`. All command implementations, helper functions, formatting utilities, and control socket logic moved to `src/commands/` (`src/main.rs`).
+- **worker:** `evaluate()` now uses `Cow<str>` for LRU cache lookups instead of `to_string_lossy().to_string()`, avoiding a heap allocation on every filesystem event. Cache insertion uses `into_owned()` only when a new entry must be stored. `drain_debounced()` similarly uses `Cow<str>` for cache eviction (`src/worker.rs`).
+- **worker:** `process_event_inner()` — removed unused `_conn: &Connection` parameter. The function never used the database connection; callers updated (`src/worker.rs`).
+- **worker:** self-protection config path check now uses `crate::config::config_search_paths(None)` to check all standard config locations (`/etc/vigil/vigil.toml`, `~/.config/vigil/vigil.toml`, `$VIGIL_CONFIG`) instead of the hardcoded `/etc/vigil/vigil.toml` (`src/worker.rs`).
+- **worker:** WAL append failure for panic detection records now logs at error level with path context instead of silently discarding via `let _ =` (`src/worker.rs`).
+- **worker:** realtime event dispatch in `spawn_workers()` now uses `detection::dispatch_detection()` instead of inline WAL-or-alert logic (~40 lines replaced by single function call) (`src/worker.rs`).
+- **scan_scheduler:** both on-demand and scheduled scan dispatch loops now use `detection::dispatch_detection()` instead of inline WAL-or-alert logic. Scan metric recording now uses `Metrics::record_scan()` instead of 3 separate atomic operations (`src/scan_scheduler.rs`).
+- **coordinator:** config HMAC storage failure now logs at error level with "tamper detection weakened" message instead of silently discarding via `let _ =` (`src/coordinator.rs`).
+- **coordinator:** `atomic_write()` visibility tightened from `pub` to `pub(crate)` — only used within the crate (`src/coordinator.rs`).
+- **coordinator:** `is_notify_socket_safe()` visibility tightened from `pub` to `pub(crate)` — only used within the crate (`src/coordinator.rs`).
+- **coordinator:** `atomic_write()` doc comment condensed — removed first line that restated the function name, kept the useful note about `rename()` atomicity on Linux (`src/coordinator.rs`).
+- **bloom:** `might_contain_prefix_of()` and `from_watch_paths()` now use `as_os_str().as_encoded_bytes()` (stable since Rust 1.74) instead of `to_string_lossy().as_bytes()`, avoiding UTF-8 conversion overhead and handling non-UTF-8 paths correctly (`src/bloom.rs`).
+- **scanner:** `run_scan_with_progress()` now hoists `force_hash`, `max_file_size`, and `mmap_threshold` before the scan loop instead of re-reading from config on every file. `build_initial_baseline()` similarly hoists the common fields (`src/scanner.rs`).
+- **metrics:** removed redundant "Operational metrics for the Vigil daemon" doc comment — the struct name `Metrics` already communicates this. Kept the useful second line about relaxed atomic ordering (`src/metrics.rs`).
+- **bloom:** removed opaque "(Item 21)" reference from doc comment — replaced with no reference since the original design document is not linked (`src/bloom.rs`).
+- **README:** rewritten with sharper voice and structural clarity — "The Baseline" section replaces "The Philosophy", "What You Get" reorganized into outcome-oriented sections (Establish/Watch/Detect/Prove/Stay informed), Quick Start commands updated with descriptive comments, "How It Gets Built" condensed, added baseline self-protection principle (`README.md`).
+
+### Removed
+- **watch_index:** `WatchGroupIndex::update_from_config()` — dead code. The coordinator creates a new index via `WatchGroupIndex::from_config()` and swaps the `ArcSwap`; in-place mutation is impossible through the `ArcSwap` indirection (`src/watch_index.rs`).
+- **scanner:** `collect_all_paths()` — dead code behind `#[cfg(feature = "parallel")]` with no callers (`src/scanner.rs`).
+- **worker:** `UpdateReason::AutoRebaseline` variant — never constructed. `PackageUpdate` is the only variant used (`src/worker.rs`).
+- **worker:** doc comment on `dup_to_file()` — restated the function name and return type. The `// SAFETY:` comments inside the function body are retained (`src/worker.rs`).
+
+### Tests
+- All 250+ tests pass (`cargo test --all-targets`), `cargo clippy --all-targets -- -D warnings` clean, `cd fuzz && cargo check` clean.
+- Tests moved from `main.rs` to `src/commands/update.rs`: `validate_vigil_repo_accepts_valid_package_name`, `validate_vigil_repo_accepts_legacy_package_name`, `validate_vigil_repo_rejects_other_package_name`, `normalize_version_prefixes_v_when_missing`.
+
 ## [0.31.0] - 2026-04-12
 
 ### Release Summary

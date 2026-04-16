@@ -68,33 +68,29 @@ pub fn blake3_hash_fd(file: &File, size: u64, mmap_threshold: u64) -> Result<Str
             }
             Err(_) => {
                 // mmap failed (e.g., special files, /proc entries) — fall back to buffered reader
-                let mut reader = file
-                    .try_clone()
-                    .map_err(|e| VigilError::Hash(format!("cannot clone file handle: {}", e)))?;
-                reader
-                    .seek(SeekFrom::Start(0))
-                    .map_err(|e| VigilError::Hash(format!("seek error: {}", e)))?;
-                let buf_reader = BufReader::with_capacity(131_072, &mut reader);
-                hasher
-                    .update_reader(buf_reader)
-                    .map_err(|e| VigilError::Hash(format!("read hash error: {}", e)))?;
+                hash_buffered(file, &mut hasher)?;
             }
         }
     } else {
-        // Buffered reader with 128KB buffer
-        let mut reader = file
-            .try_clone()
-            .map_err(|e| VigilError::Hash(format!("cannot clone file handle: {}", e)))?;
-        reader
-            .seek(SeekFrom::Start(0))
-            .map_err(|e| VigilError::Hash(format!("seek error: {}", e)))?;
-        let buf_reader = BufReader::with_capacity(131_072, &mut reader);
-        hasher
-            .update_reader(buf_reader)
-            .map_err(|e| VigilError::Hash(format!("read hash error: {}", e)))?;
+        hash_buffered(file, &mut hasher)?;
     }
 
     Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// Hash a file using a buffered reader with a 128KB buffer.
+fn hash_buffered(file: &File, hasher: &mut blake3::Hasher) -> Result<()> {
+    let mut reader = file
+        .try_clone()
+        .map_err(|e| VigilError::Hash(format!("cannot clone file handle: {}", e)))?;
+    reader
+        .seek(SeekFrom::Start(0))
+        .map_err(|e| VigilError::Hash(format!("seek error: {}", e)))?;
+    let buf_reader = BufReader::with_capacity(131_072, &mut reader);
+    hasher
+        .update_reader(buf_reader)
+        .map_err(|e| VigilError::Hash(format!("read hash error: {}", e)))?;
+    Ok(())
 }
 
 /// Compute BLAKE3 hash of raw bytes.

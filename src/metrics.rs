@@ -2,7 +2,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
 
-/// Operational metrics for the Vigil daemon.
 /// All counters use relaxed atomic ordering for approximate visibility.
 pub struct Metrics {
     pub events_received: AtomicU64,
@@ -81,6 +80,15 @@ impl Metrics {
             detections_wal_sink_lag: AtomicU64::new(0),
             uptime_start: chrono::Utc::now().timestamp(),
         }
+    }
+
+    /// Record scan result metrics (changes, duration, total checked).
+    pub fn record_scan(&self, changes_found: u64, duration_ms: u64, total_checked: u64) {
+        self.changes_detected
+            .fetch_add(changes_found, Ordering::Relaxed);
+        self.scan_duration_ms.store(duration_ms, Ordering::Relaxed);
+        self.last_scan_total
+            .store(total_checked, Ordering::Relaxed);
     }
 
     /// Take a point-in-time snapshot of all counters for serialization.

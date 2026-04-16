@@ -1,0 +1,28 @@
+mod audit;
+mod baseline;
+mod check;
+mod common;
+mod config;
+mod diff;
+mod doctor;
+mod init;
+mod log;
+mod maintenance;
+mod setup;
+mod status;
+mod update;
+mod watch;
+
+pub(crate) use audit::cmd_audit;
+pub(crate) use baseline::cmd_baseline;
+pub(crate) use check::{cmd_check, cmd_check_live, CheckOpts};
+pub(crate) use config::cmd_config;
+pub(crate) use diff::cmd_diff;
+pub(crate) use doctor::cmd_doctor;
+pub(crate) use init::cmd_init;
+pub(crate) use log::cmd_log;
+pub(crate) use maintenance::cmd_maintenance;
+pub(crate) use setup::cmd_setup;
+pub(crate) use status::cmd_status;
+pub(crate) use update::cmd_update;
+pub(crate) use watch::cmd_watch;

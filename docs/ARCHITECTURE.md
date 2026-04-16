@@ -94,6 +94,23 @@ src/
 |   |-- remote_syslog.rs    # Remote syslog forwarding over TCP or UDP.
 |   `-- socket.rs           # Unix signal socket event writer.
 |
+|-- commands/
+|   |-- mod.rs              # Re-exports all command handlers.
+|   |-- common.rs           # Shared CLI helpers: headers, formatting, pager, config path, TOML updates, control socket.
+|   |-- init.rs             # vigil init command.
+|   |-- check.rs            # vigil check / check --now commands and CheckOpts.
+|   |-- watch.rs            # vigil watch command.
+|   |-- diff.rs             # vigil diff command with audit history panel.
+|   |-- status.rs           # vigil status command (live + file-based fallback).
+|   |-- doctor.rs           # vigil doctor command and check rendering.
+|   |-- audit.rs            # vigil audit show/stats/verify commands.
+|   |-- config.rs           # vigil config show/validate commands.
+|   |-- setup.rs            # vigil setup hmac/socket commands.
+|   |-- log.rs              # vigil log show/errors commands.
+|   |-- maintenance.rs      # vigil maintenance enter/exit/status commands.
+|   |-- baseline.rs         # vigil baseline refresh command.
+|   `-- update.rs           # vigil update command with repo discovery and atomic install.
+|
 |-- config/
 |   |-- mod.rs              # Config model, loading, validation, defaults.
 |   `-- diff.rs             # Config diff for SIGHUP reload logging.
@@ -145,13 +162,14 @@ src/
 |-- control.rs              # Unix control socket. ControlHandler struct dispatches methods.
 |-- coordinator.rs          # Coordinator struct with tick loop and named housekeeping methods.
 |-- daemon.rs               # vigild binary entrypoint.
+|-- detection.rs            # Shared WAL-or-alert dispatch helper (dispatch_detection).
 |-- doctor.rs               # System health diagnostics and health snapshot.
 |-- error.rs                # Central error type.
 |-- hash.rs                 # BLAKE3 hashing helpers.
 |-- hmac.rs                 # HMAC signing and verification helpers.
 |-- lib.rs                  # Daemon struct + DaemonRuntime (start/wait/drain lifecycle).
-|-- main.rs                 # CLI entrypoint and command dispatch.
-|-- metrics.rs              # Runtime counters and snapshot serialization.
+|-- main.rs                 # CLI entrypoint (~120 lines): tracing init + command dispatch into commands::*.
+|-- metrics.rs              # Runtime counters, snapshot serialization, and record_scan helper.
 |-- package.rs              # Package manager detection and ownership query.
 |-- scan_scheduler.rs       # Cron-based scan scheduling with croner.
 |-- scanner.rs              # Scheduled scans and baseline refresh work.
@@ -165,7 +183,11 @@ src/
 
 These modules are easy to miss. They are core to the runtime.
 
-- `src/display/` is the consolidated rendering layer for all CLI output (~1,960 lines across 6 files). `mod.rs` defines the public API: `CheckReport`, `CheckReportMeta`, `InitReport`, `BaselineProfile` structs and `render_check()`/`render_init()` dispatch functions. `check.rs` builds `CheckReport` from `ScanResult` + metadata, renders human/brief/JSON output for both check and init commands, with severity triage, progressive disclosure, and package grouping. `format.rs` provides the shared ANSI color system (`Style`/`Styled`), number formatting (`format_count`, `format_size`, `format_age`), hash/fingerprint display, smart path truncation with `$HOME` collapse, and exit code descriptions. `explain.rs` maps structural changes to human-readable "why" lines (e.g. setuid bit → "setuid bit added — investigate") — pure function, no heuristics (Principle III). `term.rs` detects terminal capabilities (`TermInfo`): TTY status, `NO_COLOR`, width/height via ioctl with env fallback. `widgets.rs` renders the severity histogram and change comparison tables. Doctor and main.rs delegate formatting to display via re-exports (`fmt_count`, `fmt_size`, `truncate_hash`, `format_fingerprint`).
+- `src/display/` is the consolidated rendering layer for all CLI output (~1,960 lines across 6 files). `mod.rs` defines the public API: `CheckReport`, `CheckReportMeta`, `InitReport`, `BaselineProfile` structs and `render_check()`/`render_init()` dispatch functions. `check.rs` builds `CheckReport` from `ScanResult` + metadata, renders human/brief/JSON output for both check and init commands, with severity triage, progressive disclosure, and package grouping. `format.rs` provides the shared ANSI color system (`Style`/`Styled`), number formatting (`format_count`, `format_size`, `format_age`), hash/fingerprint display, smart path truncation with `$HOME` collapse, and exit code descriptions. `explain.rs` maps structural changes to human-readable "why" lines (e.g. setuid bit → "setuid bit added — investigate") — pure function, no heuristics (Principle III). `term.rs` detects terminal capabilities (`TermInfo`): TTY status, `NO_COLOR`, width/height via ioctl with env fallback. `widgets.rs` renders the severity histogram and change comparison tables. Doctor and `commands/` delegate formatting to display via re-exports (`fmt_count`, `fmt_size`, `truncate_hash`, `format_fingerprint`).
+
+- `src/commands/` is the CLI command implementation layer (~2,700 lines across 15 files). Each command handler lives in its own file (e.g. `check.rs`, `audit.rs`, `update.rs`). `common.rs` provides shared helpers: `print_header`, `format_count`, `truncate_hash`, `print_change_detail`, `pipe_to_pager`, `parse_time_filter`/`parse_time_filter_strict`, `resolve_config_path`, `update_config_toml`, `format_audit_timestamp`, and `query_control_socket`/`query_control_socket_authenticated`. `main.rs` is now ~120 lines: `init_tracing()` + the `run()` match dispatch calling into `commands::*`.
+
+- `src/detection.rs` provides `dispatch_detection()` — the shared WAL-or-alert dispatch helper. Tries WAL append first (incrementing `detections_wal_appends`), falls back to alert channel on WAL failure (incrementing `detections_wal_full` and logging at error), logs at error level if the alert channel is disconnected (detection would be lost). Used by `worker.rs` (realtime events), `scan_scheduler.rs` (on-demand and scheduled scans). The `drain_debounced` path in `worker.rs` uses inline logic instead because it collects alerts into a local `Vec` rather than sending directly to the channel.
 
 - `src/lib.rs` defines `Daemon` (config, connections, startup) and `DaemonRuntime` (thread ownership, channel lifecycle). `Daemon::run()` is ~11 lines: harden, record binary hash, start runtime, wait, drain. `DaemonRuntime::start()` wires all channels, spawns all threads (including WAL AuditWriter and SinkRunner when `detection_wal = true`), runs WAL self-test, calls `AuditWriter::recover()`, emits `sd_notify(Ready)`. `DaemonRuntime::drain()` joins threads in dependency order: workers → baseline_writer → audit_writer → sink_runner → alert → coordinator → scan_scheduler → final WAL truncation. A `send_watchdog_heartbeat()` helper sends `sd_notify(Watchdog)` guarded by `is_notify_socket_safe()` and is called throughout pre-flight and startup to prevent systemd from killing the daemon before the coordinator thread exists.
 - `src/wal/mod.rs` defines `DetectionWal` — the crash-safe binary WAL for detection records. The WAL decouples detection output from audit persistence and alert dispatch. Workers, scan scheduler, and debounce write `DetectionRecord` entries via `append()` (pwrite + fdatasync). Two independent consumer threads read entries via `iter_unconsumed()` with gap-scanning recovery: the AuditWriter persists to the audit DB with priority ordering; the SinkRunner dispatches to alert sinks with bounded cooldowns. Entries have independent `audit_done` / `sink_done` flags — flag updates via `mark_flag()` are non-atomic read-modify-write operations protected by the global `write_lock` to prevent concurrent flag overwrites. The WAL uses CRC32 checksums for crash recovery and optional per-entry HMAC-SHA256 for tamper detection. Gap scanning is bounded by `MAX_GAP_BYTES` (64KB) to prevent adversarial DoS via large zeroed regions. File permissions are enforced at 0o600. When the WAL is disabled or full, detections fall back to the pre-WAL `alert_tx` channel.

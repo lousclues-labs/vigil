@@ -175,11 +175,16 @@ impl Coordinator {
                         }
                         None => {
                             // Store initial config HMAC
-                            let _ = crate::db::baseline_ops::set_config_state(
+                            if let Err(e) = crate::db::baseline_ops::set_config_state(
                                 &self.startup_baseline_conn,
                                 "config_file_hmac",
                                 &current_hmac,
-                            );
+                            ) {
+                                tracing::error!(
+                                    error = %e,
+                                    "failed to store config file HMAC — tamper detection weakened"
+                                );
+                            }
                         }
                         _ => {} // HMAC matches, proceed
                     }
@@ -521,9 +526,8 @@ fn write_state_snapshot(
     Ok(())
 }
 
-/// Atomically write data to a file by writing to a temp file in the same
-/// directory, then rename(). rename() on the same filesystem is atomic on Linux.
-pub fn atomic_write(path: &std::path::Path, data: &[u8]) -> crate::Result<()> {
+/// rename() on the same filesystem is atomic on Linux.
+pub(crate) fn atomic_write(path: &std::path::Path, data: &[u8]) -> crate::Result<()> {
     use std::io::Write;
 
     let dir = path
@@ -579,7 +583,7 @@ fn config_file_content() -> Option<Vec<u8>> {
 
 /// Validate that NOTIFY_SOCKET points to a safe systemd-controlled path.
 /// Rejects non-standard paths to prevent lifecycle state leaks.
-pub fn is_notify_socket_safe() -> bool {
+pub(crate) fn is_notify_socket_safe() -> bool {
     match std::env::var("NOTIFY_SOCKET") {
         Ok(val) => {
             // Abstract sockets (@-prefixed) are acceptable

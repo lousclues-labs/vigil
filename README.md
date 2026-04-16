@@ -2,40 +2,33 @@
 
 [![CI](https://img.shields.io/badge/CI-GitHub_Actions-success)](.github/workflows/ci.yml)
 [![Security Audit](https://img.shields.io/badge/Security-Audit-success)](.github/workflows/scheduled.yml)
-[![Version](https://img.shields.io/badge/version-0.31.0-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.32.0-blue)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange.svg)](https://www.rust-lang.org/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
 
-**A lightweight file integrity monitor for Linux desktops.**
+**Your filesystem. Your baseline. Your witness.**
 
 > *No one tiptoes through your system without leaving footprints behind.*
 
 ---
 
-## The Philosophy
+## The Baseline
 
-Most security tools want to be smart. They scan your files, apply heuristics,
-consult cloud databases, compute risk scores, and then tell you something
-is "potentially suspicious." You nod. You ignore it. You move on.
+You run `vigil init` on a clean system. Vigil walks every path you told it to watch and records exactly what it sees. Hash. Permissions. Ownership. Inode. Extended attributes. That snapshot is the baseline. It is the truth about what your system looks like when you trust it.
 
-Vigil Baseline doesn't do any of that. I built it specifically to not do any of that.
+From that moment forward, every change is measured against the baseline. A file's hash changes. A permission shifts. An inode is replaced. An entry disappears. Vigil sees it because the baseline remembers what was there before.
 
-**We watch, we don't act.** Vigil Baseline compares hashes. Hashes match or they
-don't. Permissions changed or they didn't. The inode is the same or it was
-replaced. There is no "maybe." There is no gradient.
+The baseline is not a database you query. It is a declaration you made about what "correct" looks like. Everything Vigil does flows from that declaration.
 
-**We are silent by default.** A healthy system produces zero alerts. If
-Vigil Baseline is making noise during a normal day, either your system is compromised
-or your configuration is wrong. Fix the configuration first.
+**We compare. We do not guess.** Hashes match or they don't. Permissions changed or they didn't. The inode is the same or it was replaced. There is no "maybe." There is no gradient. There is no risk score that fades into ambiguity.
 
-**We stay local.** No telemetry. No update checks. No cloud lookups. No
-DNS queries. No outbound connections. Disconnect the network cable. Vigil Baseline
-works identically.
+**We are silent by default.** A healthy system produces zero alerts. When the baseline matches reality, Vigil says nothing. When reality deviates, Vigil speaks. Once. Clearly.
 
-**We don't quarantine. We don't execute. We don't remediate.** Vigil Baseline is a
-witness, not a guard. When something changes that shouldn't have, Vigil Baseline
-tells you. Immediately, clearly, and only once. What you do about it is
-your decision.
+**We stay local.** No telemetry. No cloud lookups. No outbound connections. Disconnect the network cable. Vigil works identically.
+
+**We watch. We do not act.** Vigil is a witness. Not a guard. When something changes that shouldn't have, Vigil tells you. What you do about it is your decision.
+
+**The baseline protects itself.** If the baseline database is tampered with, emptied, or replaced, Vigil detects it and refuses to operate silently on a compromised foundation. A tool that trusts its own data without verifying it is a tool that can be blinded.
 
 Read the full [Principles](docs/PRINCIPLES.md) if you want to understand
 what we're about.
@@ -44,59 +37,52 @@ what we're about.
 
 ## How It Gets Built
 
-I chose Rust because the compiler enforces the kind of promises security
-tools need to keep. I built Vigil Baseline with AI. I'm not going to pretend
-otherwise, because pretending would violate the same principles this tool
-is built on.
+Rust. Because the compiler enforces the kind of promises security tools need to keep. Memory safety is not optional when the tool's job is to prove filesystem integrity.
 
-I broke the code, found the bugs, and fixed them. Every decision is in the
-[CHANGELOG](CHANGELOG.md). That's where the real work lives.
+Built with AI. Every line held to the same standard as my own. Every decision is in the [CHANGELOG](CHANGELOG.md).
 
 ---
 
 ## What You Get
 
-```
-+--------------------------------------------------------------------+
-| [x] Filesystem monitoring                                          |
-|     fanotify (mount-wide) with inotify fallback                   |
-|                                                                    |
-| [x] BLAKE3 integrity baselines                                     |
-|     hash + permissions + ownership + inode + xattrs               |
-|                                                                    |
-| [x] TOCTOU-hardened comparison                                     |
-|     open -> fstat(fd) -> hash(fd) -> compare                      |
-|                                                                    |
-| [x] Multi-channel alerting                                         |
-|     desktop notify, journald, JSON log, Unix signal socket        |
-|                                                                    |
-| [x] systemd + package-manager integration                          |
-|     hardened daemon unit, scan timer, pacman/apt hook support     |
-|                                                                    |
-| [x] Zero network I/O                                               |
-|     no telemetry, no cloud lookups, no phoning home               |
-|                                                                    |
-| [x] Single-purpose design                                          |
-|     two binaries, one job: file integrity monitoring              |
-|                                                                    |
-| [x] Detection WAL (Write-Ahead Log)                                |
-|     crash-safe detection output, zero loss across restarts        |
-+--------------------------------------------------------------------+
-```
+**Establish the baseline.**
+- `vigil init` walks your watched paths and records the known-good state
+- BLAKE3 hashing with full metadata capture (permissions, ownership, inode, xattrs)
+- HMAC signing available for tamper-evident baselines
+
+**Watch the filesystem.**
+- Real-time kernel-level monitoring via fanotify (inotify fallback)
+- TOCTOU-hardened comparison pipeline: open, fstat(fd), hash(fd), compare
+- Bloom filter rejects 99% of irrelevant events before they reach workers
+
+**Detect deviations.**
+- Every deviation compared against the baseline you established
+- Crash-safe detection WAL ensures no detection is silently lost
+- Package-aware monitoring distinguishes system updates from suspicious changes
+
+**Prove what happened.**
+- HMAC-chained audit trail. Delete an entry and the chain breaks.
+- Suppression affects notifications. It never affects the audit trail.
+- `vigil audit verify` proves the chain is intact.
+
+**Stay informed.**
+- Desktop notifications, journald, JSON log, Unix signal socket
+- `vigil doctor` runs twelve self-diagnostics
+- `vigil diff` compares any file against baseline and audit history
 
 ---
 
 ## Quick Start
 
 ```bash
-vigil init                  # create baseline of monitored paths
-vigil check                 # one-shot integrity scan
-vigil status                # verify backend and baseline counts
-vigil doctor                # run environment diagnostics
-vigil watch                 # foreground real-time monitor
+vigil init                  # establish your baseline
+vigil check                 # verify the filesystem against it
+vigil status                # see what you are protecting
+vigil doctor                # make sure everything is healthy
+vigil watch                 # start watching in real time
 ```
 
-You're protected.
+The baseline is your source of truth. Everything starts there.
 
 ---
 

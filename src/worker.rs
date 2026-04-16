@@ -13,6 +13,7 @@ use rusqlite::Connection;
 use crate::alert::AlertPayload;
 use crate::config::Config;
 use crate::db::{self, baseline_ops};
+use crate::detection;
 use crate::error::{Result, VigilError};
 use crate::filter::EventFilter;
 use crate::metrics::Metrics;
@@ -29,12 +30,11 @@ pub struct BaselineUpdate {
     pub reason: UpdateReason,
 }
 
+#[allow(dead_code)] // reason field reserved for future logging in baseline writer
 pub enum UpdateReason {
     PackageUpdate,
-    AutoRebaseline,
 }
 
-/// Duplicate a raw file descriptor and wrap it in a `File` with RAII ownership.
 #[allow(unsafe_code)]
 fn dup_to_file(raw_fd: std::os::fd::RawFd) -> std::io::Result<std::fs::File> {
     // SAFETY: dup() creates a new fd referring to the same open file description.
@@ -91,16 +91,16 @@ impl WorkerContext {
     fn evaluate(&mut self, event: &FsEvent) -> Result<Option<ChangeResult>> {
         let cfg = self.config.load();
         let idx = self.watch_index.load();
-        let path_str = event.path.to_string_lossy().to_string();
+        let path_cow = event.path.to_string_lossy();
 
-        let baseline = if let Some(cached) = self.cache.get(&path_str) {
+        let baseline = if let Some(cached) = self.cache.get(path_cow.as_ref()) {
             self.metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
             cached.clone()
         } else {
             self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
-            match baseline_ops::get_by_path(&self.conn, &path_str)? {
+            match baseline_ops::get_by_path(&self.conn, path_cow.as_ref())? {
                 Some(b) => {
-                    self.cache.put(path_str.clone(), b.clone());
+                    self.cache.put(path_cow.clone().into_owned(), b.clone());
                     b
                 }
                 None => {
@@ -123,9 +123,9 @@ impl WorkerContext {
             }
         };
 
-        let result = process_event_inner(&self.conn, event, &cfg, &idx, &self.metrics, baseline)?;
+        let result = process_event_inner(event, &cfg, &idx, &self.metrics, baseline)?;
         if result.is_some() {
-            self.cache.pop(&path_str);
+            self.cache.pop(path_cow.as_ref());
         }
         Ok(result)
     }
@@ -160,7 +160,13 @@ impl WorkerContext {
                         maintenance_window: self.maintenance_active.load(Ordering::Acquire),
                         source: DetectionSource::Panic,
                     };
-                    let _ = wal.append(&panic_record);
+                    if let Err(e) = wal.append(&panic_record) {
+                        tracing::error!(
+                            error = %e,
+                            path = %event.path.display(),
+                            "WAL append failed for panic detection record"
+                        );
+                    }
                 }
                 None
             }
@@ -178,8 +184,8 @@ impl WorkerContext {
         let pending = self.filter.drain_pending();
         let mut alerts = Vec::new();
         for path in pending {
-            let path_str = path.to_string_lossy().to_string();
-            self.cache.pop(&path_str);
+            let path_cow = path.to_string_lossy();
+            self.cache.pop(path_cow.as_ref());
 
             let synthetic = FsEvent {
                 path: Arc::new(path),
@@ -190,10 +196,12 @@ impl WorkerContext {
             };
 
             if let Some(cr) = self.process_safe(&synthetic) {
+                let maintenance_window =
+                    self.maintenance_active.load(Ordering::Acquire);
                 if let Some(ref wal) = self.wal {
                     let record = DetectionRecord::from_change_result(
                         &cr,
-                        self.maintenance_active.load(Ordering::Acquire),
+                        maintenance_window,
                         DetectionSource::Debounce,
                     );
                     match wal.append(&record) {
@@ -212,14 +220,14 @@ impl WorkerContext {
                                 .fetch_add(1, Ordering::Relaxed);
                             alerts.push(AlertPayload {
                                 change: cr,
-                                maintenance_window: self.maintenance_active.load(Ordering::Acquire),
+                                maintenance_window,
                             });
                         }
                     }
                 } else {
                     alerts.push(AlertPayload {
                         change: cr,
-                        maintenance_window: self.maintenance_active.load(Ordering::Acquire),
+                        maintenance_window,
                     });
                 }
             }
@@ -335,48 +343,14 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
                             ctx.metrics.events_processed.fetch_add(1, Ordering::Relaxed);
                             if let Some(cr) = ctx.process_safe(&event) {
                                 ctx.try_auto_rebaseline(&cr, &update_tx);
-                                if let Some(ref wal) = ctx.wal {
-                                    let record = DetectionRecord::from_change_result(
-                                        &cr,
-                                        ctx.maintenance_active.load(Ordering::Acquire),
-                                        DetectionSource::Realtime,
-                                    );
-                                    match wal.append(&record) {
-                                        Ok(_) => {
-                                            ctx.metrics
-                                                .detections_wal_appends
-                                                .fetch_add(1, Ordering::Relaxed);
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(
-                                                error = %e,
-                                                "WAL append failed; falling back to alert channel"
-                                            );
-                                            ctx.metrics
-                                                .detections_wal_full
-                                                .fetch_add(1, Ordering::Relaxed);
-                                            if alert_tx
-                                                .send(AlertPayload {
-                                                    change: cr,
-                                                    maintenance_window: ctx
-                                                        .maintenance_active
-                                                        .load(Ordering::Acquire),
-                                                })
-                                                .is_err()
-                                            {
-                                                break;
-                                            }
-                                        }
-                                    }
-                                } else if alert_tx
-                                    .send(AlertPayload {
-                                        change: cr,
-                                        maintenance_window: ctx
-                                            .maintenance_active
-                                            .load(Ordering::Acquire),
-                                    })
-                                    .is_err()
-                                {
+                                if detection::dispatch_detection(
+                                    cr,
+                                    &ctx.wal,
+                                    &alert_tx,
+                                    &ctx.metrics,
+                                    &ctx.maintenance_active,
+                                    DetectionSource::Realtime,
+                                ) {
                                     break;
                                 }
                             }
@@ -430,11 +404,10 @@ pub fn process_event(
         }
     };
 
-    process_event_inner(conn, event, &cfg, &idx, metrics, baseline)
+    process_event_inner(event, &cfg, &idx, metrics, baseline)
 }
 
 fn process_event_inner(
-    _conn: &Connection,
     event: &FsEvent,
     cfg: &Config,
     idx: &WatchGroupIndex,
@@ -443,9 +416,11 @@ fn process_event_inner(
 ) -> Result<Option<ChangeResult>> {
     // Self-protection: log at error level if config or HMAC key is modified
     let path_str_ref = event.path.to_string_lossy();
-    let config_path = "/etc/vigil/vigil.toml";
     let hmac_key_path = cfg.security.hmac_key_path.to_string_lossy();
-    if path_str_ref.as_ref() == config_path {
+    let is_config_file = crate::config::config_search_paths(None)
+        .iter()
+        .any(|p| p.to_string_lossy() == path_str_ref);
+    if is_config_file {
         tracing::error!(
             path = %event.path.display(),
             "vigil self-protection: config file modified"

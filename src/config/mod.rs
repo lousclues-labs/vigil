@@ -673,7 +673,7 @@ pub fn migrate_config(config: &mut Config) {
     }
 }
 
-fn config_search_paths(explicit_path: Option<&Path>) -> Vec<PathBuf> {
+pub fn config_search_paths(explicit_path: Option<&Path>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
     if let Some(p) = explicit_path {

@@ -9,8 +9,9 @@ use crossbeam_channel::Sender;
 use crate::alert::AlertPayload;
 use crate::config::Config;
 use crate::control::{ScanRequest, ScanResponse};
+use crate::detection;
 use crate::metrics::Metrics;
-use crate::wal::{DetectionRecord, DetectionSource, DetectionWal};
+use crate::wal::{DetectionSource, DetectionWal};
 
 #[allow(clippy::too_many_arguments)]
 pub fn spawn(
@@ -35,47 +36,20 @@ pub fn spawn(
                         match crate::scanner::run_scan(&baseline_conn, &cfg, request.mode) {
                             Ok(scan_result) => {
                                 for change in scan_result.changes {
-                                    if let Some(ref wal) = wal {
-                                        let record = DetectionRecord::from_change_result(
-                                            &change,
-                                            maintenance_active.load(Ordering::Acquire),
-                                            DetectionSource::OnDemandScan,
-                                        );
-                                        match wal.append(&record) {
-                                            Ok(_) => {
-                                                metrics
-                                                    .detections_wal_appends
-                                                    .fetch_add(1, Ordering::Relaxed);
-                                            }
-                                            Err(e) => {
-                                                tracing::error!(
-                                                    error = %e,
-                                                    "WAL append failed for on-demand scan detection"
-                                                );
-                                                let _ = alert_tx.send(AlertPayload {
-                                                    change,
-                                                    maintenance_window: maintenance_active
-                                                        .load(Ordering::Acquire),
-                                                });
-                                            }
-                                        }
-                                    } else {
-                                        let _ = alert_tx.send(AlertPayload {
-                                            change,
-                                            maintenance_window: maintenance_active
-                                                .load(Ordering::Acquire),
-                                        });
-                                    }
+                                    detection::dispatch_detection(
+                                        change,
+                                        &wal,
+                                        &alert_tx,
+                                        &metrics,
+                                        &maintenance_active,
+                                        DetectionSource::OnDemandScan,
+                                    );
                                 }
-                                metrics
-                                    .changes_detected
-                                    .fetch_add(scan_result.changes_found, Ordering::Relaxed);
-                                metrics
-                                    .scan_duration_ms
-                                    .store(scan_result.duration_ms, Ordering::Relaxed);
-                                metrics
-                                    .last_scan_total
-                                    .store(scan_result.total_checked, Ordering::Relaxed);
+                                metrics.record_scan(
+                                    scan_result.changes_found,
+                                    scan_result.duration_ms,
+                                    scan_result.total_checked,
+                                );
 
                                 tracing::info!(
                                     checked = scan_result.total_checked,
@@ -141,47 +115,20 @@ pub fn spawn(
                     {
                         Ok(scan_result) => {
                             for change in scan_result.changes {
-                                if let Some(ref wal) = wal {
-                                    let record = DetectionRecord::from_change_result(
-                                        &change,
-                                        maintenance_active.load(Ordering::Acquire),
-                                        DetectionSource::ScheduledScan,
-                                    );
-                                    match wal.append(&record) {
-                                        Ok(_) => {
-                                            metrics
-                                                .detections_wal_appends
-                                                .fetch_add(1, Ordering::Relaxed);
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(
-                                                error = %e,
-                                                "WAL append failed for scheduled scan detection"
-                                            );
-                                            let _ = alert_tx.send(AlertPayload {
-                                                change,
-                                                maintenance_window: maintenance_active
-                                                    .load(Ordering::Acquire),
-                                            });
-                                        }
-                                    }
-                                } else {
-                                    let _ = alert_tx.send(AlertPayload {
-                                        change,
-                                        maintenance_window: maintenance_active
-                                            .load(Ordering::Acquire),
-                                    });
-                                }
+                                detection::dispatch_detection(
+                                    change,
+                                    &wal,
+                                    &alert_tx,
+                                    &metrics,
+                                    &maintenance_active,
+                                    DetectionSource::ScheduledScan,
+                                );
                             }
-                            metrics
-                                .changes_detected
-                                .fetch_add(scan_result.changes_found, Ordering::Relaxed);
-                            metrics
-                                .scan_duration_ms
-                                .store(scan_result.duration_ms, Ordering::Relaxed);
-                            metrics
-                                .last_scan_total
-                                .store(scan_result.total_checked, Ordering::Relaxed);
+                            metrics.record_scan(
+                                scan_result.changes_found,
+                                scan_result.duration_ms,
+                                scan_result.total_checked,
+                            );
 
                             tracing::info!(
                                 checked = scan_result.total_checked,
