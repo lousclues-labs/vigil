@@ -76,6 +76,14 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<Base
         let base_max_file_size = config.scanner.max_file_size;
         let base_mmap_threshold = config.scanner.mmap_threshold;
 
+        let base_opts = CaptureOpts {
+            force_hash: true,
+            max_file_size: base_max_file_size,
+            mmap_threshold: base_mmap_threshold,
+            baseline_mtime: None,
+            baseline_hash: None,
+        };
+
         for (group_name, group) in &config.watch {
             let mut group_count = 0u64;
             let mut group_errors = 0u64;
@@ -96,15 +104,7 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<Base
                         }
                     }
 
-                    let opts = CaptureOpts {
-                        force_hash: true,
-                        max_file_size: base_max_file_size,
-                        mmap_threshold: base_mmap_threshold,
-                        baseline_mtime: None,
-                        baseline_hash: None,
-                    };
-
-                    match crate::types::FileSnapshot::from_path(path, &opts) {
+                    match crate::types::FileSnapshot::from_path(path, &base_opts) {
                         Ok(SnapshotOrDeleted::Snapshot(snapshot)) => {
                             let package = if skip_package_owner {
                                 None
@@ -202,11 +202,6 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<Base
         duration: started.elapsed(),
         db_size_bytes,
     })
-}
-
-/// Refresh baseline by rebuilding entries under watch paths.
-pub fn refresh_baseline(conn: &Connection, config: &Config) -> Result<BaselineInitResult> {
-    build_initial_baseline(conn, config)
 }
 
 /// Run a baseline comparison scan.

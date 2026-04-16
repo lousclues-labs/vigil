@@ -47,26 +47,24 @@ use crate::watch_index::WatchGroupIndex;
 
 /// Vigil daemon runtime. Shared references are lock-free or read-mostly.
 pub struct Daemon {
-    pub config: Arc<ArcSwap<Config>>,
-    pub baseline_conn: rusqlite::Connection,
-    pub baseline_db_preexisting: bool,
-    pub metrics: Arc<Metrics>,
-    pub state: Arc<RwLock<DaemonState>>,
+    pub(crate) config: Arc<ArcSwap<Config>>,
+    pub(crate) baseline_conn: rusqlite::Connection,
+    pub(crate) baseline_db_preexisting: bool,
+    pub(crate) metrics: Arc<Metrics>,
+    pub(crate) state: Arc<RwLock<DaemonState>>,
     pub shutdown: Arc<AtomicBool>,
-    pub reload_flag: Arc<AtomicBool>,
-    pub watch_index: Arc<ArcSwap<WatchGroupIndex>>,
-    /// BLAKE3 hash of the config file contents at startup.
-    pub config_hash: Option<String>,
+    pub(crate) reload_flag: Arc<AtomicBool>,
+    pub(crate) watch_index: Arc<ArcSwap<WatchGroupIndex>>,
     /// Inode+device identity of the baseline DB recorded at startup for TOCTOU detection.
-    pub baseline_db_identity: Option<db::DbFileIdentity>,
+    pub(crate) baseline_db_identity: Option<db::DbFileIdentity>,
     /// Inode+device identity of the audit DB recorded at startup for TOCTOU detection.
-    pub audit_db_identity: Option<db::DbFileIdentity>,
+    pub(crate) audit_db_identity: Option<db::DbFileIdentity>,
     /// HMAC key loaded once at startup; never re-read from disk.
-    pub startup_hmac_key: Option<zeroize::Zeroizing<Vec<u8>>>,
+    pub(crate) startup_hmac_key: Option<zeroize::Zeroizing<Vec<u8>>>,
     /// Whether a maintenance window is currently active.
-    pub maintenance_active: Arc<AtomicBool>,
+    pub(crate) maintenance_active: Arc<AtomicBool>,
     /// Timestamp (epoch seconds) when maintenance window was entered; 0 if inactive.
-    pub maintenance_entered_at: Arc<AtomicI64>,
+    pub(crate) maintenance_entered_at: Arc<AtomicI64>,
 }
 
 impl Daemon {
@@ -108,11 +106,16 @@ impl Daemon {
                 if let Some(ref hash) = config_hash {
                     let config_hmac =
                         crate::hmac::compute_hmac(key, hash.as_bytes()).unwrap_or_default();
-                    let _ = baseline_ops::set_config_state(
+                    if let Err(e) = baseline_ops::set_config_state(
                         &baseline_conn,
                         "config_file_hmac",
                         &config_hmac,
-                    );
+                    ) {
+                        tracing::error!(
+                            error = %e,
+                            "failed to store config file HMAC at startup — tamper detection weakened"
+                        );
+                    }
                 }
             }
         }
@@ -126,7 +129,6 @@ impl Daemon {
             shutdown: Arc::new(AtomicBool::new(false)),
             reload_flag: Arc::new(AtomicBool::new(false)),
             watch_index: Arc::new(ArcSwap::from_pointee(watch_index)),
-            config_hash,
             baseline_db_identity,
             audit_db_identity,
             startup_hmac_key,
@@ -1014,32 +1016,9 @@ fn humanize_duration(d: std::time::Duration) -> String {
 
 /// Find the first config file that exists, for hashing.
 fn config_search_paths_for_hash() -> Option<std::path::PathBuf> {
-    #[cfg(any(test, debug_assertions))]
-    if let Ok(env_path) = std::env::var("VIGIL_CONFIG") {
-        let p = std::path::PathBuf::from(env_path);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    #[cfg(not(any(test, debug_assertions)))]
-    if let Ok(env_path) = std::env::var("VIGIL_CONFIG") {
-        // In production, validate ownership before trusting env override
-        use std::os::unix::fs::MetadataExt;
-        let p = std::path::PathBuf::from(&env_path);
-        if p.exists() {
-            if let Ok(meta) = std::fs::metadata(&p) {
-                let mode = meta.mode() & 0o777;
-                if meta.uid() == 0 && mode <= 0o644 {
-                    return Some(p);
-                }
-            }
-        }
-    }
-    let default = std::path::PathBuf::from("/etc/vigil/vigil.toml");
-    if default.exists() {
-        return Some(default);
-    }
-    None
+    config::config_search_paths(None)
+        .into_iter()
+        .find(|p| p.exists())
 }
 
 #[allow(unsafe_code)]

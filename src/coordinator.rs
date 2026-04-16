@@ -327,20 +327,22 @@ impl Coordinator {
                 current_mounts.into_iter().collect();
             let new_mounts: Vec<_> = current_set.difference(&self.initial_mounts).collect();
             if !new_mounts.is_empty() {
+                // Expand watch paths once before checking against all new mounts
+                let all_watch_paths: Vec<std::path::PathBuf> = cfg
+                    .watch
+                    .values()
+                    .flat_map(|group| crate::config::expand_user_paths(&group.paths))
+                    .collect();
                 for mount in &new_mounts {
-                    for group in cfg.watch.values() {
-                        let expanded = crate::config::expand_user_paths(&group.paths);
-                        for watch_path in &expanded {
-                            if mount.starts_with(watch_path)
-                                || watch_path.starts_with(mount.as_path())
-                            {
-                                tracing::error!(
-                                    mount = %mount.display(),
-                                    watch_path = %watch_path.display(),
-                                    "new mount detected over watched path — \
-                                     real-time monitoring may be compromised"
-                                );
-                            }
+                    for watch_path in &all_watch_paths {
+                        if mount.starts_with(watch_path) || watch_path.starts_with(mount.as_path())
+                        {
+                            tracing::error!(
+                                mount = %mount.display(),
+                                watch_path = %watch_path.display(),
+                                "new mount detected over watched path — \
+                                 real-time monitoring may be compromised"
+                            );
                         }
                     }
                 }
@@ -558,27 +560,10 @@ fn config_file_hash() -> Option<String> {
 
 /// Read raw config file content from the standard search paths.
 fn config_file_content() -> Option<Vec<u8>> {
-    #[cfg(any(test, debug_assertions))]
-    if let Ok(env_path) = std::env::var("VIGIL_CONFIG") {
-        if let Ok(content) = std::fs::read(&env_path) {
-            return Some(content);
-        }
-    }
-    #[cfg(not(any(test, debug_assertions)))]
-    if let Ok(env_path) = std::env::var("VIGIL_CONFIG") {
-        // In production, validate ownership before reading
-        use std::os::unix::fs::MetadataExt;
-        let p = std::path::Path::new(&env_path);
-        if let Ok(meta) = std::fs::metadata(p) {
-            let mode = meta.mode() & 0o777;
-            if meta.uid() == 0 && mode <= 0o644 {
-                if let Ok(content) = std::fs::read(p) {
-                    return Some(content);
-                }
-            }
-        }
-    }
-    std::fs::read("/etc/vigil/vigil.toml").ok()
+    crate::config::config_search_paths(None)
+        .into_iter()
+        .find(|p| p.exists())
+        .and_then(|p| std::fs::read(p).ok())
 }
 
 /// Validate that NOTIFY_SOCKET points to a safe systemd-controlled path.

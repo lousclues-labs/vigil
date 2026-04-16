@@ -241,7 +241,7 @@ pub(crate) fn cmd_audit(
         vigil::cli::AuditAction::Verify => {
             let (total, valid, breaks, missing) = vigil::db::audit_ops::verify_chain(&conn)?;
 
-            print_header("Vigil BaselineBaseline — Audit Chain Verification");
+            print_header("Vigil Baseline — Audit Chain Verification");
 
             println!("  Total entries    {}", format_count(total));
             println!("  Valid links      {}", format_count(valid));

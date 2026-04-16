@@ -366,7 +366,7 @@ impl ControlHandler {
                 return serde_json::json!({"ok": false, "error": format!("config load failed: {}", e)});
             }
         };
-        match crate::scanner::refresh_baseline(&self.baseline_conn, &cfg) {
+        match crate::scanner::build_initial_baseline(&self.baseline_conn, &cfg) {
             Ok(result) => {
                 serde_json::json!({
                     "ok": true,

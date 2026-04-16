@@ -76,7 +76,11 @@ pub fn spawn(
                                 error: Some(format!("{}", e)),
                             },
                         };
-                    let _ = request.response_tx.send(response);
+                    if request.response_tx.send(response).is_err() {
+                        tracing::warn!(
+                            "on-demand scan response not delivered — requester disconnected"
+                        );
+                    }
                 }
 
                 let cfg = config.load();

@@ -212,6 +212,7 @@ impl WorkerContext {
                         Err(e) => {
                             tracing::error!(
                                 error = %e,
+                                path = %synthetic.path.display(),
                                 "WAL append failed for debounced detection; falling back"
                             );
                             self.metrics

@@ -4,6 +4,25 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [0.32.1] - 2026-04-15
+
+### Fixed
+- **audit:** fixed "BaselineBaseline" typo in audit chain verification header — was "Vigil BaselineBaseline", now "Vigil Baseline" (`src/commands/audit.rs`).
+- **lib:** config HMAC storage failure in `Daemon::from_config()` now logs at error level with "tamper detection weakened" message instead of silently discarding via `let _ =`. The coordinator path was fixed in v0.32.0, but the startup path was missed (`src/lib.rs`).
+- **scan_scheduler:** on-demand scan response delivery failure now logs at warn level ("requester disconnected") instead of silently discarding via `let _ =` (`src/scan_scheduler.rs`).
+- **worker:** `drain_debounced()` WAL append failure log now includes the path of the affected file for diagnostic context, matching the behavior of `dispatch_detection()` (`src/worker.rs`).
+
+### Changed
+- **lib:** `config_search_paths_for_hash()` — replaced 28-line reimplementation of config path resolution with 3-line delegation to `config::config_search_paths(None)`, eliminating duplicated `VIGIL_CONFIG` env handling and production ownership validation logic (`src/lib.rs`).
+- **coordinator:** `config_file_content()` — replaced 23-line reimplementation with 3-line delegation to `config::config_search_paths(None)`, eliminating the same duplication (`src/coordinator.rs`).
+- **coordinator:** `check_mount_evasion()` — `expand_user_paths()` now called once before the mount iteration loop instead of once per mount × per watch group. On systems with many mounts and watch groups, this eliminates redundant path expansion (`src/coordinator.rs`).
+- **scanner:** `CaptureOpts` in `build_initial_baseline()` hoisted above the file walk loop — the struct has identical values for every file (force_hash=true, no baseline mtime/hash), so it's constructed once instead of per-file (`src/scanner.rs`).
+- **lib:** `Daemon` struct fields tightened from `pub` to `pub(crate)` — only `shutdown` remains `pub` (used by integration tests). Internal fields (`config`, `baseline_conn`, `metrics`, `state`, `reload_flag`, `watch_index`, `*_identity`, `startup_hmac_key`, `maintenance_*`) are no longer part of the public API surface (`src/lib.rs`).
+- **lib:** removed dead `config_hash: Option<String>` field from `Daemon` struct — was set at construction but never read. The coordinator independently computes its own config hash for reload detection (`src/lib.rs`).
+
+### Removed
+- **scanner:** `refresh_baseline()` one-line alias removed — callers (`commands/baseline.rs`, `control.rs`) now call `build_initial_baseline()` directly (`src/scanner.rs`).
+
 ## [0.32.0] - 2026-04-15
 
 ### Release Summary

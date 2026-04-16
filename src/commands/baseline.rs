@@ -55,7 +55,7 @@ fn cmd_baseline_refresh(config_path: Option<&Path>, quiet: bool) -> vigil::Resul
         }
     };
 
-    match vigil::scanner::refresh_baseline(&conn, &cfg) {
+    match vigil::scanner::build_initial_baseline(&conn, &cfg) {
         Ok(result) => {
             vigil::db::baseline_ops::set_config_state(&conn, "baseline_initialized", "true")?;
             if !quiet {
