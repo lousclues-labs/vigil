@@ -4,6 +4,35 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [0.32.3] - 2026-04-16
+
+### Release Summary
+- Hardened `vigil update` for crash safety, rollback capability, and sudo-aware repository discovery. Under `sudo`, the update command now correctly finds the source repository via `SUDO_USER` instead of searching only under `/root`. Build artifacts are smoke-tested before touching installed binaries. Existing binaries are backed up and automatically restored if any install step or post-install health check fails. Daemon health verification retries up to 3 times before triggering rollback. Failed repository candidates now show *why* they were rejected, not just *that* they were checked.
+
+### Fixed
+- **update:** `discover_vigil_repo()` now checks `SUDO_USER` environment variable to derive the invoking user's home directory when running under `sudo`. Previously, `HOME=/root` caused the search to miss `/home/<user>/src/vigil` even when it was the correct repository. Candidates are deduplicated so the same path is never checked or printed twice (`src/commands/update.rs`).
+- **update:** `discover_vigil_repo()` error message now includes the *reason* each candidate was rejected (e.g., "Cargo.toml not found", "package name is 'foo', expected 'vigil-baseline'") instead of just listing the paths that were checked (`src/commands/update.rs`).
+
+### Added
+- **update:** `smoke_test_binary()` — verifies build artifacts are functional (`--version` exits 0) before any installed binary is touched. If a corrupt artifact is detected, the update aborts early with the binary path and stderr output in the error message (`src/commands/update.rs`).
+- **update:** `install_binaries_with_rollback()` — backs up existing `/usr/local/bin/vigil` and `/usr/local/bin/vigild` to `.vigil.backup` / `.vigild.backup`, installs new binaries atomically (copy → chmod → rename), smoke-tests the installed copies, and automatically restores backups if any step fails (`src/commands/update.rs`).
+- **update:** `rollback_binaries()` — restores `.backup` files to their original paths via `sudo mv`, with per-binary success/failure reporting (`src/commands/update.rs`).
+- **update:** `verify_daemon_health()` — retries daemon health check up to 3 times with 2-second intervals (total max wait: 6 seconds) instead of a single check after a 2-second sleep. Returns `true` on first successful response, reports attempt progress (`src/commands/update.rs`).
+- **update:** post-restart rollback — if the daemon fails all 3 health checks and backup binaries exist, the update command stops the daemon, restores backup binaries, restarts the daemon with the old version, and returns an error explaining what happened. If no backups exist (first install), it warns instead (`src/commands/update.rs`).
+- **update:** version downgrade warning — when the new version string is lexicographically lower than the current version (after stripping `v` prefix), prints a `⚠ downgrade detected` warning. Does not block the update (`src/commands/update.rs`).
+- **update:** `backup_path()` helper — computes `.backup` path for a given binary destination (e.g., `/usr/local/bin/vigil` → `/usr/local/bin/.vigil.backup`) (`src/commands/update.rs`).
+- **update:** `cleanup_backups()` helper — removes `.backup` files after a fully successful update (`src/commands/update.rs`).
+
+### Changed
+- **update:** `validate_vigil_repo()` now returns structured error messages: "Cargo.toml not found", "Cargo.toml parse error: {details}", or "package name is '{name}', expected 'vigil-baseline', 'vigilbaseline', or 'vigil'". Previously returned a generic "not a Vigil Baseline repository" message for all failure modes (`src/commands/update.rs`).
+- **update:** `normalize_version()` now handles empty and whitespace-only input by returning `"unknown"` instead of panicking on `.unwrap()` (`src/commands/update.rs`).
+
+### Tests
+- **update:** `test_discover_vigil_repo_uses_sudo_user` — validates backup path generation and repo validation with SUDO_USER-style directory layout (`src/commands/update.rs`).
+- **update:** `validate_vigil_repo_error_messages` — verifies structured error messages for missing Cargo.toml, parse errors, and wrong package names (`src/commands/update.rs`).
+- **update:** `normalize_version_edge_cases` — covers empty string, whitespace-only, tab/newline, and multi-word version output (`src/commands/update.rs`).
+- **update:** `test_rollback_sequence` — validates backup path computation and verifies all new function signatures compile correctly (`src/commands/update.rs`).
+
 ## [0.32.2] - 2026-04-15
 
 ### Changed

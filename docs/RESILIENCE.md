@@ -186,7 +186,10 @@ Version upgrades may change the baseline schema or HMAC field coverage.
 | stored HMAC mismatches due to field set change | daemon logs warning, recomputes and stores updated HMAC | automatic since v0.25.0 |
 | older daemon version crash-loops on upgrade | `process::exit(1)` before sd_notify Ready | upgrade to v0.25.0+ or manually `vigil init --force` |
 | update binary corrupted by mid-write crash | `vigil` or `vigild` binary is truncated or incomplete | eliminated since v0.26.0 — `vigil update` uses atomic copy-then-rename |
-| daemon not responding after update restart | `systemctl start` returns 0 but daemon crashes immediately | `vigil update` now verifies health via control socket (since v0.26.0) |
+| update build artifact corrupt | new binary crashes or exits non-zero on `--version` | eliminated since v0.32.3 — `vigil update` smoke-tests build artifacts before touching installed binaries |
+| update installed binary non-functional | new binary installed but fails `--version` smoke test | eliminated since v0.32.3 — automatic rollback restores `.backup` copies of previous binaries |
+| daemon not responding after update restart | `systemctl start` returns 0 but daemon crashes immediately | `vigil update` retries health check 3× with 2s intervals (since v0.32.3); rolls back to backup binaries if all checks fail (since v0.32.3); verifies health via control socket (since v0.26.0) |
+| `sudo vigil update` cannot find repo | `HOME=/root` under sudo, user's source repo under `/home/<user>/` not searched | eliminated since v0.32.3 — `discover_vigil_repo()` checks `SUDO_USER` to derive invoking user's home |
 | watchdog kills daemon during startup baseline scan | `WatchdogSec=30` too aggressive for large file sets, no heartbeats during pre-flight | eliminated since v0.27.1 — `WatchdogSec=120`, `TimeoutStartSec=300`, heartbeats throughout startup |
 | watchdog kills daemon during coordinator tick | slow DB operations under I/O pressure exceed watchdog interval | eliminated since v0.27.1 — heartbeats interleaved within `tick()` sub-methods |
 | detection lost during daemon crash | detections written to alert channel lost if daemon exits before AlertDispatcher processes them | eliminated since v0.28.0 — Detection WAL ensures crash-safe persistence; AuditWriter replays uncommitted entries on restart |

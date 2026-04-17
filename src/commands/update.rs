@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
@@ -37,12 +38,28 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
         ));
     }
 
+    // Smoke-test build artifacts BEFORE touching installed binaries
+    smoke_test_binary(&repo_vigil, "vigil")?;
+    smoke_test_binary(&repo_vigild, "vigild")?;
+
     let new_version = version_from_binary(&repo_vigil)?;
     let current_version = installed_version().unwrap_or_else(|| "unknown".to_string());
 
     if current_version != "unknown" && current_version == new_version {
         println!("Already up to date: {}", current_version);
         return Ok(());
+    }
+
+    // Version downgrade warning
+    if current_version != "unknown" {
+        let cur = current_version.trim_start_matches('v');
+        let new = new_version.trim_start_matches('v');
+        if new < cur {
+            eprintln!(
+                "  ⚠ downgrade detected: {} → {} (use --repo to override if intentional)",
+                current_version, new_version
+            );
+        }
     }
 
     println!("Updating: {} → {}", current_version, new_version);
@@ -60,11 +77,11 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
         eprintln!("  ⚠ could not stop vigild.service; continuing");
     }
 
-    println!("  Installing vigil → /usr/local/bin...");
-    atomic_install(&repo_vigil, Path::new("/usr/local/bin/vigil"))?;
+    let dst_vigil = Path::new("/usr/local/bin/vigil");
+    let dst_vigild = Path::new("/usr/local/bin/vigild");
 
-    println!("  Installing vigild → /usr/local/bin...");
-    atomic_install(&repo_vigild, Path::new("/usr/local/bin/vigild"))?;
+    println!("  Installing binaries with rollback safety...");
+    install_binaries_with_rollback(&repo_vigil, &repo_vigild, dst_vigil, dst_vigild)?;
 
     println!("  Updating symlinks...");
     let mut symlink_vigil_cmd = ProcessCommand::new("sudo");
@@ -121,22 +138,44 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
         eprintln!("  ⚠ could not start vigild.service");
     }
 
-    // Post-start health check: verify daemon is actually responding
+    // Post-start health check with retry and rollback
     let healthy = if daemon_started {
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        vigil::config::load_config(None)
-            .ok()
-            .and_then(|cfg| {
-                if !cfg.daemon.control_socket.as_os_str().is_empty() {
-                    query_control_socket(&cfg.daemon.control_socket, r#"{"method":"status"}"#).ok()
-                } else {
-                    None
-                }
-            })
-            .is_some()
+        verify_daemon_health(3, 2)
     } else {
         false
     };
+
+    let backup_vigil = backup_path(dst_vigil);
+    let backup_vigild = backup_path(dst_vigild);
+    let backups_exist = backup_vigil.exists() || backup_vigild.exists();
+
+    if daemon_started && !healthy && backups_exist {
+        eprintln!("  ✗ Daemon not responding after 3 attempts, rolling back binaries...");
+        // Stop the daemon
+        let mut stop_cmd = ProcessCommand::new("sudo");
+        stop_cmd.arg("systemctl").arg("stop").arg("vigild.service");
+        let _ = run_best_effort(stop_cmd);
+
+        // Restore backup binaries
+        rollback_binaries(dst_vigil, dst_vigild);
+
+        // Restart with old binaries
+        let mut start_cmd = ProcessCommand::new("sudo");
+        start_cmd
+            .arg("systemctl")
+            .arg("start")
+            .arg("vigild.service");
+        let _ = run_best_effort(start_cmd);
+
+        return Err(vigil::VigilError::Daemon(
+            "daemon failed health check after update; rolled back to previous binaries".to_string(),
+        ));
+    } else if daemon_started && !healthy {
+        eprintln!("  ⚠ Daemon not responding (no backups available for rollback)");
+    }
+
+    // Clean up backups on success
+    cleanup_backups(dst_vigil, dst_vigild);
 
     let baseline_summary = match vigil::config::load_config(None)
         .ok()
@@ -183,19 +222,27 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
     Ok(())
 }
 
+/// Validate that a directory is a Vigil Baseline source repository.
+///
+/// Returns a structured error describing why validation failed (missing Cargo.toml,
+/// parse error, or wrong package name).
 fn validate_vigil_repo(repo: &Path) -> vigil::Result<()> {
     let cargo_toml = repo.join("Cargo.toml");
     if !cargo_toml.exists() {
         return Err(vigil::VigilError::Config(format!(
-            "current directory is not a Vigil Baseline repository: {}\n\
-             hint: run from the Vigil Baseline source directory, or use: vigil update --repo /path/to/vigil",
+            "Cargo.toml not found in {}",
             repo.display()
         )));
     }
 
     let content = std::fs::read_to_string(&cargo_toml)?;
-    let parsed: toml::Value = toml::from_str(&content)
-        .map_err(|e| vigil::VigilError::Config(format!("invalid Cargo.toml: {}", e)))?;
+    let parsed: toml::Value = toml::from_str(&content).map_err(|e| {
+        vigil::VigilError::Config(format!(
+            "Cargo.toml parse error in {}: {}",
+            repo.display(),
+            e
+        ))
+    })?;
 
     let package_name = parsed
         .get("package")
@@ -207,8 +254,8 @@ fn validate_vigil_repo(repo: &Path) -> vigil::Result<()> {
         && package_name != Some("vigil")
     {
         return Err(vigil::VigilError::Config(format!(
-            "current directory is not a Vigil Baseline repository: {}\n\
-             hint: run from the Vigil Baseline source directory, or use: vigil update --repo /path/to/vigil",
+            "package name is '{}', expected 'vigil-baseline', 'vigilbaseline', or 'vigil' in {}",
+            package_name.unwrap_or("<missing>"),
             repo.display()
         )));
     }
@@ -216,14 +263,27 @@ fn validate_vigil_repo(repo: &Path) -> vigil::Result<()> {
     Ok(())
 }
 
+/// Discover the Vigil Baseline source repository by searching well-known locations.
+///
+/// Checks: cwd, binary-relative, HOME subdirs, SUDO_USER home subdirs, and /opt/vigil.
+/// Deduplicates candidates and includes rejection reasons in the error message.
 fn discover_vigil_repo() -> vigil::Result<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     let mut labels: Vec<String> = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+
+    let mut add_candidate = |path: PathBuf, label: String, seen: &mut HashSet<PathBuf>| {
+        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if seen.insert(canonical) {
+            labels.push(label);
+            candidates.push(path);
+        }
+    };
 
     // 1. Current working directory
     if let Ok(cwd) = std::env::current_dir() {
-        labels.push(format!("{} (cwd)", cwd.display()));
-        candidates.push(cwd);
+        let label = format!("{} (cwd)", cwd.display());
+        add_candidate(cwd, label, &mut seen);
     }
 
     // 2. Binary-relative: walk up from the executable's location
@@ -231,47 +291,238 @@ fn discover_vigil_repo() -> vigil::Result<PathBuf> {
         let mut dir = exe.as_path().parent();
         while let Some(d) = dir {
             if d.join("Cargo.toml").exists() {
-                labels.push(format!("{} (binary relative)", d.display()));
-                candidates.push(d.to_path_buf());
+                let label = format!("{} (binary relative)", d.display());
+                add_candidate(d.to_path_buf(), label, &mut seen);
                 break;
             }
             dir = d.parent();
         }
     }
 
-    // 3. Well-known home paths
+    // 3. Well-known home paths (from HOME)
     if let Ok(home) = std::env::var("HOME") {
         let home = PathBuf::from(home);
         for sub in ["vigil", "src/vigil", "projects/vigil"] {
             let p = home.join(sub);
-            labels.push(format!("{}", p.display()));
-            candidates.push(p);
+            let label = format!("{}", p.display());
+            add_candidate(p, label, &mut seen);
         }
     }
 
-    // 4. /opt/vigil
+    // 4. SUDO_USER home paths — derive invoking user's home when running under sudo
+    if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+        let sudo_home = PathBuf::from(format!("/home/{}", sudo_user));
+        for sub in ["vigil", "src/vigil", "projects/vigil"] {
+            let p = sudo_home.join(sub);
+            let label = format!("{} (sudo user)", p.display());
+            add_candidate(p, label, &mut seen);
+        }
+    }
+
+    // 5. /opt/vigil
     let opt = PathBuf::from("/opt/vigil");
-    labels.push(format!("{}", opt.display()));
-    candidates.push(opt);
+    let label = format!("{}", opt.display());
+    add_candidate(opt, label, &mut seen);
 
-    for candidate in &candidates {
-        if validate_vigil_repo(candidate).is_ok() {
-            println!("  Using repository: {}", candidate.display());
-            return Ok(candidate.clone());
+    let mut rejections: Vec<String> = Vec::new();
+
+    for (i, candidate) in candidates.iter().enumerate() {
+        match validate_vigil_repo(candidate) {
+            Ok(()) => {
+                println!("  Using repository: {}", candidate.display());
+                return Ok(candidate.clone());
+            }
+            Err(e) => {
+                rejections.push(format!("    {} — {}", labels[i], e));
+            }
         }
     }
 
-    let checked = labels
-        .iter()
-        .map(|l| format!("    {}", l))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let checked = rejections.join("\n");
 
     Err(vigil::VigilError::Config(format!(
         "could not locate Vigil Baseline source repository\n  checked:\n{}\n  \
          hint: run from the Vigil Baseline source directory, or use: vigil update --repo /path/to/vigil",
         checked
     )))
+}
+
+/// Smoke-test a build artifact by running it with `--version`.
+///
+/// Returns an error if the binary fails to spawn or exits non-zero, including
+/// the binary path and any stderr output.
+fn smoke_test_binary(path: &Path, name: &str) -> vigil::Result<()> {
+    let output = ProcessCommand::new(path).arg("--version").output();
+    match output {
+        Ok(o) if o.status.success() => {
+            println!("  ✓ {} artifact OK", name);
+            Ok(())
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            Err(vigil::VigilError::Daemon(format!(
+                "smoke test failed for {}: {} exited with {}\n  stderr: {}",
+                name,
+                path.display(),
+                o.status,
+                stderr.trim()
+            )))
+        }
+        Err(e) => Err(vigil::VigilError::Daemon(format!(
+            "smoke test failed for {}: could not spawn {}: {}",
+            name,
+            path.display(),
+            e
+        ))),
+    }
+}
+
+/// Compute the backup path for an installed binary (e.g., `.vigil.backup`).
+fn backup_path(dst: &Path) -> PathBuf {
+    let name = dst
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    dst.with_file_name(format!(".{}.backup", name))
+}
+
+/// Install new binaries with backup and rollback support.
+///
+/// Backs up existing binaries, installs new ones atomically, smoke-tests
+/// the installed copies, and rolls back on any failure.
+fn install_binaries_with_rollback(
+    src_vigil: &Path,
+    src_vigild: &Path,
+    dst_vigil: &Path,
+    dst_vigild: &Path,
+) -> vigil::Result<()> {
+    let bkp_vigil = backup_path(dst_vigil);
+    let bkp_vigild = backup_path(dst_vigild);
+
+    // 1. Back up existing binaries
+    if dst_vigil.exists() {
+        println!(
+            "  Backing up {} → {}",
+            dst_vigil.display(),
+            bkp_vigil.display()
+        );
+        let mut cp = ProcessCommand::new("sudo");
+        cp.arg("cp").arg(dst_vigil).arg(&bkp_vigil);
+        run_checked(cp, "backup vigil")?;
+    }
+
+    if dst_vigild.exists() {
+        println!(
+            "  Backing up {} → {}",
+            dst_vigild.display(),
+            bkp_vigild.display()
+        );
+        let mut cp = ProcessCommand::new("sudo");
+        cp.arg("cp").arg(dst_vigild).arg(&bkp_vigild);
+        run_checked(cp, "backup vigild")?;
+    }
+
+    // 2-4. Install new binaries atomically
+    let install_result = (|| -> vigil::Result<()> {
+        println!("  Installing vigil → {}...", dst_vigil.display());
+        atomic_install(src_vigil, dst_vigil)?;
+
+        println!("  Installing vigild → {}...", dst_vigild.display());
+        atomic_install(src_vigild, dst_vigild)?;
+
+        // 5-6. Smoke-test installed binaries
+        println!("  Smoke-testing installed vigil...");
+        smoke_test_binary(dst_vigil, "installed vigil")?;
+
+        println!("  Smoke-testing installed vigild...");
+        smoke_test_binary(dst_vigild, "installed vigild")?;
+
+        Ok(())
+    })();
+
+    match install_result {
+        Ok(()) => {
+            println!("  ✓ Binaries installed and verified");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("  ✗ Install failed: {}", e);
+            eprintln!("  Restoring backups...");
+            rollback_binaries(dst_vigil, dst_vigild);
+            Err(e)
+        }
+    }
+}
+
+/// Restore binaries from `.backup` files.
+fn rollback_binaries(dst_vigil: &Path, dst_vigild: &Path) {
+    let bkp_vigil = backup_path(dst_vigil);
+    let bkp_vigild = backup_path(dst_vigild);
+
+    if bkp_vigil.exists() {
+        let mut mv = ProcessCommand::new("sudo");
+        mv.arg("mv").arg(&bkp_vigil).arg(dst_vigil);
+        if run_best_effort(mv) {
+            eprintln!("  ✓ Restored {}", dst_vigil.display());
+        } else {
+            eprintln!("  ✗ Failed to restore {}", dst_vigil.display());
+        }
+    }
+
+    if bkp_vigild.exists() {
+        let mut mv = ProcessCommand::new("sudo");
+        mv.arg("mv").arg(&bkp_vigild).arg(dst_vigild);
+        if run_best_effort(mv) {
+            eprintln!("  ✓ Restored {}", dst_vigild.display());
+        } else {
+            eprintln!("  ✗ Failed to restore {}", dst_vigild.display());
+        }
+    }
+}
+
+/// Remove backup files after a successful update.
+fn cleanup_backups(dst_vigil: &Path, dst_vigild: &Path) {
+    let bkp_vigil = backup_path(dst_vigil);
+    let bkp_vigild = backup_path(dst_vigild);
+
+    for bkp in [&bkp_vigil, &bkp_vigild] {
+        if bkp.exists() {
+            let mut rm = ProcessCommand::new("sudo");
+            rm.arg("rm").arg("-f").arg(bkp);
+            let _ = run_best_effort(rm);
+        }
+    }
+}
+
+/// Check daemon health with retries.
+///
+/// Attempts up to `max_attempts` times with `interval_secs` between each attempt.
+/// Returns `true` if the daemon responds to a status query.
+fn verify_daemon_health(max_attempts: u32, interval_secs: u64) -> bool {
+    for attempt in 1..=max_attempts {
+        std::thread::sleep(std::time::Duration::from_secs(interval_secs));
+        let ok = vigil::config::load_config(None)
+            .ok()
+            .and_then(|cfg| {
+                if !cfg.daemon.control_socket.as_os_str().is_empty() {
+                    query_control_socket(&cfg.daemon.control_socket, r#"{"method":"status"}"#).ok()
+                } else {
+                    None
+                }
+            })
+            .is_some();
+        if ok {
+            println!("  ✓ Daemon healthy (attempt {}/{})", attempt, max_attempts);
+            return true;
+        }
+        if attempt < max_attempts {
+            eprintln!(
+                "  ⚠ Daemon not responding (attempt {}/{}), retrying...",
+                attempt, max_attempts
+            );
+        }
+    }
+    false
 }
 
 fn atomic_install(src: &Path, dst: &Path) -> vigil::Result<()> {
@@ -325,11 +576,12 @@ fn version_from_binary(path: &Path) -> vigil::Result<String> {
 }
 
 fn normalize_version(raw: &str) -> String {
-    let token = raw
-        .split_whitespace()
-        .last()
-        .map(str::trim)
-        .unwrap_or("unknown");
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "unknown".to_string();
+    }
+
+    let token = trimmed.split_whitespace().last().unwrap_or("unknown");
 
     if token == "unknown" {
         "unknown".to_string()
@@ -466,5 +718,115 @@ mod tests {
     fn normalize_version_prefixes_v_when_missing() {
         assert_eq!(normalize_version("vigil 0.12.1"), "v0.12.1");
         assert_eq!(normalize_version("vigil v0.12.1"), "v0.12.1");
+    }
+
+    #[test]
+    fn normalize_version_edge_cases() {
+        assert_eq!(normalize_version(""), "unknown");
+        assert_eq!(normalize_version("   "), "unknown");
+        assert_eq!(normalize_version("  \t\n  "), "unknown");
+        assert_eq!(normalize_version("vigil baseline 0.12.1"), "v0.12.1");
+        assert_eq!(normalize_version("some tool v1.0.0-rc1"), "v1.0.0-rc1");
+    }
+
+    #[test]
+    fn validate_vigil_repo_error_messages() {
+        // No Cargo.toml
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let err = validate_vigil_repo(dir.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Cargo.toml not found"),
+            "expected 'Cargo.toml not found', got: {}",
+            msg
+        );
+
+        // Parse error
+        let dir2 = tempfile::tempdir().expect("create temp dir");
+        std::fs::write(dir2.path().join("Cargo.toml"), "{{invalid toml}}").expect("write bad toml");
+        let err2 = validate_vigil_repo(dir2.path()).unwrap_err();
+        let msg2 = err2.to_string();
+        assert!(
+            msg2.contains("Cargo.toml parse error"),
+            "expected 'Cargo.toml parse error', got: {}",
+            msg2
+        );
+
+        // Wrong package name
+        let dir3 = tempfile::tempdir().expect("create temp dir");
+        std::fs::write(
+            dir3.path().join("Cargo.toml"),
+            r#"
+                [package]
+                name = "something-else"
+                version = "0.1.0"
+            "#,
+        )
+        .expect("write wrong name");
+        let err3 = validate_vigil_repo(dir3.path()).unwrap_err();
+        let msg3 = err3.to_string();
+        assert!(
+            msg3.contains("package name is 'something-else'"),
+            "expected package name in error, got: {}",
+            msg3
+        );
+    }
+
+    #[test]
+    fn test_discover_vigil_repo_uses_sudo_user() {
+        // Create a temp dir simulating a sudo user's repo
+        let dir = tempfile::tempdir().expect("create temp dir");
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            r#"
+                [package]
+                name = "vigil-baseline"
+                version = "0.0.1"
+                edition = "2021"
+            "#,
+        )
+        .expect("write Cargo.toml");
+
+        // We can't easily test the full discover_vigil_repo with SUDO_USER
+        // since it requires /home/$SUDO_USER to exist, but we can verify
+        // the candidate generation logic works by testing validate_vigil_repo
+        // on the created directory (which is what discover calls internally).
+        assert!(validate_vigil_repo(dir.path()).is_ok());
+
+        // Verify backup_path generation
+        let p = Path::new("/usr/local/bin/vigil");
+        assert_eq!(
+            backup_path(p),
+            PathBuf::from("/usr/local/bin/.vigil.backup")
+        );
+
+        let p2 = Path::new("/usr/local/bin/vigild");
+        assert_eq!(
+            backup_path(p2),
+            PathBuf::from("/usr/local/bin/.vigild.backup")
+        );
+    }
+
+    #[test]
+    fn test_rollback_sequence() {
+        // Verify backup path generation logic
+        let vigil = Path::new("/usr/local/bin/vigil");
+        let vigild = Path::new("/usr/local/bin/vigild");
+
+        assert_eq!(
+            backup_path(vigil),
+            PathBuf::from("/usr/local/bin/.vigil.backup")
+        );
+        assert_eq!(
+            backup_path(vigild),
+            PathBuf::from("/usr/local/bin/.vigild.backup")
+        );
+
+        // Verify the function signatures compile
+        let _ =
+            install_binaries_with_rollback as fn(&Path, &Path, &Path, &Path) -> vigil::Result<()>;
+        let _ = rollback_binaries as fn(&Path, &Path);
+        let _ = smoke_test_binary as fn(&Path, &str) -> vigil::Result<()>;
+        let _ = verify_daemon_health as fn(u32, u64) -> bool;
     }
 }

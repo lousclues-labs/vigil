@@ -249,7 +249,8 @@ If Vigil Baseline runs as a root-owned systemd service (default), running `vigil
 ## `update`
 
 Build and install Vigil Baseline from a local git repository. Performs atomic binary
-replacement, step-by-step progress reporting, and post-update health verification.
+replacement with backup and rollback, smoke-tests build artifacts before installation,
+step-by-step progress reporting, and post-update health verification with retry.
 
 ```bash
 vigil update [--repo <PATH>]
@@ -261,18 +262,35 @@ vigil update [--repo <PATH>]
 
 When `--repo` is not provided, Vigil Baseline automatically searches for the source
 repository in order: current directory, binary-relative parent directories,
-`~/vigil`, `~/src/vigil`, `~/projects/vigil`, and `/opt/vigil`.
+`~/vigil`, `~/src/vigil`, `~/projects/vigil`, `/home/$SUDO_USER/{vigil,src/vigil,projects/vigil}`
+(when running under `sudo`), and `/opt/vigil`. Candidates are deduplicated so the same
+path is never checked twice. If no valid repository is found, the error message shows
+*why* each candidate was rejected (e.g., "Cargo.toml not found", "wrong package name").
 
-Binaries are installed atomically (copy → chmod → rename) so a crash mid-update
-cannot leave a corrupted binary. After restarting the daemon, the command
-verifies it is actually responding via the control socket before reporting
-success.
+### Safety Features
+
+- **Pre-install smoke test**: build artifacts are run with `--version` before any installed
+  binary is touched. A corrupt build is caught immediately.
+- **Binary backup**: existing `/usr/local/bin/vigil` and `vigild` are backed up to
+  `.vigil.backup` and `.vigild.backup` before installation.
+- **Atomic install**: each binary is installed via copy → chmod 755 → rename, so a crash
+  mid-update cannot leave a corrupted binary.
+- **Post-install smoke test**: installed binaries are verified with `--version` after
+  installation. If either fails, backups are restored automatically.
+- **Daemon health retry**: after restarting the daemon, health is checked up to 3 times
+  with 2-second intervals (total max wait: 6 seconds).
+- **Automatic rollback**: if the daemon fails all health checks and backups exist, the
+  update command stops the daemon, restores the previous binaries, restarts the daemon,
+  and returns an error.
+- **Downgrade warning**: if the new version appears older than the current version, a
+  warning is printed (the update is not blocked).
 
 Example:
 
 ```bash
 vigil update
 vigil update --repo /opt/vigil
+sudo vigil update    # discovers repo via SUDO_USER
 ```
 
 Example output:
@@ -281,25 +299,37 @@ Example output:
   Using repository: /home/user/src/vigil
 
 Building update from /home/user/src/vigil
-   Compiling vigil v0.26.0 (/home/user/src/vigil)
+   Compiling vigil v0.32.3 (/home/user/src/vigil)
     Finished `release` profile [optimized] target(s) in 42.3s
 
-Updating: v0.25.1 → v0.26.0
+  ✓ vigil artifact OK
+  ✓ vigild artifact OK
+
+Updating: v0.32.2 → v0.32.3
 
   Stopping vigild.service...
   ✓ Daemon stopped
-  Installing vigil → /usr/local/bin...
-  Installing vigild → /usr/local/bin...
+  Installing binaries with rollback safety...
+  Backing up /usr/local/bin/vigil → /usr/local/bin/.vigil.backup
+  Backing up /usr/local/bin/vigild → /usr/local/bin/.vigild.backup
+  Installing vigil → /usr/local/bin/vigil...
+  Installing vigild → /usr/local/bin/vigild...
+  Smoke-testing installed vigil...
+  ✓ installed vigil artifact OK
+  Smoke-testing installed vigild...
+  ✓ installed vigild artifact OK
+  ✓ Binaries installed and verified
   Updating symlinks...
   Checking systemd units...
   Checking hooks...
   Starting vigild.service...
   ✓ Daemon started
+  ✓ Daemon healthy (attempt 1/3)
 
 Vigil Baseline — Update Complete
 ═══════════════════════
 
-  ✓ v0.25.1 → v0.26.0
+  ✓ v0.32.2 → v0.32.3
   Daemon:   restarted
   Units:    unchanged
   Hooks:    unchanged
