@@ -42,9 +42,41 @@ impl UpdateStep {
             Self::PostCheck => "Post-install health check",
         }
     }
+
+    pub fn gerund(self) -> &'static str {
+        match self {
+            Self::VerifyRepo => "Verifying",
+            Self::BuildRelease => "Compiling",
+            Self::VerifyArtifacts => "Verifying",
+            Self::StopDaemon => "Stopping",
+            Self::BackupBinaries => "Backing up",
+            Self::InstallBinaries => "Installing",
+            Self::InstallUnits => "Installing",
+            Self::StartDaemon => "Starting",
+            Self::VerifyHealth => "Verifying",
+            Self::ArchiveBackups => "Archiving",
+            Self::PostCheck => "Running",
+        }
+    }
+
+    pub fn short(self) -> &'static str {
+        match self {
+            Self::VerifyRepo => "repository",
+            Self::BuildRelease => "release binaries",
+            Self::VerifyArtifacts => "artifacts",
+            Self::StopDaemon => "vigild",
+            Self::BackupBinaries => "vigil and vigild",
+            Self::InstallBinaries => "vigil and vigild",
+            Self::InstallUnits => "units",
+            Self::StartDaemon => "vigild",
+            Self::VerifyHealth => "vigild health",
+            Self::ArchiveBackups => "backups",
+            Self::PostCheck => "post-install doctor",
+        }
+    }
 }
 
-/// A plan is an ordered list of steps. The renderer uses this to show `[N/total]`.
+/// A plan is an ordered list of steps.
 #[derive(Debug, Clone)]
 pub struct Plan {
     steps: Vec<UpdateStep>,
@@ -146,6 +178,7 @@ const ANSI_YELLOW: &str = "\x1b[33m";
 const ANSI_RED: &str = "\x1b[31m";
 const ANSI_CYAN: &str = "\x1b[36m";
 const ANSI_BOLD: &str = "\x1b[1m";
+const ANSI_DIM: &str = "\x1b[2m";
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_ERASE_LINE: &str = "\x1b[2K\r";
 
@@ -173,10 +206,12 @@ pub enum StepOutcome {
 struct SpinnerState {
     active: bool,
     message: String,
-    step_label: String,
-    step_tag: String, // e.g. "[3/11]"
+    step_verb: String,
+    step_subject: String,
     started: Instant,
     frame: usize,
+    /// Grace period: suppress spinner drawing for first 250ms.
+    first_draw_at: Option<Instant>,
 }
 
 // ── Progress ───────────────────────────────────────────────
@@ -201,6 +236,8 @@ pub struct Progress {
     verbose: bool,
     /// JSON callback: if set, called for each step event.
     json_tx: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
+    summary_outcome: Option<String>,
+    plain_line_open: bool,
 }
 
 impl Progress {
@@ -214,10 +251,11 @@ impl Progress {
         let spinner_state = Arc::new(Mutex::new(SpinnerState {
             active: false,
             message: String::new(),
-            step_label: String::new(),
-            step_tag: String::new(),
+            step_verb: String::new(),
+            step_subject: String::new(),
             started: Instant::now(),
             frame: 0,
+            first_draw_at: None,
         }));
         let spinner_stop = Arc::new(AtomicBool::new(false));
 
@@ -246,6 +284,8 @@ impl Progress {
             quiet: false,
             verbose: false,
             json_tx: None,
+            summary_outcome: None,
+            plain_line_open: false,
         }
     }
 
@@ -261,38 +301,94 @@ impl Progress {
         self.json_tx = Some(Arc::new(Mutex::new(w)));
     }
 
-    /// Begin a new step. Prints `[N/total] <label>…` and starts the spinner.
-    pub fn begin_step(&mut self, step: UpdateStep) {
-        let idx = self.plan.index_of(&step).unwrap_or(0);
-        let total = self.plan.len();
-        let label = step.label();
-        let tag = format!("[{}/{}]", idx, total);
+    pub fn set_summary_outcome(&mut self, outcome: impl Into<String>) {
+        self.summary_outcome = Some(outcome.into());
+    }
 
+    pub fn header(&mut self, msg: &str) {
+        if self.quiet {
+            return;
+        }
+
+        self.stop_spinner();
+        self.flush_plain_open_line();
+
+        let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = writeln!(w, "{} {}", render_verb(self.mode, "Updating"), msg);
+    }
+
+    pub fn warn(&mut self, msg: &str) {
+        let resume_spinner = self.mode == ProgressMode::Fancy && self.current_step.is_some();
+        if resume_spinner {
+            self.stop_spinner();
+        }
+
+        if !self.quiet {
+            self.flush_plain_open_line();
+            let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+            match self.mode {
+                ProgressMode::Fancy => {
+                    let _ = writeln!(
+                        w,
+                        "{}{}warning:{} {}",
+                        ANSI_YELLOW, ANSI_BOLD, ANSI_RESET, msg
+                    );
+                }
+                ProgressMode::Plain => {
+                    let _ = writeln!(w, "warning: {}", msg);
+                }
+            }
+        }
+
+        if resume_spinner {
+            let mut s = self.spinner_state.lock().unwrap_or_else(|e| e.into_inner());
+            s.active = true;
+        }
+    }
+
+    /// Begin a new step and start spinner activity when in fancy mode.
+    pub fn begin_step(&mut self, step: UpdateStep) {
+        self.begin_step_inner(step, false);
+    }
+
+    /// Begin a step that is silent in human mode (only emits JSON).
+    /// Used for steps where a child process owns the visual output (e.g. cargo).
+    pub fn begin_step_silent(&mut self, step: UpdateStep) {
+        self.begin_step_inner(step, true);
+    }
+
+    fn begin_step_inner(&mut self, step: UpdateStep, silent: bool) {
         self.current_step = Some(step);
         self.step_start = Some(Instant::now());
 
         self.emit_json_event(step, "begin", None);
 
-        if self.quiet {
+        if self.quiet || silent {
             return;
         }
 
         match self.mode {
             ProgressMode::Fancy => {
-                // Set spinner state
-                {
-                    let mut s = self.spinner_state.lock().unwrap_or_else(|e| e.into_inner());
-                    s.active = true;
-                    s.message.clear();
-                    s.step_label = label.to_string();
-                    s.step_tag = tag;
-                    s.started = Instant::now();
-                    s.frame = 0;
-                }
+                let mut s = self.spinner_state.lock().unwrap_or_else(|e| e.into_inner());
+                s.active = true;
+                s.message.clear();
+                s.step_verb = step.gerund().to_string();
+                s.step_subject = step.short().to_string();
+                s.started = Instant::now();
+                s.frame = 0;
+                s.first_draw_at = None;
             }
             ProgressMode::Plain => {
+                self.flush_plain_open_line();
                 let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-                let _ = writeln!(w, "{} {}...", tag, label);
+                let _ = write!(
+                    w,
+                    "{} {} ...",
+                    render_verb(self.mode, step.gerund()),
+                    step.short()
+                );
+                let _ = w.flush();
+                self.plain_line_open = true;
             }
         }
     }
@@ -308,7 +404,7 @@ impl Progress {
                 s.message = m.to_string();
             }
         } else if let Some(m) = msg {
-            // In plain mode, print tick messages as indented status lines
+            self.flush_plain_open_line();
             let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
             let _ = writeln!(w, "  {}", m);
         }
@@ -316,6 +412,16 @@ impl Progress {
 
     /// End the current step successfully.
     pub fn end_step_ok(&mut self, detail: Option<&str>) {
+        self.end_step_ok_inner(detail, false);
+    }
+
+    /// End the current step successfully without rendering human output.
+    /// JSON events are still emitted.
+    pub fn end_step_ok_silent(&mut self, detail: Option<&str>) {
+        self.end_step_ok_inner(detail, true);
+    }
+
+    fn end_step_ok_inner(&mut self, detail: Option<&str>, silent: bool) {
         let elapsed = self.step_start.map(|s| s.elapsed()).unwrap_or_default();
         if let Some(step) = self.current_step.take() {
             self.records.push(StepRecord {
@@ -324,37 +430,15 @@ impl Progress {
                 elapsed,
             });
             self.emit_json_event(step, "ok", detail);
-        }
-        self.stop_spinner();
 
-        if self.quiet {
-            return;
-        }
-
-        let label = self
-            .records
-            .last()
-            .map(|r| r.step.label())
-            .unwrap_or("step");
-
-        match self.mode {
-            ProgressMode::Fancy => {
-                let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-                let elapsed_str = format_duration(elapsed);
-                let detail_str = detail.map(|d| format!(" — {}", d)).unwrap_or_default();
-                let _ = write!(w, "{}", ANSI_ERASE_LINE);
-                let _ = writeln!(
-                    w,
-                    "  {}✓{} {} ({}){}\r",
-                    ANSI_GREEN, ANSI_RESET, label, elapsed_str, detail_str
-                );
+            if !self.quiet && !silent {
+                self.stop_spinner();
+                self.render_step_result(step, StepOutcome::Ok, elapsed, detail, false);
+            } else {
+                self.stop_spinner();
             }
-            ProgressMode::Plain => {
-                let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-                let elapsed_str = format_duration(elapsed);
-                let detail_str = detail.map(|d| format!(" {}", d)).unwrap_or_default();
-                let _ = writeln!(w, "  ok {} ({}){}", label, elapsed_str, detail_str);
-            }
+        } else {
+            self.stop_spinner();
         }
     }
 
@@ -368,35 +452,12 @@ impl Progress {
                 elapsed,
             });
             self.emit_json_event(step, "warn", Some(detail));
-        }
-        self.stop_spinner();
 
-        if self.quiet {
-            return;
-        }
-
-        let label = self
-            .records
-            .last()
-            .map(|r| r.step.label())
-            .unwrap_or("step");
-
-        match self.mode {
-            ProgressMode::Fancy => {
-                let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-                let elapsed_str = format_duration(elapsed);
-                let _ = write!(w, "{}", ANSI_ERASE_LINE);
-                let _ = writeln!(
-                    w,
-                    "  {}⚠{} {} ({}) — {}\r",
-                    ANSI_YELLOW, ANSI_RESET, label, elapsed_str, detail
-                );
-            }
-            ProgressMode::Plain => {
-                let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-                let elapsed_str = format_duration(elapsed);
-                let _ = writeln!(w, "  warn {} ({}) {}", label, elapsed_str, detail);
-            }
+            self.stop_spinner();
+            self.render_step_result(step, StepOutcome::Warn, elapsed, None, false);
+            self.warn(detail);
+        } else {
+            self.stop_spinner();
         }
     }
 
@@ -410,38 +471,25 @@ impl Progress {
                 elapsed,
             });
             self.emit_json_event(step, "fail", Some(detail));
-        }
-        self.stop_spinner();
 
-        // Errors always printed, even in quiet mode (Principle X)
-        let label = self
-            .records
-            .last()
-            .map(|r| r.step.label())
-            .unwrap_or("step");
-
-        match self.mode {
-            ProgressMode::Fancy => {
-                let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-                let elapsed_str = format_duration(elapsed);
-                let _ = write!(w, "{}", ANSI_ERASE_LINE);
-                let _ = writeln!(
-                    w,
-                    "  {}✗{} {} ({}) — {}\r",
-                    ANSI_RED, ANSI_RESET, label, elapsed_str, detail
-                );
-            }
-            ProgressMode::Plain => {
-                let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-                let elapsed_str = format_duration(elapsed);
-                let _ = writeln!(w, "  fail {} ({}) {}", label, elapsed_str, detail);
-            }
+            self.stop_spinner();
+            self.render_step_result(step, StepOutcome::Err, elapsed, Some(detail), true);
+        } else {
+            self.stop_spinner();
+            self.render_error_line(detail);
         }
     }
 
     /// Mark remaining un-started steps as skipped.
     pub fn skip_remaining(&mut self) {
+        self.skip_remaining_with_reason("not run");
+    }
+
+    /// Mark remaining un-started steps as skipped, with a collapse reason.
+    pub fn skip_remaining_with_reason(&mut self, reason: &str) {
         let completed: Vec<UpdateStep> = self.records.iter().map(|r| r.step).collect();
+        let mut skipped = Vec::new();
+
         for step in &self.plan.steps {
             if !completed.contains(step) && self.current_step != Some(*step) {
                 self.records.push(StepRecord {
@@ -450,52 +498,65 @@ impl Progress {
                     elapsed: Duration::ZERO,
                 });
                 self.emit_json_event(*step, "skipped", None);
+                skipped.push(*step);
             }
         }
         self.current_step = None;
-    }
 
-    /// Print a cargo-style pass-through frame header.
-    pub fn begin_passthrough(&mut self, cmd_label: &str) {
-        self.stop_spinner();
-
-        if self.quiet {
+        if self.quiet || skipped.is_empty() {
             return;
         }
 
-        let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        match self.mode {
-            ProgressMode::Fancy => {
-                let pad_len = 50usize.saturating_sub(cmd_label.len() + 4);
-                let _ = writeln!(
-                    w,
-                    "{}╭─ {} {}{}",
-                    ANSI_CYAN,
-                    cmd_label,
-                    "─".repeat(pad_len),
-                    ANSI_RESET
+        self.stop_spinner();
+        self.flush_plain_open_line();
+
+        if self.verbose {
+            for step in skipped {
+                self.render_step_result(
+                    step,
+                    StepOutcome::Skipped,
+                    Duration::ZERO,
+                    Some(reason),
+                    false,
                 );
             }
-            ProgressMode::Plain => {
-                let _ = writeln!(w, "--- begin {} ---", cmd_label);
-            }
-        }
-    }
-
-    /// Print a cargo-style pass-through frame footer.
-    pub fn end_passthrough(&mut self) {
-        if self.quiet {
             return;
         }
 
         let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        match self.mode {
-            ProgressMode::Fancy => {
-                let _ = writeln!(w, "{}╰{}{}", ANSI_CYAN, "─".repeat(50), ANSI_RESET);
-            }
-            ProgressMode::Plain => {
-                let _ = writeln!(w, "--- end ---");
-            }
+        let labels = skipped
+            .iter()
+            .map(|s| s.short())
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let _ = writeln!(
+            w,
+            "{} {} steps ({}): {}",
+            render_skipping(self.mode),
+            skipped.len(),
+            reason,
+            labels
+        );
+    }
+
+    /// Pass-through entry point. Ensures spinner is cleared before child output.
+    pub fn begin_passthrough(&mut self, _cmd_label: &str) {
+        self.stop_spinner();
+        self.flush_plain_open_line();
+        // Ensure the line is visually clean before child writes to stderr.
+        if self.mode == ProgressMode::Fancy {
+            let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = write!(w, "\r\x1b[2K");
+            let _ = w.flush();
+        }
+    }
+
+    /// Pass-through completion is intentionally unframed in v0.37.
+    pub fn end_passthrough(&mut self) {
+        if self.mode == ProgressMode::Fancy && self.current_step.is_some() {
+            let mut s = self.spinner_state.lock().unwrap_or_else(|e| e.into_inner());
+            s.active = true;
         }
     }
 
@@ -508,42 +569,57 @@ impl Progress {
             return Ok(());
         }
 
+        let resume_spinner = self.mode == ProgressMode::Fancy && self.current_step.is_some();
+        if resume_spinner {
+            self.stop_spinner();
+            // Ensure the line is visually clean before child output.
+            let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = write!(w, "\r\x1b[2K");
+            let _ = w.flush();
+        }
+        self.flush_plain_open_line();
+
         let buf_reader = BufReader::new(reader);
         let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let mut saw_compiling = false;
+        let mut deferred_finished: Option<String> = None;
         for line in buf_reader.lines() {
             match line {
                 Ok(l) => {
+                    if l.contains("Compiling ") {
+                        saw_compiling = true;
+                    }
+                    // Defer lone "Finished" lines — only emit if we saw Compiling
+                    // or are in verbose mode.
+                    if l.trim_start().starts_with("Finished ") && !saw_compiling {
+                        deferred_finished = Some(l);
+                        continue;
+                    }
                     let _ = writeln!(w, "{}", l);
                 }
                 Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-                    // Non-UTF8 data, skip
                     continue;
                 }
                 Err(e) => return Err(e),
             }
+        }
+        // Emit deferred Finished line only in verbose mode.
+        if let Some(finished_line) = deferred_finished {
+            if self.verbose {
+                let _ = writeln!(w, "{}", finished_line);
+            }
+        }
+
+        if resume_spinner {
+            let mut s = self.spinner_state.lock().unwrap_or_else(|e| e.into_inner());
+            s.active = true;
         }
         Ok(())
     }
 
     /// Print a rollback banner.
     pub fn rollback_banner(&mut self, reason: &str) {
-        let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        match self.mode {
-            ProgressMode::Fancy => {
-                let _ = writeln!(w);
-                let _ = writeln!(
-                    w,
-                    "  {}{}↩ Rolling back: {}{}",
-                    ANSI_RED, ANSI_BOLD, reason, ANSI_RESET
-                );
-                let _ = writeln!(w);
-            }
-            ProgressMode::Plain => {
-                let _ = writeln!(w);
-                let _ = writeln!(w, "  >> Rolling back: {}", reason);
-                let _ = writeln!(w);
-            }
-        }
+        self.warn(&format!("rolling back: {}", reason));
     }
 
     /// Print a message line (for informational output outside of steps).
@@ -552,6 +628,7 @@ impl Progress {
             return;
         }
         self.stop_spinner();
+        self.flush_plain_open_line();
         let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let _ = writeln!(w, "  {}", msg);
     }
@@ -559,42 +636,42 @@ impl Progress {
     /// Print the final summary with per-step timing.
     pub fn finish_summary(&mut self) {
         self.stop_spinner();
+        self.flush_plain_open_line();
         let overall = self.overall_start.elapsed();
 
         let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
 
         let any_failed = self.records.iter().any(|r| r.outcome == StepOutcome::Err);
+        let outcome = self.summary_outcome.clone().unwrap_or_else(|| {
+            if any_failed {
+                "failed".to_string()
+            } else {
+                "update completed".to_string()
+            }
+        });
 
         match self.mode {
             ProgressMode::Fancy => {
-                let _ = writeln!(w);
-                if any_failed {
-                    let _ = writeln!(
-                        w,
-                        "  {}{}Update failed{} ({})",
-                        ANSI_RED,
-                        ANSI_BOLD,
-                        ANSI_RESET,
-                        format_duration(overall)
-                    );
+                let finished = if any_failed {
+                    format!("{}{}Finished{}", ANSI_RED, ANSI_BOLD, ANSI_RESET)
                 } else {
-                    let _ = writeln!(
-                        w,
-                        "  {}{}Update complete{} ({})",
-                        ANSI_GREEN,
-                        ANSI_BOLD,
-                        ANSI_RESET,
-                        format_duration(overall)
-                    );
-                }
+                    format!("{}{}Finished{}", ANSI_GREEN, ANSI_BOLD, ANSI_RESET)
+                };
+                let _ = writeln!(
+                    w,
+                    "    {} update in {} \u{2014} {}",
+                    finished,
+                    format_duration(overall),
+                    outcome
+                );
             }
             ProgressMode::Plain => {
-                let _ = writeln!(w);
-                if any_failed {
-                    let _ = writeln!(w, "  Update failed ({})", format_duration(overall));
-                } else {
-                    let _ = writeln!(w, "  Update complete ({})", format_duration(overall));
-                }
+                let _ = writeln!(
+                    w,
+                    "    Finished update in {} \u{2014} {}",
+                    format_duration(overall),
+                    outcome
+                );
             }
         }
 
@@ -602,22 +679,81 @@ impl Progress {
         if self.verbose && !self.records.is_empty() {
             let _ = writeln!(w);
             for rec in &self.records {
-                let icon = match rec.outcome {
-                    StepOutcome::Ok => "✓",
-                    StepOutcome::Warn => "⚠",
-                    StepOutcome::Err => "✗",
-                    StepOutcome::Skipped => "·",
+                let status = match rec.outcome {
+                    StepOutcome::Ok => "ok",
+                    StepOutcome::Warn => "warning",
+                    StepOutcome::Err => "failed",
+                    StepOutcome::Skipped => "skipped",
                 };
-                let _ = writeln!(
-                    w,
-                    "    {} {:40} {}",
-                    icon,
-                    rec.step.label(),
-                    format_duration(rec.elapsed)
-                );
+                let elapsed = format_step_duration(rec.elapsed).unwrap_or_else(|| "-".to_string());
+                let _ = writeln!(w, "    {:8} {:28} {}", status, rec.step.short(), elapsed);
             }
         }
         let _ = w.flush();
+    }
+
+    fn render_step_result(
+        &mut self,
+        step: UpdateStep,
+        outcome: StepOutcome,
+        elapsed: Duration,
+        detail: Option<&str>,
+        force: bool,
+    ) {
+        if self.quiet && !force {
+            return;
+        }
+
+        let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+
+        if self.mode == ProgressMode::Plain && self.plain_line_open {
+            let _ = writeln!(w);
+            self.plain_line_open = false;
+        }
+
+        let mut line = format!(
+            "{} {} ... {}",
+            render_verb(self.mode, step.gerund()),
+            step.short(),
+            render_status(self.mode, &outcome)
+        );
+
+        if let Some(elapsed) = format_step_duration(elapsed) {
+            line.push_str(&format!(" ({})", elapsed));
+        }
+
+        if let Some(extra) = detail {
+            if !extra.trim().is_empty() {
+                line.push_str(" \u{2014} ");
+                line.push_str(extra);
+            }
+        }
+
+        let _ = writeln!(w, "{}", line);
+    }
+
+    fn render_error_line(&mut self, detail: &str) {
+        let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        if self.mode == ProgressMode::Plain && self.plain_line_open {
+            let _ = writeln!(w);
+            self.plain_line_open = false;
+        }
+
+        let _ = writeln!(
+            w,
+            "{} update ... {} \u{2014} {}",
+            render_verb(self.mode, "Failing"),
+            render_status(self.mode, &StepOutcome::Err),
+            detail
+        );
+    }
+
+    fn flush_plain_open_line(&mut self) {
+        if self.mode == ProgressMode::Plain && self.plain_line_open {
+            let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = writeln!(w);
+            self.plain_line_open = false;
+        }
     }
 
     /// Emit a JSON event to the json writer, if configured.
@@ -687,6 +823,8 @@ fn spinner_thread(
     state: Arc<Mutex<SpinnerState>>,
     stop: Arc<AtomicBool>,
 ) {
+    const GRACE_MS: u64 = 250;
+
     while !stop.load(Ordering::Acquire) {
         std::thread::sleep(Duration::from_millis(100));
 
@@ -694,17 +832,43 @@ fn spinner_thread(
         if !s.active {
             continue;
         }
+
+        // Grace period: don't draw spinner for the first 250ms of a step.
+        let now = Instant::now();
+        let draw_after = match s.first_draw_at {
+            Some(t) => t,
+            None => {
+                drop(s);
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                let t = Instant::now() + Duration::from_millis(GRACE_MS);
+                s.first_draw_at = Some(t);
+                drop(s);
+                continue;
+            }
+        };
+        if now < draw_after {
+            continue;
+        }
+
         let frame_char = SPINNER_FRAMES[s.frame % SPINNER_FRAMES.len()];
-        let elapsed = s.started.elapsed();
-        let elapsed_str = format_duration(elapsed);
+        let elapsed = format_step_duration(s.started.elapsed())
+            .map(|d| format!(" ({})", d))
+            .unwrap_or_default();
         let msg = if s.message.is_empty() {
             String::new()
         } else {
             format!(" [{}]", s.message)
         };
         let line = format!(
-            "{}{} {}{} {} ({}){}",
-            ANSI_ERASE_LINE, ANSI_CYAN, frame_char, ANSI_RESET, s.step_tag, elapsed_str, msg
+            "{}{} {}{} {} {} ...{}{}",
+            ANSI_ERASE_LINE,
+            ANSI_CYAN,
+            frame_char,
+            ANSI_RESET,
+            render_verb(ProgressMode::Fancy, &s.step_verb),
+            s.step_subject,
+            elapsed,
+            msg
         );
         drop(s);
 
@@ -722,20 +886,65 @@ fn spinner_thread(
 
 // ── Helpers ────────────────────────────────────────────────
 
-/// Format a Duration as "Xm Ys" or "X.Ys".
+fn render_verb(mode: ProgressMode, verb: &str) -> String {
+    match mode {
+        ProgressMode::Fancy => {
+            format!("{}{}{:>12}{}", ANSI_GREEN, ANSI_BOLD, verb, ANSI_RESET)
+        }
+        ProgressMode::Plain => format!("{:>12}", verb),
+    }
+}
+
+fn render_status(mode: ProgressMode, outcome: &StepOutcome) -> String {
+    match (mode, outcome) {
+        (ProgressMode::Fancy, StepOutcome::Ok) => format!("{}ok{}", ANSI_GREEN, ANSI_RESET),
+        (ProgressMode::Fancy, StepOutcome::Warn) => {
+            format!("{}{}warning{}", ANSI_YELLOW, ANSI_BOLD, ANSI_RESET)
+        }
+        (ProgressMode::Fancy, StepOutcome::Err) => {
+            format!("{}{}failed{}", ANSI_RED, ANSI_BOLD, ANSI_RESET)
+        }
+        (ProgressMode::Fancy, StepOutcome::Skipped) => {
+            format!("{}skipped{}", ANSI_DIM, ANSI_RESET)
+        }
+        (ProgressMode::Plain, StepOutcome::Ok) => "ok".to_string(),
+        (ProgressMode::Plain, StepOutcome::Warn) => "warning".to_string(),
+        (ProgressMode::Plain, StepOutcome::Err) => "failed".to_string(),
+        (ProgressMode::Plain, StepOutcome::Skipped) => "skipped".to_string(),
+    }
+}
+
+fn render_skipping(mode: ProgressMode) -> String {
+    match mode {
+        ProgressMode::Fancy => format!("{}{:>12}{}", ANSI_DIM, "Skipping", ANSI_RESET),
+        ProgressMode::Plain => format!("{:>12}", "Skipping"),
+    }
+}
+
+fn format_step_duration(d: Duration) -> Option<String> {
+    if d < Duration::from_millis(100) {
+        None
+    } else {
+        Some(format_duration(d))
+    }
+}
+
+/// Format a Duration as "Xm Ys", "X.Ys", "Nms", or "<1ms".
 pub fn format_duration(d: Duration) -> String {
+    let ms = d.as_millis();
+    if ms == 0 {
+        return "<1ms".to_string();
+    }
+
     let secs = d.as_secs();
     if secs >= 60 {
         let m = secs / 60;
         let s = secs % 60;
         format!("{}m {:02}s", m, s)
+    } else if ms < 1000 {
+        format!("{}ms", ms)
     } else {
-        let ms = d.as_millis();
-        if ms < 1000 {
-            format!("{}ms", ms)
-        } else {
-            format!("{}.{}s", secs, (ms % 1000) / 100)
-        }
+        format!("{}.{}s", secs, (ms % 1000) / 100)
     }
 }
 
@@ -895,8 +1104,7 @@ mod tests {
             "plain mode should not contain ANSI escapes, got: {}",
             output
         );
-        assert!(output.contains("[1/1]"));
-        assert!(output.contains("ok Verify repository"));
+        assert!(output.contains("Verifying repository ... ok"));
     }
 
     #[test]
@@ -922,18 +1130,343 @@ mod tests {
             String::from_utf8_lossy(&buf).to_string()
         };
 
-        assert!(output.contains("--- begin cargo build --release ---"));
+        assert!(!output.contains("--- begin cargo build --release ---"));
         assert!(output.contains("Compiling vigil v0.35.0"));
         assert!(output.contains("Finished release"));
-        assert!(output.contains("--- end ---"));
+        assert!(!output.contains("--- end ---"));
+    }
+
+    #[test]
+    fn warnings_render_with_prefix() {
+        let plan = Plan {
+            steps: vec![UpdateStep::VerifyRepo],
+        };
+        let shared = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let writer = SharedWriter(Arc::clone(&shared));
+        let mut prog = Progress::with_mode(plan, Box::new(writer), ProgressMode::Plain);
+
+        prog.begin_step(UpdateStep::VerifyRepo);
+        prog.warn("repository ownership is non-root");
+        prog.end_step_ok(None);
+
+        let output = {
+            let buf = shared.lock().unwrap();
+            String::from_utf8_lossy(&buf).to_string()
+        };
+
+        assert!(output.contains("warning: repository ownership is non-root"));
+    }
+
+    #[test]
+    fn skip_remaining_collapses_steps_when_not_verbose() {
+        let plan = Plan {
+            steps: vec![
+                UpdateStep::VerifyRepo,
+                UpdateStep::BuildRelease,
+                UpdateStep::VerifyArtifacts,
+            ],
+        };
+        let shared = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let writer = SharedWriter(Arc::clone(&shared));
+        let mut prog = Progress::with_mode(plan, Box::new(writer), ProgressMode::Plain);
+
+        prog.begin_step(UpdateStep::VerifyRepo);
+        prog.end_step_ok(None);
+        prog.skip_remaining_with_reason("already up to date");
+
+        let output = {
+            let buf = shared.lock().unwrap();
+            String::from_utf8_lossy(&buf).to_string()
+        };
+
+        assert!(output.contains("Skipping"));
+        assert!(output.contains("already up to date"));
+        assert!(output.contains("release binaries, artifacts"));
+    }
+
+    #[test]
+    fn cargo_lone_finished_suppressed_in_human_mode() {
+        let plan = Plan {
+            steps: vec![UpdateStep::BuildRelease],
+        };
+
+        // Default mode (not verbose): suppress lone Finished
+        let shared = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let writer = SharedWriter(Arc::clone(&shared));
+        let mut prog = Progress::with_mode(plan.clone(), Box::new(writer), ProgressMode::Plain);
+
+        prog.begin_step(UpdateStep::BuildRelease);
+        let sim_output = b"    Finished `release` profile [optimized] target(s) in 0.11s\n";
+        prog.pass_through(&sim_output[..]).unwrap();
+        prog.end_step_ok(None);
+
+        let output = {
+            let buf = shared.lock().unwrap();
+            String::from_utf8_lossy(&buf).to_string()
+        };
+
+        assert!(
+            !output.contains("Finished `release`"),
+            "lone Finished should be suppressed, got: {}",
+            output
+        );
+
+        // Verbose mode: emit the Finished line
+        let shared2 = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let writer2 = SharedWriter(Arc::clone(&shared2));
+        let mut prog2 = Progress::with_mode(plan, Box::new(writer2), ProgressMode::Plain);
+        prog2.set_verbose(true);
+
+        prog2.begin_step(UpdateStep::BuildRelease);
+        prog2.pass_through(&sim_output[..]).unwrap();
+        prog2.end_step_ok(None);
+
+        let output2 = {
+            let buf = shared2.lock().unwrap();
+            String::from_utf8_lossy(&buf).to_string()
+        };
+
+        assert!(
+            output2.contains("Finished `release`"),
+            "verbose should show Finished, got: {}",
+            output2
+        );
+    }
+
+    #[test]
+    fn cargo_compiling_plus_finished_both_emitted() {
+        let plan = Plan {
+            steps: vec![UpdateStep::BuildRelease],
+        };
+        let shared = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let writer = SharedWriter(Arc::clone(&shared));
+        let mut prog = Progress::with_mode(plan, Box::new(writer), ProgressMode::Plain);
+
+        prog.begin_step(UpdateStep::BuildRelease);
+        let sim_output = b"   Compiling vigil-baseline v0.39.0\n    Finished `release` profile [optimized] target(s) in 42.3s\n";
+        prog.pass_through(&sim_output[..]).unwrap();
+        prog.end_step_ok(None);
+
+        let output = {
+            let buf = shared.lock().unwrap();
+            String::from_utf8_lossy(&buf).to_string()
+        };
+
+        assert!(output.contains("Compiling vigil-baseline"));
+        assert!(output.contains("Finished `release`"));
+    }
+
+    #[test]
+    fn skipped_step_short_labels_match_spec() {
+        let plan = Plan::update_plan();
+        let shared = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let writer = SharedWriter(Arc::clone(&shared));
+        let mut prog = Progress::with_mode(plan, Box::new(writer), ProgressMode::Plain);
+
+        prog.begin_step(UpdateStep::VerifyRepo);
+        prog.end_step_ok(None);
+        prog.begin_step(UpdateStep::BuildRelease);
+        prog.end_step_ok(None);
+        prog.begin_step(UpdateStep::VerifyArtifacts);
+        prog.end_step_ok(None);
+        prog.skip_remaining_with_reason("no version change");
+
+        let output = {
+            let buf = shared.lock().unwrap();
+            String::from_utf8_lossy(&buf).to_string()
+        };
+
+        assert!(
+            output.contains("vigild, vigil and vigild, vigil and vigild, units, vigild, vigild health, backups, post-install doctor"),
+            "expected spec short labels, got: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn header_uses_updating_verb() {
+        let plan = Plan {
+            steps: vec![UpdateStep::VerifyRepo],
+        };
+        let shared = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let writer = SharedWriter(Arc::clone(&shared));
+        let mut prog = Progress::with_mode(plan, Box::new(writer), ProgressMode::Plain);
+
+        prog.header("vigil-baseline 0.36.0 -> 0.37.0");
+
+        let output = {
+            let buf = shared.lock().unwrap();
+            String::from_utf8_lossy(&buf).to_string()
+        };
+
+        assert!(output.contains("Updating vigil-baseline 0.36.0 -> 0.37.0"));
+    }
+
+    #[test]
+    fn header_uses_unicode_arrow() {
+        let plan = Plan {
+            steps: vec![UpdateStep::VerifyRepo],
+        };
+        let shared = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let writer = SharedWriter(Arc::clone(&shared));
+        let mut prog = Progress::with_mode(plan, Box::new(writer), ProgressMode::Plain);
+
+        prog.header("vigil-baseline 0.37.0 \u{2192} 0.38.0");
+
+        let output = {
+            let buf = shared.lock().unwrap();
+            String::from_utf8_lossy(&buf).to_string()
+        };
+
+        assert!(
+            output.contains("\u{2192}"),
+            "expected → in header, got: {}",
+            output
+        );
+        assert!(
+            !output.contains("->"),
+            "should not contain ->, got: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn build_step_silent_in_human_mode() {
+        let plan = Plan {
+            steps: vec![UpdateStep::BuildRelease],
+        };
+        let shared = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let writer = SharedWriter(Arc::clone(&shared));
+        let mut prog = Progress::with_mode(plan, Box::new(writer), ProgressMode::Plain);
+
+        prog.begin_step_silent(UpdateStep::BuildRelease);
+        prog.end_step_ok_silent(None);
+
+        let output = {
+            let buf = shared.lock().unwrap();
+            String::from_utf8_lossy(&buf).to_string()
+        };
+
+        assert!(
+            !output.contains("Building"),
+            "silent step should not print, got: {}",
+            output
+        );
+        assert!(
+            output.is_empty(),
+            "expected no human output, got: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn step_detail_uses_em_dash() {
+        let plan = Plan {
+            steps: vec![UpdateStep::VerifyRepo],
+        };
+        let shared = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let writer = SharedWriter(Arc::clone(&shared));
+        let mut prog = Progress::with_mode(plan, Box::new(writer), ProgressMode::Plain);
+
+        prog.begin_step(UpdateStep::VerifyRepo);
+        prog.end_step_ok(Some("some detail"));
+
+        let output = {
+            let buf = shared.lock().unwrap();
+            String::from_utf8_lossy(&buf).to_string()
+        };
+
+        assert!(
+            output.contains("\u{2014}"),
+            "expected em-dash, got: {}",
+            output
+        );
+        assert!(
+            !output.contains(" - some detail"),
+            "should not use hyphen separator, got: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn finished_uses_em_dash() {
+        let plan = Plan {
+            steps: vec![UpdateStep::VerifyRepo],
+        };
+        let shared = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let writer = SharedWriter(Arc::clone(&shared));
+        let mut prog = Progress::with_mode(plan, Box::new(writer), ProgressMode::Plain);
+
+        prog.begin_step(UpdateStep::VerifyRepo);
+        prog.end_step_ok(None);
+        prog.set_summary_outcome("no changes installed");
+        prog.finish_summary();
+
+        let output = {
+            let buf = shared.lock().unwrap();
+            String::from_utf8_lossy(&buf).to_string()
+        };
+
+        assert!(
+            output.contains("Finished update in"),
+            "expected Finished line, got: {}",
+            output
+        );
+        assert!(
+            output.contains("\u{2014} no changes installed"),
+            "expected em-dash in summary, got: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn no_blank_line_before_finished() {
+        let plan = Plan {
+            steps: vec![UpdateStep::VerifyRepo],
+        };
+        let shared = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let writer = SharedWriter(Arc::clone(&shared));
+        let mut prog = Progress::with_mode(plan, Box::new(writer), ProgressMode::Plain);
+
+        prog.begin_step(UpdateStep::VerifyRepo);
+        prog.end_step_ok(None);
+        prog.set_summary_outcome("done");
+        prog.finish_summary();
+
+        let output = {
+            let buf = shared.lock().unwrap();
+            String::from_utf8_lossy(&buf).to_string()
+        };
+
+        // The Finished line should follow immediately after the step line.
+        // There should be no blank line between them.
+        let lines: Vec<&str> = output.lines().collect();
+        let finished_idx = lines.iter().position(|l| l.contains("Finished")).unwrap();
+        assert!(finished_idx > 0);
+        let prev_line = lines[finished_idx - 1];
+        assert!(
+            !prev_line.trim().is_empty(),
+            "blank line before Finished: {:?}",
+            lines
+        );
     }
 
     #[test]
     fn format_duration_formats_correctly() {
+        assert_eq!(format_duration(Duration::from_millis(0)), "<1ms");
         assert_eq!(format_duration(Duration::from_millis(42)), "42ms");
         assert_eq!(format_duration(Duration::from_millis(1500)), "1.5s");
         assert_eq!(format_duration(Duration::from_secs(65)), "1m 05s");
         assert_eq!(format_duration(Duration::from_secs(147)), "2m 27s");
+    }
+
+    #[test]
+    fn format_step_duration_hides_sub_100ms() {
+        assert_eq!(format_step_duration(Duration::from_millis(42)), None);
+        assert_eq!(
+            format_step_duration(Duration::from_millis(123)),
+            Some("123ms".to_string())
+        );
     }
 
     #[test]

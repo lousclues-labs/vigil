@@ -3,11 +3,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-use vigil::doctor;
 use vigil::types::OutputFormat;
 use vigil::ui::progress::{Plan, Progress, ProgressMode, UpdateStep};
 
-use super::common::{format_count, query_control_socket};
+use super::common::query_control_socket;
 
 pub(crate) fn cmd_update(
     repo: Option<PathBuf>,
@@ -35,33 +34,62 @@ pub(crate) fn cmd_update(
         prog.set_json_writer(stdout_writer);
     }
 
-    // ── Step 1: Verify repository ──────────────────────────
-    prog.begin_step(UpdateStep::VerifyRepo);
+    let repo_was_explicit = repo.is_some();
+
+    // ── Discover repo path early (for header) ──────────────
     let repo_path = match repo {
-        Some(p) => {
-            validate_vigil_repo(&p).map_err(|e| {
-                prog.end_step_err(&format!("invalid: {}", e));
-                prog.skip_remaining();
-                prog.finish_summary();
-                e.with_context(&format!("validating vigil repository at {}", p.display()))
-            })?;
-            p
-        }
+        Some(p) => p,
         None => match discover_vigil_repo(&mut prog) {
             Ok(p) => p,
             Err(e) => {
+                prog.begin_step(UpdateStep::VerifyRepo);
                 prog.end_step_err("no repository found");
-                prog.skip_remaining();
+                prog.skip_remaining_with_reason("repository discovery failed");
                 prog.finish_summary();
                 return Err(e);
             }
         },
     };
-    prog.end_step_ok(Some(&format!("{}", repo_path.display())));
+
+    // ── Read version from Cargo.toml for header ────────────
+    let current_version = installed_version().unwrap_or_else(|| "unknown".to_string());
+    let cargo_version =
+        read_cargo_toml_version(&repo_path).unwrap_or_else(|| current_version.clone());
+
+    let mut header_text = format!(
+        "vigil-baseline {} \u{2192} {}",
+        display_version(&current_version),
+        display_version(&cargo_version)
+    );
+    if repo_was_explicit || verbose {
+        header_text.push_str(&format!("  (repo {})", repo_path.display()));
+    }
+    if verbose {
+        if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+            if !sudo_user.trim().is_empty() {
+                header_text.push_str(&format!("  (sudo as {})", sudo_user));
+            }
+        }
+    }
+    prog.header(&header_text);
+
+    // ── Step 1: Verify repository ──────────────────────────
+    prog.begin_step(UpdateStep::VerifyRepo);
+    validate_vigil_repo_with_progress(&repo_path, Some(&mut prog)).map_err(|e| {
+        prog.end_step_err(&format!("invalid: {}", e));
+        prog.skip_remaining_with_reason("repository validation failed");
+        prog.finish_summary();
+        e.with_context(&format!(
+            "validating vigil repository at {}",
+            repo_path.display()
+        ))
+    })?;
+    prog.end_step_ok(None);
 
     // ── Step 2: Build release binaries ─────────────────────
-    prog.begin_step(UpdateStep::BuildRelease);
-    prog.begin_passthrough("cargo build --release");
+    // Silent in human mode — cargo owns the visual output.
+    // JSON begin/ok events still emitted.
+    prog.begin_step_silent(UpdateStep::BuildRelease);
 
     let mut build_cmd = ProcessCommand::new("cargo");
     build_cmd
@@ -77,15 +105,13 @@ pub(crate) fn cmd_update(
 
     let build_status = build_cmd.status();
 
-    prog.end_passthrough();
-
     match build_status {
         Ok(status) if status.success() => {
-            prog.end_step_ok(None);
+            prog.end_step_ok_silent(None);
         }
         Ok(_) => {
             prog.end_step_err("cargo build --release failed");
-            prog.skip_remaining();
+            prog.skip_remaining_with_reason("build failed");
             prog.finish_summary();
             return Err(vigil::VigilError::Daemon(
                 "update failed: cargo build --release did not succeed".to_string(),
@@ -93,7 +119,7 @@ pub(crate) fn cmd_update(
         }
         Err(e) => {
             prog.end_step_err(&format!("failed to spawn cargo: {}", e));
-            prog.skip_remaining();
+            prog.skip_remaining_with_reason("build failed to start");
             prog.finish_summary();
             return Err(vigil::VigilError::Io(e));
         }
@@ -105,7 +131,7 @@ pub(crate) fn cmd_update(
     let repo_vigild = repo_path.join("target/release/vigild");
     if !repo_vigil.exists() || !repo_vigild.exists() {
         prog.end_step_err("target/release/vigil or vigild missing");
-        prog.skip_remaining();
+        prog.skip_remaining_with_reason("missing build artifacts");
         prog.finish_summary();
         return Err(vigil::VigilError::Daemon(
             "update build is incomplete: target/release/vigil and vigild must exist".to_string(),
@@ -116,11 +142,11 @@ pub(crate) fn cmd_update(
     smoke_test_binary_exists(&repo_vigild, "vigild")?;
 
     let new_version = version_from_binary(&repo_vigil)?;
-    let current_version = installed_version().unwrap_or_else(|| "unknown".to_string());
 
     if current_version != "unknown" && current_version == new_version {
-        prog.end_step_ok(Some(&format!("already at {}", current_version)));
-        prog.skip_remaining();
+        prog.end_step_ok(None);
+        prog.set_summary_outcome("no changes installed");
+        prog.skip_remaining_with_reason("no version change");
         prog.finish_summary();
         return Ok(());
     }
@@ -130,14 +156,14 @@ pub(crate) fn cmd_update(
         let cur = current_version.trim_start_matches('v');
         let new = new_version.trim_start_matches('v');
         if new < cur {
-            prog.tick(Some(&format!(
-                "downgrade: {} → {}",
+            prog.warn(&format!(
+                "downgrade: {} \u{2192} {}",
                 current_version, new_version
-            )));
+            ));
         }
     }
 
-    prog.end_step_ok(Some(&format!("{} → {}", current_version, new_version)));
+    prog.end_step_ok(None);
 
     // ── Step 4: Stop daemon ────────────────────────────────
     prog.begin_step(UpdateStep::StopDaemon);
@@ -151,7 +177,7 @@ pub(crate) fn cmd_update(
         prog.end_step_ok(None);
     } else if daemon_is_active() {
         prog.end_step_err("could not stop vigild.service and it is still active");
-        prog.skip_remaining();
+        prog.skip_remaining_with_reason("daemon stop failed");
         prog.finish_summary();
         return Err(vigil::VigilError::Daemon(
             "could not stop vigild.service and it is still active; refusing to replace running binary. \
@@ -197,7 +223,7 @@ pub(crate) fn cmd_update(
         // Rollback from install failure
         prog.rollback_banner("install failed, restoring backups");
         rollback_binaries(dst_vigil, dst_vigild);
-        prog.skip_remaining();
+        prog.skip_remaining_with_reason("install failed");
         prog.finish_summary();
         return Err(e);
     }
@@ -315,7 +341,8 @@ pub(crate) fn cmd_update(
         let _ = run_best_effort(start_cmd);
 
         prog.message("Rolled back to previous binaries");
-        prog.skip_remaining();
+        prog.set_summary_outcome("rolled back to previous binaries");
+        prog.skip_remaining_with_reason("rollback path activated");
         prog.finish_summary();
         return Err(vigil::VigilError::Daemon(
             "daemon failed health check after update; rolled back to previous binaries".to_string(),
@@ -330,27 +357,12 @@ pub(crate) fn cmd_update(
 
     // ── Step 10: Archive backups ───────────────────────────
     prog.begin_step(UpdateStep::ArchiveBackups);
-    archive_backups(dst_vigil, dst_vigild);
-    prog.end_step_ok(None);
+    let archive_path = archive_backups(dst_vigil, dst_vigild);
+    let archive_detail = archive_path.map(|p| p.display().to_string());
+    prog.end_step_ok(archive_detail.as_deref());
 
     // ── Step 11: Post-install health check ─────────────────
     prog.begin_step(UpdateStep::PostCheck);
-
-    let baseline_summary = match vigil::config::load_config(None)
-        .ok()
-        .and_then(|cfg| doctor::baseline_count_with_fallback(&cfg))
-    {
-        Some(count) => format!("preserved ({} entries)", format_count(count.max(0) as u64)),
-        None => "preserved".to_string(),
-    };
-
-    let daemon_status = if daemon_started && healthy {
-        "restarted"
-    } else if daemon_started {
-        "started but not responding"
-    } else {
-        "restart failed"
-    };
 
     // Run vigil doctor
     let _ = ProcessCommand::new(installed_vigil_path())
@@ -359,11 +371,13 @@ pub(crate) fn cmd_update(
         .stdout(std::process::Stdio::null())
         .status();
 
-    prog.end_step_ok(Some(&format!(
-        "{} → {} | daemon: {} | baseline: {}",
-        current_version, new_version, daemon_status, baseline_summary
-    )));
+    prog.end_step_ok(None);
 
+    prog.set_summary_outcome(format!(
+        "vigil-baseline {} \u{2192} {}",
+        display_version(&current_version),
+        display_version(&new_version)
+    ));
     prog.finish_summary();
     Ok(())
 }
@@ -375,7 +389,10 @@ pub(crate) fn cmd_update(
 ///
 /// When running as root, also verifies directory and Cargo.toml ownership to prevent
 /// privilege escalation via user-controlled source directories.
-fn validate_vigil_repo(repo: &Path) -> vigil::Result<()> {
+fn validate_vigil_repo_with_progress(
+    repo: &Path,
+    prog: Option<&mut Progress>,
+) -> vigil::Result<()> {
     let cargo_toml = repo.join("Cargo.toml");
     if !cargo_toml.exists() {
         return Err(vigil::VigilError::Config(format!(
@@ -388,27 +405,39 @@ fn validate_vigil_repo(repo: &Path) -> vigil::Result<()> {
     // The typical workflow is `sudo vigil update` from a user-owned checkout.
     // The real security boundary is the binary smoke-test and rollback mechanism,
     // not source directory ownership.  A hard error here breaks the primary use case.
+    #[cfg(any(test, debug_assertions))]
+    let _ = &prog;
+
     #[cfg(not(any(test, debug_assertions)))]
     {
         use std::os::unix::fs::MetadataExt;
+
+        let mut prog = prog;
+
+        let mut emit_warning = |msg: String| {
+            if let Some(p) = prog.as_deref_mut() {
+                p.warn(&msg);
+            } else {
+                eprintln!("warning: {}", msg);
+            }
+        };
+
         if nix::unistd::geteuid().is_root() {
             let dir_meta = std::fs::metadata(repo)?;
             if dir_meta.uid() != 0 {
-                eprintln!(
-                    "  ⚠ repository directory {} is owned by UID {} (not root). \
-                     Verify you trust this source tree.",
+                emit_warning(format!(
+                    "{} is owned by uid {} (not root)",
                     repo.display(),
                     dir_meta.uid()
-                );
+                ));
             }
             let toml_meta = std::fs::metadata(&cargo_toml)?;
             if toml_meta.uid() != 0 {
-                eprintln!(
-                    "  ⚠ Cargo.toml at {} is owned by UID {} (not root). \
-                     Verify you trust this source tree.",
+                emit_warning(format!(
+                    "{} is owned by uid {} (not root)",
                     cargo_toml.display(),
                     toml_meta.uid()
-                );
+                ));
             }
         }
     }
@@ -516,7 +545,7 @@ fn discover_vigil_repo(prog: &mut Progress) -> vigil::Result<PathBuf> {
     let mut rejections: Vec<String> = Vec::new();
 
     for (i, candidate) in candidates.iter().enumerate() {
-        match validate_vigil_repo(candidate) {
+        match validate_vigil_repo_with_progress(candidate, None) {
             Ok(()) => {
                 prog.tick(Some(&format!("found: {}", candidate.display())));
                 return Ok(candidate.clone());
@@ -675,11 +704,11 @@ fn rollback_binaries(dst_vigil: &Path, dst_vigild: &Path) {
 /// `/var/lib/vigil/binary-backups/`. Keeps the last 3 sets of backups so an
 /// operator can manually roll back if a delayed failure surfaces (e.g. the
 /// new daemon dies under load minutes after `vigil update` returned).
-fn archive_backups(dst_vigil: &Path, dst_vigild: &Path) {
+fn archive_backups(dst_vigil: &Path, dst_vigild: &Path) -> Option<PathBuf> {
     let bkp_vigil = backup_path(dst_vigil);
     let bkp_vigild = backup_path(dst_vigild);
     if !bkp_vigil.exists() && !bkp_vigild.exists() {
-        return;
+        return None;
     }
 
     let archive_root = std::path::PathBuf::from("/var/lib/vigil/binary-backups");
@@ -699,12 +728,12 @@ fn archive_backups(dst_vigil: &Path, dst_vigild: &Path) {
     let mut mkdir = ProcessCommand::new("sudo");
     mkdir.arg("mkdir").arg("-p").arg(&archive_dir);
     if !run_best_effort(mkdir) {
-        eprintln!(
-            "  ⚠ Could not create backup archive {}; deleting backups instead",
-            archive_dir.display()
+        tracing::warn!(
+            path = %archive_dir.display(),
+            "could not create backup archive; deleting backups instead"
         );
         cleanup_backups(dst_vigil, dst_vigild);
-        return;
+        return None;
     }
 
     for bkp in [&bkp_vigil, &bkp_vigild] {
@@ -721,6 +750,7 @@ fn archive_backups(dst_vigil: &Path, dst_vigild: &Path) {
     }
 
     prune_old_backup_archives(&archive_root, 3);
+    Some(archive_dir)
 }
 
 /// Keep only the most recent `keep` directories under `archive_root`.
@@ -953,6 +983,18 @@ fn normalize_version(raw: &str) -> String {
     }
 }
 
+fn display_version(v: &str) -> &str {
+    v.trim_start_matches('v')
+}
+
+/// Read the package version from Cargo.toml without building.
+fn read_cargo_toml_version(repo: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(repo.join("Cargo.toml")).ok()?;
+    let parsed: toml::Value = toml::from_str(&content).ok()?;
+    let ver = parsed.get("package")?.get("version")?.as_str()?;
+    Some(format!("v{}", ver))
+}
+
 fn run_checked(mut cmd: ProcessCommand, label: &str) -> vigil::Result<()> {
     let status = cmd.status()?;
     if !status.success() {
@@ -1042,7 +1084,7 @@ mod tests {
         )
         .expect("write Cargo.toml");
 
-        let result = validate_vigil_repo(dir.path());
+        let result = validate_vigil_repo_with_progress(dir.path(), None);
         assert!(result.is_ok(), "expected valid vigil repository");
     }
 
@@ -1061,7 +1103,7 @@ mod tests {
         )
         .expect("write Cargo.toml");
 
-        let result = validate_vigil_repo(dir.path());
+        let result = validate_vigil_repo_with_progress(dir.path(), None);
         assert!(result.is_ok(), "expected legacy vigil name to be accepted");
     }
 
@@ -1080,7 +1122,7 @@ mod tests {
         )
         .expect("write Cargo.toml");
 
-        let result = validate_vigil_repo(dir.path());
+        let result = validate_vigil_repo_with_progress(dir.path(), None);
         assert!(result.is_err(), "expected repository validation to fail");
     }
 
@@ -1103,7 +1145,7 @@ mod tests {
     fn validate_vigil_repo_error_messages() {
         // No Cargo.toml
         let dir = tempfile::tempdir().expect("create temp dir");
-        let err = validate_vigil_repo(dir.path()).unwrap_err();
+        let err = validate_vigil_repo_with_progress(dir.path(), None).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("Cargo.toml not found"),
@@ -1114,7 +1156,7 @@ mod tests {
         // Parse error
         let dir2 = tempfile::tempdir().expect("create temp dir");
         std::fs::write(dir2.path().join("Cargo.toml"), "{{invalid toml}}").expect("write bad toml");
-        let err2 = validate_vigil_repo(dir2.path()).unwrap_err();
+        let err2 = validate_vigil_repo_with_progress(dir2.path(), None).unwrap_err();
         let msg2 = err2.to_string();
         assert!(
             msg2.contains("Cargo.toml parse error"),
@@ -1133,7 +1175,7 @@ mod tests {
             "#,
         )
         .expect("write wrong name");
-        let err3 = validate_vigil_repo(dir3.path()).unwrap_err();
+        let err3 = validate_vigil_repo_with_progress(dir3.path(), None).unwrap_err();
         let msg3 = err3.to_string();
         assert!(
             msg3.contains("package name is 'something-else'"),
@@ -1161,7 +1203,7 @@ mod tests {
         // since it requires /home/$SUDO_USER to exist, but we can verify
         // the candidate generation logic works by testing validate_vigil_repo
         // on the created directory (which is what discover calls internally).
-        assert!(validate_vigil_repo(dir.path()).is_ok());
+        assert!(validate_vigil_repo_with_progress(dir.path(), None).is_ok());
 
         // Verify backup_path generation
         let p = Path::new("/usr/local/bin/vigil");

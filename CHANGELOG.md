@@ -4,6 +4,64 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-04-17
+
+### Bug Fixes
+
+- **Fix duplicate ownership warnings.** Repository discovery no longer emits ownership warnings during candidate scanning — warnings now fire exactly once during the explicit validation step.
+- **Suppress orphan cargo `Finished` line on cached builds.** When cargo has nothing to compile, its lone `Finished` line is suppressed to avoid a contextless fragment in the output. `--verbose` still emits it.
+- **Fix step labels to use `vigild` not `daemon`.** Stop, start, and health check steps now reference the actual systemd unit name (`vigild`) for searchability in logs and journals.
+- **De-redundant binary step labels.** `Backing up existing binaries` → `Backing up vigil and vigild`; `Installing new binaries` → `Installing vigil and vigild`.
+- **Fix tautological `Checking post-install checks`.** PostCheck now renders as `Running post-install doctor ... ok`.
+- **Remove pipe-delimited PostCheck detail.** The version transition, daemon status, and baseline count were redundant with the header, prior steps, and doctor output. PostCheck now renders with no trailing detail.
+- **Add archive path to backup step.** `Archiving backups ... ok — /var/lib/vigil/binary-backups/<ts>` now shows the forensic recovery path.
+- **Remove stray `⚠` eprintln in archive_backups.** Archive creation failure now logs via tracing instead of unscoped `eprintln!`.
+
+### Internal
+
+- `pass_through()` now tracks `Compiling` lines and defers lone `Finished` lines; verbose mode bypasses the filter.
+- `archive_backups()` returns `Option<PathBuf>` so the caller can render the path as step detail.
+- 2 new tests: `cargo_lone_finished_suppressed_in_human_mode`, `cargo_compiling_plus_finished_both_emitted`.
+
+## [0.38.0] - 2026-04-17
+
+### Bug Fixes
+
+- **Fix spinner collision with cargo output.** The spinner line was not erased before cargo's `Compiling`/`Finished` output streamed in, causing garbled lines. The spinner is now explicitly cleared (`\r\x1b[2K`) before any pass-through child output, and a 250ms grace period suppresses spinner drawing for sub-second steps.
+- **Fix header position.** The `Updating vigil-baseline X → Y` header now appears as the first output line, before any warnings or step output. Previously it printed after the build step.
+- **Fix build step double attribution.** The `BuildRelease` step is now silent in human mode — only cargo's native `Compiling`/`Finished` lines render. JSON `begin`/`ok` events still emit.
+- **Fix hyphen where em-dash specified.** Detail separators and the `Finished` summary line now use `—` (U+2014) instead of ` - `.
+- **Fix ASCII arrow in header.** Version transitions now use `→` (U+2192) instead of `->`.
+- **Fix redundant step details.** Step details that duplicate header content (repo path, version transition) are no longer rendered.
+- **Fix skipped-step labels.** Short labels now match spec: `stop, backup, install, units, start, health, archive, doctor`. Previously labels like `daemon` appeared twice.
+- **Fix verbose skip reason.** No-op early exit now shows `no version change` instead of repeating the version string.
+- **Fix stray blank line before Finished.** The `Finished` summary now follows immediately after the last step or skip line with no blank line separator.
+- **Fix verbose warning text.** Ownership warnings are now terse: `warning: /path is owned by uid N (not root)`. Redundant filename and trailing admonition removed.
+
+### Internal
+
+- `begin_step_silent()` / `end_step_ok_silent()` methods for steps where a child process owns the visual output.
+- Spinner thread 250ms grace period via `first_draw_at` field in `SpinnerState`.
+- `read_cargo_toml_version()` helper reads version from Cargo.toml without building.
+- 6 new unit tests: `skipped_step_short_labels_match_spec`, `header_uses_unicode_arrow`, `build_step_silent_in_human_mode`, `step_detail_uses_em_dash`, `finished_uses_em_dash`, `no_blank_line_before_finished`.
+
+## [0.37.0] - 2026-04-17
+
+### User Experience
+
+- **`vigil update` visual polish (cargo-style grammar).** Human progress output now uses a right-aligned 12-column verb gutter (`Verifying`, `Building`, `Installing`, etc.) with concise per-step subjects instead of `[N/total]` counters.
+- **Scoped warnings with `warning:` prefix.** Operator warnings are now emitted at column 0 with consistent `warning: ...` styling so warning lines are easy to grep in CI logs and postmortems.
+- **No more pass-through framing.** Cargo output is now streamed unframed, preserving native cargo readability and avoiding mixed visual metaphors.
+- **Skipped-step collapse.** No-op and early-exit paths now print a single collapsed `Skipping N steps (reason): ...` summary in non-verbose mode, while verbose mode still renders per-step skip detail.
+- **Honest final summary.** Final line now reports `Finished update in <T> - <outcome>` with explicit outcomes such as version transition, no changes installed, or rolled back.
+- **Update header line.** Once versions are known, update output prints a scoped header (`Updating vigil-baseline <from> -> <to>`) with optional repo/sudo context in explicit or verbose flows.
+
+### Internal
+
+- `src/ui/progress.rs` now includes cargo-style verb/subject mapping, scoped warning rendering, skip-collapse support, and elapsed formatting that omits noisy sub-100ms step timings.
+- `src/commands/update.rs` now feeds reasons into skip-collapse, emits repo ownership warnings through the progress renderer, and sets explicit summary outcomes for success/no-op/rollback.
+- Progress renderer unit tests were updated and expanded to cover warnings, header rendering, unframed passthrough, and duration threshold behavior.
+
 ## [0.36.0] - 2026-04-17
 
 ### User Experience
