@@ -48,6 +48,7 @@ max_file_size = 2147483648
 mmap_threshold = 1048576
 scheduled_mode = "full"          # incremental, full (full protects against mtime-reset attacks)
 parallel = false
+# drift_velocity_threshold = 50  # average changes per tick (60s) before high-drift warning
 
 [alerts]
 desktop_notifications = true
@@ -90,6 +91,7 @@ hmac_signing = false
 hmac_key_path = "/etc/vigil/hmac.key"
 verify_config_integrity = true
 control_socket_auth = true        # challenge-response auth on control socket
+# trust_baseline_on_hmac_mismatch = false  # set true temporarily after version upgrades
 
 [database]
 wal_mode = true

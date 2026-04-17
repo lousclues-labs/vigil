@@ -4,6 +4,66 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-04-17
+
+### Release Summary
+- Six new features and six security fixes (VIGIL-VULN-051 through VIGIL-VULN-056). Workers now self-heal after database connection failures. Package manager queries are protected by a circuit breaker that suspends subprocess calls after repeated timeouts. The coordinator tracks per-sub-method tick timing for watchdog debugging and auto-recovers from transient backpressure degradation. A drift velocity metric detects anomalous rates of baseline deviations. Error messages gain structured context via `VigilError::with_context()`. Three critical security fixes: baseline HMAC mismatch no longer silently recomputes (enters Degraded state instead), `baseline_refresh` uses the daemon's live HMAC-verified config instead of re-reading from disk, and control socket reads are bounded to 64KB to prevent OOM. Two high-severity fixes: HMAC key files with group/other permissions are now rejected in release builds, and `vigil update` under sudo no longer searches user-writable home directories for source repositories. All 266 tests pass, clippy clean.
+
+### Security
+- **VIGIL-VULN-051 (Critical):** baseline HMAC mismatch in `ensure_baseline_health()` silently recomputed and stored the new HMAC, nullifying tamper-evidence. Now enters `Degraded` state with reason `baseline_hmac_mismatch` and sends `Critical` desktop notification. Escape hatch: `security.trust_baseline_on_hmac_mismatch = true` for genuine version upgrades (`src/lib.rs`).
+- **VIGIL-VULN-052 (Critical):** `handle_baseline_refresh()` called `load_config(None)` which re-read config from disk without HMAC verification, bypassing the coordinator's config integrity check. Now uses the daemon's live config via `Arc<ArcSwap<Config>>`. Additionally gated on daemon state — refuses execution when `Degraded` to prevent cementing compromised filesystem state (`src/control.rs`).
+- **VIGIL-VULN-053 (Critical):** `read_request()` and `authenticate_and_read()` used `BufReader::read_line()` with no size limit. A local process could OOM the daemon with a multi-gigabyte newline-less payload. Now bounded to 64KB via `read_bounded_line()` using `Read::take()` (`src/control.rs`).
+- **VIGIL-VULN-054 (High):** `check_hmac_key_permissions()` logged a warning when the HMAC key file was world-readable but continued using the key. Now returns `Err` in release builds (`#[cfg(not(any(test, debug_assertions)))]`) when mode & 0o077 != 0, refusing to load the key. Test/debug builds warn instead (`src/hmac.rs`).
+- **VIGIL-VULN-055 (High):** under `sudo vigil update`, `$HOME` may point to an unprivileged user's home. `discover_vigil_repo()` searched user-writable paths, and `validate_vigil_repo()` only checked the package name — a user-placed malicious Rust project could execute arbitrary code as root. Now skips `$HOME`-relative candidates when running as root (unless `$HOME=/root`). As defense-in-depth, `validate_vigil_repo()` checks directory and `Cargo.toml` ownership in release builds (`src/commands/update.rs`).
+- **VIGIL-VULN-056 (Medium):** process attribution via `/proc/{pid}/exe` did not distinguish successful from failed readlink — stale PID attribution was indistinguishable from valid attribution. Now detects exited processes and logs at `debug` level with `exe: None` flagging (`src/monitor/fanotify.rs`).
+
+### Added
+- **worker:** self-healing database connections — `WorkerContext` gains `consecutive_db_errors: u32` and `db_path: PathBuf` fields. On `get_by_path()` failure, the counter increments; on success, it resets to 0. After 5 consecutive failures, the worker attempts `open_baseline_db_readonly()` — on success, replaces the connection, clears the LRU cache, and resets the counter. On failure, logs at `error` and retries after 5 more failures. Never panics on reconnect failure (Principle IV) (`src/worker.rs`).
+- **package:** circuit breaker for package manager queries — module-level `CONSECUTIVE_TIMEOUTS: AtomicU32` and `CIRCUIT_OPEN_UNTIL: AtomicI64` statics. After 3 consecutive `run_with_timeout()` timeouts on the `PKG_QUERY_TIMEOUT` (5s) path, the circuit opens for 60 seconds — all queries return `None` immediately without spawning subprocesses. Successful queries reset the counter. `build_package_cache()` (30s timeout) is unaffected. `is_circuit_open()` logs at `info` when the circuit closes (`src/package.rs`).
+- **coordinator:** per-sub-method tick duration tracking — each of the 12 sub-method calls in `tick()` is wrapped with `Instant::now()` / `elapsed()`. Individual durations exceeding 5 seconds log at `warn` with method name. Total tick exceeding 10 seconds logs at `warn` with full breakdown. Negligible overhead (one `Instant::now()` per sub-method per 60-second tick). Does not change existing `notify_watchdog()` placement (`src/coordinator.rs`).
+- **coordinator:** backpressure auto-recovery — `check_backpressure()` now transitions back from `Degraded { reason: "event_backpressure" }` to `Healthy` when the backpressure flag clears. Only recovers from `event_backpressure` — security-related degradation (`baseline_db_replaced`, `audit_db_replaced`, `wal_file_replaced`, `baseline_hmac_mismatch`) requires daemon restart (`src/coordinator.rs`).
+- **coordinator:** drift velocity metric — `Coordinator` gains `drift_samples: [u64; 5]`, `drift_sample_idx: usize`, and `last_changes_seen: u64`. `check_drift_velocity()` computes the 5-minute rolling average of changes per tick. When the average exceeds `scanner.drift_velocity_threshold` (default 50) and no maintenance window is active, logs at `error`: "high baseline drift velocity — possible active compromise". Suppressed during maintenance windows. Included in `state.json` as `drift_velocity` field (`src/coordinator.rs`).
+- **config:** `scanner.drift_velocity_threshold: Option<u64>` — average baseline changes per coordinator tick that triggers a high-drift-velocity warning. `None` (default) uses hardcoded 50. (`src/config/mod.rs`).
+- **config:** `security.trust_baseline_on_hmac_mismatch: bool` — when `true`, HMAC mismatch on startup recomputes and stores the new HMAC (with warning) instead of entering Degraded state. Default `false`. Use temporarily after version upgrades that change baseline HMAC field coverage (`src/config/mod.rs`).
+- **error:** `VigilError::with_context(self, ctx: &str) -> Self` — prepends context to string-based error variants (Config, Daemon, Baseline, Alert, etc.). For variants wrapping external errors (Io, Database, TomlParse, Json, GlobPattern), converts to the appropriate string variant with context prefix. No new dependencies (`src/error.rs`).
+- **control:** `ControlHandler` gains `config: Arc<ArcSwap<Config>>` field — provides access to the daemon's live, HMAC-verified config. Threaded from `DaemonRuntime::start()` where `daemon.config` is available (`src/control.rs`, `src/lib.rs`).
+- **control:** `read_bounded_line()` helper — reads a single line from a `UnixStream` bounded to `MAX_REQUEST_LINE_BYTES` (64KB) using `Read::take()`. Returns `Err` on empty connection, size limit exceeded, or I/O error (`src/control.rs`).
+
+### Changed
+- **lib:** `ensure_baseline_health()` — HMAC mismatch branch now checks `config.security.trust_baseline_on_hmac_mismatch`. When `false` (default): logs at `error`, sends `Critical` desktop notification, transitions to `Degraded`. When `true`: logs at `warn`, recomputes and stores the HMAC. Previously always recomputed silently (`src/lib.rs`).
+- **lib:** `db::open_baseline_db()` call in `Daemon::from_config()` now wrapped with `.map_err(|e| e.with_context("opening baseline database during daemon startup"))` (`src/lib.rs`).
+- **lib:** `db::open_audit_db()` call in `Daemon::from_config()` now wrapped with `.map_err(|e| e.with_context("opening audit database during startup"))` (`src/lib.rs`).
+- **lib:** `scanner::build_initial_baseline()` call in `ensure_baseline_health()` now wrapped with `.map_err(|e| e.with_context("building initial baseline"))` (`src/lib.rs`).
+- **control:** `handle_baseline_refresh()` — uses `self.config.load()` instead of `crate::config::load_config(None)`. Checks daemon state before execution and refuses with clear error when `Degraded` (`src/control.rs`).
+- **control:** `read_request()` and `authenticate_and_read()` — replaced `BufReader::read_line()` with `read_bounded_line()` (`src/control.rs`).
+- **hmac:** `check_hmac_key_permissions()` — changed from void function to `Result<()>`. In release builds, returns `Err(VigilError::HmacVerification(...))` on permissive mode. `load_hmac_key()` now propagates the error via `?` (`src/hmac.rs`).
+- **coordinator:** `write_state_snapshot()` — now takes an optional `drift_velocity: Option<u64>` parameter and includes it in the state JSON when available (`src/coordinator.rs`).
+- **commands/check:** `open_baseline_db()` call now wrapped with `.map_err(|e| e.with_context("opening baseline database for check"))` (`src/commands/check.rs`).
+- **commands/update:** `validate_vigil_repo()` call now wrapped with `.map_err(|e| e.with_context(...))` with the repo path in context (`src/commands/update.rs`).
+- **commands/update:** `discover_vigil_repo()` — when running as root, skips `$HOME`-relative candidates unless `$HOME` is `/root`. Logs at `debug` when skipping (`src/commands/update.rs`).
+- **commands/update:** `validate_vigil_repo()` — when running as root in release builds, checks directory and `Cargo.toml` ownership (UID must be 0) (`src/commands/update.rs`).
+- **monitor/fanotify:** process attribution — failed `/proc/{pid}/exe` readlink now logged at `debug` ("process exited before attribution — PID may be stale") and `ProcessAttribution` populated with `exe: None` (`src/monitor/fanotify.rs`).
+
+### Tests
+- **worker:** `worker_consecutive_db_errors_increments` — creates a `WorkerContext` with an in-memory DB that lacks baseline tables, verifies `consecutive_db_errors` increments to 4 after 4 failed `evaluate()` calls (`src/worker.rs`).
+- **package:** `circuit_breaker_opens_after_threshold` — sets `CIRCUIT_OPEN_UNTIL` to future timestamp, verifies `is_circuit_open()` returns `true` (`src/package.rs`).
+- **package:** `circuit_breaker_closes_after_expiry` — sets `CIRCUIT_OPEN_UNTIL` to past timestamp, verifies `is_circuit_open()` returns `false` and counters reset (`src/package.rs`).
+- **package:** `circuit_breaker_resets_on_success` — verifies `CONSECUTIVE_TIMEOUTS` can be reset to 0 (`src/package.rs`).
+- **error:** `with_context_prepends_message` — verifies `VigilError::Config("missing field").with_context("loading config")` produces a message containing both strings (`src/error.rs`).
+- **error:** `with_context_io_becomes_daemon` — verifies `VigilError::Io(...)` converts to `VigilError::Daemon(...)` with context prefix and "I/O error" tag (`src/error.rs`).
+- **control:** `read_bounded_line_rejects_oversized_request` — sends 65KB+ without newline via `UnixStream::pair()`, verifies `read_bounded_line()` returns error mentioning "exceeds maximum size" (`src/control.rs`).
+- **control:** `baseline_refresh_refused_when_degraded` — constructs `ControlHandler` with `Degraded` state, verifies `handle_baseline_refresh()` returns `ok: false` with error mentioning "degraded" (`src/control.rs`).
+- **hmac:** `check_hmac_key_permissions_permissive_mode_in_test` — creates key with mode 0644, verifies test-build returns `Ok` (would fail in release), confirms underlying mode check would flag it (`src/hmac.rs`).
+- **hmac:** `check_hmac_key_permissions_strict_mode_ok` — creates key with mode 0600, verifies `check_hmac_key_permissions()` returns `Ok` (`src/hmac.rs`).
+- **update:** `validate_vigil_repo_ownership_check_logic` — creates temp repo, verifies ownership metadata (UID non-zero when non-root, zero when root) (`src/commands/update.rs`).
+- All 266 tests pass (`cargo test --all-targets`), `cargo clippy --all-targets` clean.
+
+### Documentation
+- **docs/VULNERABILITIES.md:** added VIGIL-VULN-051 through VIGIL-VULN-056 with severity, fixed-in version, detailed description, and remediation for each.
+- **docs/RESILIENCE.md:** added sections for worker self-healing, package manager circuit breaker, backpressure recovery, baseline HMAC mismatch handling, control socket size limits, and process attribution limitations.
+- **docs/CONFIGURATION.md:** documented `scanner.drift_velocity_threshold` and `security.trust_baseline_on_hmac_mismatch` options with defaults.
+- **docs/SECURITY.md:** added 7 entries to the threat scope table for the new security coverage areas.
+
 ## [0.32.3] - 2026-04-16
 
 ### Release Summary

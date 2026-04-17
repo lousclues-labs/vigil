@@ -42,7 +42,7 @@ pub fn verify_hmac(key: &[u8], data: &[u8], expected: &str) -> bool {
 /// See docs/SECURITY.md "HMAC Key Lifecycle" for key management guidance.
 pub fn load_hmac_key(path: &Path) -> Result<Vec<u8>> {
     // Check key file permissions before reading
-    check_hmac_key_permissions(path);
+    check_hmac_key_permissions(path)?;
 
     let content = std::fs::read(path).map_err(|e| {
         VigilError::HmacVerification(format!(
@@ -94,22 +94,38 @@ pub fn build_audit_hmac_data(
 
 /// Check HMAC key file permissions and warn if too permissive.
 ///
-/// The key file should be mode 0400 or 0600 to prevent other users from
-/// reading the HMAC secret. If the file is readable by group or others,
-/// a warning is emitted because the tamper-evidence guarantee is weakened.
-fn check_hmac_key_permissions(path: &Path) {
+/// In release builds, returns an error if the key file is readable by group
+/// or others, since a readable key undermines the tamper-evidence guarantee.
+/// In test/debug builds, logs a warning instead to allow tests to run as
+/// unprivileged users in temp directories.
+fn check_hmac_key_permissions(path: &Path) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
     match std::fs::metadata(path) {
         Ok(meta) => {
             let mode = meta.mode() & 0o777;
             if mode & 0o077 != 0 {
-                tracing::warn!(
-                    "HMAC key file {} has overly permissive mode {:04o} \
-                     (should be 0400 or 0600). Other users may read the key.",
-                    path.display(),
-                    mode
-                );
+                #[cfg(not(any(test, debug_assertions)))]
+                {
+                    return Err(VigilError::HmacVerification(format!(
+                        "HMAC key file {} has unsafe permissions {:04o} \
+                         (must be 0400 or 0600). Refusing to load key. \
+                         Fix with: sudo chmod 600 {}",
+                        path.display(),
+                        mode,
+                        path.display()
+                    )));
+                }
+                #[cfg(any(test, debug_assertions))]
+                {
+                    tracing::warn!(
+                        "HMAC key file {} has permissive mode {:04o} \
+                         (would fail in release build)",
+                        path.display(),
+                        mode
+                    );
+                }
             }
+            Ok(())
         }
         Err(e) => {
             tracing::warn!(
@@ -117,6 +133,9 @@ fn check_hmac_key_permissions(path: &Path) {
                 path.display(),
                 e
             );
+            // Don't hard-fail on stat failure — the subsequent read will
+            // produce a clear error if the file is truly inaccessible
+            Ok(())
         }
     }
 }
@@ -299,5 +318,45 @@ mod tests {
             "should not flag strict mode: {:?}",
             issues
         );
+    }
+
+    #[test]
+    fn check_hmac_key_permissions_permissive_mode_in_test() {
+        // In test builds, check_hmac_key_permissions warns but returns Ok.
+        // In release builds, it would return Err.
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let key_path = dir.path().join("hmac.key");
+        std::fs::write(&key_path, b"test-key-data").expect("write key");
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644))
+            .expect("set permissions");
+
+        // Under test builds, this returns Ok despite permissive mode
+        let result = check_hmac_key_permissions(&key_path);
+        assert!(result.is_ok(), "test build should warn, not error");
+
+        // Verify the underlying logic would catch it
+        use std::os::unix::fs::MetadataExt;
+        let mode = std::fs::metadata(&key_path).unwrap().mode() & 0o777;
+        assert!(
+            mode & 0o077 != 0,
+            "mode {:04o} should be flagged as permissive",
+            mode
+        );
+    }
+
+    #[test]
+    fn check_hmac_key_permissions_strict_mode_ok() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let key_path = dir.path().join("hmac.key");
+        std::fs::write(&key_path, b"test-key-data").expect("write key");
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+            .expect("set permissions");
+
+        let result = check_hmac_key_permissions(&key_path);
+        assert!(result.is_ok(), "strict mode should always succeed");
     }
 }

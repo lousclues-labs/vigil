@@ -66,6 +66,7 @@ pub struct WorkerSpawnArgs {
 /// Per-worker processing context holding connection, cache, and filter state.
 struct WorkerContext {
     conn: Connection,
+    db_path: PathBuf,
     config: Arc<ArcSwap<Config>>,
     watch_index: Arc<ArcSwap<WatchGroupIndex>>,
     metrics: Arc<Metrics>,
@@ -77,6 +78,7 @@ struct WorkerContext {
     last_drain: std::time::Instant,
     wal: Option<Arc<DetectionWal>>,
     maintenance_active: Arc<AtomicBool>,
+    consecutive_db_errors: u32,
 }
 
 impl WorkerContext {
@@ -98,12 +100,14 @@ impl WorkerContext {
             cached.clone()
         } else {
             self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
-            match baseline_ops::get_by_path(&self.conn, path_cow.as_ref())? {
-                Some(b) => {
+            match baseline_ops::get_by_path(&self.conn, path_cow.as_ref()) {
+                Ok(Some(b)) => {
+                    self.consecutive_db_errors = 0;
                     self.cache.put(path_cow.clone().into_owned(), b.clone());
                     b
                 }
-                None => {
+                Ok(None) => {
+                    self.consecutive_db_errors = 0;
                     if matches!(event.event_type, FsEventType::Create | FsEventType::MovedTo) {
                         if let Some((group_name, severity)) = idx.lookup(&event.path) {
                             return Ok(Some(ChangeResult {
@@ -119,6 +123,31 @@ impl WorkerContext {
                         tracing::info!(path = %event.path.display(), "new file detected (not in baseline)");
                     }
                     return Ok(None);
+                }
+                Err(e) => {
+                    self.consecutive_db_errors += 1;
+                    if self.consecutive_db_errors >= 5 {
+                        match db::open_baseline_db_readonly(&self.db_path) {
+                            Ok(new_conn) => {
+                                let n = self.consecutive_db_errors;
+                                self.conn = new_conn;
+                                self.cache.clear();
+                                self.consecutive_db_errors = 0;
+                                tracing::warn!(
+                                    failures = n,
+                                    "worker reopened baseline connection after {} consecutive failures",
+                                    n
+                                );
+                            }
+                            Err(reopen_err) => {
+                                tracing::error!(
+                                    error = %reopen_err,
+                                    "worker failed to reopen baseline connection"
+                                );
+                            }
+                        }
+                    }
+                    return Err(e);
                 }
             }
         };
@@ -312,6 +341,7 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
                 let local_generation = generation.load(Ordering::Acquire);
                 let mut ctx = WorkerContext {
                     conn,
+                    db_path: db_path.clone(),
                     config: config.clone(),
                     watch_index: watch_index.clone(),
                     metrics: metrics.clone(),
@@ -323,6 +353,7 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
                     last_drain: std::time::Instant::now(),
                     wal,
                     maintenance_active,
+                    consecutive_db_errors: 0,
                 };
 
                 while !shutdown.load(Ordering::Acquire) {
@@ -620,5 +651,51 @@ mod tests {
         }
         // If the default config doesn't have a watch group covering this exact path,
         // that's also valid — the test documents the intended behavior.
+    }
+
+    #[test]
+    fn worker_consecutive_db_errors_increments() {
+        // Simulate a WorkerContext with an in-memory DB that has no baseline tables,
+        // causing get_by_path to fail. Verify the counter increments.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // Intentionally do NOT create baseline tables — queries will error.
+
+        let cfg = crate::config::default_config();
+        let metrics = Arc::new(Metrics::new());
+
+        let mut ctx = WorkerContext {
+            conn,
+            db_path: PathBuf::from("/dev/null"),
+            config: Arc::new(ArcSwap::from_pointee(cfg.clone())),
+            watch_index: Arc::new(ArcSwap::from_pointee(WatchGroupIndex::from_config(&cfg))),
+            metrics,
+            filter: EventFilter::with_metrics(&cfg, None),
+            cache: LruCache::new(std::num::NonZeroUsize::new(64).unwrap()),
+            local_generation: 0,
+            generation: Arc::new(AtomicU64::new(0)),
+            drain_counter: 0,
+            last_drain: std::time::Instant::now(),
+            wal: None,
+            maintenance_active: Arc::new(AtomicBool::new(false)),
+            consecutive_db_errors: 0,
+        };
+
+        let event = FsEvent {
+            path: Arc::new("/etc/test_file".into()),
+            event_type: FsEventType::Modify,
+            timestamp: Utc::now(),
+            event_fd: None,
+            process: None,
+        };
+
+        // Each call should increment consecutive_db_errors
+        for i in 1..=4 {
+            let _ = ctx.evaluate(&event);
+            assert_eq!(
+                ctx.consecutive_db_errors, i,
+                "counter should be {} after {} errors",
+                i, i
+            );
+        }
     }
 }

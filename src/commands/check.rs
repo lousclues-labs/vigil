@@ -25,7 +25,8 @@ pub(crate) struct CheckOpts {
 
 pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
     let cfg = vigil::config::load_config(opts.config_path.as_deref())?;
-    let conn = vigil::db::open_baseline_db(&cfg)?;
+    let conn = vigil::db::open_baseline_db(&cfg)
+        .map_err(|e| e.with_context("opening baseline database for check"))?;
 
     let mode = if opts.full {
         ScanMode::Full

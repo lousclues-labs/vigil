@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -13,6 +13,11 @@ use crate::error::{Result, VigilError};
 use crate::metrics::Metrics;
 use crate::types::{DaemonState, ScanMode};
 use zeroize::Zeroizing;
+
+/// Maximum size of a single control socket request line.
+/// Legitimate requests are small JSON objects (< 1KB typically).
+/// 64KB provides generous headroom while preventing OOM attacks.
+const MAX_REQUEST_LINE_BYTES: u64 = 65_536;
 
 /// Request sent through the scan trigger channel.
 #[derive(Debug)]
@@ -41,6 +46,7 @@ pub struct ControlHandler {
     pub scan_trigger_tx: crossbeam_channel::Sender<ScanRequest>,
     pub baseline_db_path: PathBuf,
     pub baseline_conn: rusqlite::Connection,
+    pub config: Arc<arc_swap::ArcSwap<crate::config::Config>>,
     pub hmac_key: Option<Zeroizing<Vec<u8>>>,
     pub auth_enabled: bool,
     pub maintenance_active: Arc<AtomicBool>,
@@ -172,12 +178,8 @@ impl ControlHandler {
             .flush()
             .map_err(|e| VigilError::Control(format!("failed to flush challenge: {}", e)))?;
 
-        // Read authenticated request
-        let mut line = String::new();
-        let mut reader = BufReader::new(stream);
-        if reader.read_line(&mut line).is_err() {
-            return Err(VigilError::Control("failed to read request".into()));
-        }
+        // Read authenticated request (bounded)
+        let line = read_bounded_line(stream)?;
         let trimmed = line.trim();
         if trimmed.is_empty() {
             return Err(VigilError::Control("empty request".into()));
@@ -211,11 +213,7 @@ impl ControlHandler {
     }
 
     fn read_request(&self, stream: &std::os::unix::net::UnixStream) -> Result<serde_json::Value> {
-        let mut line = String::new();
-        let mut reader = BufReader::new(stream);
-        if reader.read_line(&mut line).is_err() {
-            return Err(VigilError::Control("failed to read request".into()));
-        }
+        let line = read_bounded_line(stream)?;
         let trimmed = line.trim();
         if trimmed.is_empty() {
             return Err(VigilError::Control("empty request".into()));
@@ -360,12 +358,18 @@ impl ControlHandler {
     }
 
     fn handle_baseline_refresh(&self) -> serde_json::Value {
-        let cfg = match crate::config::load_config(None) {
-            Ok(c) => c,
-            Err(e) => {
-                return serde_json::json!({"ok": false, "error": format!("config load failed: {}", e)});
+        // Refuse baseline refresh while in degraded state to prevent
+        // cementing compromised filesystem state as the new baseline
+        {
+            let state = self.state.read();
+            if let DaemonState::Degraded { reason, .. } = &*state {
+                return serde_json::json!({
+                    "ok": false,
+                    "error": format!("baseline refresh refused: daemon is degraded ({})", reason)
+                });
             }
-        };
+        }
+        let cfg = self.config.load();
         match crate::scanner::build_initial_baseline(&self.baseline_conn, &cfg) {
             Ok(result) => {
                 serde_json::json!({
@@ -379,6 +383,30 @@ impl ControlHandler {
                 serde_json::json!({"ok": false, "error": format!("baseline refresh failed: {}", e)})
             }
         }
+    }
+}
+
+/// Read a single line from the stream, bounded to MAX_REQUEST_LINE_BYTES.
+/// Returns Err if the line exceeds the limit or if an I/O error occurs.
+fn read_bounded_line(stream: &std::os::unix::net::UnixStream) -> Result<String> {
+    let mut line = String::new();
+    let limited = Read::take(stream, MAX_REQUEST_LINE_BYTES);
+    let mut reader = BufReader::new(limited);
+    match reader.read_line(&mut line) {
+        Ok(0) => Err(VigilError::Control(
+            "empty request (connection closed)".into(),
+        )),
+        Ok(_) => {
+            if !line.ends_with('\n') && line.len() as u64 >= MAX_REQUEST_LINE_BYTES {
+                Err(VigilError::Control(format!(
+                    "request exceeds maximum size of {} bytes",
+                    MAX_REQUEST_LINE_BYTES
+                )))
+            } else {
+                Ok(line)
+            }
+        }
+        Err(e) => Err(VigilError::Control(format!("read error: {}", e))),
     }
 }
 
@@ -464,6 +492,9 @@ mod tests {
             scan_trigger_tx: scan_tx,
             baseline_db_path: db_path.clone(),
             baseline_conn: crate::db::open_baseline_db_readonly(&db_path).unwrap(),
+            config: Arc::new(arc_swap::ArcSwap::from_pointee(
+                crate::config::default_config(),
+            )),
             hmac_key: None,
             auth_enabled: false,
             maintenance_active: Arc::new(AtomicBool::new(false)),
@@ -582,6 +613,9 @@ mod tests {
                 crate::db::schema::create_baseline_tables(&conn).unwrap();
                 conn
             },
+            config: Arc::new(arc_swap::ArcSwap::from_pointee(
+                crate::config::default_config(),
+            )),
             hmac_key: None,
             auth_enabled: false,
             maintenance_active: Arc::new(AtomicBool::new(false)),
@@ -615,6 +649,9 @@ mod tests {
                 crate::db::schema::create_baseline_tables(&conn).unwrap();
                 conn
             },
+            config: Arc::new(arc_swap::ArcSwap::from_pointee(
+                crate::config::default_config(),
+            )),
             hmac_key: None,
             auth_enabled: false,
             maintenance_active: Arc::new(AtomicBool::new(false)),
@@ -627,6 +664,72 @@ mod tests {
             metrics.control_commands.load(Ordering::Relaxed),
             1,
             "control_commands metric should increment on reload"
+        );
+    }
+
+    #[test]
+    fn read_bounded_line_rejects_oversized_request() {
+        use std::os::unix::net::UnixStream;
+
+        let (mut client, server) = UnixStream::pair().unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+
+        // Send data larger than MAX_REQUEST_LINE_BYTES without a newline
+        let oversized = vec![b'a'; (MAX_REQUEST_LINE_BYTES as usize) + 100];
+        // Write in a separate thread to avoid blocking
+        let write_handle = std::thread::spawn(move || {
+            let _ = client.write_all(&oversized);
+            let _ = client.flush();
+        });
+
+        let result = read_bounded_line(&server);
+        assert!(result.is_err(), "should reject oversized request");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("exceeds maximum size"),
+            "error should mention size limit: {}",
+            err_msg
+        );
+
+        let _ = write_handle.join();
+    }
+
+    #[test]
+    fn baseline_refresh_refused_when_degraded() {
+        let metrics = Arc::new(Metrics::new());
+        let state = Arc::new(RwLock::new(DaemonState::Degraded {
+            reason: "baseline_db_replaced".into(),
+            since: chrono::Utc::now(),
+        }));
+        let (scan_tx, _scan_rx) = crossbeam_channel::bounded::<ScanRequest>(1);
+
+        let handler = ControlHandler {
+            metrics,
+            state,
+            reload_flag: Arc::new(AtomicBool::new(false)),
+            scan_trigger_tx: scan_tx,
+            baseline_db_path: PathBuf::from("/dev/null"),
+            baseline_conn: {
+                let conn = rusqlite::Connection::open_in_memory().unwrap();
+                crate::db::schema::create_baseline_tables(&conn).unwrap();
+                conn
+            },
+            config: Arc::new(arc_swap::ArcSwap::from_pointee(
+                crate::config::default_config(),
+            )),
+            hmac_key: None,
+            auth_enabled: false,
+            maintenance_active: Arc::new(AtomicBool::new(false)),
+            maintenance_entered_at: Arc::new(AtomicI64::new(0)),
+        };
+
+        let result = handler.handle_baseline_refresh();
+        assert_eq!(result["ok"], false);
+        assert!(
+            result["error"].as_str().unwrap().contains("degraded"),
+            "should mention degraded state"
         );
     }
 }

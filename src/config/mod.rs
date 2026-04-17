@@ -310,6 +310,10 @@ pub struct ScannerConfig {
     pub scheduled_mode: ScanMode,
     #[serde(default)]
     pub parallel: bool,
+    /// Average baseline changes per coordinator tick (60s) that triggers
+    /// a high-drift-velocity warning. `None` uses the default of 50.
+    #[serde(default)]
+    pub drift_velocity_threshold: Option<u64>,
 }
 
 impl Default for ScannerConfig {
@@ -322,6 +326,7 @@ impl Default for ScannerConfig {
             mmap_threshold: default_mmap_threshold(),
             scheduled_mode: ScanMode::Full,
             parallel: false,
+            drift_velocity_threshold: None,
         }
     }
 }
@@ -529,6 +534,11 @@ pub struct SecurityConfig {
     /// Requires hmac_signing to be enabled.
     #[serde(default = "default_true")]
     pub control_socket_auth: bool,
+    /// When set to true, an HMAC mismatch on startup will recompute and store
+    /// the new HMAC instead of entering degraded state. Use this after version
+    /// upgrades that change the baseline HMAC field coverage. Default: false.
+    #[serde(default)]
+    pub trust_baseline_on_hmac_mismatch: bool,
 }
 
 impl Default for SecurityConfig {
@@ -538,6 +548,7 @@ impl Default for SecurityConfig {
             hmac_key_path: default_hmac_key_path(),
             verify_config_integrity: true,
             control_socket_auth: true,
+            trust_baseline_on_hmac_mismatch: false,
         }
     }
 }

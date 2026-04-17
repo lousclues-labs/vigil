@@ -70,7 +70,8 @@ pub struct Daemon {
 impl Daemon {
     pub fn from_config(config: Config) -> Result<Self> {
         let baseline_db_preexisting = config.daemon.db_path.exists();
-        let baseline_conn = db::open_baseline_db(&config)?;
+        let baseline_conn = db::open_baseline_db(&config)
+            .map_err(|e| e.with_context("opening baseline database during daemon startup"))?;
         let watch_index = WatchGroupIndex::from_config(&config);
 
         // Record inode+device of baseline DB for TOCTOU detection
@@ -79,7 +80,8 @@ impl Daemon {
         // Record inode+device of audit DB for TOCTOU detection
         let audit_db_path = db::audit_db_path(&config);
         // Ensure audit DB exists so we can record its identity
-        let _audit_conn = db::open_audit_db(&config)?;
+        let _audit_conn = db::open_audit_db(&config)
+            .map_err(|e| e.with_context("opening audit database during startup"))?;
         let audit_db_identity = db::DbFileIdentity::from_path(&audit_db_path).ok();
 
         // Load HMAC key exactly once at startup — never re-read from disk
@@ -188,7 +190,8 @@ impl Daemon {
                 "Baseline database not found. Auto-initializing from configured watch paths."
             );
             send_watchdog_heartbeat();
-            let result = scanner::build_initial_baseline(&self.baseline_conn, config)?;
+            let result = scanner::build_initial_baseline(&self.baseline_conn, config)
+                .map_err(|e| e.with_context("building initial baseline"))?;
             send_watchdog_heartbeat();
             baseline_ops::set_config_state(&self.baseline_conn, "baseline_initialized", "true")?;
             let group_names: Vec<&str> = result.groups.iter().map(|g| g.name.as_str()).collect();
@@ -368,19 +371,32 @@ impl Daemon {
                             baseline_ops::compute_baseline_hmac(&self.baseline_conn, key)?;
                         if current == *expected {
                             tracing::info!("baseline HMAC verification passed");
-                        } else {
-                            // HMAC mismatch may be benign after a version upgrade that changed
-                            // the set of fields covered by the HMAC. Recompute and store rather
-                            // than refusing to start.
+                        } else if config.security.trust_baseline_on_hmac_mismatch {
                             tracing::warn!(
-                                "Baseline HMAC mismatch — likely caused by a version upgrade. \
-                                 Recomputing and storing updated HMAC."
+                                "baseline HMAC mismatch accepted — \
+                                 trust_baseline_on_hmac_mismatch is enabled. \
+                                 Recomputing HMAC. Disable this setting after upgrade."
                             );
                             baseline_ops::set_config_state(
                                 &self.baseline_conn,
                                 "baseline_hmac",
                                 &current,
                             )?;
+                        } else {
+                            tracing::error!(
+                                "baseline HMAC verification failed — baseline may have been \
+                                 tampered with. Stored HMAC does not match computed HMAC."
+                            );
+                            notify_desktop(
+                                "⚠ BASELINE HMAC VERIFICATION FAILED — possible tampering. \
+                                 Investigate immediately.",
+                                NotifyUrgency::Critical,
+                            );
+                            let mut s = self.state.write();
+                            *s = DaemonState::Degraded {
+                                reason: "baseline_hmac_mismatch".into(),
+                                since: chrono::Utc::now(),
+                            };
                         }
                     }
                     None => {
@@ -644,6 +660,7 @@ impl DaemonRuntime {
                 scan_trigger_tx,
                 baseline_db_path: baseline_db_path.clone(),
                 baseline_conn: control_baseline_conn,
+                config: daemon.config.clone(),
                 hmac_key: daemon.startup_hmac_key.clone(),
                 auth_enabled: daemon.startup_hmac_key.is_some(),
                 maintenance_active: daemon.maintenance_active.clone(),

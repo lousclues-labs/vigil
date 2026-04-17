@@ -164,6 +164,13 @@ It does not:
 | WAL entry tampering | per-entry HMAC-SHA256 when HMAC signing enabled; entries with invalid HMAC are skipped |
 | WAL file replacement | coordinator periodic TOCTOU check on WAL inode/device; Degraded state on replacement |
 | WAL gap scanning DoS | `MAX_GAP_BYTES` (64KB) bounds gap scanning; scanner stops after limit, preventing adversarial CPU exhaustion via large zeroed regions |
+| baseline HMAC auto-recompute bypass | HMAC mismatch on startup enters Degraded state unless `trust_baseline_on_hmac_mismatch` is explicitly set |
+| control socket config bypass via baseline_refresh | `baseline_refresh` uses the daemon's live (HMAC-verified) config, not a fresh disk read |
+| control socket OOM via unbounded read | `read_line` bounded to 64KB; oversized requests rejected |
+| HMAC key world-readable | `check_hmac_key_permissions()` returns hard error in release builds when key has group/other permissions |
+| sudo privilege escalation via user-owned repo | `vigil update` skips $HOME-relative candidates when running as root (unless $HOME=/root); `validate_vigil_repo()` checks directory ownership |
+| baseline refresh during degraded state | `baseline_refresh` control socket command refuses execution when daemon is in Degraded state |
+| PID recycling in process attribution | Process attribution detects exited processes (exe readlink failure) and marks attribution as stale; best-effort by design |
 
 ### Out of scope
 

@@ -70,6 +70,47 @@ pub enum VigilError {
 
 pub type Result<T> = std::result::Result<T, VigilError>;
 
+impl VigilError {
+    /// Prepend context to a string-based error variant.
+    pub fn with_context(self, ctx: &str) -> Self {
+        match self {
+            VigilError::Config(msg) => VigilError::Config(format!("{}: {}", ctx, msg)),
+            VigilError::Daemon(msg) => VigilError::Daemon(format!("{}: {}", ctx, msg)),
+            VigilError::Baseline(msg) => VigilError::Baseline(format!("{}: {}", ctx, msg)),
+            VigilError::Alert(msg) => VigilError::Alert(format!("{}: {}", ctx, msg)),
+            VigilError::Monitor(msg) => VigilError::Monitor(format!("{}: {}", ctx, msg)),
+            VigilError::Fanotify(msg) => VigilError::Fanotify(format!("{}: {}", ctx, msg)),
+            VigilError::Inotify(msg) => VigilError::Inotify(format!("{}: {}", ctx, msg)),
+            VigilError::Hash(msg) => VigilError::Hash(format!("{}: {}", ctx, msg)),
+            VigilError::Control(msg) => VigilError::Control(format!("{}: {}", ctx, msg)),
+            VigilError::HmacVerification(msg) => {
+                VigilError::HmacVerification(format!("{}: {}", ctx, msg))
+            }
+            VigilError::Wal(msg) => VigilError::Wal(format!("{}: {}", ctx, msg)),
+            VigilError::DBus(msg) => VigilError::DBus(format!("{}: {}", ctx, msg)),
+            VigilError::PackageManager(msg) => {
+                VigilError::PackageManager(format!("{}: {}", ctx, msg))
+            }
+            VigilError::PermissionDenied(msg) => {
+                VigilError::PermissionDenied(format!("{}: {}", ctx, msg))
+            }
+            VigilError::Path(msg) => VigilError::Path(format!("{}: {}", ctx, msg)),
+            VigilError::Syslog(msg) => VigilError::Syslog(format!("{}: {}", ctx, msg)),
+            VigilError::Io(e) => VigilError::Daemon(format!("{}: I/O error: {}", ctx, e)),
+            VigilError::Database(e) => {
+                VigilError::Daemon(format!("{}: database error: {}", ctx, e))
+            }
+            VigilError::TomlParse(e) => {
+                VigilError::Config(format!("{}: TOML parse error: {}", ctx, e))
+            }
+            VigilError::Json(e) => VigilError::Daemon(format!("{}: JSON error: {}", ctx, e)),
+            VigilError::GlobPattern(e) => {
+                VigilError::Config(format!("{}: glob pattern error: {}", ctx, e))
+            }
+        }
+    }
+}
+
 /// A structured warning collected during scanning operations.
 #[derive(Debug, Clone)]
 pub struct ScanWarning {
@@ -159,5 +200,26 @@ mod tests {
             VigilError::Baseline("missing".into()),
             VigilError::Baseline("missing".into()),
         );
+    }
+
+    #[test]
+    fn with_context_prepends_message() {
+        let err = VigilError::Config("missing field".into());
+        let contexted = err.with_context("loading config");
+        assert!(contexted.to_string().contains("loading config: "));
+        assert!(contexted.to_string().contains("missing field"));
+    }
+
+    #[test]
+    fn with_context_io_becomes_daemon() {
+        let err = VigilError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
+        let contexted = err.with_context("opening file");
+        match contexted {
+            VigilError::Daemon(msg) => {
+                assert!(msg.contains("opening file"));
+                assert!(msg.contains("I/O error"));
+            }
+            other => panic!("expected Daemon variant, got {:?}", other),
+        }
     }
 }

@@ -176,6 +176,68 @@ Did monitoring stop?
 
 ---
 
+## Worker Self-Healing
+
+Workers hold read-only baseline DB connections. If a connection becomes stale (e.g., baseline DB replaced during `vigil init --force`), the worker tracks consecutive `get_by_path()` failures. After 5 consecutive failures, the worker attempts to reopen the connection. On success, the LRU cache is cleared and the failure counter resets. On failure, the worker retries after 5 more failures.
+
+| Failure | Behavior | Recovery |
+|---------|----------|----------|
+| stale read-only connection | `consecutive_db_errors` increments on each DB error | automatic — reconnects after 5 consecutive failures |
+| reconnect fails | error logged, counter left as-is | retries after 5 more failures |
+
+Workers never panic on reconnect failure (Principle IV: Fail Open).
+
+---
+
+## Package Manager Circuit Breaker
+
+During heavy package operations (e.g., system upgrades), the package manager database is locked. Every individual `query_package_owner()` call times out, starving workers. A circuit breaker suspends package queries after 3 consecutive timeouts for 60 seconds.
+
+| Failure | Behavior | Recovery |
+|---------|----------|----------|
+| 3 consecutive package query timeouts | circuit breaker opens — all queries return `None` for 60s | automatic — circuit closes after 60s and resets timeout counter |
+| successful query during/after open | timeout counter resets to 0 | immediate |
+
+During circuit-open, package-managed file changes will generate alerts instead of being silently rebaselined. The circuit breaker only affects the 5-second `PKG_QUERY_TIMEOUT` path; `build_package_cache()` (used during baseline init) has its own 30-second timeout and is unaffected.
+
+---
+
+## Backpressure Recovery
+
+When the event channel fills, the coordinator transitions to `Degraded` with reason `event_backpressure`. This degradation now auto-recovers when the backpressure flag clears (i.e., workers have drained the channel).
+
+Security-related degradation (`baseline_db_replaced`, `audit_db_replaced`, `wal_file_replaced`, `baseline_hmac_mismatch`) requires daemon restart — these are never auto-recovered because they indicate potential tampering.
+
+---
+
+## Baseline HMAC Mismatch Handling
+
+When the daemon starts and detects a baseline HMAC mismatch:
+
+| `trust_baseline_on_hmac_mismatch` | Behavior |
+|----------------------------------|----------|
+| `false` (default) | Daemon enters `Degraded` state with reason `baseline_hmac_mismatch`. Desktop notification at Critical urgency. Monitoring continues but operator must investigate. |
+| `true` | HMAC is recomputed and stored. Warning logged. Use this after version upgrades that change baseline HMAC field coverage, then disable it. |
+
+---
+
+## Control Socket Size Limits
+
+Control socket requests are bounded to 64KB per line. Requests exceeding this limit are rejected with an error. This prevents OOM attacks from local processes with socket access.
+
+---
+
+## Process Attribution Limitations
+
+| Limitation | Impact | Mitigation |
+|-----------|--------|------------|
+| PID recycling between event generation and `/proc/PID/exe` readlink | Forensic attribution may be incorrect — a malicious process's modification could be attributed to a legitimate process | Attribution is best-effort; audit entries with `exe: null` indicate the process exited before attribution |
+| Kernel-level fix available | `FAN_REPORT_PIDFD` (Linux 6.2+) provides stable pidfd references that survive PID recycling | Future: migrate to pidfd-based attribution when minimum kernel version is raised |
+
+Process attribution is informational, not authoritative. Vigil never makes security decisions based on process identity — it always reports the file change regardless of attribution.
+
+---
+
 ## Version Upgrade Recovery
 
 Version upgrades may change the baseline schema or HMAC field coverage.
@@ -183,7 +245,7 @@ Version upgrades may change the baseline schema or HMAC field coverage.
 | Failure | Behavior | Recovery |
 |---------|----------|----------|
 | baseline table empty after schema migration | daemon detects non-trivial DB file size (>4096 bytes), logs warning, auto-reinitializes baseline | automatic since v0.25.0 |
-| stored HMAC mismatches due to field set change | daemon logs warning, recomputes and stores updated HMAC | automatic since v0.25.0 |
+| stored HMAC mismatches due to field set change | daemon enters Degraded state with reason `baseline_hmac_mismatch`; monitoring continues | set `security.trust_baseline_on_hmac_mismatch = true` in config, restart daemon, then disable (since v0.33.0) |
 | older daemon version crash-loops on upgrade | `process::exit(1)` before sd_notify Ready | upgrade to v0.25.0+ or manually `vigil init --force` |
 | update binary corrupted by mid-write crash | `vigil` or `vigild` binary is truncated or incomplete | eliminated since v0.26.0 — `vigil update` uses atomic copy-then-rename |
 | update build artifact corrupt | new binary crashes or exits non-zero on `--version` | eliminated since v0.32.3 — `vigil update` smoke-tests build artifacts before touching installed binaries |

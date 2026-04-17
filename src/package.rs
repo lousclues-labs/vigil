@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 use std::time::Duration;
 
 use crate::config::PackageManagerConfig;
@@ -9,6 +10,35 @@ use crate::types::PackageBackend;
 
 /// Timeout for package manager subprocess calls.
 const PKG_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Number of consecutive timeouts before the circuit breaker opens.
+const CIRCUIT_OPEN_THRESHOLD: u32 = 3;
+
+/// Duration in seconds to keep the circuit breaker open.
+const CIRCUIT_OPEN_DURATION_SECS: i64 = 60;
+
+/// Consecutive timeout counter for the circuit breaker.
+static CONSECUTIVE_TIMEOUTS: AtomicU32 = AtomicU32::new(0);
+
+/// Unix timestamp until which the circuit breaker remains open.
+static CIRCUIT_OPEN_UNTIL: AtomicI64 = AtomicI64::new(0);
+
+/// Returns true if the package manager circuit breaker is open (queries suspended).
+fn is_circuit_open() -> bool {
+    let until = CIRCUIT_OPEN_UNTIL.load(Ordering::Acquire);
+    if until == 0 {
+        return false;
+    }
+    let now = chrono::Utc::now().timestamp();
+    if now < until {
+        return true;
+    }
+    // Circuit breaker expired — close it
+    tracing::info!("package manager circuit breaker closed — resuming queries");
+    CIRCUIT_OPEN_UNTIL.store(0, Ordering::Release);
+    CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed);
+    false
+}
 
 /// Absolute paths for package managers — prevents PATH injection attacks.
 const PACMAN_PATH: &str = "/usr/bin/pacman";
@@ -99,7 +129,12 @@ fn query_rpm(path: &str) -> Option<String> {
 }
 
 /// Run a command with a timeout. Returns None if the command times out or fails to spawn.
+/// When the circuit breaker is open, returns None immediately without spawning a subprocess.
 fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process::Output> {
+    if timeout == PKG_QUERY_TIMEOUT && is_circuit_open() {
+        return None;
+    }
+
     let mut child = cmd
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -110,6 +145,9 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process
     loop {
         match child.try_wait() {
             Ok(Some(_status)) => {
+                if timeout == PKG_QUERY_TIMEOUT {
+                    CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed);
+                }
                 return child.wait_with_output().ok();
             }
             Ok(None) => {
@@ -117,6 +155,18 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process
                     tracing::warn!("Package manager query timed out after {:?}", timeout);
                     let _ = child.kill();
                     let _ = child.wait();
+                    if timeout == PKG_QUERY_TIMEOUT {
+                        let count = CONSECUTIVE_TIMEOUTS.fetch_add(1, Ordering::Relaxed) + 1;
+                        if count >= CIRCUIT_OPEN_THRESHOLD {
+                            let until = chrono::Utc::now().timestamp() + CIRCUIT_OPEN_DURATION_SECS;
+                            CIRCUIT_OPEN_UNTIL.store(until, Ordering::Release);
+                            tracing::warn!(
+                                "package manager circuit breaker opened — suspending queries for {}s after {} consecutive timeouts",
+                                CIRCUIT_OPEN_DURATION_SECS,
+                                count
+                            );
+                        }
+                    }
                     return None;
                 }
                 std::thread::sleep(Duration::from_millis(50));
@@ -475,5 +525,50 @@ mod tests {
         );
         // Directory entries should be skipped
         assert!(!cache.contains_key(&PathBuf::from("/usr/lib64/")));
+    }
+
+    #[test]
+    fn circuit_breaker_opens_after_threshold() {
+        // Set CIRCUIT_OPEN_UNTIL to a future timestamp
+        let future = chrono::Utc::now().timestamp() + 3600;
+        CIRCUIT_OPEN_UNTIL.store(future, Ordering::Release);
+        assert!(
+            is_circuit_open(),
+            "circuit breaker should be open with future timestamp"
+        );
+        // Clean up
+        CIRCUIT_OPEN_UNTIL.store(0, Ordering::Release);
+        CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn circuit_breaker_closes_after_expiry() {
+        // Set CIRCUIT_OPEN_UNTIL to a past timestamp
+        let past = chrono::Utc::now().timestamp() - 10;
+        CIRCUIT_OPEN_UNTIL.store(past, Ordering::Release);
+        CONSECUTIVE_TIMEOUTS.store(5, Ordering::Relaxed);
+        assert!(
+            !is_circuit_open(),
+            "circuit breaker should be closed with past timestamp"
+        );
+        assert_eq!(
+            CONSECUTIVE_TIMEOUTS.load(Ordering::Relaxed),
+            0,
+            "timeouts should be reset"
+        );
+        assert_eq!(
+            CIRCUIT_OPEN_UNTIL.load(Ordering::Relaxed),
+            0,
+            "open_until should be reset"
+        );
+    }
+
+    #[test]
+    fn circuit_breaker_resets_on_success() {
+        CONSECUTIVE_TIMEOUTS.store(2, Ordering::Relaxed);
+        CIRCUIT_OPEN_UNTIL.store(0, Ordering::Release);
+        // Simulate a successful reset (as run_with_timeout does on success)
+        CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed);
+        assert_eq!(CONSECUTIVE_TIMEOUTS.load(Ordering::Relaxed), 0);
     }
 }

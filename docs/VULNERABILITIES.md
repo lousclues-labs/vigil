@@ -71,6 +71,12 @@ Use this as a reference when assessing Vigil Baseline's security posture or audi
 | VIGIL-VULN-048 | Medium | 0.24.0 | Config reload HMAC verification opens fresh DB connection — TOCTOU |
 | VIGIL-VULN-049 | Low | 0.24.0 | sd_notify called unconditionally — no NOTIFY_SOCKET safety verification |
 | VIGIL-VULN-050 | Medium | 0.24.0 | Scheduled scan severity hardcoded Medium — critical changes downgraded |
+| VIGIL-VULN-051 | Critical | 0.33.0 | Baseline HMAC mismatch silently auto-recomputed — tamper evidence nullified |
+| VIGIL-VULN-052 | Critical | 0.33.0 | `baseline_refresh` re-read config from disk bypassing HMAC verification |
+| VIGIL-VULN-053 | Critical | 0.33.0 | Control socket `read_line` unbounded — local OOM denial of service |
+| VIGIL-VULN-054 | High | 0.33.0 | HMAC key permission check warn-only — world-readable key accepted |
+| VIGIL-VULN-055 | High | 0.33.0 | `vigil update` under sudo builds from user-owned directory — privilege escalation |
+| VIGIL-VULN-056 | Medium | 0.33.0 | PID attribution did not detect exited processes — stale attribution undetectable |
 
 ---
 
@@ -573,3 +579,63 @@ Vigil Baseline sent lifecycle/watchdog notifications without validating `NOTIFY_
 Scheduled scanner emitted `Severity::Medium` for all change results, ignoring configured watch-group severities and potentially downgrading critical findings.
 
 **Remediation:** Scanner now resolves severity from watch-group index per path, with fallback only when no watch-group mapping exists.
+
+---
+
+### VIGIL-VULN-051 — Baseline HMAC mismatch silently auto-recomputed (Critical)
+
+**Fixed in:** 0.33.0
+
+In `ensure_baseline_health()`, when the baseline HMAC did not match the stored value, the daemon logged a warning ("likely caused by a version upgrade") and silently recomputed and stored the new HMAC. An attacker who modified the baseline database directly would have their tampered baseline accepted as truth on the next daemon restart, completely nullifying the HMAC tamper-evidence guarantee.
+
+**Remediation:** On HMAC mismatch, the daemon now transitions to `Degraded` state with reason `baseline_hmac_mismatch`, logs at `error` level, and sends a `Critical` urgency desktop notification. The daemon continues running (Fail Open) but the operator must investigate. A new config option `security.trust_baseline_on_hmac_mismatch` (default `false`) provides an explicit escape hatch for genuine version upgrade scenarios — when set to `true`, the old recompute behavior is restored with a warning to disable the setting after upgrade.
+
+---
+
+### VIGIL-VULN-052 — `baseline_refresh` config bypass and degraded-state gate (Critical)
+
+**Fixed in:** 0.33.0
+
+`handle_baseline_refresh()` called `crate::config::load_config(None)` which re-read the config file from disk. The coordinator's `handle_reload()` verified config HMAC before accepting changes, but `baseline_refresh` bypassed that verification entirely. An attacker who modified the config file (e.g., removing watch paths for directories they had compromised) and sent `baseline_refresh` via the control socket would get the baseline rebuilt using tampered config without any HMAC check. Additionally, there was no guard against `baseline_refresh` execution while the daemon was in `Degraded` state — after a security event (e.g., baseline DB replacement), an attacker could immediately rebuild the baseline from compromised filesystem state.
+
+**Remediation:** `handle_baseline_refresh()` now uses the daemon's live config via a new `config: Arc<ArcSwap<Config>>` field on `ControlHandler`, threaded from `DaemonRuntime::start()`. This config is already HMAC-verified through the coordinator's reload path. Additionally, `baseline_refresh` now checks daemon state and refuses execution with a clear error when `Degraded`, preventing an attacker from cementing compromised state as the new baseline.
+
+---
+
+### VIGIL-VULN-053 — Control socket unbounded read_line (Critical)
+
+**Fixed in:** 0.33.0
+
+Both `read_request()` and `authenticate_and_read()` used `BufReader::read_line()` which reads until `\n` with no size limit. A local process with socket access could send a multi-gigabyte line without a newline and OOM the daemon, causing a denial of service that kills integrity monitoring.
+
+**Remediation:** A `read_bounded_line()` helper function bounds all control socket reads to 64KB (`MAX_REQUEST_LINE_BYTES = 65_536`) using `Read::take()` on the stream reference. Requests exceeding the limit are rejected with a `VigilError::Control` error. Legitimate requests are small JSON objects (typically < 1KB), so 64KB provides generous headroom.
+
+---
+
+### VIGIL-VULN-054 — HMAC key permission check warn-only (High)
+
+**Fixed in:** 0.33.0
+
+`check_hmac_key_permissions()` logged a warning when the HMAC key file was world-readable (mode & 0o077 != 0) but continued to load and use the key. Any non-root user could read the key, compute valid HMACs, forge audit entries, or authenticate to the control socket, silently breaking the HMAC integrity guarantee.
+
+**Remediation:** `check_hmac_key_permissions()` now returns `Result<()>` and is propagated by `load_hmac_key()`. In release builds (`#[cfg(not(any(test, debug_assertions)))]`), the function returns `Err(VigilError::HmacVerification(...))` when the key file has group or other permissions, refusing to load the key. In test/debug builds, a warning is logged instead to allow tests to run as unprivileged users in temporary directories.
+
+---
+
+### VIGIL-VULN-055 — `vigil update` privilege escalation via user-owned directory (High)
+
+**Fixed in:** 0.33.0
+
+When `vigil update` was run with `sudo`, `$HOME` may point to the unprivileged user's home directory. `discover_vigil_repo()` searched user-writable paths like `/home/user/src/vigil/` and `validate_vigil_repo()` only checked the `Cargo.toml` package name. A non-root user who placed a malicious Rust project with `name = "vigil"` at `~/src/vigil/` could get arbitrary code execution as root via `cargo build --release`.
+
+**Remediation:** When running as root, `discover_vigil_repo()` now skips `$HOME`-relative candidates entirely unless `$HOME` is `/root`. As defense-in-depth, `validate_vigil_repo()` checks directory and `Cargo.toml` ownership in release builds when running as root, rejecting non-root-owned source directories with a clear error message.
+
+---
+
+### VIGIL-VULN-056 — PID attribution did not detect exited processes (Medium)
+
+**Fixed in:** 0.33.0
+
+While VIGIL-VULN-035 moved the `/proc/{pid}/exe` readlink earlier to minimize the PID recycling window, a successful readlink was not distinguished from a failed one — the process field was always populated with the PID regardless. When the readlink failed (process already exited), the attribution was silently set to `exe: None` without any log entry, making stale or recycled PID attribution indistinguishable from valid attribution in audit records.
+
+**Remediation:** Process attribution now explicitly detects when the `/proc/{pid}/exe` readlink fails and logs at `debug` level: "process exited before attribution — PID may be stale". The `ProcessAttribution` is still recorded (with `exe: None`) to preserve the PID for forensic context, but the log entry provides operational visibility into potential attribution staleness.

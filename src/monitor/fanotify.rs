@@ -208,10 +208,22 @@ pub fn start(
                             let exe = std::fs::read_link(format!("/proc/{}/exe", event.pid))
                                 .ok()
                                 .map(|p| p.to_string_lossy().to_string());
-                            Some(ProcessAttribution {
-                                pid: event.pid as u32,
-                                exe,
-                            })
+                            if exe.is_some() {
+                                Some(ProcessAttribution {
+                                    pid: event.pid as u32,
+                                    exe,
+                                })
+                            } else {
+                                // Process already exited — PID may have been recycled
+                                tracing::debug!(
+                                    pid = event.pid,
+                                    "process exited before attribution — PID may be stale"
+                                );
+                                Some(ProcessAttribution {
+                                    pid: event.pid as u32,
+                                    exe: None,
+                                })
+                            }
                         } else {
                             None
                         };

@@ -65,6 +65,9 @@ struct Coordinator {
     checkpoint_counter: u32,
     last_dropped: u64,
     last_rotation_timestamp: i64,
+    drift_samples: [u64; 5],
+    drift_sample_idx: usize,
+    last_changes_seen: u64,
 }
 
 pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()>> {
@@ -95,6 +98,9 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
         checkpoint_counter: 0,
         last_dropped: 0,
         last_rotation_timestamp: Utc::now().timestamp(),
+        drift_samples: [0; 5],
+        drift_sample_idx: 0,
+        last_changes_seen: 0,
     };
 
     std::thread::Builder::new()
@@ -116,28 +122,119 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
 
 impl Coordinator {
     fn tick(&mut self) {
+        let tick_start = std::time::Instant::now();
+
+        let t = std::time::Instant::now();
         if !self.check_baseline_db_identity() {
             return;
         }
+        let baseline_check_ms = t.elapsed().as_millis();
+
+        let t = std::time::Instant::now();
         if !self.check_audit_db_identity() {
             return;
         }
+        let audit_check_ms = t.elapsed().as_millis();
+
+        let t = std::time::Instant::now();
         if !self.check_wal_identity() {
             return;
         }
+        let wal_check_ms = t.elapsed().as_millis();
+
+        let t = std::time::Instant::now();
         self.check_mount_evasion();
+        let mount_check_ms = t.elapsed().as_millis();
+
         self.notify_watchdog();
+
+        let t = std::time::Instant::now();
         let clock_anomaly = self.detect_clock_anomaly();
+        let clock_check_ms = t.elapsed().as_millis();
+
+        let t = std::time::Instant::now();
         if !clock_anomaly {
             self.rotate_audit_log();
         }
+        let rotation_ms = t.elapsed().as_millis();
+
         self.notify_watchdog();
+
+        let t = std::time::Instant::now();
         self.write_snapshots();
+        let snapshots_ms = t.elapsed().as_millis();
+
         self.notify_watchdog();
+
+        let t = std::time::Instant::now();
         self.check_backpressure();
+        let backpressure_ms = t.elapsed().as_millis();
+
+        let t = std::time::Instant::now();
         self.check_event_drops();
+        let drops_ms = t.elapsed().as_millis();
+
+        let t = std::time::Instant::now();
         self.maybe_checkpoint_wal();
+        let checkpoint_ms = t.elapsed().as_millis();
+
+        let t = std::time::Instant::now();
         self.check_maintenance_timeout();
+        let maintenance_ms = t.elapsed().as_millis();
+
+        let t = std::time::Instant::now();
+        self.check_drift_velocity();
+        let drift_ms = t.elapsed().as_millis();
+
+        let total_ms = tick_start.elapsed().as_millis();
+
+        // Log individual sub-method timings if any exceeded 5 seconds
+        let threshold_ms = 5000;
+        for (name, dur) in [
+            ("baseline_check", baseline_check_ms),
+            ("audit_check", audit_check_ms),
+            ("wal_check", wal_check_ms),
+            ("mount_check", mount_check_ms),
+            ("clock_check", clock_check_ms),
+            ("rotation", rotation_ms),
+            ("snapshots", snapshots_ms),
+            ("backpressure", backpressure_ms),
+            ("drops", drops_ms),
+            ("checkpoint", checkpoint_ms),
+            ("maintenance", maintenance_ms),
+            ("drift", drift_ms),
+        ] {
+            if dur > threshold_ms {
+                tracing::warn!(
+                    method = name,
+                    duration_ms = dur as u64,
+                    "coordinator tick: {} took {}ms",
+                    name,
+                    dur
+                );
+            }
+        }
+
+        if total_ms > 10_000 {
+            tracing::warn!(
+                total_ms = total_ms as u64,
+                baseline_check_ms = baseline_check_ms as u64,
+                audit_check_ms = audit_check_ms as u64,
+                wal_check_ms = wal_check_ms as u64,
+                mount_check_ms = mount_check_ms as u64,
+                clock_check_ms = clock_check_ms as u64,
+                rotation_ms = rotation_ms as u64,
+                snapshots_ms = snapshots_ms as u64,
+                backpressure_ms = backpressure_ms as u64,
+                drops_ms = drops_ms as u64,
+                checkpoint_ms = checkpoint_ms as u64,
+                maintenance_ms = maintenance_ms as u64,
+                drift_ms = drift_ms as u64,
+                "coordinator tick took {}ms",
+                total_ms
+            );
+        }
+
         self.last_tick = std::time::Instant::now();
     }
 
@@ -416,7 +513,13 @@ impl Coordinator {
         if let Err(e) = write_metrics_snapshot(&cfg.daemon.runtime_dir, &self.metrics) {
             tracing::warn!(error = %e, "failed to write metrics snapshot");
         }
-        if let Err(e) = write_state_snapshot(&cfg.daemon.runtime_dir, &self.state) {
+
+        let drift_velocity = if self.drift_sample_idx >= 5 {
+            Some(self.drift_samples.iter().sum::<u64>() / 5)
+        } else {
+            None
+        };
+        if let Err(e) = write_state_snapshot(&cfg.daemon.runtime_dir, &self.state, drift_velocity) {
             tracing::warn!(error = %e, "failed to write state snapshot");
         }
         if let Err(e) = crate::doctor::write_health_snapshot(&cfg) {
@@ -432,6 +535,14 @@ impl Coordinator {
                     reason: "event_backpressure".into(),
                     since: Utc::now(),
                 };
+            }
+        } else {
+            let mut s = self.state.write();
+            if let DaemonState::Degraded { reason, .. } = &*s {
+                if reason == "event_backpressure" {
+                    tracing::info!("backpressure resolved — returning to healthy state");
+                    *s = DaemonState::Healthy;
+                }
             }
         }
     }
@@ -496,6 +607,31 @@ impl Coordinator {
             self.maintenance_entered_at.store(0, Ordering::Release);
         }
     }
+
+    fn check_drift_velocity(&mut self) {
+        let current_total = self.metrics.changes_detected.load(Ordering::Relaxed);
+        let delta = current_total.saturating_sub(self.last_changes_seen);
+        self.last_changes_seen = current_total;
+
+        self.drift_samples[self.drift_sample_idx % 5] = delta;
+        self.drift_sample_idx += 1;
+
+        // Only check after 5 samples (5 minutes of data)
+        if self.drift_sample_idx >= 5 {
+            let avg: u64 = self.drift_samples.iter().sum::<u64>() / 5;
+            let cfg = self.config.load();
+            let threshold = cfg.scanner.drift_velocity_threshold.unwrap_or(50);
+            let in_maintenance = self.maintenance_active.load(Ordering::Acquire);
+
+            if avg > threshold && !in_maintenance {
+                tracing::error!(
+                    avg_changes_per_tick = avg,
+                    threshold = threshold,
+                    "high baseline drift velocity — possible active compromise"
+                );
+            }
+        }
+    }
 }
 
 fn write_metrics_snapshot(runtime_dir: &std::path::Path, metrics: &Metrics) -> crate::Result<()> {
@@ -509,11 +645,12 @@ fn write_metrics_snapshot(runtime_dir: &std::path::Path, metrics: &Metrics) -> c
 fn write_state_snapshot(
     runtime_dir: &std::path::Path,
     state: &RwLock<DaemonState>,
+    drift_velocity: Option<u64>,
 ) -> crate::Result<()> {
     std::fs::create_dir_all(runtime_dir)?;
     let path = runtime_dir.join("state.json");
 
-    let value = match &*state.read() {
+    let mut value = match &*state.read() {
         DaemonState::Healthy => serde_json::json!({
             "status": "healthy"
         }),
@@ -523,6 +660,10 @@ fn write_state_snapshot(
             "since": since,
         }),
     };
+
+    if let Some(dv) = drift_velocity {
+        value["drift_velocity"] = serde_json::json!(dv);
+    }
 
     atomic_write(&path, &serde_json::to_vec_pretty(&value)?)?;
     Ok(())
