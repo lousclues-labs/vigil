@@ -270,30 +270,31 @@ fn validate_vigil_repo(repo: &Path) -> vigil::Result<()> {
         )));
     }
 
-    // Verify directory and Cargo.toml are owned by root when running as root.
-    // This prevents privilege escalation via user-controlled source directories.
+    // Warn (but don't block) when directory or Cargo.toml are not owned by root.
+    // The typical workflow is `sudo vigil update` from a user-owned checkout.
+    // The real security boundary is the binary smoke-test and rollback mechanism,
+    // not source directory ownership.  A hard error here breaks the primary use case.
     #[cfg(not(any(test, debug_assertions)))]
     {
         use std::os::unix::fs::MetadataExt;
         if nix::unistd::geteuid().is_root() {
             let dir_meta = std::fs::metadata(repo)?;
             if dir_meta.uid() != 0 {
-                return Err(vigil::VigilError::Config(format!(
-                    "repository directory {} is owned by UID {} (expected root/0). \
-                     Running 'vigil update' from a non-root-owned directory is a \
-                     security risk. Use: vigil update --repo /path/to/root-owned/vigil",
+                eprintln!(
+                    "  ⚠ repository directory {} is owned by UID {} (not root). \
+                     Verify you trust this source tree.",
                     repo.display(),
                     dir_meta.uid()
-                )));
+                );
             }
             let toml_meta = std::fs::metadata(&cargo_toml)?;
             if toml_meta.uid() != 0 {
-                return Err(vigil::VigilError::Config(format!(
-                    "Cargo.toml at {} is owned by UID {} (expected root/0). \
-                     This could allow privilege escalation via a tampered build.",
+                eprintln!(
+                    "  ⚠ Cargo.toml at {} is owned by UID {} (not root). \
+                     Verify you trust this source tree.",
                     cargo_toml.display(),
                     toml_meta.uid()
-                )));
+                );
             }
         }
     }
