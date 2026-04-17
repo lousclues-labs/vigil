@@ -107,6 +107,7 @@ Possible bypass/evasion routes:
 - control socket abuse to trigger reload of tampered config
 - event channel flooding to cause event drops
 - persistence via transient systemd units in `/run/systemd/transient/`
+- slow clock drift to bypass audit retention cutoff (mitigated in v0.35.0 via monotonic-time comparison)
 
 Mitigations in design:
 - deterministic structural comparison
@@ -125,9 +126,14 @@ Mitigations in design:
 - HMAC chain includes previous chain hash to detect mid-chain audit entry deletion
 - Detection WAL ensures zero detection loss across daemon crashes, audit DB failures, and I/O stalls
 - WAL entries protected by per-entry HMAC-SHA256 when HMAC signing enabled; tampered entries are skipped
+- WAL HMAC is sticky per-file: once the header is initialized with an HMAC key fingerprint, entries with zero-HMAC are rejected and the WAL refuses to open without a key (VIGIL-VULN-067)
 - WAL file identity (inode/device) checked periodically by coordinator; replacement triggers Degraded state
 - WAL instance nonce stored in baseline DB; prevents cross-instance replay attacks on crash recovery
 - WAL gap scanning bounded by `MAX_GAP_BYTES` (64KB); prevents adversarial DoS via large zeroed/corrupted regions
+- Race-deleted files (unlinked between fanotify event and fd→path resolution) are detected as deletions via kernel ` (deleted)` suffix stripping (VIGIL-VULN-068)
+- New mounts overlapping watched paths receive dynamic fanotify marks; modifications under new mounts are monitored in real-time (VIGIL-VULN-069, fanotify backend only; inotify detects and logs but cannot mark)
+- Clock anomaly detection compares wall-clock delta against monotonic time; slow drift > 5s tolerance triggers Degraded state and skips audit rotation (VIGIL-VULN-070)
+- Audit rotation refused when max audit timestamp exceeds current wall-clock time (clock rollback detection)
 
 ---
 

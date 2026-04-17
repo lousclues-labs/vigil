@@ -69,7 +69,7 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
     println!("  Stopping vigild.service...");
     let mut daemon_stop_cmd = ProcessCommand::new("sudo");
     daemon_stop_cmd
-        .arg("systemctl")
+        .arg("/usr/bin/systemctl")
         .arg("stop")
         .arg("vigild.service");
     let daemon_stopped = run_best_effort(daemon_stop_cmd);
@@ -123,7 +123,9 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
     if !updated_units.is_empty() {
         println!("  Reloading systemd daemon...");
         let mut daemon_reload_cmd = ProcessCommand::new("sudo");
-        daemon_reload_cmd.arg("systemctl").arg("daemon-reload");
+        daemon_reload_cmd
+            .arg("/usr/bin/systemctl")
+            .arg("daemon-reload");
         run_checked(daemon_reload_cmd, "systemctl daemon-reload")?;
     }
 
@@ -138,7 +140,7 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
     println!("  Starting vigild.service...");
     let mut daemon_start_cmd = ProcessCommand::new("sudo");
     daemon_start_cmd
-        .arg("systemctl")
+        .arg("/usr/bin/systemctl")
         .arg("start")
         .arg("vigild.service");
     let daemon_started = run_best_effort(daemon_start_cmd);
@@ -174,7 +176,10 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
         );
         // Stop the daemon (no-op if it never started)
         let mut stop_cmd = ProcessCommand::new("sudo");
-        stop_cmd.arg("systemctl").arg("stop").arg("vigild.service");
+        stop_cmd
+            .arg("/usr/bin/systemctl")
+            .arg("stop")
+            .arg("vigild.service");
         let _ = run_best_effort(stop_cmd);
 
         // Restore backup binaries
@@ -183,7 +188,7 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
         // Restart with old binaries
         let mut start_cmd = ProcessCommand::new("sudo");
         start_cmd
-            .arg("systemctl")
+            .arg("/usr/bin/systemctl")
             .arg("start")
             .arg("vigild.service");
         let _ = run_best_effort(start_cmd);
@@ -562,7 +567,17 @@ fn archive_backups(dst_vigil: &Path, dst_vigild: &Path) {
 
     let archive_root = std::path::PathBuf::from("/var/lib/vigil/binary-backups");
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let archive_dir = archive_root.join(&stamp);
+    // VIGIL-VULN-073: add random suffix to prevent collisions on sub-second runs
+    let rand_suffix = {
+        let mut buf = [0u8; 4];
+        // Use /dev/urandom for the random suffix; no new dep needed
+        if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+            use std::io::Read;
+            let _ = f.read_exact(&mut buf);
+        }
+        format!("{:08x}", u32::from_le_bytes(buf))
+    };
+    let archive_dir = archive_root.join(format!("{}-{}", stamp, rand_suffix));
 
     let mut mkdir = ProcessCommand::new("sudo");
     mkdir.arg("mkdir").arg("-p").arg(&archive_dir);
@@ -593,14 +608,58 @@ fn archive_backups(dst_vigil: &Path, dst_vigild: &Path) {
 }
 
 /// Keep only the most recent `keep` directories under `archive_root`.
+/// VIGIL-VULN-073: only consider dirs whose name matches the archive naming
+/// pattern; non-conforming names are preserved and logged.
 fn prune_old_backup_archives(archive_root: &Path, keep: usize) {
     let entries = match std::fs::read_dir(archive_root) {
         Ok(e) => e,
         Err(_) => return,
     };
+    // Pattern: YYYYMMDDTHHMMSSZ or YYYYMMDDTHHMMSSZ-hexsuffix
+    let is_archive_name = |name: &str| -> bool {
+        if name.len() < 16 {
+            return false;
+        }
+        let base = &name[..16]; // 8 date + T + 6 time + Z = 16
+        if !base.chars().take(8).all(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        if name.as_bytes().get(8) != Some(&b'T') {
+            return false;
+        }
+        if !name[9..15].chars().all(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        if name.as_bytes().get(15) != Some(&b'Z') {
+            return false;
+        }
+        // Optional -hexsuffix
+        if name.len() > 16 {
+            if name.as_bytes().get(16) != Some(&b'-') {
+                return false;
+            }
+            if !name[17..].chars().all(|c| c.is_ascii_hexdigit()) {
+                return false;
+            }
+        }
+        true
+    };
+
     let mut dirs: Vec<std::path::PathBuf> = entries
         .flatten()
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if is_archive_name(&name) {
+                true
+            } else {
+                tracing::warn!(
+                    name,
+                    "skipping non-conforming directory in backup archive root"
+                );
+                false
+            }
+        })
         .map(|e| e.path())
         .collect();
     dirs.sort();
@@ -617,7 +676,7 @@ fn prune_old_backup_archives(archive_root: &Path, keep: usize) {
 
 /// Return true if `vigild.service` is currently active.
 fn daemon_is_active() -> bool {
-    let mut cmd = ProcessCommand::new("systemctl");
+    let mut cmd = ProcessCommand::new("/usr/bin/systemctl");
     cmd.arg("is-active")
         .arg("--quiet")
         .arg("vigild.service")

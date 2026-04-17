@@ -77,6 +77,7 @@ fn run_config_reload_storm(seed: u64) {
         startup_baseline_conn: baseline_conn,
         startup_audit_conn: audit_conn,
         reconfigure_tx: None,
+        mount_mark_tx: None,
         wal_identity: None,
         wal_path: None,
         maintenance_active: Arc::new(AtomicBool::new(false)),

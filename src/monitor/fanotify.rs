@@ -22,6 +22,21 @@ use crate::metrics::Metrics;
 use crate::types::{DaemonState, FsEvent, FsEventType, ProcessAttribution, ScanMode};
 use crate::watch_index::WatchGroupIndex;
 
+/// Operation to perform on a mount point's fanotify mark.
+#[derive(Debug, Clone)]
+pub enum MountMarkOp {
+    Add,
+    Remove,
+}
+
+/// Request to dynamically add or remove fanotify marks on mount points
+/// discovered at runtime (VIGIL-VULN-069).
+#[derive(Debug, Clone)]
+pub struct MountMarkRequest {
+    pub mount: PathBuf,
+    pub op: MountMarkOp,
+}
+
 // fanotify constants
 const FAN_CLOEXEC: u32 = 0x0000_0001;
 const FAN_CLASS_NOTIF: u32 = 0x0000_0000;
@@ -103,6 +118,7 @@ pub fn start(
     bloom: Arc<BloomFilter>,
     state: Option<Arc<RwLock<DaemonState>>>,
     scan_trigger: Option<Sender<crate::control::ScanRequest>>,
+    mount_mark_rx: Option<crossbeam_channel::Receiver<MountMarkRequest>>,
 ) -> Result<crossbeam_channel::Sender<Vec<PathBuf>>> {
     // SAFETY: fanotify_init syscall with valid flags; return value checked.
     let fan_fd = unsafe {
@@ -213,6 +229,39 @@ pub fn start(
                         }
                     }
                     current_mounts = new_mounts;
+                }
+
+                // VIGIL-VULN-069: process dynamic mount mark requests from
+                // the coordinator when new mounts overlap watched paths.
+                if let Some(ref rx) = mount_mark_rx {
+                    while let Ok(req) = rx.try_recv() {
+                        let op_flag = match req.op {
+                            MountMarkOp::Add => FAN_MARK_ADD,
+                            MountMarkOp::Remove => FAN_MARK_REMOVE,
+                        };
+                        if let Err(e) = apply_fanotify_mark(fan_fd, &req.mount, mask, op_flag) {
+                            tracing::error!(
+                                mount = %req.mount.display(),
+                                op = ?req.op,
+                                error = %e,
+                                "dynamic fanotify_mark failed for overlapping mount"
+                            );
+                            metrics
+                                .fanotify_mark_failures
+                                .fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            tracing::info!(
+                                mount = %req.mount.display(),
+                                op = ?req.op,
+                                "dynamic fanotify_mark applied for overlapping mount"
+                            );
+                            if matches!(req.op, MountMarkOp::Add) {
+                                current_mounts.insert(req.mount);
+                            } else {
+                                current_mounts.remove(&req.mount);
+                            }
+                        }
+                    }
                 }
 
                 // SAFETY: valid fd + valid buffer pointer.
@@ -350,7 +399,19 @@ pub fn start(
                         };
 
                         let fd_link = format!("/proc/self/fd/{}", event.fd);
-                        if let Ok(path) = std::fs::read_link(&fd_link) {
+                        if let Ok(raw_path) = std::fs::read_link(&fd_link) {
+                            // VIGIL-VULN-068: strip " (deleted)" suffix appended
+                            // by the kernel when a file is unlinked between event
+                            // production and fd→path resolution.
+                            let (path, was_deleted) = strip_deleted_suffix(&raw_path);
+                            if was_deleted {
+                                tracing::info!(
+                                    raw = %raw_path.display(),
+                                    stripped = %path.display(),
+                                    "resolved deleted-file path from fanotify event"
+                                );
+                            }
+
                             // Bloom filter fast-reject: check if any prefix of the
                             // event path is in the filter (not the full path, which
                             // was never inserted)
@@ -364,7 +425,13 @@ pub fn start(
                             let is_watched = idx.is_watched(&path);
 
                             if is_watched {
-                                if let Some(event_type) = mask_to_event_type(event.mask) {
+                                // Force Delete event type if file was unlinked
+                                let event_type_resolved = if was_deleted {
+                                    Some(FsEventType::Delete)
+                                } else {
+                                    mask_to_event_type(event.mask)
+                                };
+                                if let Some(event_type) = event_type_resolved {
                                     metrics
                                         .events_received
                                         .fetch_add(1, Ordering::Relaxed);
@@ -415,6 +482,23 @@ pub fn start(
         .map_err(|e| VigilError::Fanotify(format!("cannot spawn thread: {}", e)))?;
 
     Ok(control_tx)
+}
+
+/// Strip the ` (deleted)` suffix the kernel appends to `/proc/self/fd/N`
+/// targets when the file has been unlinked between event production and
+/// read_link resolution (VIGIL-VULN-068).
+///
+/// Returns `(stripped_path, true)` if the suffix was present, or
+/// `(original_path, false)` otherwise. Handles paths that legitimately
+/// contain parentheses by only stripping a trailing ` (deleted)`.
+pub fn strip_deleted_suffix(path: &std::path::Path) -> (PathBuf, bool) {
+    const SUFFIX: &str = " (deleted)";
+    let s = path.as_os_str().to_string_lossy();
+    if let Some(stripped) = s.strip_suffix(SUFFIX) {
+        (PathBuf::from(stripped), true)
+    } else {
+        (path.to_path_buf(), false)
+    }
 }
 
 fn apply_fanotify_mark(fan_fd: RawFd, mount: &std::path::Path, mask: u64, op: u32) -> Result<()> {
@@ -580,5 +664,32 @@ mod tests {
     fn unescape_mountinfo_rejects_non_octal_digits() {
         // Non-octal digits should be left as literal backslash sequences
         assert_eq!(unescape_mountinfo("foo\\999"), "foo\\999");
+    }
+
+    #[test]
+    fn strip_deleted_suffix_strips_when_present() {
+        let (p, deleted) = strip_deleted_suffix(std::path::Path::new("/etc/foo (deleted)"));
+        assert_eq!(p, PathBuf::from("/etc/foo"));
+        assert!(deleted);
+    }
+
+    #[test]
+    fn strip_deleted_suffix_passthrough_when_absent() {
+        let (p, deleted) = strip_deleted_suffix(std::path::Path::new("/etc/foo"));
+        assert_eq!(p, PathBuf::from("/etc/foo"));
+        assert!(!deleted);
+    }
+
+    #[test]
+    fn strip_deleted_suffix_handles_paths_with_parens() {
+        // Path with parens AND deleted suffix
+        let (p, deleted) = strip_deleted_suffix(std::path::Path::new("/etc/foo (bar) (deleted)"));
+        assert_eq!(p, PathBuf::from("/etc/foo (bar)"));
+        assert!(deleted);
+
+        // Path with parens but NOT deleted
+        let (p, deleted) = strip_deleted_suffix(std::path::Path::new("/etc/foo (bar)"));
+        assert_eq!(p, PathBuf::from("/etc/foo (bar)"));
+        assert!(!deleted);
     }
 }

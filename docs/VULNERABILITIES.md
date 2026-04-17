@@ -749,3 +749,87 @@ When the kernel's fanotify event queue overflowed (`FAN_Q_OVERFLOW` event), the 
 When `fanotify_mark()` failed during initial setup or mount reload, the failure was logged but the daemon continued running with no real-time monitoring on those mounts. Similarly, `read()` failures on the fanotify FD were classified only by the success/failure of the read syscall — fatal errno values (EBADF, EFAULT, EINVAL) were not distinguished from transient ones (EAGAIN, EWOULDBLOCK, EINTR), so a fatal error would either spin in a tight error loop or terminate the monitor without surfacing the cause.
 
 **Remediation:** Mark failures now increment the new `fanotify_mark_failures` counter and, when state is available (reload path), transition the daemon to `Degraded { reason: "fanotify_mark_failure" }`. Read failures are now classified: EAGAIN/EWOULDBLOCK/EINTR continue the loop benignly; any other errno increments `fanotify_read_errors`, degrades state, logs at `error`, and stops the monitor cleanly so the rest of the daemon can shut down or be restarted by systemd.
+
+---
+
+### VIGIL-VULN-067 — WAL HMAC verification bypass via zero-HMAC injection (Critical)
+
+**Fixed in:** 0.35.0
+
+`compute_entry_hmac()` returns `[0u8; 32]` when HMAC is disabled. The WAL scanner only verified HMAC when `any_hmac` (any non-zero byte in the 32-byte field). An attacker with write access to the WAL file could append a forged entry with all-zero HMAC and a valid CRC32; the reader holding a valid HMAC key would accept it without cryptographic verification. Additionally, reopening an HMAC-protected WAL with `hmac_key = None` was silently allowed, downgrading security.
+
+**Reproduction:** Create WAL with HMAC, manually craft a binary entry with `[0; 32]` HMAC field, valid CRC32, append to file, call `iter_unconsumed` — entry accepted.
+
+**Remediation:** (1) `scan_entries` reads the 16-byte key fingerprint from the WAL header; when non-zero (`hmac_required`), entries with all-zero HMAC are rejected with `error` log. (2) `open_with_sync` returns error when header fingerprint is non-zero but caller passes `hmac_key = None`. (3) Magic number `50` replaced with documented `MIN_ENTRY_SIZE` constant. New metric `wal_entries_rejected_hmac`. Code path: `src/wal/mod.rs`.
+
+---
+
+### VIGIL-VULN-068 — fanotify silently drops events for deleted files (High)
+
+**Fixed in:** 0.35.0
+
+When a file is unlinked between fanotify event production and `read_link("/proc/self/fd/N")`, the kernel returns the path with literal suffix ` (deleted)`. The Bloom filter prefix walk fails on the suffixed string, silently dropping the event. Deletion is the most security-relevant event class.
+
+**Reproduction:** Unlink a watched file while fanotify events are pending; observe that no deletion event reaches the worker pipeline.
+
+**Remediation:** New `strip_deleted_suffix(path) -> (PathBuf, bool)` helper strips the suffix. When detected, `event_type` is forced to `FsEventType::Delete` regardless of the fanotify mask. Both raw and stripped paths are logged at `info`. Code path: `src/monitor/fanotify.rs`.
+
+---
+
+### VIGIL-VULN-069 — new-mount evasion: fanotify marks not applied to overlapping mounts (High)
+
+**Fixed in:** 0.35.0
+
+`FAN_MARK_MOUNT` does not follow into newly-mounted submounts. An attacker mounting over a watched path (e.g. `mount -t tmpfs none /etc/cron.d`) could write malicious files undetected in real-time. The coordinator detected new mounts but only logged; no fanotify marks were applied.
+
+**Remediation:** New `MountMarkRequest` channel from coordinator to fanotify thread. When `check_mount_evasion` detects a new mount overlapping a watched path, it sends `MountMarkOp::Add`; disappeared mounts get `MountMarkOp::Remove`. Inotify backend has no equivalent API and logs at `error`. Code path: `src/coordinator.rs`, `src/monitor/fanotify.rs`, `src/monitor/mod.rs`.
+
+---
+
+### VIGIL-VULN-070 — clock manipulation evades audit retention via slow drift (Medium)
+
+**Fixed in:** 0.35.0
+
+`detect_clock_anomaly` only caught forward jumps > 3600s between 60s ticks. An attacker advancing the wall clock by < 3600s per tick would never trip the gate, gradually erasing audit history through the retention cutoff.
+
+**Remediation:** Each tick compares wall-clock delta against monotonic (`Instant`) delta; skew > 5s triggers Degraded state and skips rotation. Rotation also refused when `MAX(timestamp)` in audit_log exceeds current time (clock rollback past existing entries). Code path: `src/coordinator.rs`.
+
+---
+
+### VIGIL-VULN-071 — coordinator uses stale DB connections after Degraded transition (Medium)
+
+**Fixed in:** 0.35.0
+
+When `is_replaced` returned true for baseline/audit DB, the coordinator entered Degraded but continued holding open the `rusqlite::Connection` against the orphaned inode. Writes appeared to succeed but were invisible to anything opening the path freshly.
+
+**Remediation:** Coordinator holds connections as `Option<Connection>`. On Degraded due to `*_db_replaced`, connections are dropped immediately (`= None`). All methods using these connections early-return with warning when `None`. No auto-reopen; operator restart required. Code path: `src/coordinator.rs`.
+
+---
+
+### VIGIL-VULN-072 — user-space event loss not surfaced as Degraded state (Medium)
+
+**Fixed in:** 0.35.0
+
+The `send_timeout(.., 1s)` drop path in fanotify.rs surfaced event loss only via `tracing::warn!` and the `events_dropped` counter. No Degraded transition, violating the principle that VIGIL-VULN-064 fixed for kernel-side drops.
+
+**Remediation:** Coordinator tick samples `events_dropped` and `kernel_queue_overflows` deltas. When either exceeds `monitor.event_loss_alert_threshold` (default 10), daemon enters Degraded. Recovery after 5 consecutive zero-delta ticks. New `DetectionSource::HealthDegraded` variant. Code path: `src/coordinator.rs`, `src/config/mod.rs`, `src/wal/mod.rs`.
+
+---
+
+### VIGIL-VULN-073 — v0.34.0 follow-up bugs (Medium, composite)
+
+**Fixed in:** 0.35.0
+
+Six bugs introduced or left open by the v0.34.0 sweep: (1) thread-spawn failure leaks in-flight slot, potentially wedging the control socket after ≤8 failures; (2) `current_euid()` called per connection instead of once; (3) backup archive timestamp collides on sub-second runs; (4) `sudo systemctl` in update.rs missing absolute path; (5) `prune_old_backup_archives` trusts lexical sort without filtering non-conforming directory names; (6) `start_monitor` accepts `None` for `state`/`scan_trigger` without warning, silently disabling VIGIL-VULN-064/066 protections.
+
+**Remediation:** All six sub-issues fixed. See CHANGELOG.md v0.35.0 for details. Code paths: `src/control.rs`, `src/commands/update.rs`, `src/monitor/mod.rs`.
+
+---
+
+### VIGIL-VULN-074 — key material in non-zeroizing buffers; fd leak across exec (Medium, composite)
+
+**Fixed in:** 0.35.0
+
+(1) `load_hmac_key` returned `Vec<u8>` — key material lived in non-zeroizing buffers between read and consumer. (2) `dup_to_file` used `libc::dup` which does not set `FD_CLOEXEC`; if any future code path spawns children, the fd would leak across exec.
+
+**Remediation:** (1) `load_hmac_key` returns `Zeroizing<Vec<u8>>`; intermediate content buffer explicitly zeroized. (2) `dup_to_file` uses `libc::fcntl(F_DUPFD_CLOEXEC)`. (3) WAL `random_nonce()` uses `libc::getrandom` syscall instead of per-call `/dev/urandom` open. Code paths: `src/hmac.rs`, `src/worker.rs`, `src/wal/mod.rs`.

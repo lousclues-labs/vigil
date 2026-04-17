@@ -127,14 +127,26 @@ pub fn spawn(
 
                         let handler_clone = Arc::clone(&handler);
                         let in_flight_clone = Arc::clone(&in_flight);
-                        let _ = std::thread::Builder::new()
+                        match std::thread::Builder::new()
                             .name("vigil-control-conn".into())
                             .spawn(move || {
                                 if let Err(e) = handler_clone.handle_connection(stream) {
                                     tracing::debug!(error = %e, "control socket connection error");
                                 }
                                 in_flight_clone.fetch_sub(1, Ordering::AcqRel);
-                            });
+                            }) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                // VIGIL-VULN-073: spawn failed — release
+                                // the in-flight slot immediately to prevent
+                                // permanent slot leak that would wedge the socket.
+                                in_flight.fetch_sub(1, Ordering::AcqRel);
+                                tracing::error!(
+                                    error = %e,
+                                    "failed to spawn control connection handler thread"
+                                );
+                            }
+                        }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(200));
@@ -554,12 +566,15 @@ fn peer_credentials(stream: &std::os::unix::net::UnixStream) -> Option<libc::ucr
     }
 }
 
-/// Return the daemon's effective UID. Wrapped in #[allow(unsafe_code)]
-/// because the crate-level deny forbids inline unsafe blocks.
+/// Return the daemon's effective UID. Cached in a OnceLock to avoid
+/// repeated syscalls on every connection (VIGIL-VULN-073).
 #[allow(unsafe_code)]
 fn current_euid() -> u32 {
-    // SAFETY: geteuid is always safe to call.
-    unsafe { libc::geteuid() }
+    static EUID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *EUID.get_or_init(|| {
+        // SAFETY: geteuid is always safe to call.
+        unsafe { libc::geteuid() }
+    })
 }
 
 #[cfg(test)]

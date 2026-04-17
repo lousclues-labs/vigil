@@ -35,6 +35,8 @@ pub struct CoordinatorConfig {
     pub startup_baseline_conn: rusqlite::Connection,
     pub startup_audit_conn: rusqlite::Connection,
     pub reconfigure_tx: Option<crossbeam_channel::Sender<Vec<std::path::PathBuf>>>,
+    pub mount_mark_tx:
+        Option<crossbeam_channel::Sender<crate::monitor::fanotify::MountMarkRequest>>,
     pub wal_identity: Option<crate::db::DbFileIdentity>,
     pub wal_path: Option<std::path::PathBuf>,
     pub maintenance_active: Arc<AtomicBool>,
@@ -52,9 +54,10 @@ struct Coordinator {
     baseline_db_identity: Option<crate::db::DbFileIdentity>,
     audit_db_identity: Option<crate::db::DbFileIdentity>,
     startup_hmac_key: Option<zeroize::Zeroizing<Vec<u8>>>,
-    startup_baseline_conn: rusqlite::Connection,
-    startup_audit_conn: rusqlite::Connection,
+    startup_baseline_conn: Option<rusqlite::Connection>,
+    startup_audit_conn: Option<rusqlite::Connection>,
     reconfigure_tx: Option<crossbeam_channel::Sender<Vec<std::path::PathBuf>>>,
+    mount_mark_tx: Option<crossbeam_channel::Sender<crate::monitor::fanotify::MountMarkRequest>>,
     wal_identity: Option<crate::db::DbFileIdentity>,
     wal_path: Option<std::path::PathBuf>,
     maintenance_active: Arc<AtomicBool>,
@@ -68,6 +71,9 @@ struct Coordinator {
     drift_samples: [u64; 5],
     drift_sample_idx: usize,
     last_changes_seen: u64,
+    last_tick_monotonic: std::time::Instant,
+    last_kernel_overflows: u64,
+    clean_ticks_since_event_loss: u32,
 }
 
 pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()>> {
@@ -82,9 +88,10 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
         baseline_db_identity: cfg.baseline_db_identity,
         audit_db_identity: cfg.audit_db_identity,
         startup_hmac_key: cfg.startup_hmac_key,
-        startup_baseline_conn: cfg.startup_baseline_conn,
-        startup_audit_conn: cfg.startup_audit_conn,
+        startup_baseline_conn: Some(cfg.startup_baseline_conn),
+        startup_audit_conn: Some(cfg.startup_audit_conn),
         reconfigure_tx: cfg.reconfigure_tx,
+        mount_mark_tx: cfg.mount_mark_tx,
         wal_identity: cfg.wal_identity,
         wal_path: cfg.wal_path,
         maintenance_active: cfg.maintenance_active,
@@ -101,6 +108,9 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
         drift_samples: [0; 5],
         drift_sample_idx: 0,
         last_changes_seen: 0,
+        last_tick_monotonic: std::time::Instant::now(),
+        last_kernel_overflows: 0,
+        clean_ticks_since_event_loss: 0,
     };
 
     std::thread::Builder::new()
@@ -253,38 +263,42 @@ impl Coordinator {
         let cfg = self.config.load();
         if cfg.security.hmac_signing {
             if let Some(ref key) = self.startup_hmac_key {
-                if let Some(content) = config_file_content() {
-                    let current_hmac = crate::hmac::compute_hmac(key, &content).unwrap_or_default();
-                    let stored = crate::db::baseline_ops::get_config_state(
-                        &self.startup_baseline_conn,
-                        "config_file_hmac",
-                    )
-                    .ok()
-                    .flatten();
-                    match stored {
-                        Some(ref expected) if expected != &current_hmac => {
-                            tracing::error!(
-                                "config reload REJECTED: config file HMAC \
-                                 verification failed. The config file may \
-                                 have been tampered with."
-                            );
-                            return; // skip reload
-                        }
-                        None => {
-                            // Store initial config HMAC
-                            if let Err(e) = crate::db::baseline_ops::set_config_state(
-                                &self.startup_baseline_conn,
-                                "config_file_hmac",
-                                &current_hmac,
-                            ) {
+                if let Some(ref conn) = self.startup_baseline_conn {
+                    if let Some(content) = config_file_content() {
+                        let current_hmac =
+                            crate::hmac::compute_hmac(key, &content).unwrap_or_default();
+                        let stored =
+                            crate::db::baseline_ops::get_config_state(conn, "config_file_hmac")
+                                .ok()
+                                .flatten();
+                        match stored {
+                            Some(ref expected) if expected != &current_hmac => {
                                 tracing::error!(
-                                    error = %e,
-                                    "failed to store config file HMAC — tamper detection weakened"
+                                    "config reload REJECTED: config file HMAC \
+                                     verification failed. The config file may \
+                                     have been tampered with."
                                 );
+                                return; // skip reload
                             }
+                            None => {
+                                // Store initial config HMAC
+                                if let Err(e) = crate::db::baseline_ops::set_config_state(
+                                    conn,
+                                    "config_file_hmac",
+                                    &current_hmac,
+                                ) {
+                                    tracing::error!(
+                                        error = %e,
+                                        "failed to store config file HMAC — tamper detection weakened"
+                                    );
+                                }
+                            }
+                            _ => {} // HMAC matches, proceed
                         }
-                        _ => {} // HMAC matches, proceed
                     }
+                } else {
+                    // VIGIL-VULN-071: DB connection dropped after Degraded transition
+                    tracing::warn!("skipping config HMAC check: baseline DB connection dropped (daemon degraded)");
                 }
             }
         }
@@ -338,6 +352,8 @@ impl Coordinator {
                         "baseline database file replaced — possible tampering. \
                          Inode/device changed since startup."
                     );
+                    // VIGIL-VULN-071: drop stale connection immediately
+                    self.startup_baseline_conn = None;
                     let mut s = self.state.write();
                     *s = DaemonState::Degraded {
                         reason: "baseline_db_replaced".into(),
@@ -369,6 +385,8 @@ impl Coordinator {
                         "audit database file replaced — possible evidence \
                          destruction. Inode/device changed since startup."
                     );
+                    // VIGIL-VULN-071: drop stale connection immediately
+                    self.startup_audit_conn = None;
                     let mut s = self.state.write();
                     *s = DaemonState::Degraded {
                         reason: "audit_db_replaced".into(),
@@ -440,7 +458,45 @@ impl Coordinator {
                                 "new mount detected over watched path — \
                                  real-time monitoring may be compromised"
                             );
+                            // VIGIL-VULN-069: dynamically apply fanotify mark
+                            // to the new mount so events under it are monitored.
+                            if let Some(ref tx) = self.mount_mark_tx {
+                                use crate::monitor::fanotify::{MountMarkOp, MountMarkRequest};
+                                if let Err(e) = tx.send(MountMarkRequest {
+                                    mount: mount.to_path_buf(),
+                                    op: MountMarkOp::Add,
+                                }) {
+                                    tracing::error!(
+                                        mount = %mount.display(),
+                                        error = %e,
+                                        "failed to send mount mark request to fanotify thread"
+                                    );
+                                    self.metrics
+                                        .fanotify_mark_failures
+                                        .fetch_add(1, Ordering::Relaxed);
+                                }
+                            } else {
+                                // inotify backend or no channel — log degradation
+                                tracing::error!(
+                                    mount = %mount.display(),
+                                    "mount evasion detected but no fanotify mark channel available — \
+                                     modifications under new mount not monitored until next scan"
+                                );
+                            }
                         }
+                    }
+                }
+            }
+            // Check for disappeared overlapping mounts — remove marks
+            let disappeared: Vec<_> = self.initial_mounts.difference(&current_set).collect();
+            if !disappeared.is_empty() {
+                if let Some(ref tx) = self.mount_mark_tx {
+                    for mount in disappeared {
+                        use crate::monitor::fanotify::{MountMarkOp, MountMarkRequest};
+                        let _ = tx.send(MountMarkRequest {
+                            mount: mount.to_path_buf(),
+                            op: MountMarkOp::Remove,
+                        });
                     }
                 }
             }
@@ -449,39 +505,94 @@ impl Coordinator {
 
     fn detect_clock_anomaly(&mut self) -> bool {
         let now_ts = Utc::now().timestamp();
-        let clock_delta = now_ts - self.last_rotation_timestamp;
-        if clock_delta > 3600 {
+        let wall_delta = now_ts - self.last_rotation_timestamp;
+        let mono_delta = self.last_tick_monotonic.elapsed().as_secs() as i64;
+        let clock_skew = wall_delta - mono_delta;
+
+        // VIGIL-VULN-070: compare wall-clock delta against monotonic delta.
+        // A 5-second tolerance handles normal NTP adjustments; anything larger
+        // indicates active clock manipulation.
+        if clock_skew.abs() > 5 {
             tracing::error!(
-                jump_secs = clock_delta,
+                wall_delta,
+                mono_delta,
+                clock_skew,
+                "clock skew detected (wall vs monotonic) — skipping audit rotation"
+            );
+            let mut s = self.state.write();
+            if matches!(*s, DaemonState::Healthy) {
+                *s = DaemonState::Degraded {
+                    reason: "clock_skew_detected".into(),
+                    since: Utc::now(),
+                };
+            }
+            self.last_rotation_timestamp = now_ts;
+            self.last_tick_monotonic = std::time::Instant::now();
+            return true;
+        }
+
+        // Coarse second-line checks for large jumps
+        if wall_delta > 3600 {
+            tracing::error!(
+                jump_secs = wall_delta,
                 "forward clock anomaly detected — skipping audit rotation to prevent evidence loss"
             );
             self.last_rotation_timestamp = now_ts;
-            true
-        } else if clock_delta < -60 {
+            self.last_tick_monotonic = std::time::Instant::now();
+            return true;
+        }
+        if wall_delta < -60 {
             tracing::error!(
-                jump_secs = clock_delta,
+                jump_secs = wall_delta,
                 "negative clock jump detected — skipping audit rotation (possible clock manipulation replay)"
             );
             self.last_rotation_timestamp = now_ts;
-            true
-        } else {
-            false
+            self.last_tick_monotonic = std::time::Instant::now();
+            return true;
         }
+
+        // VIGIL-VULN-070: refuse rotation when max audit timestamp is in the
+        // future (indicates clock was rolled back past existing entries).
+        if let Some(ref conn) = self.startup_audit_conn {
+            match conn.query_row("SELECT MAX(timestamp) FROM audit_log", [], |row| {
+                row.get::<_, Option<i64>>(0)
+            }) {
+                Ok(Some(max_ts)) if max_ts > now_ts => {
+                    tracing::error!(
+                        max_audit_ts = max_ts,
+                        now = now_ts,
+                        "max audit timestamp is in the future — refusing rotation (clock rollback)"
+                    );
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
+        self.last_tick_monotonic = std::time::Instant::now();
+        false
     }
 
     fn rotate_audit_log(&mut self) {
+        let conn = match self.startup_audit_conn.as_ref() {
+            Some(c) => c,
+            None => {
+                tracing::warn!(
+                    "skipping audit rotation: audit DB connection dropped (daemon degraded)"
+                );
+                return;
+            }
+        };
         let cfg = self.config.load();
         let now_ts = Utc::now().timestamp();
 
         // Safety check: count total entries and compute how many
         // would be deleted. Skip if > 50% would be removed.
-        let total: i64 = self
-            .startup_audit_conn
+        let total: i64 = conn
             .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
             .unwrap_or(0);
         let cutoff = now_ts - (cfg.database.audit_retention_days as i64 * 86400);
-        let would_delete: i64 = self
-            .startup_audit_conn
+        let would_delete: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM audit_log WHERE timestamp < ?1",
                 rusqlite::params![cutoff],
@@ -496,10 +607,7 @@ impl Coordinator {
                 "audit rotation would delete >50% of entries — skipping (possible clock manipulation)"
             );
         } else {
-            match crate::db::audit_ops::rotate_audit_log(
-                &self.startup_audit_conn,
-                cfg.database.audit_retention_days,
-            ) {
+            match crate::db::audit_ops::rotate_audit_log(conn, cfg.database.audit_retention_days) {
                 Ok(0) => {}
                 Ok(n) => tracing::info!(deleted = n, "rotated old audit entries"),
                 Err(e) => tracing::warn!(error = %e, "audit rotation failed"),
@@ -549,34 +657,89 @@ impl Coordinator {
 
     fn check_event_drops(&mut self) {
         let current_dropped = self.metrics.events_dropped.load(Ordering::Relaxed);
-        if current_dropped > self.last_dropped {
-            let delta = current_dropped - self.last_dropped;
+        let current_overflows = self.metrics.kernel_queue_overflows.load(Ordering::Relaxed);
+        let drop_delta = current_dropped.saturating_sub(self.last_dropped);
+        let overflow_delta = current_overflows.saturating_sub(self.last_kernel_overflows);
+
+        if drop_delta > 0 || overflow_delta > 0 {
             tracing::error!(
-                dropped = delta,
+                dropped = drop_delta,
                 total_dropped = current_dropped,
+                kernel_overflows = overflow_delta,
                 "filesystem events are being dropped — possible evasion attack or I/O overload"
             );
         }
+
+        let cfg = self.config.load();
+        let threshold = cfg.monitor.event_loss_alert_threshold.unwrap_or(10);
+
+        // VIGIL-VULN-072: transition to Degraded when event loss exceeds threshold
+        if drop_delta > threshold || overflow_delta > threshold {
+            self.clean_ticks_since_event_loss = 0;
+            let mut s = self.state.write();
+            if matches!(*s, DaemonState::Healthy) {
+                *s = DaemonState::Degraded {
+                    reason: "event_loss_detected".into(),
+                    since: Utc::now(),
+                };
+                tracing::error!(
+                    drop_delta,
+                    overflow_delta,
+                    threshold,
+                    "event loss threshold exceeded — entering Degraded state"
+                );
+            }
+        } else if drop_delta == 0 && overflow_delta == 0 {
+            let s = self.state.read();
+            if let DaemonState::Degraded { reason, .. } = &*s {
+                if reason == "event_loss_detected" {
+                    drop(s);
+                    self.clean_ticks_since_event_loss += 1;
+                    if self.clean_ticks_since_event_loss >= 5 {
+                        let mut s = self.state.write();
+                        if let DaemonState::Degraded { reason, .. } = &*s {
+                            if reason == "event_loss_detected" {
+                                tracing::info!(
+                                    "event loss recovered for 5 consecutive ticks — returning to Healthy"
+                                );
+                                *s = DaemonState::Healthy;
+                                self.clean_ticks_since_event_loss = 0;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            self.clean_ticks_since_event_loss = 0;
+        }
+
         self.last_dropped = current_dropped;
+        self.last_kernel_overflows = current_overflows;
     }
 
     fn maybe_checkpoint_wal(&mut self) {
         self.checkpoint_counter += 1;
         if self.checkpoint_counter >= 5 {
             self.checkpoint_counter = 0;
-            match self
-                .startup_baseline_conn
-                .pragma_update(None, "wal_checkpoint", "PASSIVE")
-            {
-                Ok(()) => tracing::debug!("WAL checkpoint (baseline) completed"),
-                Err(e) => tracing::warn!(error = %e, "WAL checkpoint (baseline) failed"),
+            if let Some(ref conn) = self.startup_baseline_conn {
+                match conn.pragma_update(None, "wal_checkpoint", "PASSIVE") {
+                    Ok(()) => tracing::debug!("WAL checkpoint (baseline) completed"),
+                    Err(e) => tracing::warn!(error = %e, "WAL checkpoint (baseline) failed"),
+                }
+            } else {
+                tracing::warn!(
+                    "skipping WAL checkpoint (baseline): DB connection dropped (daemon degraded)"
+                );
             }
-            match self
-                .startup_audit_conn
-                .pragma_update(None, "wal_checkpoint", "PASSIVE")
-            {
-                Ok(()) => tracing::debug!("WAL checkpoint (audit) completed"),
-                Err(e) => tracing::warn!(error = %e, "WAL checkpoint (audit) failed"),
+            if let Some(ref conn) = self.startup_audit_conn {
+                match conn.pragma_update(None, "wal_checkpoint", "PASSIVE") {
+                    Ok(()) => tracing::debug!("WAL checkpoint (audit) completed"),
+                    Err(e) => tracing::warn!(error = %e, "WAL checkpoint (audit) failed"),
+                }
+            } else {
+                tracing::warn!(
+                    "skipping WAL checkpoint (audit): DB connection dropped (daemon degraded)"
+                );
             }
         }
     }
@@ -595,13 +758,15 @@ impl Coordinator {
         if entered_at == 0 {
             return;
         }
+        let cfg = self.config.load();
+        let max_seconds = cfg.maintenance.max_window_seconds as i64;
         let now = Utc::now().timestamp();
         let elapsed_secs = now - entered_at;
-        // Auto-exit maintenance after 30 minutes (safety timeout)
-        if elapsed_secs > 1800 {
+        if elapsed_secs > max_seconds {
             tracing::warn!(
                 elapsed_secs = elapsed_secs,
-                "maintenance window exceeded 30-minute safety timeout — auto-exiting"
+                max_seconds,
+                "maintenance window exceeded safety timeout — auto-exiting"
             );
             self.maintenance_active.store(false, Ordering::Release);
             self.maintenance_entered_at.store(0, Ordering::Release);

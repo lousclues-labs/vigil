@@ -550,9 +550,7 @@ mod tests {
         cfg.security.hmac_signing = true;
         cfg.security.hmac_key_path = key_path.clone();
 
-        let hmac_key = crate::hmac::load_hmac_key(&key_path)
-            .ok()
-            .map(Zeroizing::new);
+        let hmac_key = crate::hmac::load_hmac_key(&key_path).ok();
         let metrics = Arc::new(crate::metrics::Metrics::new());
         let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, hmac_key, false).unwrap();
 

@@ -19,6 +19,7 @@ use crate::watch_index::WatchGroupIndex;
 pub struct MonitorHandle {
     pub backend: MonitorBackend,
     pub reconfigure_tx: Option<crossbeam_channel::Sender<Vec<PathBuf>>>,
+    pub mount_mark_tx: Option<crossbeam_channel::Sender<fanotify::MountMarkRequest>>,
 }
 
 /// Start the real-time filesystem monitor and return backend handle.
@@ -31,8 +32,26 @@ pub fn start_monitor(
     state: Option<Arc<RwLock<DaemonState>>>,
     scan_trigger: Option<Sender<crate::control::ScanRequest>>,
 ) -> Result<MonitorHandle> {
+    // VIGIL-VULN-073: warn loudly if daemon state / scan trigger channels
+    // are missing — this disables VIGIL-VULN-064/066 protections silently.
+    if state.is_none() {
+        tracing::error!(
+            "start_monitor called without daemon state handle — \
+             fanotify Degraded transitions (VIGIL-VULN-064/066) will not fire"
+        );
+    }
+    if scan_trigger.is_none() {
+        tracing::error!(
+            "start_monitor called without scan trigger channel — \
+             FAN_Q_OVERFLOW compensating scans (VIGIL-VULN-064) disabled"
+        );
+    }
+
     let watch_paths = collect_watch_paths(config);
     let bloom = Arc::new(BloomFilter::from_watch_paths(&watch_paths));
+
+    // VIGIL-VULN-069: mount mark channel for dynamic fanotify marks on new mounts
+    let (mount_mark_tx, mount_mark_rx) = crossbeam_channel::unbounded();
 
     match config.daemon.monitor_backend {
         MonitorBackend::Fanotify => {
@@ -46,11 +65,13 @@ pub fn start_monitor(
                 bloom,
                 state,
                 scan_trigger,
+                Some(mount_mark_rx),
             ) {
                 Ok(reconfigure_tx) => {
                     return Ok(MonitorHandle {
                         backend: MonitorBackend::Fanotify,
                         reconfigure_tx: Some(reconfigure_tx),
+                        mount_mark_tx: Some(mount_mark_tx),
                     });
                 }
                 Err(e) => {
@@ -68,6 +89,7 @@ pub fn start_monitor(
     Ok(MonitorHandle {
         backend: MonitorBackend::Inotify,
         reconfigure_tx: Some(reconfigure_tx),
+        mount_mark_tx: None,
     })
 }
 

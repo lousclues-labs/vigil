@@ -2,7 +2,7 @@ use std::path::Path;
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::{Result, VigilError};
 
@@ -36,15 +36,16 @@ pub fn verify_hmac(key: &[u8], data: &[u8], expected: &str) -> bool {
 }
 
 /// Load HMAC key from a file. The key file should contain raw bytes or hex-encoded key.
+/// Returns `Zeroizing<Vec<u8>>` so key material is zeroized on drop (VIGIL-VULN-074).
 ///
 /// Warns at runtime if the key file permissions are more permissive than 0600,
 /// since a readable key undermines the tamper-evidence guarantee.
 /// See docs/SECURITY.md "HMAC Key Lifecycle" for key management guidance.
-pub fn load_hmac_key(path: &Path) -> Result<Vec<u8>> {
+pub fn load_hmac_key(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
     // Check key file permissions before reading
     check_hmac_key_permissions(path)?;
 
-    let content = std::fs::read(path).map_err(|e| {
+    let mut content = std::fs::read(path).map_err(|e| {
         VigilError::HmacVerification(format!(
             "cannot read HMAC key file {}: {}",
             path.display(),
@@ -55,14 +56,16 @@ pub fn load_hmac_key(path: &Path) -> Result<Vec<u8>> {
     // If the file contains hex-encoded key, decode it; otherwise use raw bytes
     let mut trimmed = String::from_utf8_lossy(&content).trim().to_string();
     let result = if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
-        hex::decode(&trimmed).map_err(|e| {
+        let decoded = hex::decode(&trimmed).map_err(|e| {
             VigilError::HmacVerification(format!("invalid hex in HMAC key file: {}", e))
-        })
+        });
+        decoded.map(Zeroizing::new)
     } else {
-        Ok(content)
+        Ok(Zeroizing::new(content.clone()))
     };
-    // Zeroize the intermediate string to prevent key material from persisting in freed memory
+    // Zeroize intermediate buffers to prevent key material from persisting in freed memory
     trimmed.zeroize();
+    content.zeroize();
     result
 }
 

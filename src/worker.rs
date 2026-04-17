@@ -24,6 +24,10 @@ use crate::types::{
 use crate::wal::{DetectionRecord, DetectionSource, DetectionWal};
 use crate::watch_index::WatchGroupIndex;
 
+/// Number of consecutive DB errors before the worker attempts to reopen the
+/// baseline connection. Prevents permanent degradation from transient SQLite errors.
+const WORKER_DB_REOPEN_THRESHOLD: u32 = 5;
+
 /// Baseline update sent from workers to the baseline writer thread.
 pub struct BaselineUpdate {
     pub entry: BaselineEntry,
@@ -37,12 +41,13 @@ pub enum UpdateReason {
 
 #[allow(unsafe_code)]
 fn dup_to_file(raw_fd: std::os::fd::RawFd) -> std::io::Result<std::fs::File> {
-    // SAFETY: dup() creates a new fd referring to the same open file description.
-    let dup_fd = unsafe { libc::dup(raw_fd) };
+    // SAFETY: fcntl(F_DUPFD_CLOEXEC) creates a new fd with close-on-exec set,
+    // preventing fd leaks across exec (VIGIL-VULN-074).
+    let dup_fd = unsafe { libc::fcntl(raw_fd, libc::F_DUPFD_CLOEXEC, 0) };
     if dup_fd < 0 {
         return Err(std::io::Error::last_os_error());
     }
-    // SAFETY: dup_fd is a fresh owned descriptor returned by dup above.
+    // SAFETY: dup_fd is a fresh owned descriptor returned by fcntl above.
     Ok(unsafe { std::fs::File::from_raw_fd(dup_fd) })
 }
 
@@ -126,7 +131,7 @@ impl WorkerContext {
                 }
                 Err(e) => {
                     self.consecutive_db_errors += 1;
-                    if self.consecutive_db_errors >= 5 {
+                    if self.consecutive_db_errors >= WORKER_DB_REOPEN_THRESHOLD {
                         match db::open_baseline_db_readonly(&self.db_path) {
                             Ok(new_conn) => {
                                 let n = self.consecutive_db_errors;
@@ -176,6 +181,8 @@ impl WorkerContext {
                     event_type = ?event.event_type,
                     "panic caught in worker — event processing failed"
                 );
+                // Clear the cache to avoid logically-inconsistent state after panic
+                self.cache.clear();
                 if let Some(ref wal) = self.wal {
                     let panic_record = DetectionRecord {
                         timestamp: chrono::Utc::now().timestamp(),

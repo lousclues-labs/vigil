@@ -179,6 +179,10 @@ pub struct Config {
     #[serde(default)]
     pub database: DatabaseConfig,
     #[serde(default)]
+    pub monitor: MonitorConfig,
+    #[serde(default)]
+    pub maintenance: MaintenanceConfig,
+    #[serde(default)]
     pub watch: HashMap<String, WatchGroup>,
 }
 
@@ -600,6 +604,46 @@ fn default_audit_retention_days() -> u32 {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MonitorConfig {
+    /// Event loss alert threshold per coordinator tick.
+    /// When user-space or kernel event loss exceeds this count in a single tick,
+    /// the daemon enters Degraded state.
+    #[serde(default = "default_event_loss_alert_threshold")]
+    pub event_loss_alert_threshold: Option<u64>,
+}
+
+impl Default for MonitorConfig {
+    fn default() -> Self {
+        Self {
+            event_loss_alert_threshold: default_event_loss_alert_threshold(),
+        }
+    }
+}
+
+fn default_event_loss_alert_threshold() -> Option<u64> {
+    Some(10)
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MaintenanceConfig {
+    /// Maximum maintenance window duration in seconds (safety timeout).
+    #[serde(default = "default_max_window_seconds")]
+    pub max_window_seconds: u64,
+}
+
+impl Default for MaintenanceConfig {
+    fn default() -> Self {
+        Self {
+            max_window_seconds: default_max_window_seconds(),
+        }
+    }
+}
+
+fn default_max_window_seconds() -> u64 {
+    1800
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RemoteSyslogConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -932,6 +976,8 @@ pub fn default_config() -> Config {
         hooks: HooksConfig::default(),
         security: SecurityConfig::default(),
         database: DatabaseConfig::default(),
+        monitor: MonitorConfig::default(),
+        maintenance: MaintenanceConfig::default(),
         watch,
     }
 }

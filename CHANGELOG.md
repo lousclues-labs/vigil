@@ -4,6 +4,59 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-04-17
+
+### Release Summary
+WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.0 follow-up fixes. 8 VIGIL-VULN entries (067–074).
+
+### Security
+
+- **VIGIL-VULN-067 (Critical):** WAL HMAC verification bypass fixed. Forged entries with all-zero HMAC fields are now rejected when the WAL header contains a non-zero HMAC key fingerprint. WAL refuses to open without a key when the header demands one (sticky-HMAC enforcement). Magic number `50` replaced with documented `MIN_ENTRY_SIZE` constant. New metric `wal_entries_rejected_hmac`.
+- **VIGIL-VULN-068 (High):** Fanotify path resolution now strips the kernel's ` (deleted)` suffix from `/proc/self/fd/N` targets. Deleted files are detected as `FsEventType::Delete` instead of being silently dropped by the Bloom filter.
+- **VIGIL-VULN-069 (High):** New mounts overlapping watched paths now receive dynamic `fanotify_mark` via a mount-mark control channel from the coordinator to the fanotify thread. Disappeared mounts are un-marked. Inotify backend logs error (no equivalent API).
+- **VIGIL-VULN-070 (Medium):** Clock anomaly detection now compares wall-clock delta against monotonic (`Instant`) delta with 5-second tolerance. Slow drift that previously evaded the 3600s threshold is caught. Audit rotation refused when `MAX(timestamp)` in audit log exceeds current time. Degraded state entered on clock skew detection.
+- **VIGIL-VULN-071 (Medium):** Coordinator drops stale `rusqlite::Connection` immediately when entering Degraded state for `*_db_replaced`. Subsequent rotations, checkpoints, and config HMAC checks early-return with warnings instead of operating on orphaned inodes.
+- **VIGIL-VULN-072 (Medium):** User-space `events_dropped` and kernel `kernel_queue_overflows` deltas exceeding `monitor.event_loss_alert_threshold` (default 10) now trigger Degraded state. Recovery after 5 consecutive clean ticks. New `DetectionSource::HealthDegraded` variant for health-driven alerts.
+- **VIGIL-VULN-073 (Medium, composite):** v0.34.0 follow-up fixes:
+  - Thread-spawn failure in control socket no longer leaks the in-flight connection slot.
+  - `current_euid()` cached in `OnceLock` (called once, not per-connection).
+  - Backup archive timestamp includes 4-byte random hex suffix to prevent sub-second collisions.
+  - `sudo systemctl` invocations in `vigil update` use absolute `/usr/bin/systemctl` path (consistent with rest of codebase).
+  - `prune_old_backup_archives` filters directories by archive-name pattern; non-conforming names are preserved with warning.
+  - `start_monitor` logs at error level when `state` or `scan_trigger` are `None` (production callers must provide them).
+- **VIGIL-VULN-074 (Medium, composite):** Cleanups:
+  - `load_hmac_key` returns `Zeroizing<Vec<u8>>`; intermediate `content` buffer zeroized. All call sites updated.
+  - `dup_to_file` uses `F_DUPFD_CLOEXEC` instead of `dup()` to prevent fd leaks across exec.
+  - Worker `consecutive_db_errors` threshold extracted to `WORKER_DB_REOPEN_THRESHOLD` const.
+  - Worker cache cleared after panic in `process_safe` to avoid logically-inconsistent state.
+  - WAL `random_nonce()` uses `libc::getrandom` syscall instead of per-call `/dev/urandom` open.
+
+### Added
+
+- `Cargo.toml` declares `rust-version = "1.85"` (MSRV hoisted from CI-only to manifest).
+- `cargo test --release` CI job exercises release-profile code paths (e.g. HMAC permission hard-fail).
+- Config sections: `[monitor]` with `event_loss_alert_threshold`, `[maintenance]` with `max_window_seconds`.
+- Release pipeline: `actions/attest-build-provenance@v1` for cosign-keyless signatures, `cargo-cyclonedx` SBOM generation, `--locked` on publish, changelog extracted from `CHANGELOG.md`, `--allow-dirty` removed.
+- `MountMarkRequest` / `MountMarkOp` types for dynamic fanotify mount marking.
+- `MonitorHandle::mount_mark_tx` channel.
+- `strip_deleted_suffix()` helper in `monitor::fanotify`.
+
+### Changed
+
+- WAL `scan_entries` reads header fingerprint to determine HMAC requirement independently of caller-supplied key.
+- Coordinator DB connections are `Option<Connection>`; dropped on Degraded transitions.
+- Maintenance timeout reads from `cfg.maintenance.max_window_seconds` instead of hardcoded `1800`.
+- `check_event_drops` tracks both user-space and kernel event loss deltas with threshold-based Degraded transitions.
+
+### Tests Added
+
+- `wal_rejects_zero_hmac_entry_when_hmac_required`
+- `wal_open_refuses_hmac_keyless_when_header_demands_key`
+- `wal_rejects_bad_hmac_entry_when_hmac_required`
+- `strip_deleted_suffix_strips_when_present`
+- `strip_deleted_suffix_passthrough_when_absent`
+- `strip_deleted_suffix_handles_paths_with_parens`
+
 ## [0.34.0] - 2026-04-17
 
 ### Release Summary

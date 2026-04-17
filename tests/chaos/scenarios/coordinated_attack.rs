@@ -108,6 +108,7 @@ fn run_coordinated_attack(seed: u64) {
         startup_baseline_conn: baseline_conn_coord,
         startup_audit_conn: audit_conn_coord,
         reconfigure_tx: None,
+        mount_mark_tx: None,
         wal_identity: DbFileIdentity::from_path(&wal_path).ok(),
         wal_path: Some(wal_path.clone()),
         maintenance_active: Arc::new(AtomicBool::new(false)),

@@ -87,7 +87,7 @@ impl Daemon {
         // Load HMAC key exactly once at startup — never re-read from disk
         let startup_hmac_key = if config.security.hmac_signing {
             match crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
-                Ok(key) => Some(zeroize::Zeroizing::new(key)),
+                Ok(key) => Some(key),
                 Err(e) => {
                     tracing::warn!(error = %e, "HMAC key load failed at startup");
                     None
@@ -624,6 +624,7 @@ impl DaemonRuntime {
             startup_baseline_conn: coordinator_baseline_conn,
             startup_audit_conn: coordinator_audit_conn,
             reconfigure_tx: monitor_handle.reconfigure_tx.clone(),
+            mount_mark_tx: monitor_handle.mount_mark_tx.clone(),
             wal_identity,
             wal_path: wal_path_for_coord,
             maintenance_active: daemon.maintenance_active.clone(),

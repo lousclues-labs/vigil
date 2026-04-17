@@ -47,6 +47,8 @@ pub struct Metrics {
     pub detections_wal_pending: AtomicU64,
     pub detections_wal_audit_lag: AtomicU64,
     pub detections_wal_sink_lag: AtomicU64,
+    /// WAL entries rejected due to HMAC verification failure or zero-HMAC when HMAC required.
+    pub wal_entries_rejected_hmac: AtomicU64,
     /// Unix timestamp set once at daemon startup.
     pub uptime_start: i64,
 }
@@ -90,6 +92,7 @@ impl Metrics {
             detections_wal_pending: AtomicU64::new(0),
             detections_wal_audit_lag: AtomicU64::new(0),
             detections_wal_sink_lag: AtomicU64::new(0),
+            wal_entries_rejected_hmac: AtomicU64::new(0),
             uptime_start: chrono::Utc::now().timestamp(),
         }
     }
@@ -147,6 +150,7 @@ impl Metrics {
             detections_wal_pending: self.detections_wal_pending.load(Ordering::Relaxed),
             detections_wal_audit_lag: self.detections_wal_audit_lag.load(Ordering::Relaxed),
             detections_wal_sink_lag: self.detections_wal_sink_lag.load(Ordering::Relaxed),
+            wal_entries_rejected_hmac: self.wal_entries_rejected_hmac.load(Ordering::Relaxed),
             uptime_start: self.uptime_start,
         }
     }
@@ -197,6 +201,7 @@ pub struct MetricsSnapshot {
     pub detections_wal_pending: u64,
     pub detections_wal_audit_lag: u64,
     pub detections_wal_sink_lag: u64,
+    pub wal_entries_rejected_hmac: u64,
     pub uptime_start: i64,
 }
 
@@ -409,6 +414,12 @@ impl MetricsSnapshot {
             "vigil_detections_wal_sink_lag",
             "Current number of WAL entries pending sink dispatch",
             self.detections_wal_sink_lag,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_wal_entries_rejected_hmac_total",
+            "WAL entries rejected due to HMAC failure or zero-HMAC bypass attempt",
+            self.wal_entries_rejected_hmac,
         );
 
         let _ = writeln!(out);

@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::unix::fs::{FileExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,6 +36,10 @@ const FLAG_SINK_DONE: u16 = 0x0002;
 /// completes in microseconds.
 const MAX_GAP_BYTES: u64 = 65_536;
 
+/// Minimum valid WAL entry size (bytes):
+///   4 (entry_size) + 8 (sequence) + 2 (flags) + 32 (hmac) + 0 (min payload) + 4 (crc)
+const MIN_ENTRY_SIZE: u32 = 4 + 8 + 2 + 32 + 4;
+
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +50,7 @@ pub enum DetectionSource {
     Debounce,
     Panic,
     Sentinel,
+    HealthDegraded,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,6 +226,14 @@ impl DetectionWal {
 
             header_fingerprint.copy_from_slice(&header[16..32]);
             instance_nonce.copy_from_slice(&header[32..64]);
+
+            // VIGIL-VULN-067: WAL was created with HMAC; refuse to open
+            // without a key. Prevents silent security downgrade.
+            if header_fingerprint != [0u8; 16] && hmac_key.is_none() {
+                return Err(VigilError::Wal(
+                    "WAL was created with HMAC; refusing to open without key".to_string(),
+                ));
+            }
 
             if hmac_key.is_some()
                 && header_fingerprint != [0u8; 16]
@@ -486,7 +499,7 @@ impl DetectionWal {
         let mut size_buf = [0u8; 4];
         read_exact_at(&file, &mut size_buf, offset)?;
         let entry_size = u32::from_le_bytes(size_buf) as usize;
-        if entry_size < 50 {
+        if entry_size < MIN_ENTRY_SIZE as usize {
             return Err(VigilError::Wal(
                 "invalid WAL entry size while marking flags".into(),
             ));
@@ -527,10 +540,26 @@ fn fingerprint_for_key(key: &[u8]) -> [u8; 16] {
     fp
 }
 
+/// Generate a random 32-byte nonce using the getrandom syscall.
+/// Avoids the overhead and fd management of opening /dev/urandom per call.
+#[allow(unsafe_code)]
 fn random_nonce() -> Result<[u8; 32]> {
     let mut nonce = [0u8; 32];
-    let mut urandom = File::open("/dev/urandom")?;
-    urandom.read_exact(&mut nonce)?;
+    // SAFETY: getrandom fills the buffer with random bytes from the kernel's
+    // CSPRNG. The buffer pointer and length are valid. flags=0 means block
+    // until the entropy pool is initialized (equivalent to /dev/urandom after
+    // boot). Return value is checked for errors.
+    let ret = unsafe { libc::getrandom(nonce.as_mut_ptr() as *mut libc::c_void, 32, 0) };
+    if ret != 32 {
+        return Err(VigilError::Wal(format!(
+            "getrandom failed: {}",
+            if ret < 0 {
+                std::io::Error::last_os_error().to_string()
+            } else {
+                format!("short read: {} bytes", ret)
+            }
+        )));
+    }
     Ok(nonce)
 }
 
@@ -562,6 +591,17 @@ fn scan_entries(
     include_consumed: bool,
     keep_bytes: bool,
 ) -> Result<Vec<ScannedEntry>> {
+    // VIGIL-VULN-067: determine if HMAC is mandatory from the header fingerprint.
+    // When the header has a non-zero fingerprint, entries with all-zero HMAC fields
+    // are forged (the legitimate writer always produces a real HMAC).
+    let hmac_required = if file_len >= WAL_HEADER_SIZE {
+        let mut fp = [0u8; 16];
+        read_exact_at(file, &mut fp, 16)?;
+        fp != [0u8; 16]
+    } else {
+        false
+    };
+
     let mut offset = WAL_HEADER_SIZE;
     let mut out = Vec::new();
     let mut gap_start: Option<u64> = None;
@@ -587,7 +627,7 @@ fn scan_entries(
             break;
         }
         let entry_size = u32::from_le_bytes(size_buf);
-        if !(50..=MAX_ENTRY_SIZE).contains(&entry_size) {
+        if !(MIN_ENTRY_SIZE..=MAX_ENTRY_SIZE).contains(&entry_size) {
             if gap_start.is_none() {
                 gap_start = Some(offset);
             }
@@ -654,8 +694,20 @@ fn scan_entries(
         let entry_hmac = &raw[14..46];
         let payload = &raw[46..entry_size as usize - 4];
 
+        // VIGIL-VULN-067: enforce mandatory HMAC when the WAL header contains
+        // a non-zero key fingerprint.
+        let any_hmac = entry_hmac.iter().any(|b| *b != 0);
+        if hmac_required && !any_hmac {
+            // Zero-HMAC entry in an HMAC-mandatory WAL — forged injection.
+            tracing::error!(
+                sequence = sequence,
+                offset = offset,
+                "WAL entry has zero HMAC but HMAC is required — rejecting forged entry"
+            );
+            offset += entry_size as u64;
+            continue;
+        }
         if let Some(key) = hmac_key {
-            let any_hmac = entry_hmac.iter().any(|b| *b != 0);
             if any_hmac && !verify_entry_hmac(key, payload, entry_hmac)? {
                 tracing::error!(
                     sequence = sequence,
@@ -1157,5 +1209,123 @@ mod tests {
         wal.truncate_consumed().unwrap();
 
         assert_eq!(std::fs::metadata(&wal_path).unwrap().len(), WAL_HEADER_SIZE);
+    }
+
+    /// VIGIL-VULN-067: forged entry with zero-HMAC must be rejected when WAL
+    /// was created with HMAC signing enabled.
+    #[test]
+    fn wal_rejects_zero_hmac_entry_when_hmac_required() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("detections.wal");
+        let key = Zeroizing::new(b"test-hmac-key-material".to_vec());
+        let wal = DetectionWal::open(&wal_path, Some(&key), 64 * 1024 * 1024).unwrap();
+
+        // Append a legitimate entry
+        let legitimate_seq = wal
+            .append(&make_record(1, Severity::High, DetectionSource::Realtime))
+            .unwrap();
+
+        // Manually craft a forged entry with zero HMAC and valid CRC
+        let payload = rmp_serde::to_vec(&make_record(
+            99,
+            Severity::Critical,
+            DetectionSource::Realtime,
+        ))
+        .unwrap();
+        let forged_seq: u64 = 999;
+        let entry_size = 4u32 + 8 + 2 + 32 + payload.len() as u32 + 4;
+        let mut buf = Vec::with_capacity(entry_size as usize);
+        buf.extend_from_slice(&entry_size.to_le_bytes());
+        buf.extend_from_slice(&forged_seq.to_le_bytes());
+        buf.extend_from_slice(&0u16.to_le_bytes()); // flags
+        buf.extend_from_slice(&[0u8; 32]); // zero HMAC — the attack vector
+        buf.extend_from_slice(&payload);
+        let crc = crc32fast::hash(&buf);
+        buf.extend_from_slice(&crc.to_le_bytes());
+
+        // Append forged entry directly to the WAL file
+        let file_len = wal.file_len.load(Ordering::Acquire);
+        {
+            let file = wal.file.lock();
+            write_all_at(&file, &buf, file_len).unwrap();
+        }
+        wal.file_len
+            .store(file_len + entry_size as u64, Ordering::Release);
+
+        // Only the legitimate entry should be returned
+        let entries = wal.iter_unconsumed().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].sequence, legitimate_seq);
+    }
+
+    /// VIGIL-VULN-067: reopening an HMAC-protected WAL without a key must fail.
+    #[test]
+    fn wal_open_refuses_hmac_keyless_when_header_demands_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("detections.wal");
+        let key = Zeroizing::new(b"test-hmac-key-material".to_vec());
+
+        // Create WAL with HMAC
+        {
+            let wal = DetectionWal::open(&wal_path, Some(&key), 64 * 1024 * 1024).unwrap();
+            wal.append(&make_record(1, Severity::Low, DetectionSource::Realtime))
+                .unwrap();
+        }
+
+        // Reopen without key — must fail
+        match DetectionWal::open(&wal_path, None, 64 * 1024 * 1024) {
+            Err(VigilError::Wal(msg)) => {
+                assert!(
+                    msg.contains("refusing to open without key"),
+                    "unexpected error message: {}",
+                    msg
+                );
+            }
+            Err(other) => panic!("unexpected error kind: {}", other),
+            Ok(_) => panic!("expected WAL to refuse opening without key"),
+        }
+    }
+
+    /// VIGIL-VULN-067: forged entries with wrong HMAC are also rejected.
+    #[test]
+    fn wal_rejects_bad_hmac_entry_when_hmac_required() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("detections.wal");
+        let key = Zeroizing::new(b"test-hmac-key-material".to_vec());
+        let wal = DetectionWal::open(&wal_path, Some(&key), 64 * 1024 * 1024).unwrap();
+
+        let legitimate_seq = wal
+            .append(&make_record(1, Severity::High, DetectionSource::Realtime))
+            .unwrap();
+
+        // Craft entry with WRONG (non-zero) HMAC
+        let payload = rmp_serde::to_vec(&make_record(
+            99,
+            Severity::Critical,
+            DetectionSource::Realtime,
+        ))
+        .unwrap();
+        let forged_seq: u64 = 998;
+        let entry_size = 4u32 + 8 + 2 + 32 + payload.len() as u32 + 4;
+        let mut buf = Vec::with_capacity(entry_size as usize);
+        buf.extend_from_slice(&entry_size.to_le_bytes());
+        buf.extend_from_slice(&forged_seq.to_le_bytes());
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        buf.extend_from_slice(&[0xAA; 32]); // wrong HMAC
+        buf.extend_from_slice(&payload);
+        let crc = crc32fast::hash(&buf);
+        buf.extend_from_slice(&crc.to_le_bytes());
+
+        let file_len = wal.file_len.load(Ordering::Acquire);
+        {
+            let file = wal.file.lock();
+            write_all_at(&file, &buf, file_len).unwrap();
+        }
+        wal.file_len
+            .store(file_len + entry_size as u64, Ordering::Release);
+
+        let entries = wal.iter_unconsumed().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].sequence, legitimate_seq);
     }
 }
