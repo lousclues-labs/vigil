@@ -4,6 +4,27 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-04-17
+
+### User Experience
+
+- **`vigil update` operator experience overhaul.** Every phase of the update process now shows a step counter `[N/11]`, elapsed time, and a live spinner (TTY) or clean ASCII (non-TTY). No silent gap exceeds ~200ms.
+- **Step 9 (Verify daemon health)** shows attempt counter and live countdown between probes: `[attempt 2/3, next probe in 4s]`.
+- **Cargo build output framing:** cargo's native output is preserved byte-for-byte but wrapped in visible `╭─ cargo build --release ─────` / `╰─────` delimiters so operators can distinguish Vigil's phases from cargo's.
+- **Rollback rendering:** when the daemon fails health checks, the rollback path renders its own mini-plan with the same renderer. Summary clearly distinguishes "rolled back" from "no rollback available".
+- **New flags:** `--quiet` / `-q`, `--verbose` / `-v`, `--no-progress` for update command.
+- **Machine-readable output:** `--format=json` emits one NDJSON object per step event on stdout (stderr retains human output). Schema documented in docs/CLI.md.
+- **Environment variable support:** `VIGIL_PROGRESS=plain|auto|fancy`, `NO_COLOR`, `TERM=dumb` all respected.
+- **All output now goes to stderr** (stdout reserved for `--format=json`), matching cargo/shroud convention.
+
+### Internal
+
+- New `src/ui/` module with in-tree progress renderer (~500 lines, no new dependencies).
+- `src/ui/progress.rs`: `Plan`, `Progress`, `UpdateStep` types with full TTY/non-TTY/color/no-color matrix.
+- 11 new unit tests for the progress renderer (labels, modes, JSON events, passthrough framing).
+- 6 new CLI flag parsing tests.
+- All `println!` removed from update command non-test code paths; all output via `Progress` struct or `eprintln!` for low-level helpers.
+
 ## [0.35.0] - 2026-04-17
 
 ### Release Summary

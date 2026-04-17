@@ -102,6 +102,18 @@ pub enum Command {
         /// Path to the Vigil Baseline git repository (defaults to current directory)
         #[arg(long)]
         repo: Option<PathBuf>,
+
+        /// Suppress all output except errors and final summary
+        #[arg(short, long, conflicts_with_all = ["verbose", "no_progress"])]
+        quiet: bool,
+
+        /// Include debug-level output and per-step timing table
+        #[arg(short, long, conflicts_with_all = ["quiet", "no_progress"])]
+        verbose: bool,
+
+        /// Force plain-text progress (no spinners) even on a TTY
+        #[arg(long, conflicts_with_all = ["quiet", "verbose"])]
+        no_progress: bool,
     },
 
     /// Audit log operations
@@ -323,11 +335,80 @@ mod tests {
         let cli = Cli::try_parse_from(["vigil", "update", "--repo", "/opt/vigil"])
             .expect("parse update --repo");
         match cli.command {
-            Command::Update { repo } => {
+            Command::Update { repo, .. } => {
                 assert_eq!(repo, Some(PathBuf::from("/opt/vigil")));
             }
             _ => panic!("expected update command"),
         }
+    }
+
+    #[test]
+    fn update_quiet_flag() {
+        let cli =
+            Cli::try_parse_from(["vigil", "update", "--quiet"]).expect("parse update --quiet");
+        match cli.command {
+            Command::Update {
+                quiet,
+                verbose,
+                no_progress,
+                ..
+            } => {
+                assert!(quiet);
+                assert!(!verbose);
+                assert!(!no_progress);
+            }
+            _ => panic!("expected update command"),
+        }
+    }
+
+    #[test]
+    fn update_verbose_flag() {
+        let cli = Cli::try_parse_from(["vigil", "update", "-v"]).expect("parse update -v");
+        match cli.command {
+            Command::Update {
+                quiet,
+                verbose,
+                no_progress,
+                ..
+            } => {
+                assert!(!quiet);
+                assert!(verbose);
+                assert!(!no_progress);
+            }
+            _ => panic!("expected update command"),
+        }
+    }
+
+    #[test]
+    fn update_no_progress_flag() {
+        let cli = Cli::try_parse_from(["vigil", "update", "--no-progress"])
+            .expect("parse update --no-progress");
+        match cli.command {
+            Command::Update {
+                quiet,
+                verbose,
+                no_progress,
+                ..
+            } => {
+                assert!(!quiet);
+                assert!(!verbose);
+                assert!(no_progress);
+            }
+            _ => panic!("expected update command"),
+        }
+    }
+
+    #[test]
+    fn update_quiet_verbose_conflict() {
+        let result = Cli::try_parse_from(["vigil", "update", "--quiet", "--verbose"]);
+        assert!(result.is_err(), "--quiet and --verbose should conflict");
+    }
+
+    #[test]
+    fn update_json_format() {
+        let cli = Cli::try_parse_from(["vigil", "--format", "json", "update"])
+            .expect("parse --format json update");
+        assert_eq!(cli.format, OutputFormat::Json);
     }
 
     #[test]

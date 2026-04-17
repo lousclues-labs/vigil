@@ -97,8 +97,13 @@ fn run(cli: Cli) -> vigil::Result<i32> {
         Command::Doctor {
             format: doctor_format,
         } => cmd_doctor(config_path.as_deref(), doctor_format.unwrap_or(format)),
-        Command::Update { repo } => {
-            cmd_update(repo)?;
+        Command::Update {
+            repo,
+            quiet,
+            verbose,
+            no_progress,
+        } => {
+            cmd_update(repo, format, quiet, verbose, no_progress)?;
             Ok(0)
         }
         Command::Audit { action } => {

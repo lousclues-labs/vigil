@@ -253,12 +253,24 @@ replacement with backup and rollback, smoke-tests build artifacts before install
 step-by-step progress reporting, and post-update health verification with retry.
 
 ```bash
-vigil update [--repo <PATH>]
+vigil update [OPTIONS]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--repo <PATH>` | path to the Vigil Baseline git repository (skips auto-discovery) |
+| `-q`, `--quiet` | suppress all output except errors and final summary |
+| `-v`, `--verbose` | include debug-level output and per-step timing table |
+| `--no-progress` | force plain-text progress (no spinners) even on a TTY |
+
+The global `--format=json` flag enables machine-readable NDJSON output on stdout (human-readable output continues on stderr).
+
+**Environment variables:**
+
+| Variable | Values | Description |
+|----------|--------|-------------|
+| `VIGIL_PROGRESS` | `auto`, `plain`, `fancy` | override progress rendering mode |
+| `NO_COLOR` | any value | disable all ANSI color output |
 
 When `--repo` is not provided, Vigil Baseline automatically searches for the source
 repository in order: current directory, binary-relative parent directories,
@@ -293,49 +305,46 @@ vigil update --repo /opt/vigil
 sudo vigil update    # discovers repo via SUDO_USER
 ```
 
-Example output:
+Example output (TTY mode, ANSI stripped):
 
 ```
-  Using repository: /home/user/src/vigil
+[ 1/11] Verify repository...
+  ✓ Verify repository (12ms) — /home/user/src/vigil
+[ 2/11] Build release binaries...
+╭─ cargo build --release ───────────────────────────
+   Compiling vigil-baseline v0.36.0 (/home/user/src/vigil)
+    Finished `release` profile [optimized] target(s) in 2m 27s
+╰──────────────────────────────────────────────────
+  ✓ Build release binaries (2m 29s)
+[ 3/11] Verify artifacts...
+  ✓ Verify artifacts (120ms) — v0.35.0 → v0.36.0
+[ 4/11] Stop daemon...
+  ✓ Stop daemon (1.2s)
+[ 5/11] Back up existing binaries...
+  ✓ Back up existing binaries (85ms)
+[ 6/11] Install new binaries (atomic)...
+  ✓ Install new binaries (atomic) (210ms)
+[ 7/11] Install systemd units & hooks...
+  ✓ Install systemd units & hooks (45ms) — unchanged
+[ 8/11] Start daemon...
+  ✓ Start daemon (1.1s)
+[ 9/11] Verify daemon health...
+  ✓ Verify daemon health (2.3s)
+[10/11] Archive backups...
+  ✓ Archive backups (52ms)
+[11/11] Post-install health check...
+  ✓ Post-install health check (310ms) — v0.35.0 → v0.36.0 | daemon: restarted | baseline: preserved (14,832 entries)
 
-Building update from /home/user/src/vigil
-   Compiling vigil v0.32.3 (/home/user/src/vigil)
-    Finished `release` profile [optimized] target(s) in 42.3s
+  Update complete (2m 35s)
+```
 
-  ✓ vigil artifact OK
-  ✓ vigild artifact OK
+Example output (`--format=json`, one line per event on stdout):
 
-Updating: v0.32.2 → v0.32.3
-
-  Stopping vigild.service...
-  ✓ Daemon stopped
-  Installing binaries with rollback safety...
-  Backing up /usr/local/bin/vigil → /usr/local/bin/.vigil.backup
-  Backing up /usr/local/bin/vigild → /usr/local/bin/.vigild.backup
-  Installing vigil → /usr/local/bin/vigil...
-  Installing vigild → /usr/local/bin/vigild...
-  Smoke-testing installed vigil...
-  ✓ installed vigil artifact OK
-  Smoke-testing installed vigild...
-  ✓ installed vigild artifact OK
-  ✓ Binaries installed and verified
-  Updating symlinks...
-  Checking systemd units...
-  Checking hooks...
-  Starting vigild.service...
-  ✓ Daemon started
-  ✓ Daemon healthy (attempt 1/3)
-
-Vigil Baseline — Update Complete
-═══════════════════════
-
-  ✓ v0.32.2 → v0.32.3
-  Daemon:   restarted
-  Units:    unchanged
-  Hooks:    unchanged
-  Baseline: preserved (14,832 entries)
-
-  Running health check...
+```json
+{"ts":"2026-04-17T15:30:00Z","step":1,"total":11,"label":"Verify repository","state":"begin","elapsed_ms":0}
+{"ts":"2026-04-17T15:30:00Z","step":1,"total":11,"label":"Verify repository","state":"ok","elapsed_ms":12}
+{"ts":"2026-04-17T15:30:00Z","step":2,"total":11,"label":"Build release binaries","state":"begin","elapsed_ms":0}
+{"ts":"2026-04-17T15:32:29Z","step":2,"total":11,"label":"Build release binaries","state":"ok","elapsed_ms":149000}
 ```
 
 ---

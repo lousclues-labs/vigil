@@ -20,6 +20,7 @@ pub mod package;
 pub mod scan_scheduler;
 pub mod scanner;
 pub mod types;
+pub mod ui;
 pub mod wal;
 pub mod watch_index;
 pub mod worker;

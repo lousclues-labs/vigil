@@ -23,6 +23,31 @@ journalctl -u vigild.service -n 100 --no-pager
 
 ---
 
+## The Update Appears Stuck
+
+### Symptoms
+
+- `sudo vigil update` has been running for a long time with no visible output
+
+### Cause
+
+As of v0.36.0, `vigil update` shows a step counter `[N/11]` and elapsed time
+for every phase. If you see a spinner without progress, the system is waiting
+for a specific operation to complete. Common long-running steps:
+
+- **Step 2 (Build release binaries)**: cargo compilation, can take 2–3 minutes on initial build
+- **Step 4/8 (Stop/Start daemon)**: systemctl waiting for daemon to flush WAL or start fully
+- **Step 9 (Verify daemon health)**: retry loop with countdown shown as `[attempt 2/3, next probe in 4s]`
+
+### Fix
+
+1. Run with `--verbose` to see extra detail: `sudo vigil update --verbose`
+2. If the daemon is unresponsive, check its journal: `journalctl -u vigild.service -n 50`
+3. Force plain output for CI/logging: `sudo vigil update --no-progress`
+4. Machine-readable mode for automation: `sudo vigil --format=json update`
+
+---
+
 ## fanotify Not Available
 
 ### Symptoms

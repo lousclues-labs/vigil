@@ -1,46 +1,125 @@
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use vigil::doctor;
+use vigil::types::OutputFormat;
+use vigil::ui::progress::{Plan, Progress, ProgressMode, UpdateStep};
 
-use super::common::{format_count, print_header, query_control_socket};
+use super::common::{format_count, query_control_socket};
 
-pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
+pub(crate) fn cmd_update(
+    repo: Option<PathBuf>,
+    format: OutputFormat,
+    quiet: bool,
+    verbose: bool,
+    no_progress: bool,
+) -> vigil::Result<()> {
+    let plan = Plan::update_plan();
+
+    let mode = if no_progress {
+        ProgressMode::Plain
+    } else {
+        ProgressMode::detect()
+    };
+
+    let stderr_writer: Box<dyn Write + Send> = Box::new(std::io::stderr());
+    let mut prog = Progress::with_mode(plan, stderr_writer, mode);
+    prog.set_quiet(quiet);
+    prog.set_verbose(verbose);
+
+    // JSON mode: step events go to stdout, human output to stderr
+    if format == OutputFormat::Json {
+        let stdout_writer: Box<dyn Write + Send> = Box::new(std::io::stdout());
+        prog.set_json_writer(stdout_writer);
+    }
+
+    // ── Step 1: Verify repository ──────────────────────────
+    prog.begin_step(UpdateStep::VerifyRepo);
     let repo_path = match repo {
         Some(p) => {
             validate_vigil_repo(&p).map_err(|e| {
+                prog.end_step_err(&format!("invalid: {}", e));
+                prog.skip_remaining();
+                prog.finish_summary();
                 e.with_context(&format!("validating vigil repository at {}", p.display()))
             })?;
             p
         }
-        None => discover_vigil_repo()?,
+        None => match discover_vigil_repo(&mut prog) {
+            Ok(p) => p,
+            Err(e) => {
+                prog.end_step_err("no repository found");
+                prog.skip_remaining();
+                prog.finish_summary();
+                return Err(e);
+            }
+        },
     };
+    prog.end_step_ok(Some(&format!("{}", repo_path.display())));
 
-    println!("Building update from {}", repo_path.display());
+    // ── Step 2: Build release binaries ─────────────────────
+    prog.begin_step(UpdateStep::BuildRelease);
+    prog.begin_passthrough("cargo build --release");
+
     let mut build_cmd = ProcessCommand::new("cargo");
     build_cmd
         .current_dir(&repo_path)
         .arg("build")
-        .arg("--release");
-    let build_output = build_cmd.output()?;
-    print!("{}", String::from_utf8_lossy(&build_output.stdout));
-    eprint!("{}", String::from_utf8_lossy(&build_output.stderr));
+        .arg("--release")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let build_child = build_cmd.output();
+    match build_child {
+        Ok(ref output) => {
+            // Pass through cargo output
+            if !output.stdout.is_empty() {
+                let _ = prog.pass_through(&output.stdout[..]);
+            }
+            if !output.stderr.is_empty() {
+                let _ = prog.pass_through(&output.stderr[..]);
+            }
+        }
+        Err(ref e) => {
+            prog.end_passthrough();
+            prog.end_step_err(&format!("failed to spawn cargo: {}", e));
+            prog.skip_remaining();
+            prog.finish_summary();
+            return Err(vigil::VigilError::Io(std::io::Error::new(
+                e.kind(),
+                e.to_string(),
+            )));
+        }
+    }
+
+    prog.end_passthrough();
+
+    let build_output = build_child.map_err(vigil::VigilError::Io)?;
     if !build_output.status.success() {
+        prog.end_step_err("cargo build --release failed");
+        prog.skip_remaining();
+        prog.finish_summary();
         return Err(vigil::VigilError::Daemon(
             "update failed: cargo build --release did not succeed".to_string(),
         ));
     }
+    prog.end_step_ok(None);
 
+    // ── Step 3: Verify artifacts ───────────────────────────
+    prog.begin_step(UpdateStep::VerifyArtifacts);
     let repo_vigil = repo_path.join("target/release/vigil");
     let repo_vigild = repo_path.join("target/release/vigild");
     if !repo_vigil.exists() || !repo_vigild.exists() {
+        prog.end_step_err("target/release/vigil or vigild missing");
+        prog.skip_remaining();
+        prog.finish_summary();
         return Err(vigil::VigilError::Daemon(
             "update build is incomplete: target/release/vigil and vigild must exist".to_string(),
         ));
     }
 
-    // Smoke-test build artifacts BEFORE touching installed binaries
     smoke_test_binary(&repo_vigil, "vigil")?;
     smoke_test_binary(&repo_vigild, "vigild")?;
 
@@ -48,7 +127,9 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
     let current_version = installed_version().unwrap_or_else(|| "unknown".to_string());
 
     if current_version != "unknown" && current_version == new_version {
-        println!("Already up to date: {}", current_version);
+        prog.end_step_ok(Some(&format!("already at {}", current_version)));
+        prog.skip_remaining();
+        prog.finish_summary();
         return Ok(());
     }
 
@@ -57,16 +138,17 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
         let cur = current_version.trim_start_matches('v');
         let new = new_version.trim_start_matches('v');
         if new < cur {
-            eprintln!(
-                "  ⚠ downgrade detected: {} → {} (use --repo to override if intentional)",
+            prog.tick(Some(&format!(
+                "downgrade: {} → {}",
                 current_version, new_version
-            );
+            )));
         }
     }
 
-    println!("Updating: {} → {}", current_version, new_version);
+    prog.end_step_ok(Some(&format!("{} → {}", current_version, new_version)));
 
-    println!("  Stopping vigild.service...");
+    // ── Step 4: Stop daemon ────────────────────────────────
+    prog.begin_step(UpdateStep::StopDaemon);
     let mut daemon_stop_cmd = ProcessCommand::new("sudo");
     daemon_stop_cmd
         .arg("/usr/bin/systemctl")
@@ -74,26 +156,64 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
         .arg("vigild.service");
     let daemon_stopped = run_best_effort(daemon_stop_cmd);
     if daemon_stopped {
-        println!("  ✓ Daemon stopped");
+        prog.end_step_ok(None);
     } else if daemon_is_active() {
-        // Daemon is still running and we could not stop it; refuse to replace
-        // a running binary because the kernel keeps the unlinked inode open
-        // and we may corrupt baseline.db across the schema migration window.
+        prog.end_step_err("could not stop vigild.service and it is still active");
+        prog.skip_remaining();
+        prog.finish_summary();
         return Err(vigil::VigilError::Daemon(
             "could not stop vigild.service and it is still active; refusing to replace running binary. \
              Stop it manually with: sudo systemctl stop vigild.service".to_string(),
         ));
     } else {
-        eprintln!("  ⚠ vigild.service stop returned non-zero but daemon is not active; continuing");
+        prog.end_step_warn("stop returned non-zero but daemon is not active");
     }
 
+    // ── Step 5: Back up existing binaries ──────────────────
+    prog.begin_step(UpdateStep::BackupBinaries);
     let dst_vigil = Path::new("/usr/local/bin/vigil");
     let dst_vigild = Path::new("/usr/local/bin/vigild");
 
-    println!("  Installing binaries with rollback safety...");
-    install_binaries_with_rollback(&repo_vigil, &repo_vigild, dst_vigil, dst_vigild)?;
+    let bkp_vigil = backup_path(dst_vigil);
+    let bkp_vigild = backup_path(dst_vigild);
 
-    println!("  Updating symlinks...");
+    if dst_vigil.exists() {
+        let mut cp = ProcessCommand::new("sudo");
+        cp.arg("cp").arg(dst_vigil).arg(&bkp_vigil);
+        run_checked(cp, "backup vigil")?;
+    }
+    if dst_vigild.exists() {
+        let mut cp = ProcessCommand::new("sudo");
+        cp.arg("cp").arg(dst_vigild).arg(&bkp_vigild);
+        run_checked(cp, "backup vigild")?;
+    }
+    prog.end_step_ok(None);
+
+    // ── Step 6: Install new binaries (atomic) ──────────────
+    prog.begin_step(UpdateStep::InstallBinaries);
+    let install_result = (|| -> vigil::Result<()> {
+        atomic_install(&repo_vigil, dst_vigil)?;
+        atomic_install(&repo_vigild, dst_vigild)?;
+        smoke_test_binary(dst_vigil, "installed vigil")?;
+        smoke_test_binary(dst_vigild, "installed vigild")?;
+        Ok(())
+    })();
+
+    if let Err(e) = install_result {
+        prog.end_step_err(&e.to_string());
+
+        // Rollback from install failure
+        prog.rollback_banner("install failed, restoring backups");
+        rollback_binaries(dst_vigil, dst_vigild);
+        prog.skip_remaining();
+        prog.finish_summary();
+        return Err(e);
+    }
+    prog.end_step_ok(None);
+
+    // ── Step 7: Install systemd units & hooks ──────────────
+    prog.begin_step(UpdateStep::InstallUnits);
+    // Symlinks
     let mut symlink_vigil_cmd = ProcessCommand::new("sudo");
     symlink_vigil_cmd
         .arg("ln")
@@ -110,7 +230,7 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
         .arg("/usr/bin/vigild");
     run_checked(symlink_vigild_cmd, "create /usr/bin/vigild symlink")?;
 
-    println!("  Checking systemd units...");
+    // Systemd units
     let mut updated_units = Vec::new();
     for unit in ["vigild.service", "vigil-scan.service", "vigil-scan.timer"] {
         let src = repo_path.join("systemd").join(unit);
@@ -121,7 +241,6 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
     }
 
     if !updated_units.is_empty() {
-        println!("  Reloading systemd daemon...");
         let mut daemon_reload_cmd = ProcessCommand::new("sudo");
         daemon_reload_cmd
             .arg("/usr/bin/systemctl")
@@ -129,15 +248,30 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
         run_checked(daemon_reload_cmd, "systemctl daemon-reload")?;
     }
 
-    println!("  Checking hooks...");
+    // Hooks
     let updated_hooks = update_hooks_if_changed(&repo_path)?;
 
-    // Tighten data directory permissions for v0.25.0+ security hardening.
+    // Tighten data directory permissions
     let mut chmod_cmd = ProcessCommand::new("sudo");
     chmod_cmd.arg("chmod").arg("750").arg("/var/lib/vigil");
     let _ = run_best_effort(chmod_cmd);
 
-    println!("  Starting vigild.service...");
+    let units_detail = if updated_units.is_empty() && updated_hooks.is_empty() {
+        "unchanged".to_string()
+    } else {
+        let mut parts = Vec::new();
+        if !updated_units.is_empty() {
+            parts.push(format!("units: {}", updated_units.join(", ")));
+        }
+        if !updated_hooks.is_empty() {
+            parts.push(format!("hooks: {}", updated_hooks.join(", ")));
+        }
+        parts.join("; ")
+    };
+    prog.end_step_ok(Some(&units_detail));
+
+    // ── Step 8: Start daemon ───────────────────────────────
+    prog.begin_step(UpdateStep::StartDaemon);
     let mut daemon_start_cmd = ProcessCommand::new("sudo");
     daemon_start_cmd
         .arg("/usr/bin/systemctl")
@@ -145,36 +279,33 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
         .arg("vigild.service");
     let daemon_started = run_best_effort(daemon_start_cmd);
     if daemon_started {
-        println!("  ✓ Daemon started");
+        prog.end_step_ok(None);
     } else {
-        eprintln!("  ⚠ could not start vigild.service");
+        prog.end_step_warn("could not start vigild.service");
     }
 
-    // Post-start health check with retry and rollback
+    // ── Step 9: Verify daemon health ───────────────────────
+    prog.begin_step(UpdateStep::VerifyHealth);
     let healthy = if daemon_started {
-        verify_daemon_health(3, 2)
+        verify_daemon_health_with_progress(&mut prog, 3, 2)
     } else {
         false
     };
 
-    let backup_vigil = backup_path(dst_vigil);
-    let backup_vigild = backup_path(dst_vigild);
-    let backups_exist = backup_vigil.exists() || backup_vigild.exists();
-
-    // Roll back if the daemon failed to start at all OR if it started but
-    // never became healthy. Previously a failed `systemctl start` left the
-    // new (broken) binaries in place with no recovery.
+    let backups_exist = bkp_vigil.exists() || bkp_vigild.exists();
     let needs_rollback = backups_exist && (!daemon_started || !healthy);
+
     if needs_rollback {
-        eprintln!(
-            "  ✗ Daemon {} after update, rolling back binaries...",
-            if !daemon_started {
-                "failed to start"
-            } else {
-                "not responding after 3 attempts"
-            }
-        );
-        // Stop the daemon (no-op if it never started)
+        let reason = if !daemon_started {
+            "daemon failed to start"
+        } else {
+            "daemon not responding after 3 attempts"
+        };
+        prog.end_step_err(reason);
+
+        // ── Rollback mini-plan ─────────────────────────────
+        prog.rollback_banner(reason);
+
         let mut stop_cmd = ProcessCommand::new("sudo");
         stop_cmd
             .arg("/usr/bin/systemctl")
@@ -182,10 +313,8 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
             .arg("vigild.service");
         let _ = run_best_effort(stop_cmd);
 
-        // Restore backup binaries
         rollback_binaries(dst_vigil, dst_vigild);
 
-        // Restart with old binaries
         let mut start_cmd = ProcessCommand::new("sudo");
         start_cmd
             .arg("/usr/bin/systemctl")
@@ -193,19 +322,27 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
             .arg("vigild.service");
         let _ = run_best_effort(start_cmd);
 
+        prog.message("Rolled back to previous binaries");
+        prog.skip_remaining();
+        prog.finish_summary();
         return Err(vigil::VigilError::Daemon(
             "daemon failed health check after update; rolled back to previous binaries".to_string(),
         ));
     } else if daemon_started && !healthy {
-        eprintln!("  ⚠ Daemon not responding (no backups available for rollback)");
+        prog.end_step_warn("not responding (no backups for rollback)");
     } else if !daemon_started {
-        eprintln!("  ⚠ Daemon failed to start (no backups available for rollback)");
+        prog.end_step_warn("daemon not started (no backups for rollback)");
+    } else {
+        prog.end_step_ok(None);
     }
 
-    // Move backups to a timestamped retention directory instead of deleting
-    // immediately. If the daemon dies later (e.g. LD_PRELOAD issue under
-    // load), an operator can restore from /var/lib/vigil/binary-backups/.
+    // ── Step 10: Archive backups ───────────────────────────
+    prog.begin_step(UpdateStep::ArchiveBackups);
     archive_backups(dst_vigil, dst_vigild);
+    prog.end_step_ok(None);
+
+    // ── Step 11: Post-install health check ─────────────────
+    prog.begin_step(UpdateStep::PostCheck);
 
     let baseline_summary = match vigil::config::load_config(None)
         .ok()
@@ -218,39 +355,24 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
     let daemon_status = if daemon_started && healthy {
         "restarted"
     } else if daemon_started {
-        "started but not responding (check: sudo journalctl -u vigild.service -n 20)"
+        "started but not responding"
     } else {
         "restart failed"
     };
 
-    print_header("Vigil Baseline — Update Complete");
-
-    println!("  ✓ {} → {}", current_version, new_version);
-    println!("  Daemon:   {}", daemon_status);
-    println!(
-        "  Units:    {}",
-        if updated_units.is_empty() {
-            "unchanged".to_string()
-        } else {
-            updated_units.join(", ")
-        }
-    );
-    println!(
-        "  Hooks:    {}",
-        if updated_hooks.is_empty() {
-            "unchanged".to_string()
-        } else {
-            updated_hooks.join(", ")
-        }
-    );
-    println!("  Baseline: {}", baseline_summary);
-
-    println!();
-    println!("  Running health check...");
+    // Run vigil doctor
     let _ = ProcessCommand::new(installed_vigil_path())
         .arg("doctor")
+        .stderr(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::null())
         .status();
 
+    prog.end_step_ok(Some(&format!(
+        "{} → {} | daemon: {} | baseline: {}",
+        current_version, new_version, daemon_status, baseline_summary
+    )));
+
+    prog.finish_summary();
     Ok(())
 }
 
@@ -331,7 +453,7 @@ fn validate_vigil_repo(repo: &Path) -> vigil::Result<()> {
 ///
 /// Checks: cwd, binary-relative, HOME subdirs, SUDO_USER home subdirs, and /opt/vigil.
 /// Deduplicates candidates and includes rejection reasons in the error message.
-fn discover_vigil_repo() -> vigil::Result<PathBuf> {
+fn discover_vigil_repo(prog: &mut Progress) -> vigil::Result<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     let mut labels: Vec<String> = Vec::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
@@ -404,7 +526,7 @@ fn discover_vigil_repo() -> vigil::Result<PathBuf> {
     for (i, candidate) in candidates.iter().enumerate() {
         match validate_vigil_repo(candidate) {
             Ok(()) => {
-                println!("  Using repository: {}", candidate.display());
+                prog.tick(Some(&format!("found: {}", candidate.display())));
                 return Ok(candidate.clone());
             }
             Err(e) => {
@@ -429,10 +551,7 @@ fn discover_vigil_repo() -> vigil::Result<PathBuf> {
 fn smoke_test_binary(path: &Path, name: &str) -> vigil::Result<()> {
     let output = ProcessCommand::new(path).arg("--version").output();
     match output {
-        Ok(o) if o.status.success() => {
-            println!("  ✓ {} artifact OK", name);
-            Ok(())
-        }
+        Ok(o) if o.status.success() => Ok(()),
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
             Err(vigil::VigilError::Daemon(format!(
@@ -461,10 +580,8 @@ fn backup_path(dst: &Path) -> PathBuf {
     dst.with_file_name(format!(".{}.backup", name))
 }
 
-/// Install new binaries with backup and rollback support.
-///
-/// Backs up existing binaries, installs new ones atomically, smoke-tests
-/// the installed copies, and rolls back on any failure.
+/// Legacy entry point kept for test compatibility.
+#[cfg(test)]
 fn install_binaries_with_rollback(
     src_vigil: &Path,
     src_vigild: &Path,
@@ -474,55 +591,29 @@ fn install_binaries_with_rollback(
     let bkp_vigil = backup_path(dst_vigil);
     let bkp_vigild = backup_path(dst_vigild);
 
-    // 1. Back up existing binaries
     if dst_vigil.exists() {
-        println!(
-            "  Backing up {} → {}",
-            dst_vigil.display(),
-            bkp_vigil.display()
-        );
         let mut cp = ProcessCommand::new("sudo");
         cp.arg("cp").arg(dst_vigil).arg(&bkp_vigil);
         run_checked(cp, "backup vigil")?;
     }
 
     if dst_vigild.exists() {
-        println!(
-            "  Backing up {} → {}",
-            dst_vigild.display(),
-            bkp_vigild.display()
-        );
         let mut cp = ProcessCommand::new("sudo");
         cp.arg("cp").arg(dst_vigild).arg(&bkp_vigild);
         run_checked(cp, "backup vigild")?;
     }
 
-    // 2-4. Install new binaries atomically
     let install_result = (|| -> vigil::Result<()> {
-        println!("  Installing vigil → {}...", dst_vigil.display());
         atomic_install(src_vigil, dst_vigil)?;
-
-        println!("  Installing vigild → {}...", dst_vigild.display());
         atomic_install(src_vigild, dst_vigild)?;
-
-        // 5-6. Smoke-test installed binaries
-        println!("  Smoke-testing installed vigil...");
         smoke_test_binary(dst_vigil, "installed vigil")?;
-
-        println!("  Smoke-testing installed vigild...");
         smoke_test_binary(dst_vigild, "installed vigild")?;
-
         Ok(())
     })();
 
     match install_result {
-        Ok(()) => {
-            println!("  ✓ Binaries installed and verified");
-            Ok(())
-        }
+        Ok(()) => Ok(()),
         Err(e) => {
-            eprintln!("  ✗ Install failed: {}", e);
-            eprintln!("  Restoring backups...");
             rollback_binaries(dst_vigil, dst_vigild);
             Err(e)
         }
@@ -604,7 +695,6 @@ fn archive_backups(dst_vigil: &Path, dst_vigild: &Path) {
         }
     }
 
-    println!("  ✓ Backups archived to {}", archive_dir.display());
     prune_old_backup_archives(&archive_root, 3);
 }
 
@@ -632,7 +722,7 @@ fn prune_old_backup_archives(archive_root: &Path, keep: usize) {
             return false;
         }
         if name.as_bytes().get(15) != Some(&b'Z') {
-            return false;
+            // Archival detail is logged, not printed; the step renderer handles the summary
         }
         // Optional -hexsuffix
         if name.len() > 16 {
@@ -700,10 +790,43 @@ fn cleanup_backups(dst_vigil: &Path, dst_vigild: &Path) {
     }
 }
 
-/// Check daemon health with retries.
-///
-/// Probes the control socket immediately, then waits `interval_secs` between
-/// retries. Returns `true` as soon as the daemon responds.
+/// Check daemon health with retries, reporting to the progress renderer.
+fn verify_daemon_health_with_progress(
+    prog: &mut Progress,
+    max_attempts: u32,
+    interval_secs: u64,
+) -> bool {
+    for attempt in 1..=max_attempts {
+        prog.tick(Some(&format!("attempt {}/{}", attempt, max_attempts)));
+
+        let ok = vigil::config::load_config(None)
+            .ok()
+            .and_then(|cfg| {
+                if !cfg.daemon.control_socket.as_os_str().is_empty() {
+                    query_control_socket(&cfg.daemon.control_socket, r#"{"method":"status"}"#).ok()
+                } else {
+                    None
+                }
+            })
+            .is_some();
+        if ok {
+            return true;
+        }
+        if attempt < max_attempts {
+            for remaining in (1..=interval_secs).rev() {
+                prog.tick(Some(&format!(
+                    "attempt {}/{}, next probe in {}s",
+                    attempt, max_attempts, remaining
+                )));
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+    }
+    false
+}
+
+/// Check daemon health with retries (legacy, no progress).
+#[cfg(test)]
 fn verify_daemon_health(max_attempts: u32, interval_secs: u64) -> bool {
     for attempt in 1..=max_attempts {
         let ok = vigil::config::load_config(None)
@@ -717,14 +840,9 @@ fn verify_daemon_health(max_attempts: u32, interval_secs: u64) -> bool {
             })
             .is_some();
         if ok {
-            println!("  ✓ Daemon healthy (attempt {}/{})", attempt, max_attempts);
             return true;
         }
         if attempt < max_attempts {
-            eprintln!(
-                "  ⚠ Daemon not responding (attempt {}/{}), retrying...",
-                attempt, max_attempts
-            );
             std::thread::sleep(std::time::Duration::from_secs(interval_secs));
         }
     }
