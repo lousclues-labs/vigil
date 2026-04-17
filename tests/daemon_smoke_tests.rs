@@ -3,6 +3,7 @@ use std::time::Duration;
 
 #[test]
 #[cfg_attr(tarpaulin, ignore)]
+#[cfg_attr(not(debug_assertions), ignore)] // requires root in release builds (directory ownership check)
 fn daemon_start_and_shutdown_smoke_test() {
     let dir = tempfile::tempdir().unwrap();
     let watch_dir = dir.path().join("watch");
