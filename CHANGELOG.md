@@ -17,6 +17,11 @@ All notable changes to Vigil Baseline will be documented in this file.
 - **Environment variable support:** `VIGIL_PROGRESS=plain|auto|fancy`, `NO_COLOR`, `TERM=dumb` all respected.
 - **All output now goes to stderr** (stdout reserved for `--format=json`), matching cargo/shroud convention.
 
+### Bug Fixes
+
+- **Fix 4-minute hang at step 3/11 and 6/11.** `vigild` has no CLI argument parsing; running `vigild --version` launched a full daemon that blocked until killed. New `smoke_test_binary_exists()` checks file existence and executable permission instead of running the binary. `smoke_test_binary()` (with `--version`) is still used for the `vigil` CLI binary.
+- **Fix silent cargo build.** Step 2 used `.output()` which buffered all cargo output until completion. Changed to `Stdio::inherit()` so cargo's `Compiling…` / `Building…` lines stream live to the terminal.
+
 ### Internal
 
 - New `src/ui/` module with in-tree progress renderer (~500 lines, no new dependencies).
