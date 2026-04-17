@@ -80,8 +80,9 @@ pub fn detect_backend() -> PackageBackend {
 
 fn query_pacman(path: &str) -> Option<String> {
     let output = run_with_timeout(
-        Command::new(PACMAN_PATH).args(["-Qo", "--quiet", path]),
+        Command::new(PACMAN_PATH).args(["-Qo", "--quiet", "--", path]),
         PKG_QUERY_TIMEOUT,
+        true,
     )?;
 
     if output.status.success() {
@@ -98,8 +99,9 @@ fn query_pacman(path: &str) -> Option<String> {
 
 fn query_dpkg(path: &str) -> Option<String> {
     let output = run_with_timeout(
-        Command::new(DPKG_PATH).args(["-S", path]),
+        Command::new(DPKG_PATH).args(["-S", "--", path]),
         PKG_QUERY_TIMEOUT,
+        true,
     )?;
 
     if output.status.success() {
@@ -112,8 +114,9 @@ fn query_dpkg(path: &str) -> Option<String> {
 
 fn query_rpm(path: &str) -> Option<String> {
     let output = run_with_timeout(
-        Command::new(RPM_PATH).args(["-qf", path]),
+        Command::new(RPM_PATH).args(["-qf", "--", path]),
         PKG_QUERY_TIMEOUT,
+        true,
     )?;
 
     if output.status.success() {
@@ -129,9 +132,15 @@ fn query_rpm(path: &str) -> Option<String> {
 }
 
 /// Run a command with a timeout. Returns None if the command times out or fails to spawn.
-/// When the circuit breaker is open, returns None immediately without spawning a subprocess.
-fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process::Output> {
-    if timeout == PKG_QUERY_TIMEOUT && is_circuit_open() {
+/// When `use_breaker` is true and the circuit breaker is open, returns None
+/// immediately without spawning a subprocess. Successful runs reset the
+/// breaker; timeouts increment the consecutive-timeout counter.
+fn run_with_timeout(
+    cmd: &mut Command,
+    timeout: Duration,
+    use_breaker: bool,
+) -> Option<std::process::Output> {
+    if use_breaker && is_circuit_open() {
         return None;
     }
 
@@ -145,7 +154,7 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process
     loop {
         match child.try_wait() {
             Ok(Some(_status)) => {
-                if timeout == PKG_QUERY_TIMEOUT {
+                if use_breaker {
                     CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed);
                 }
                 return child.wait_with_output().ok();
@@ -155,7 +164,7 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process
                     tracing::warn!("Package manager query timed out after {:?}", timeout);
                     let _ = child.kill();
                     let _ = child.wait();
-                    if timeout == PKG_QUERY_TIMEOUT {
+                    if use_breaker {
                         let count = CONSECUTIVE_TIMEOUTS.fetch_add(1, Ordering::Relaxed) + 1;
                         if count >= CIRCUIT_OPEN_THRESHOLD {
                             let until = chrono::Utc::now().timestamp() + CIRCUIT_OPEN_DURATION_SECS;
@@ -215,10 +224,12 @@ fn batch_query_dpkg(paths: &[String]) -> HashMap<String, String> {
     let mut results = HashMap::new();
     let mut cmd = Command::new(DPKG_PATH);
     cmd.arg("-S");
+    // `--` ensures any path beginning with `-` is treated as a path, not a flag.
+    cmd.arg("--");
     for p in paths {
         cmd.arg(p);
     }
-    if let Some(output) = run_with_timeout(&mut cmd, PKG_QUERY_TIMEOUT) {
+    if let Some(output) = run_with_timeout(&mut cmd, PKG_QUERY_TIMEOUT, true) {
         // dpkg -S output: "package: /path/to/file" per line
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
@@ -283,7 +294,7 @@ fn build_cache_pacman() -> HashMap<PathBuf, String> {
     let mut cache = HashMap::new();
     // `pacman -Ql` outputs "package /path/to/file" per line
     let timeout = Duration::from_secs(30);
-    if let Some(output) = run_with_timeout(Command::new(PACMAN_PATH).arg("-Ql"), timeout) {
+    if let Some(output) = run_with_timeout(Command::new(PACMAN_PATH).arg("-Ql"), timeout, false) {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
@@ -297,7 +308,14 @@ fn build_cache_pacman() -> HashMap<PathBuf, String> {
             }
         }
     }
-    tracing::info!(entries = cache.len(), "built pacman package cache");
+    if cache.is_empty() {
+        tracing::error!(
+            "pacman package cache built with 0 entries (likely query timeout) — \
+             package attribution will be unavailable until the next refresh"
+        );
+    } else {
+        tracing::info!(entries = cache.len(), "built pacman package cache");
+    }
     cache
 }
 
@@ -348,7 +366,13 @@ fn build_cache_dpkg() -> HashMap<PathBuf, String> {
             }
         }
     }
-    tracing::info!(entries = cache.len(), "built dpkg package cache");
+    if cache.is_empty() {
+        tracing::error!(
+            "dpkg package cache built with 0 entries — /var/lib/dpkg/info is empty or unreadable"
+        );
+    } else {
+        tracing::info!(entries = cache.len(), "built dpkg package cache");
+    }
     cache
 }
 
@@ -360,6 +384,7 @@ fn build_cache_rpm() -> HashMap<PathBuf, String> {
     if let Some(output) = run_with_timeout(
         Command::new(RPM_PATH).args(["-qa", "--filesbypkg"]),
         timeout,
+        false,
     ) {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -381,7 +406,11 @@ fn build_cache_rpm() -> HashMap<PathBuf, String> {
             }
         }
     }
-    tracing::info!(entries = cache.len(), "built rpm package cache");
+    if cache.is_empty() {
+        tracing::error!("rpm package cache built with 0 entries (likely query timeout)");
+    } else {
+        tracing::info!(entries = cache.len(), "built rpm package cache");
+    }
     cache
 }
 

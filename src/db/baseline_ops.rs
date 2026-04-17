@@ -137,7 +137,13 @@ pub fn batch_upsert(conn: &Connection, entries: &[BaselineEntry]) -> Result<u64>
     let mut count = 0u64;
     for entry in entries {
         if let Err(e) = upsert(conn, entry) {
-            let _ = conn.execute_batch("ROLLBACK");
+            if let Err(rb) = conn.execute_batch("ROLLBACK") {
+                tracing::error!(
+                    rollback_error = %rb,
+                    original_error = %e,
+                    "ROLLBACK failed; sqlite connection state may be inconsistent"
+                );
+            }
             return Err(e);
         }
         count += 1;

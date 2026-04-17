@@ -1466,12 +1466,27 @@ fn command_exists(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn systemctl_is_active(unit: &str) -> Option<bool> {
-    if !command_exists("systemctl") {
-        return None;
+/// Resolve the absolute path of `systemctl` to avoid PATH-injection in the
+/// privileged daemon. Prefers known absolute locations; falls back to PATH
+/// only if none of the canonical paths exist.
+fn systemctl_binary() -> Option<std::path::PathBuf> {
+    for cand in ["/usr/bin/systemctl", "/bin/systemctl"] {
+        let p = std::path::PathBuf::from(cand);
+        if p.is_file() {
+            return Some(p);
+        }
     }
+    if command_exists("systemctl") {
+        Some(std::path::PathBuf::from("systemctl"))
+    } else {
+        None
+    }
+}
 
-    let status = Command::new("systemctl")
+fn systemctl_is_active(unit: &str) -> Option<bool> {
+    let bin = systemctl_binary()?;
+
+    let status = Command::new(&bin)
         .arg("is-active")
         .arg(unit)
         .stdout(Stdio::null())
@@ -1482,11 +1497,9 @@ fn systemctl_is_active(unit: &str) -> Option<bool> {
 }
 
 fn systemctl_show(unit: &str, property: &str) -> Option<String> {
-    if !command_exists("systemctl") {
-        return None;
-    }
+    let bin = systemctl_binary()?;
 
-    let output = Command::new("systemctl")
+    let output = Command::new(&bin)
         .arg("show")
         .arg(unit)
         .arg(format!("--property={}", property))

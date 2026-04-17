@@ -456,12 +456,20 @@ impl DaemonRuntime {
 
         let backpressure = Arc::new(AtomicBool::new(false));
 
+        // Create scan trigger channel here (used both by control socket and by
+        // the fanotify monitor, which triggers a compensating full scan on
+        // FAN_Q_OVERFLOW). Channel size > 1 avoids dropping overflow signals.
+        let (scan_trigger_tx, scan_trigger_rx) =
+            crossbeam_channel::bounded::<control::ScanRequest>(4);
+
         let monitor_handle = monitor::start_monitor(
             &cfg,
             event_tx.clone(),
             daemon.shutdown.clone(),
             daemon.watch_index.clone(),
             daemon.metrics.clone(),
+            Some(daemon.state.clone()),
+            Some(scan_trigger_tx.clone()),
         )?;
         send_watchdog_heartbeat();
 
@@ -625,10 +633,6 @@ impl DaemonRuntime {
 
         let (shutdown_tx, shutdown_rx) = crossbeam_channel::bounded::<()>(1);
 
-        // Create scan trigger channel for on-demand scans via control socket
-        let (scan_trigger_tx, scan_trigger_rx) =
-            crossbeam_channel::bounded::<control::ScanRequest>(1);
-
         // Open a startup baseline connection for the scan scheduler (avoids TOCTOU)
         let scan_baseline_conn = db::open_baseline_db(&cfg)?;
 
@@ -659,7 +663,7 @@ impl DaemonRuntime {
                 reload_flag: daemon.reload_flag.clone(),
                 scan_trigger_tx,
                 baseline_db_path: baseline_db_path.clone(),
-                baseline_conn: control_baseline_conn,
+                baseline_conn: Arc::new(parking_lot::Mutex::new(control_baseline_conn)),
                 config: daemon.config.clone(),
                 hmac_key: daemon.startup_hmac_key.clone(),
                 auth_enabled: daemon.startup_hmac_key.is_some(),
@@ -711,23 +715,37 @@ impl DaemonRuntime {
 
         // Stop new monitor events and let workers drain what remains.
         drop(self.event_tx);
-        for worker in self.workers {
-            let _ = worker.join();
+        for (i, worker) in self.workers.into_iter().enumerate() {
+            if let Err(e) = worker.join() {
+                tracing::warn!(thread = "worker", index = i, panic = ?e, "thread panicked during shutdown");
+            }
         }
 
         // No more fallback alerts can be produced after workers exit.
         drop(self.alert_tx);
 
-        let _ = self.baseline_writer.join();
+        if let Err(e) = self.baseline_writer.join() {
+            tracing::warn!(thread = "baseline_writer", panic = ?e, "thread panicked during shutdown");
+        }
         if let Some(handle) = self.audit_writer_handle {
-            let _ = handle.join();
+            if let Err(e) = handle.join() {
+                tracing::warn!(thread = "audit_writer", panic = ?e, "thread panicked during shutdown");
+            }
         }
         if let Some(handle) = self.sink_runner_handle {
-            let _ = handle.join();
+            if let Err(e) = handle.join() {
+                tracing::warn!(thread = "sink_runner", panic = ?e, "thread panicked during shutdown");
+            }
         }
-        let _ = self.alert_handle.join();
-        let _ = self.coordinator_handle.join();
-        let _ = self.scan_handle.join();
+        if let Err(e) = self.alert_handle.join() {
+            tracing::warn!(thread = "alert", panic = ?e, "thread panicked during shutdown");
+        }
+        if let Err(e) = self.coordinator_handle.join() {
+            tracing::warn!(thread = "coordinator", panic = ?e, "thread panicked during shutdown");
+        }
+        if let Err(e) = self.scan_handle.join() {
+            tracing::warn!(thread = "scan_scheduler", panic = ?e, "thread panicked during shutdown");
+        }
 
         if let Some(wal) = self.wal {
             let _ = wal.truncate_consumed();
@@ -987,20 +1005,33 @@ enum NotifyUrgency {
 }
 
 fn notify_desktop(message: &str, urgency: NotifyUrgency) {
-    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let available = *AVAILABLE.get_or_init(|| {
-        let found = std::env::var_os("PATH")
-            .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join("notify-send").is_file()))
-            .unwrap_or(false);
-        if !found {
-            tracing::debug!("notify-send not found; desktop notifications disabled");
-        }
-        found
-    });
+    static AVAILABLE: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    let available = AVAILABLE
+        .get_or_init(|| {
+            // Prefer absolute-path candidates to avoid PATH-injection in the
+            // privileged daemon. Fall back to PATH lookup as a last resort.
+            const ABS_CANDIDATES: &[&str] = &["/usr/bin/notify-send", "/bin/notify-send"];
+            for cand in ABS_CANDIDATES {
+                let p = std::path::Path::new(cand);
+                if p.is_file() {
+                    return Some(p.to_path_buf());
+                }
+            }
+            let path_hit = std::env::var_os("PATH").and_then(|paths| {
+                std::env::split_paths(&paths)
+                    .map(|dir| dir.join("notify-send"))
+                    .find(|p| p.is_file())
+            });
+            if path_hit.is_none() {
+                tracing::debug!("notify-send not found; desktop notifications disabled");
+            }
+            path_hit
+        })
+        .clone();
 
-    if !available {
+    let Some(notify_send_path) = available else {
         return;
-    }
+    };
 
     let urgency_str = match urgency {
         NotifyUrgency::Low => "low",
@@ -1008,7 +1039,7 @@ fn notify_desktop(message: &str, urgency: NotifyUrgency) {
         NotifyUrgency::Critical => "critical",
     };
 
-    let status = std::process::Command::new("notify-send")
+    let status = std::process::Command::new(&notify_send_path)
         .arg("--app-name=Vigil Baseline")
         .arg(format!("--urgency={}", urgency_str))
         .arg("Vigil Baseline")

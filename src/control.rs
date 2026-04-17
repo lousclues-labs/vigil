@@ -1,12 +1,12 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 use crate::db::baseline_ops;
 use crate::error::{Result, VigilError};
@@ -18,6 +18,11 @@ use zeroize::Zeroizing;
 /// Legitimate requests are small JSON objects (< 1KB typically).
 /// 64KB provides generous headroom while preventing OOM attacks.
 const MAX_REQUEST_LINE_BYTES: u64 = 65_536;
+
+/// Maximum number of concurrent in-flight control socket connections.
+/// Bounds resource usage from a slow/malicious peer holding multiple sockets.
+/// Excess connections receive a 503-style JSON refusal and close immediately.
+const MAX_CONCURRENT_CONNECTIONS: usize = 8;
 
 /// Request sent through the scan trigger channel.
 #[derive(Debug)]
@@ -45,7 +50,7 @@ pub struct ControlHandler {
     pub reload_flag: Arc<AtomicBool>,
     pub scan_trigger_tx: crossbeam_channel::Sender<ScanRequest>,
     pub baseline_db_path: PathBuf,
-    pub baseline_conn: rusqlite::Connection,
+    pub baseline_conn: Arc<Mutex<rusqlite::Connection>>,
     pub config: Arc<arc_swap::ArcSwap<crate::config::Config>>,
     pub hmac_key: Option<Zeroizing<Vec<u8>>>,
     pub auth_enabled: bool,
@@ -90,6 +95,8 @@ pub fn spawn(
         .name("vigil-control".into())
         .spawn(move || {
             tracing::info!(path = %socket_path_clone.display(), "control socket listening");
+            let handler = Arc::new(handler);
+            let in_flight = Arc::new(AtomicUsize::new(0));
 
             while !shutdown.load(Ordering::Acquire) {
                 match listener.accept() {
@@ -97,9 +104,37 @@ pub fn spawn(
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
                         let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
 
-                        if let Err(e) = handler.handle_connection(stream) {
-                            tracing::debug!(error = %e, "control socket connection error");
+                        // Bound concurrent connections so a slow/hung peer
+                        // cannot starve health-check traffic from `vigil
+                        // update`. Atomic-CAS reservation slot.
+                        let current = in_flight.load(Ordering::Acquire);
+                        if current >= MAX_CONCURRENT_CONNECTIONS {
+                            let _ = handler.write_response(
+                                &stream,
+                                &serde_json::json!({
+                                    "ok": false,
+                                    "error": "control socket busy: too many concurrent connections"
+                                }),
+                            );
+                            tracing::warn!(
+                                in_flight = current,
+                                max = MAX_CONCURRENT_CONNECTIONS,
+                                "rejecting control socket connection: at concurrency limit"
+                            );
+                            continue;
                         }
+                        in_flight.fetch_add(1, Ordering::AcqRel);
+
+                        let handler_clone = Arc::clone(&handler);
+                        let in_flight_clone = Arc::clone(&in_flight);
+                        let _ = std::thread::Builder::new()
+                            .name("vigil-control-conn".into())
+                            .spawn(move || {
+                                if let Err(e) = handler_clone.handle_connection(stream) {
+                                    tracing::debug!(error = %e, "control socket connection error");
+                                }
+                                in_flight_clone.fetch_sub(1, Ordering::AcqRel);
+                            });
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(200));
@@ -120,7 +155,54 @@ pub fn spawn(
 
 impl ControlHandler {
     fn handle_connection(&self, stream: std::os::unix::net::UnixStream) -> Result<()> {
-        log_peer_credentials(&stream);
+        let peer = peer_credentials(&stream);
+        match &peer {
+            Some(p) => {
+                tracing::info!(
+                    peer_pid = p.pid,
+                    peer_uid = p.uid,
+                    peer_gid = p.gid,
+                    "control socket connection"
+                );
+            }
+            None => {
+                // Without SO_PEERCRED we cannot tell who is on the other end.
+                // Fail closed rather than silently allow.
+                let _ = self.write_response(
+                    &stream,
+                    &serde_json::json!({
+                        "ok": false,
+                        "error": "unauthorized: peer credentials unavailable"
+                    }),
+                );
+                tracing::warn!("rejecting control socket connection: SO_PEERCRED unavailable");
+                return Ok(());
+            }
+        }
+
+        // Enforce peer UID even when HMAC auth is disabled. The socket file is
+        // mode 0600 so the kernel typically blocks non-root access, but defense
+        // in depth: explicitly reject any connection whose peer UID is neither
+        // root (0) nor the daemon's own effective UID.
+        if let Some(p) = &peer {
+            let our_uid = current_euid();
+            if p.uid != 0 && p.uid != our_uid {
+                let _ = self.write_response(
+                    &stream,
+                    &serde_json::json!({
+                        "ok": false,
+                        "error": "unauthorized: peer UID is not root or daemon UID"
+                    }),
+                );
+                tracing::warn!(
+                    peer_pid = p.pid,
+                    peer_uid = p.uid,
+                    "rejecting control socket connection: unauthorized peer UID"
+                );
+                return Ok(());
+            }
+        }
+
         let request = if self.auth_enabled {
             self.authenticate_and_read(&stream)?
         } else {
@@ -188,9 +270,11 @@ impl ControlHandler {
         match serde_json::from_str::<serde_json::Value>(trimmed) {
             Ok(request) => {
                 let client_response = request["response"].as_str().unwrap_or("");
-                let expected_hmac =
-                    crate::hmac::compute_hmac(key, nonce.as_bytes()).unwrap_or_default();
-                if client_response != expected_hmac {
+                // Use constant-time HMAC verification (Mac::verify_slice). The
+                // previous string `!=` comparison was both timing-leaky and
+                // could be bypassed when compute_hmac() returned an empty
+                // String via unwrap_or_default().
+                if !crate::hmac::verify_hmac(key, nonce.as_bytes(), client_response) {
                     let fail_resp = r#"{"ok":false,"error":"authentication failed"}"#;
                     let mut writer = stream;
                     let _ = writer.write_all(fail_resp.as_bytes());
@@ -228,11 +312,17 @@ impl ControlHandler {
         response: &serde_json::Value,
     ) -> Result<()> {
         let mut writer = stream;
-        let mut response_str = serde_json::to_string(response)
-            .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization error"}"#.into());
-        response_str.push('\n');
-        let _ = writer.write_all(response_str.as_bytes());
-        let _ = writer.flush();
+        let response_str = serde_json::to_string(response)
+            .map_err(|e| VigilError::Control(format!("response serialize failed: {}", e)))?;
+        writer
+            .write_all(response_str.as_bytes())
+            .map_err(|e| VigilError::Control(format!("response write failed: {}", e)))?;
+        writer
+            .write_all(b"\n")
+            .map_err(|e| VigilError::Control(format!("response newline write failed: {}", e)))?;
+        writer
+            .flush()
+            .map_err(|e| VigilError::Control(format!("response flush failed: {}", e)))?;
         Ok(())
     }
 
@@ -293,7 +383,8 @@ impl ControlHandler {
     }
 
     fn handle_baseline_count(&self) -> serde_json::Value {
-        match baseline_ops::count(&self.baseline_conn) {
+        let conn = self.baseline_conn.lock();
+        match baseline_ops::count(&conn) {
             Ok(count) => serde_json::json!({"ok": true, "count": count}),
             Err(e) => serde_json::json!({"ok": false, "error": e.to_string()}),
         }
@@ -370,7 +461,8 @@ impl ControlHandler {
             }
         }
         let cfg = self.config.load();
-        match crate::scanner::build_initial_baseline(&self.baseline_conn, &cfg) {
+        let conn = self.baseline_conn.lock();
+        match crate::scanner::build_initial_baseline(&conn, &cfg) {
             Ok(result) => {
                 serde_json::json!({
                     "ok": true,
@@ -433,9 +525,11 @@ fn generate_nonce() -> std::result::Result<String, std::io::Error> {
     Ok(hex::encode(buf))
 }
 
-/// Log peer credentials of the connecting process using SO_PEERCRED.
+/// Read peer credentials of the connecting process via SO_PEERCRED.
+/// Returns `None` if the syscall fails (in which case callers should reject
+/// the connection).
 #[allow(unsafe_code)]
-fn log_peer_credentials(stream: &std::os::unix::net::UnixStream) {
+fn peer_credentials(stream: &std::os::unix::net::UnixStream) -> Option<libc::ucred> {
     use std::os::unix::io::AsRawFd;
 
     let fd = stream.as_raw_fd();
@@ -454,13 +548,18 @@ fn log_peer_credentials(stream: &std::os::unix::net::UnixStream) {
     };
 
     if ret == 0 {
-        tracing::info!(
-            peer_pid = cred.pid,
-            peer_uid = cred.uid,
-            peer_gid = cred.gid,
-            "control socket connection"
-        );
+        Some(cred)
+    } else {
+        None
     }
+}
+
+/// Return the daemon's effective UID. Wrapped in #[allow(unsafe_code)]
+/// because the crate-level deny forbids inline unsafe blocks.
+#[allow(unsafe_code)]
+fn current_euid() -> u32 {
+    // SAFETY: geteuid is always safe to call.
+    unsafe { libc::geteuid() }
 }
 
 #[cfg(test)]
@@ -491,7 +590,9 @@ mod tests {
             reload_flag,
             scan_trigger_tx: scan_tx,
             baseline_db_path: db_path.clone(),
-            baseline_conn: crate::db::open_baseline_db_readonly(&db_path).unwrap(),
+            baseline_conn: Arc::new(Mutex::new(
+                crate::db::open_baseline_db_readonly(&db_path).unwrap(),
+            )),
             config: Arc::new(arc_swap::ArcSwap::from_pointee(
                 crate::config::default_config(),
             )),
@@ -608,11 +709,11 @@ mod tests {
             reload_flag,
             scan_trigger_tx: scan_tx,
             baseline_db_path: PathBuf::from("/dev/null"),
-            baseline_conn: {
+            baseline_conn: Arc::new(Mutex::new({
                 let conn = rusqlite::Connection::open_in_memory().unwrap();
                 crate::db::schema::create_baseline_tables(&conn).unwrap();
                 conn
-            },
+            })),
             config: Arc::new(arc_swap::ArcSwap::from_pointee(
                 crate::config::default_config(),
             )),
@@ -644,11 +745,11 @@ mod tests {
             reload_flag,
             scan_trigger_tx: scan_tx,
             baseline_db_path: PathBuf::from("/dev/null"),
-            baseline_conn: {
+            baseline_conn: Arc::new(Mutex::new({
                 let conn = rusqlite::Connection::open_in_memory().unwrap();
                 crate::db::schema::create_baseline_tables(&conn).unwrap();
                 conn
-            },
+            })),
             config: Arc::new(arc_swap::ArcSwap::from_pointee(
                 crate::config::default_config(),
             )),
@@ -711,11 +812,11 @@ mod tests {
             reload_flag: Arc::new(AtomicBool::new(false)),
             scan_trigger_tx: scan_tx,
             baseline_db_path: PathBuf::from("/dev/null"),
-            baseline_conn: {
+            baseline_conn: Arc::new(Mutex::new({
                 let conn = rusqlite::Connection::open_in_memory().unwrap();
                 crate::db::schema::create_baseline_tables(&conn).unwrap();
                 conn
-            },
+            })),
             config: Arc::new(arc_swap::ArcSwap::from_pointee(
                 crate::config::default_config(),
             )),
@@ -730,6 +831,33 @@ mod tests {
         assert!(
             result["error"].as_str().unwrap().contains("degraded"),
             "should mention degraded state"
+        );
+    }
+
+    /// Regression test for CRITICAL audit finding: HMAC verification must use
+    /// constant-time comparison and fail closed. Previously authentication
+    /// could be bypassed when compute_hmac() returned an empty string via
+    /// unwrap_or_default(); a client sending {"response":""} would
+    /// incorrectly authenticate.
+    #[test]
+    fn verify_hmac_rejects_empty_response() {
+        let key = b"super_secret_test_key";
+        let nonce = b"deadbeefcafebabe";
+        // Empty client response must NEVER authenticate against any nonzero key.
+        assert!(
+            !crate::hmac::verify_hmac(key, nonce, ""),
+            "empty client response must not authenticate"
+        );
+        // Wrong response must not authenticate.
+        assert!(
+            !crate::hmac::verify_hmac(key, nonce, "not_the_real_hmac"),
+            "wrong response must not authenticate"
+        );
+        // Correct response must authenticate.
+        let expected = crate::hmac::compute_hmac(key, nonce).unwrap();
+        assert!(
+            crate::hmac::verify_hmac(key, nonce, &expected),
+            "correct response must authenticate"
         );
     }
 }

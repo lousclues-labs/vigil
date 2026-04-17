@@ -77,6 +77,16 @@ Use this as a reference when assessing Vigil Baseline's security posture or audi
 | VIGIL-VULN-054 | High | 0.33.0 | HMAC key permission check warn-only — world-readable key accepted |
 | VIGIL-VULN-055 | High | 0.33.0 | `vigil update` under sudo builds from user-owned directory — privilege escalation |
 | VIGIL-VULN-056 | Medium | 0.33.0 | PID attribution did not detect exited processes — stale attribution undetectable |
+| VIGIL-VULN-057 | Critical | 0.34.0 | Control socket HMAC auth used non-constant-time string compare and was bypassable on empty response |
+| VIGIL-VULN-058 | Critical | 0.34.0 | fanotify event loop did not validate `event_len` — malformed event caused infinite loop |
+| VIGIL-VULN-059 | High | 0.34.0 | Control socket accepted connections from any local UID — peer credentials not enforced |
+| VIGIL-VULN-060 | High | 0.34.0 | Control socket spawned unbounded threads per connection — local thread-exhaustion DoS |
+| VIGIL-VULN-061 | High | 0.34.0 | `vigil update` did not roll back when daemon failed to start — only when started-but-unhealthy |
+| VIGIL-VULN-062 | High | 0.34.0 | Package manager queries lacked `--` separator — paths starting with `-` interpreted as flags |
+| VIGIL-VULN-063 | High | 0.34.0 | Helper binaries invoked by bare name — vulnerable to PATH hijacking |
+| VIGIL-VULN-064 | Medium | 0.34.0 | fanotify queue overflow silently logged — no Degraded state, no recovery scan |
+| VIGIL-VULN-065 | Medium | 0.34.0 | fanotify mountinfo octal escapes not decoded — mount points with whitespace not marked |
+| VIGIL-VULN-066 | Medium | 0.34.0 | fanotify mark/read failures silently ignored — daemon ran without real-time monitoring |
 
 ---
 
@@ -639,3 +649,103 @@ When `vigil update` was run with `sudo`, `$HOME` may point to the unprivileged u
 While VIGIL-VULN-035 moved the `/proc/{pid}/exe` readlink earlier to minimize the PID recycling window, a successful readlink was not distinguished from a failed one — the process field was always populated with the PID regardless. When the readlink failed (process already exited), the attribution was silently set to `exe: None` without any log entry, making stale or recycled PID attribution indistinguishable from valid attribution in audit records.
 
 **Remediation:** Process attribution now explicitly detects when the `/proc/{pid}/exe` readlink fails and logs at `debug` level: "process exited before attribution — PID may be stale". The `ProcessAttribution` is still recorded (with `exe: None`) to preserve the PID for forensic context, but the log entry provides operational visibility into potential attribution staleness.
+
+---
+
+### VIGIL-VULN-057 — Control socket HMAC auth bypass via empty response and timing leak (Critical)
+
+**Fixed in:** 0.34.0
+
+The control socket's challenge-response authentication compared the client-supplied HMAC to the expected value with `client_response.unwrap_or_default() != expected_hmac`. Two distinct flaws: (1) string `!=` is not constant-time and leaked timing information about the expected MAC under repeated probing; (2) `unwrap_or_default()` produced an empty string on EOF or read error, which would never match a real HMAC but could be exploited if the expected MAC computation path was ever skipped or returned an empty string due to an upstream bug, since two empty strings compare equal.
+
+**Remediation:** Authentication now calls `crate::hmac::verify_hmac(key, nonce.as_bytes(), client_response)` which uses `subtle::ConstantTimeEq` for the comparison and rejects malformed (non-hex, wrong-length, or empty) input before any compare happens. Regression test `verify_hmac_rejects_empty_response` exercises the empty-response bypass path.
+
+---
+
+### VIGIL-VULN-058 — fanotify event loop infinite loop on malformed `event_len` (Critical)
+
+**Fixed in:** 0.34.0
+
+The fanotify reader advanced its parsing offset by `event.event_len as usize` on every iteration. The kernel guarantees `event_len >= sizeof(struct fanotify_event_metadata)` for well-formed events, but the daemon performed no validation. A buggy or malicious kernel module — or a kernel bug producing `event_len == 0` — would cause the parser to loop forever on the same offset, pinning a CPU core and starving the rest of the daemon. Even worse, `event_len` larger than the remaining buffer could read past the buffer boundary on the next iteration's metadata cast.
+
+**Remediation:** The parser now validates `event.event_len >= FAN_EVENT_METADATA_LEN && offset + event.event_len as usize <= n_usize` before advancing. On violation, it increments the new `fanotify_read_errors` counter, logs at `error` with the observed lengths, and breaks the resync loop to drop the malformed batch cleanly.
+
+---
+
+### VIGIL-VULN-059 — Control socket accepted connections from any local UID (High)
+
+**Fixed in:** 0.34.0
+
+The control socket called `getsockopt(SO_PEERCRED)` to log the peer's credentials but did not enforce them. Any local process (any UID) that could open `/run/vigil/control.sock` could send authenticated commands as long as it possessed the HMAC key — and on systems where the socket file's mode was misconfigured (e.g., `0666` or `0660` with a permissive group), arbitrary local users could probe authentication.
+
+**Remediation:** `peer_credentials()` (renamed from `log_peer_credentials()`) now returns `Option<ucred>` and `handle_connection()` rejects the connection unconditionally when (a) SO_PEERCRED is unavailable, (b) the peer UID is non-zero, or (c) the peer UID is non-zero and does not match the daemon's effective UID. Daemon EUID is resolved through a new `current_euid()` helper that wraps `libc::geteuid()` with `#[allow(unsafe_code)]` for the FFI call.
+
+---
+
+### VIGIL-VULN-060 — Control socket thread-exhaustion DoS (High)
+
+**Fixed in:** 0.34.0
+
+The control socket accept loop spawned a fresh thread per incoming connection with no upper bound. A local attacker who could connect to the socket — or who could trigger many legitimate clients — could exhaust the process's thread budget and FD table.
+
+**Remediation:** Introduced `MAX_CONCURRENT_CONNECTIONS = 8` and an `AtomicUsize` semaphore. Connections beyond the cap receive a JSON rejection (`{"ok":false,"error":"too many concurrent connections"}`) and are closed immediately. The semaphore is decremented in the worker thread's drop path so it is released even if the handler panics. To support sharing a single `rusqlite::Connection` across worker threads, `ControlHandler.baseline_conn` was rewrapped as `Arc<Mutex<Connection>>` (parking_lot Mutex).
+
+---
+
+### VIGIL-VULN-061 — `vigil update` did not roll back when daemon failed to start (High)
+
+**Fixed in:** 0.34.0
+
+The post-install rollback in `vigil update` triggered only when the daemon started successfully but failed its health check. If `systemctl start vigild` itself failed (e.g., the new binary aborted during startup, the unit file became invalid, or systemd refused to start the unit), the new binaries remained installed even though the daemon was not running — the operator now had to manually restore from `.vigil.backup` and `.vigild.backup`.
+
+**Remediation:** Rollback condition changed from `started && !healthy` to `backups_exist && (!daemon_started || !healthy)`. Any failure to bring the daemon into a healthy state — whether the start command failed or the health probe failed — triggers automatic restoration of the backed-up binaries.
+
+---
+
+### VIGIL-VULN-062 — Package manager queries vulnerable to path-as-flag injection (High)
+
+**Fixed in:** 0.34.0
+
+Package manager queries (`pacman -Qo <path>`, `dpkg -S <path>`, `rpm -qf <path>`) passed the file path positionally without a `--` argument-terminator. A path beginning with `-` (e.g., a deliberately-named file `/-rf` or any path under a maliciously-created directory `/--option`) could be interpreted by the package manager as a flag. While the practical exploitability was limited (Vigil only invokes these queries on paths it observes, and the exec is via `Command::arg()` not a shell), it represented an injection class that should be closed at the source.
+
+**Remediation:** All four call sites — `query_pacman()`, `query_dpkg()`, `query_rpm()`, and `batch_query_dpkg()` — now insert `.arg("--")` immediately before the path argument(s).
+
+---
+
+### VIGIL-VULN-063 — Helper binaries vulnerable to PATH hijacking (High)
+
+**Fixed in:** 0.34.0
+
+The daemon invoked `systemctl`, `journalctl`, `notify-send`, and (in the update path) `vigil` by bare command name, relying on PATH to resolve them. A unit file or environment that placed an attacker-controlled binary earlier in PATH could substitute a malicious helper. Most affected paths run as root.
+
+**Remediation:** Added per-binary resolver helpers (`systemctl_binary()`, `journalctl_binary()`, `notify_send_binary()`, `installed_vigil_path()`) that prefer `/usr/bin/<name>`, then `/bin/<name>`, and only fall back to the bare name (PATH resolution) when no canonical absolute path exists. `notify_send_binary()` caches the result in a `OnceLock<Option<PathBuf>>` to avoid repeated stat calls.
+
+---
+
+### VIGIL-VULN-064 — fanotify queue overflow silently logged with no recovery scan (Medium)
+
+**Fixed in:** 0.34.0
+
+When the kernel's fanotify event queue overflowed (`FAN_Q_OVERFLOW` event), the daemon logged a warning but did nothing else. Real-time events had been dropped, the baseline could now drift, and operators had no signal that detection had been bypassed during the overflow window.
+
+**Remediation:** On `FAN_Q_OVERFLOW`, the monitor now (1) sets daemon state to `Degraded { reason: "fanotify_queue_overflow" }`, (2) sends a `Full` `ScanRequest` via the new scan-trigger channel using `try_send` to avoid blocking the read loop, and (3) increments the new `fanotify_overflow_scans_triggered` Prometheus counter. The Full scan re-establishes ground truth across the watch set.
+
+---
+
+### VIGIL-VULN-065 — fanotify mountinfo octal escapes not decoded (Medium)
+
+**Fixed in:** 0.34.0
+
+`/proc/self/mountinfo` uses octal escapes (`\040` for space, `\011` for tab, `\134` for backslash, etc.) for special characters in mount point fields. The daemon's mountinfo parser took the raw field verbatim, so any mount point containing whitespace or backslashes was misparsed and would not receive a fanotify mark — producing a silent monitoring gap on those mounts.
+
+**Remediation:** New `unescape_mountinfo(s: &str) -> String` decodes the standard octal escape set used by the kernel. Applied to both the mount-point field used for fanotify marks and any subsequent path matching. Covered by 5 unit tests (passthrough, single space, single tab, backslash, and a realistic mixed-escape mount path).
+
+---
+
+### VIGIL-VULN-066 — fanotify mark/read failures silently ignored (Medium)
+
+**Fixed in:** 0.34.0
+
+When `fanotify_mark()` failed during initial setup or mount reload, the failure was logged but the daemon continued running with no real-time monitoring on those mounts. Similarly, `read()` failures on the fanotify FD were classified only by the success/failure of the read syscall — fatal errno values (EBADF, EFAULT, EINVAL) were not distinguished from transient ones (EAGAIN, EWOULDBLOCK, EINTR), so a fatal error would either spin in a tight error loop or terminate the monitor without surfacing the cause.
+
+**Remediation:** Mark failures now increment the new `fanotify_mark_failures` counter and, when state is available (reload path), transition the daemon to `Degraded { reason: "fanotify_mark_failure" }`. Read failures are now classified: EAGAIN/EWOULDBLOCK/EINTR continue the loop benignly; any other errno increments `fanotify_read_errors`, degrades state, logs at `error`, and stops the monitor cleanly so the rest of the daemon can shut down or be restarted by systemd.

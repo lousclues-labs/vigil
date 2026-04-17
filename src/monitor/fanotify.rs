@@ -13,12 +13,13 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 use chrono::Utc;
 use crossbeam_channel::Sender;
+use parking_lot::RwLock;
 
 use crate::bloom::BloomFilter;
 use crate::config::Config;
 use crate::error::{Result, VigilError};
 use crate::metrics::Metrics;
-use crate::types::{FsEvent, FsEventType, ProcessAttribution};
+use crate::types::{DaemonState, FsEvent, FsEventType, ProcessAttribution, ScanMode};
 use crate::watch_index::WatchGroupIndex;
 
 // fanotify constants
@@ -91,6 +92,7 @@ impl Drop for EventFdGuard {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn start(
     _config: &Config,
     watch_paths: &[PathBuf],
@@ -99,6 +101,8 @@ pub fn start(
     watch_index: Arc<ArcSwap<WatchGroupIndex>>,
     metrics: Arc<Metrics>,
     bloom: Arc<BloomFilter>,
+    state: Option<Arc<RwLock<DaemonState>>>,
+    scan_trigger: Option<Sender<crate::control::ScanRequest>>,
 ) -> Result<crossbeam_channel::Sender<Vec<PathBuf>>> {
     // SAFETY: fanotify_init syscall with valid flags; return value checked.
     let fan_fd = unsafe {
@@ -139,7 +143,16 @@ pub fn start(
         | FAN_MOVED_TO;
 
     for mount in &mount_points {
-        let _ = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD);
+        if let Err(e) = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD) {
+            tracing::error!(
+                mount = %mount.display(),
+                error = %e,
+                "fanotify_mark FAN_MARK_ADD failed at startup — coverage degraded"
+            );
+            metrics
+                .fanotify_mark_failures
+                .fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     std::thread::Builder::new()
@@ -157,42 +170,150 @@ pub fn start(
                     let new_mounts: HashSet<PathBuf> =
                         resolve_mount_points(&new_paths).into_iter().collect();
 
+                    // Rebuild the Bloom filter FIRST so any in-flight events for
+                    // newly-added paths are not falsely rejected during the
+                    // mark add window.
+                    current_bloom = Arc::new(BloomFilter::from_watch_paths(&new_paths));
+
                     for mount in new_mounts.difference(&current_mounts) {
-                        let _ = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD);
+                        if let Err(e) = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD) {
+                            tracing::error!(
+                                mount = %mount.display(),
+                                error = %e,
+                                "fanotify_mark FAN_MARK_ADD failed during reload — coverage degraded for this mount"
+                            );
+                            metrics
+                                .fanotify_mark_failures
+                                .fetch_add(1, Ordering::Relaxed);
+                            if let Some(s) = &state {
+                                let mut guard = s.write();
+                                if matches!(*guard, DaemonState::Healthy) {
+                                    *guard = DaemonState::Degraded {
+                                        reason: format!(
+                                            "fanotify_mark add failed for {}: {}",
+                                            mount.display(),
+                                            e
+                                        ),
+                                        since: Utc::now(),
+                                    };
+                                }
+                            }
+                        }
                     }
                     for mount in current_mounts.difference(&new_mounts) {
-                        let _ = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_REMOVE);
+                        if let Err(e) = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_REMOVE) {
+                            tracing::warn!(
+                                mount = %mount.display(),
+                                error = %e,
+                                "fanotify_mark FAN_MARK_REMOVE failed during reload"
+                            );
+                            metrics
+                                .fanotify_mark_failures
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                     current_mounts = new_mounts;
-
-                    // Rebuild the Bloom filter from the new watch paths
-                    current_bloom = Arc::new(BloomFilter::from_watch_paths(&new_paths));
                 }
 
                 // SAFETY: valid fd + valid buffer pointer.
                 let n = unsafe { libc::read(fan_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
-                if n <= 0 {
+                if n < 0 {
+                    let err = std::io::Error::last_os_error();
+                    let raw = err.raw_os_error();
+                    if raw == Some(libc::EAGAIN) || raw == Some(libc::EWOULDBLOCK) {
+                        std::thread::sleep(Duration::from_millis(50));
+                        continue;
+                    }
+                    if raw == Some(libc::EINTR) {
+                        continue;
+                    }
+                    tracing::error!(
+                        error = %err,
+                        errno = ?raw,
+                        "fanotify read() failed with non-recoverable error — stopping monitor"
+                    );
+                    metrics
+                        .fanotify_read_errors
+                        .fetch_add(1, Ordering::Relaxed);
+                    if let Some(s) = &state {
+                        let mut guard = s.write();
+                        if matches!(*guard, DaemonState::Healthy) {
+                            *guard = DaemonState::Degraded {
+                                reason: format!("fanotify read failed: {}", err),
+                                since: Utc::now(),
+                            };
+                        }
+                    }
+                    return;
+                }
+                if n == 0 {
                     std::thread::sleep(Duration::from_millis(50));
                     continue;
                 }
 
+                let n_usize = n as usize;
                 let mut offset = 0usize;
-                while offset + FAN_EVENT_METADATA_LEN <= n as usize {
+                while offset + FAN_EVENT_METADATA_LEN <= n_usize {
                     // SAFETY: offset bounds checked and kernel produced this buffer.
                     // Using read_unaligned because the buffer offset may not be aligned.
                     let event: FanotifyEventMetadata =
                         unsafe { std::ptr::read_unaligned(buf.as_ptr().add(offset) as *const FanotifyEventMetadata) };
 
+                    // Validate event_len BEFORE using it: the kernel may report a
+                    // malformed value that would otherwise cause an infinite loop
+                    // (event_len == 0) or buffer over-read (event_len > remaining).
+                    let len = event.event_len as usize;
+                    if len < FAN_EVENT_METADATA_LEN || offset + len > n_usize {
+                        tracing::error!(
+                            event_len = len,
+                            offset,
+                            buf_len = n_usize,
+                            "malformed fanotify event_len; dropping remaining buffer and resyncing"
+                        );
+                        metrics
+                            .fanotify_read_errors
+                            .fetch_add(1, Ordering::Relaxed);
+                        break;
+                    }
+
                     // Handle kernel queue overflow: fanotify dropped events
                     if event.mask & FAN_Q_OVERFLOW != 0 {
                         tracing::error!(
                             "fanotify kernel queue overflow (FAN_Q_OVERFLOW) — \
-                             events were dropped by the kernel. File changes may have been missed."
+                             events were dropped by the kernel. Triggering compensating full scan."
                         );
                         metrics
                             .kernel_queue_overflows
                             .fetch_add(1, Ordering::Relaxed);
-                        offset += event.event_len as usize;
+                        // Mark the daemon Degraded so operators see this in `vigil status`
+                        if let Some(s) = &state {
+                            let mut guard = s.write();
+                            if matches!(*guard, DaemonState::Healthy) {
+                                *guard = DaemonState::Degraded {
+                                    reason: "fanotify queue overflow — events dropped by kernel"
+                                        .to_string(),
+                                    since: Utc::now(),
+                                };
+                            }
+                        }
+                        // Trigger a full scan so the missed events are caught by the
+                        // next baseline diff. The scan response is discarded; the
+                        // scheduler will attribute changes through normal channels.
+                        if let Some(tx) = &scan_trigger {
+                            let (resp_tx, _resp_rx) = crossbeam_channel::bounded(1);
+                            if tx
+                                .try_send(crate::control::ScanRequest {
+                                    mode: ScanMode::Full,
+                                    response_tx: resp_tx,
+                                })
+                                .is_ok()
+                            {
+                                metrics
+                                    .fanotify_overflow_scans_triggered
+                                    .fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        offset += len;
                         continue;
                     }
 
@@ -235,7 +356,7 @@ pub fn start(
                             // was never inserted)
                             if !current_bloom.might_contain_prefix_of(&path) {
                                 // fd_guard drops and closes the fd automatically
-                                offset += event.event_len as usize;
+                                offset += len;
                                 continue;
                             }
 
@@ -285,7 +406,7 @@ pub fn start(
                         // else: read_link failed — fd_guard drops and closes
                     }
 
-                    offset += event.event_len as usize;
+                    offset += len;
                 }
             }
 
@@ -371,10 +492,40 @@ pub fn parse_mountinfo() -> Option<Vec<PathBuf>> {
         // Format: mount_id parent_id major:minor root mount_point ...
         let fields: Vec<&str> = line.split_whitespace().collect();
         if fields.len() >= 5 {
-            mounts.push(PathBuf::from(fields[4]));
+            // mountinfo octal-escapes whitespace and special chars in mount_point
+            // (e.g. " " -> "\040"); decode before storing as PathBuf.
+            mounts.push(PathBuf::from(unescape_mountinfo(fields[4])));
         }
     }
     Some(mounts)
+}
+
+/// Decode mountinfo's octal escapes (`\NNN`) back to raw bytes.
+/// Used because mountinfo escapes space, tab, newline, and backslash to keep
+/// fields whitespace-separated.
+fn unescape_mountinfo(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 3 < bytes.len() {
+            let candidate = &bytes[i + 1..i + 4];
+            if candidate.iter().all(|&c| (b'0'..=b'7').contains(&c)) {
+                let n = ((candidate[0] - b'0') as u32) * 64
+                    + ((candidate[1] - b'0') as u32) * 8
+                    + ((candidate[2] - b'0') as u32);
+                if n <= 0xFF {
+                    out.push(n as u8);
+                    i += 4;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    // mountinfo paths are conventionally UTF-8 on Linux; lossy is acceptable
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Find the mount point that contains the given path.
@@ -394,4 +545,40 @@ fn find_mount_for_path(path: &std::path::Path, mount_points: &[PathBuf]) -> Opti
         }
     }
     best.cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unescape_mountinfo_decodes_octal_space() {
+        // mountinfo encodes ' ' as \040
+        assert_eq!(unescape_mountinfo("/mnt/with\\040space"), "/mnt/with space");
+    }
+
+    #[test]
+    fn unescape_mountinfo_decodes_tab_and_newline() {
+        // \011 = tab, \012 = newline, \134 = backslash
+        assert_eq!(unescape_mountinfo("a\\011b\\012c\\134d"), "a\tb\nc\\d");
+    }
+
+    #[test]
+    fn unescape_mountinfo_passes_through_plain_path() {
+        assert_eq!(unescape_mountinfo("/usr/local/bin"), "/usr/local/bin");
+    }
+
+    #[test]
+    fn unescape_mountinfo_handles_trailing_backslash() {
+        // trailing backslash with insufficient digits should be left alone
+        assert_eq!(unescape_mountinfo("foo\\"), "foo\\");
+        assert_eq!(unescape_mountinfo("foo\\1"), "foo\\1");
+        assert_eq!(unescape_mountinfo("foo\\12"), "foo\\12");
+    }
+
+    #[test]
+    fn unescape_mountinfo_rejects_non_octal_digits() {
+        // Non-octal digits should be left as literal backslash sequences
+        assert_eq!(unescape_mountinfo("foo\\999"), "foo\\999");
+    }
 }

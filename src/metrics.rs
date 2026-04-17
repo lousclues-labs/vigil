@@ -26,6 +26,14 @@ pub struct Metrics {
     pub control_commands: AtomicU64,
     /// Fanotify kernel queue overflow events.
     pub kernel_queue_overflows: AtomicU64,
+    /// Full scans triggered in response to fanotify queue overflow.
+    pub fanotify_overflow_scans_triggered: AtomicU64,
+    /// Fanotify mark add/remove failures (degrades coverage).
+    pub fanotify_mark_failures: AtomicU64,
+    /// Fanotify read() syscall failures (other than EAGAIN).
+    pub fanotify_read_errors: AtomicU64,
+    /// Package manager cache build failures or empty results when a package manager exists.
+    pub package_cache_failures: AtomicU64,
     /// Audit entries permanently lost due to buffer overflow.
     pub audit_entries_lost: AtomicU64,
     pub detections_wal_appends: AtomicU64,
@@ -66,6 +74,10 @@ impl Metrics {
             backpressure_events: AtomicU64::new(0),
             control_commands: AtomicU64::new(0),
             kernel_queue_overflows: AtomicU64::new(0),
+            fanotify_overflow_scans_triggered: AtomicU64::new(0),
+            fanotify_mark_failures: AtomicU64::new(0),
+            fanotify_read_errors: AtomicU64::new(0),
+            package_cache_failures: AtomicU64::new(0),
             audit_entries_lost: AtomicU64::new(0),
             detections_wal_appends: AtomicU64::new(0),
             detections_wal_audit_committed: AtomicU64::new(0),
@@ -113,6 +125,12 @@ impl Metrics {
             backpressure_events: self.backpressure_events.load(Ordering::Relaxed),
             control_commands: self.control_commands.load(Ordering::Relaxed),
             kernel_queue_overflows: self.kernel_queue_overflows.load(Ordering::Relaxed),
+            fanotify_overflow_scans_triggered: self
+                .fanotify_overflow_scans_triggered
+                .load(Ordering::Relaxed),
+            fanotify_mark_failures: self.fanotify_mark_failures.load(Ordering::Relaxed),
+            fanotify_read_errors: self.fanotify_read_errors.load(Ordering::Relaxed),
+            package_cache_failures: self.package_cache_failures.load(Ordering::Relaxed),
             audit_entries_lost: self.audit_entries_lost.load(Ordering::Relaxed),
             detections_wal_appends: self.detections_wal_appends.load(Ordering::Relaxed),
             detections_wal_audit_committed: self
@@ -163,6 +181,10 @@ pub struct MetricsSnapshot {
     pub backpressure_events: u64,
     pub control_commands: u64,
     pub kernel_queue_overflows: u64,
+    pub fanotify_overflow_scans_triggered: u64,
+    pub fanotify_mark_failures: u64,
+    pub fanotify_read_errors: u64,
+    pub package_cache_failures: u64,
     pub audit_entries_lost: u64,
     pub detections_wal_appends: u64,
     pub detections_wal_audit_committed: u64,
@@ -279,6 +301,42 @@ impl MetricsSnapshot {
             "vigil_kernel_queue_overflows_total",
             "Fanotify kernel queue overflow events",
             self.kernel_queue_overflows,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_fanotify_overflow_scans_triggered_total",
+            "Full scans triggered in response to fanotify queue overflow",
+            self.fanotify_overflow_scans_triggered,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_fanotify_mark_failures_total",
+            "Fanotify mark add/remove failures (degrades coverage)",
+            self.fanotify_mark_failures,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_fanotify_read_errors_total",
+            "Fanotify read() syscall failures other than EAGAIN",
+            self.fanotify_read_errors,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_package_cache_failures_total",
+            "Package manager cache build failures or empty results",
+            self.package_cache_failures,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_control_commands_total",
+            "Security-relevant control socket commands executed",
+            self.control_commands,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_backpressure_events_total",
+            "Coordinator backpressure events recorded",
+            self.backpressure_events,
         );
         write_prom_counter(
             &mut out,

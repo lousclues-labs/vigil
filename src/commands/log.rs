@@ -1,6 +1,18 @@
+use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 
 use vigil::cli::LogAction;
+
+/// Resolve the absolute path to `journalctl` to avoid PATH-injection.
+fn journalctl_binary() -> PathBuf {
+    for cand in ["/usr/bin/journalctl", "/bin/journalctl"] {
+        let p = PathBuf::from(cand);
+        if p.is_file() {
+            return p;
+        }
+    }
+    PathBuf::from("journalctl")
+}
 
 pub(crate) fn cmd_log(action: LogAction) -> vigil::Result<()> {
     match action {
@@ -52,7 +64,7 @@ pub(crate) fn cmd_log(action: LogAction) -> vigil::Result<()> {
             args.push("-o".into());
             args.push("short-iso".into());
 
-            let status = ProcessCommand::new("journalctl")
+            let status = ProcessCommand::new(journalctl_binary())
                 .args(&args)
                 .status()
                 .map_err(vigil::VigilError::Io)?;
@@ -80,7 +92,7 @@ pub(crate) fn cmd_log(action: LogAction) -> vigil::Result<()> {
                 args.push(s.clone());
             }
 
-            let status = ProcessCommand::new("journalctl")
+            let status = ProcessCommand::new(journalctl_binary())
                 .args(&args)
                 .status()
                 .map_err(vigil::VigilError::Io)?;

@@ -7,12 +7,13 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use crossbeam_channel::Sender;
+use parking_lot::RwLock;
 
 use crate::bloom::BloomFilter;
 use crate::config::Config;
 use crate::error::Result;
 use crate::metrics::Metrics;
-use crate::types::{FsEvent, MonitorBackend};
+use crate::types::{DaemonState, FsEvent, MonitorBackend};
 use crate::watch_index::WatchGroupIndex;
 
 pub struct MonitorHandle {
@@ -27,6 +28,8 @@ pub fn start_monitor(
     shutdown: Arc<AtomicBool>,
     watch_index: Arc<ArcSwap<WatchGroupIndex>>,
     metrics: Arc<Metrics>,
+    state: Option<Arc<RwLock<DaemonState>>>,
+    scan_trigger: Option<Sender<crate::control::ScanRequest>>,
 ) -> Result<MonitorHandle> {
     let watch_paths = collect_watch_paths(config);
     let bloom = Arc::new(BloomFilter::from_watch_paths(&watch_paths));
@@ -41,6 +44,8 @@ pub fn start_monitor(
                 watch_index,
                 metrics.clone(),
                 bloom,
+                state,
+                scan_trigger,
             ) {
                 Ok(reconfigure_tx) => {
                     return Ok(MonitorHandle {

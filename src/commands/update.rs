@@ -75,8 +75,16 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
     let daemon_stopped = run_best_effort(daemon_stop_cmd);
     if daemon_stopped {
         println!("  ✓ Daemon stopped");
+    } else if daemon_is_active() {
+        // Daemon is still running and we could not stop it; refuse to replace
+        // a running binary because the kernel keeps the unlinked inode open
+        // and we may corrupt baseline.db across the schema migration window.
+        return Err(vigil::VigilError::Daemon(
+            "could not stop vigild.service and it is still active; refusing to replace running binary. \
+             Stop it manually with: sudo systemctl stop vigild.service".to_string(),
+        ));
     } else {
-        eprintln!("  ⚠ could not stop vigild.service; continuing");
+        eprintln!("  ⚠ vigild.service stop returned non-zero but daemon is not active; continuing");
     }
 
     let dst_vigil = Path::new("/usr/local/bin/vigil");
@@ -151,9 +159,20 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
     let backup_vigild = backup_path(dst_vigild);
     let backups_exist = backup_vigil.exists() || backup_vigild.exists();
 
-    if daemon_started && !healthy && backups_exist {
-        eprintln!("  ✗ Daemon not responding after 3 attempts, rolling back binaries...");
-        // Stop the daemon
+    // Roll back if the daemon failed to start at all OR if it started but
+    // never became healthy. Previously a failed `systemctl start` left the
+    // new (broken) binaries in place with no recovery.
+    let needs_rollback = backups_exist && (!daemon_started || !healthy);
+    if needs_rollback {
+        eprintln!(
+            "  ✗ Daemon {} after update, rolling back binaries...",
+            if !daemon_started {
+                "failed to start"
+            } else {
+                "not responding after 3 attempts"
+            }
+        );
+        // Stop the daemon (no-op if it never started)
         let mut stop_cmd = ProcessCommand::new("sudo");
         stop_cmd.arg("systemctl").arg("stop").arg("vigild.service");
         let _ = run_best_effort(stop_cmd);
@@ -174,10 +193,14 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
         ));
     } else if daemon_started && !healthy {
         eprintln!("  ⚠ Daemon not responding (no backups available for rollback)");
+    } else if !daemon_started {
+        eprintln!("  ⚠ Daemon failed to start (no backups available for rollback)");
     }
 
-    // Clean up backups on success
-    cleanup_backups(dst_vigil, dst_vigild);
+    // Move backups to a timestamped retention directory instead of deleting
+    // immediately. If the daemon dies later (e.g. LD_PRELOAD issue under
+    // load), an operator can restore from /var/lib/vigil/binary-backups/.
+    archive_backups(dst_vigil, dst_vigild);
 
     let baseline_summary = match vigil::config::load_config(None)
         .ok()
@@ -219,7 +242,9 @@ pub(crate) fn cmd_update(repo: Option<PathBuf>) -> vigil::Result<()> {
 
     println!();
     println!("  Running health check...");
-    let _ = ProcessCommand::new("vigil").arg("doctor").status();
+    let _ = ProcessCommand::new(installed_vigil_path())
+        .arg("doctor")
+        .status();
 
     Ok(())
 }
@@ -524,6 +549,83 @@ fn rollback_binaries(dst_vigil: &Path, dst_vigild: &Path) {
     }
 }
 
+/// Move backup files into a timestamped retention directory under
+/// `/var/lib/vigil/binary-backups/`. Keeps the last 3 sets of backups so an
+/// operator can manually roll back if a delayed failure surfaces (e.g. the
+/// new daemon dies under load minutes after `vigil update` returned).
+fn archive_backups(dst_vigil: &Path, dst_vigild: &Path) {
+    let bkp_vigil = backup_path(dst_vigil);
+    let bkp_vigild = backup_path(dst_vigild);
+    if !bkp_vigil.exists() && !bkp_vigild.exists() {
+        return;
+    }
+
+    let archive_root = std::path::PathBuf::from("/var/lib/vigil/binary-backups");
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let archive_dir = archive_root.join(&stamp);
+
+    let mut mkdir = ProcessCommand::new("sudo");
+    mkdir.arg("mkdir").arg("-p").arg(&archive_dir);
+    if !run_best_effort(mkdir) {
+        eprintln!(
+            "  ⚠ Could not create backup archive {}; deleting backups instead",
+            archive_dir.display()
+        );
+        cleanup_backups(dst_vigil, dst_vigild);
+        return;
+    }
+
+    for bkp in [&bkp_vigil, &bkp_vigild] {
+        if bkp.exists() {
+            let dst_name = bkp
+                .file_name()
+                .map(|n| n.to_string_lossy().trim_start_matches('.').to_string())
+                .unwrap_or_else(|| "backup".into());
+            let dest = archive_dir.join(dst_name);
+            let mut mv = ProcessCommand::new("sudo");
+            mv.arg("mv").arg(bkp).arg(&dest);
+            let _ = run_best_effort(mv);
+        }
+    }
+
+    println!("  ✓ Backups archived to {}", archive_dir.display());
+    prune_old_backup_archives(&archive_root, 3);
+}
+
+/// Keep only the most recent `keep` directories under `archive_root`.
+fn prune_old_backup_archives(archive_root: &Path, keep: usize) {
+    let entries = match std::fs::read_dir(archive_root) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut dirs: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| e.path())
+        .collect();
+    dirs.sort();
+    if dirs.len() <= keep {
+        return;
+    }
+    let to_remove = dirs.len() - keep;
+    for old in dirs.iter().take(to_remove) {
+        let mut rm = ProcessCommand::new("sudo");
+        rm.arg("rm").arg("-rf").arg(old);
+        let _ = run_best_effort(rm);
+    }
+}
+
+/// Return true if `vigild.service` is currently active.
+fn daemon_is_active() -> bool {
+    let mut cmd = ProcessCommand::new("systemctl");
+    cmd.arg("is-active")
+        .arg("--quiet")
+        .arg("vigild.service")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
 /// Remove backup files after a successful update.
 fn cleanup_backups(dst_vigil: &Path, dst_vigild: &Path) {
     let bkp_vigil = backup_path(dst_vigil);
@@ -540,11 +642,10 @@ fn cleanup_backups(dst_vigil: &Path, dst_vigild: &Path) {
 
 /// Check daemon health with retries.
 ///
-/// Attempts up to `max_attempts` times with `interval_secs` between each attempt.
-/// Returns `true` if the daemon responds to a status query.
+/// Probes the control socket immediately, then waits `interval_secs` between
+/// retries. Returns `true` as soon as the daemon responds.
 fn verify_daemon_health(max_attempts: u32, interval_secs: u64) -> bool {
     for attempt in 1..=max_attempts {
-        std::thread::sleep(std::time::Duration::from_secs(interval_secs));
         let ok = vigil::config::load_config(None)
             .ok()
             .and_then(|cfg| {
@@ -564,6 +665,7 @@ fn verify_daemon_health(max_attempts: u32, interval_secs: u64) -> bool {
                 "  ⚠ Daemon not responding (attempt {}/{}), retrying...",
                 attempt, max_attempts
             );
+            std::thread::sleep(std::time::Duration::from_secs(interval_secs));
         }
     }
     false
@@ -598,7 +700,7 @@ fn atomic_install(src: &Path, dst: &Path) -> vigil::Result<()> {
 }
 
 fn installed_version() -> Option<String> {
-    let out = ProcessCommand::new("vigil")
+    let out = ProcessCommand::new(installed_vigil_path())
         .arg("--version")
         .output()
         .ok()?;
@@ -606,6 +708,18 @@ fn installed_version() -> Option<String> {
         return None;
     }
     Some(normalize_version(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Return the absolute path of the currently installed `vigil` binary.
+/// Prefers `/usr/local/bin/vigil`, falls back to `/usr/bin/vigil`, then PATH.
+fn installed_vigil_path() -> std::path::PathBuf {
+    for candidate in ["/usr/local/bin/vigil", "/usr/bin/vigil"] {
+        let p = std::path::PathBuf::from(candidate);
+        if p.is_file() {
+            return p;
+        }
+    }
+    std::path::PathBuf::from("vigil")
 }
 
 fn version_from_binary(path: &Path) -> vigil::Result<String> {
@@ -652,7 +766,16 @@ fn run_best_effort(mut cmd: ProcessCommand) -> bool {
 }
 
 fn install_file_if_changed(src: &Path, dst: &Path) -> vigil::Result<bool> {
-    let src_bytes = std::fs::read(src)?;
+    // Treat a missing source as a benign skip: optional units (e.g. removed
+    // in a future release) must not abort the entire update mid-flight.
+    let src_bytes = match std::fs::read(src) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(src = %src.display(), "source not in repo; skipping");
+            return Ok(false);
+        }
+        Err(e) => return Err(e.into()),
+    };
     let dst_bytes = std::fs::read(dst).ok();
 
     if dst_bytes.as_deref() == Some(src_bytes.as_slice()) {

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -6,6 +7,23 @@ use parking_lot::Mutex;
 use crate::alert::AlertSink;
 use crate::error::Result;
 use crate::types::{Alert, Severity};
+
+/// Resolve the absolute path to `notify-send` once at startup. The daemon
+/// runs as root, so we must avoid PATH-injection.
+fn notify_send_binary() -> PathBuf {
+    static CACHED: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            for cand in ["/usr/bin/notify-send", "/bin/notify-send"] {
+                let p = PathBuf::from(cand);
+                if p.is_file() {
+                    return p;
+                }
+            }
+            PathBuf::from("notify-send")
+        })
+        .clone()
+}
 
 struct NotifyRate {
     count: u32,
@@ -82,7 +100,7 @@ impl AlertSink for DbusSink {
 
         body.push_str("\nRun 'vigil audit show --last 5' for details.");
 
-        let status = Command::new("notify-send")
+        let status = Command::new(notify_send_binary())
             .arg("--app-name=Vigil Baseline")
             .arg(format!("--urgency={}", urgency))
             .arg(&title)
