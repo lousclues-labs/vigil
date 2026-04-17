@@ -67,45 +67,37 @@ pub(crate) fn cmd_update(
     build_cmd
         .current_dir(&repo_path)
         .arg("build")
-        .arg("--release")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .arg("--release");
 
-    let build_child = build_cmd.output();
-    match build_child {
-        Ok(ref output) => {
-            // Pass through cargo output
-            if !output.stdout.is_empty() {
-                let _ = prog.pass_through(&output.stdout[..]);
-            }
-            if !output.stderr.is_empty() {
-                let _ = prog.pass_through(&output.stderr[..]);
-            }
-        }
-        Err(ref e) => {
-            prog.end_passthrough();
-            prog.end_step_err(&format!("failed to spawn cargo: {}", e));
-            prog.skip_remaining();
-            prog.finish_summary();
-            return Err(vigil::VigilError::Io(std::io::Error::new(
-                e.kind(),
-                e.to_string(),
-            )));
-        }
-    }
+    // Inherit stderr so cargo's live progress (Compiling…, Building…) streams
+    // directly to the terminal. Cargo writes all useful output to stderr.
+    build_cmd
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit());
+
+    let build_status = build_cmd.status();
 
     prog.end_passthrough();
 
-    let build_output = build_child.map_err(vigil::VigilError::Io)?;
-    if !build_output.status.success() {
-        prog.end_step_err("cargo build --release failed");
-        prog.skip_remaining();
-        prog.finish_summary();
-        return Err(vigil::VigilError::Daemon(
-            "update failed: cargo build --release did not succeed".to_string(),
-        ));
+    match build_status {
+        Ok(status) if status.success() => {
+            prog.end_step_ok(None);
+        }
+        Ok(_) => {
+            prog.end_step_err("cargo build --release failed");
+            prog.skip_remaining();
+            prog.finish_summary();
+            return Err(vigil::VigilError::Daemon(
+                "update failed: cargo build --release did not succeed".to_string(),
+            ));
+        }
+        Err(e) => {
+            prog.end_step_err(&format!("failed to spawn cargo: {}", e));
+            prog.skip_remaining();
+            prog.finish_summary();
+            return Err(vigil::VigilError::Io(e));
+        }
     }
-    prog.end_step_ok(None);
 
     // ── Step 3: Verify artifacts ───────────────────────────
     prog.begin_step(UpdateStep::VerifyArtifacts);
@@ -121,7 +113,7 @@ pub(crate) fn cmd_update(
     }
 
     smoke_test_binary(&repo_vigil, "vigil")?;
-    smoke_test_binary(&repo_vigild, "vigild")?;
+    smoke_test_binary_exists(&repo_vigild, "vigild")?;
 
     let new_version = version_from_binary(&repo_vigil)?;
     let current_version = installed_version().unwrap_or_else(|| "unknown".to_string());
@@ -195,7 +187,7 @@ pub(crate) fn cmd_update(
         atomic_install(&repo_vigil, dst_vigil)?;
         atomic_install(&repo_vigild, dst_vigild)?;
         smoke_test_binary(dst_vigil, "installed vigil")?;
-        smoke_test_binary(dst_vigild, "installed vigild")?;
+        smoke_test_binary_exists(dst_vigild, "installed vigild")?;
         Ok(())
     })();
 
@@ -548,6 +540,9 @@ fn discover_vigil_repo(prog: &mut Progress) -> vigil::Result<PathBuf> {
 ///
 /// Returns an error if the binary fails to spawn or exits non-zero, including
 /// the binary path and any stderr output.
+///
+/// For binaries that don't support `--version` (like `vigild`), use
+/// `smoke_test_binary_exists` instead.
 fn smoke_test_binary(path: &Path, name: &str) -> vigil::Result<()> {
     let output = ProcessCommand::new(path).arg("--version").output();
     match output {
@@ -569,6 +564,36 @@ fn smoke_test_binary(path: &Path, name: &str) -> vigil::Result<()> {
             e
         ))),
     }
+}
+
+/// Smoke-test a binary that does not support `--version` (e.g. `vigild`).
+///
+/// Checks that the file exists, is a regular file, and is executable.
+fn smoke_test_binary_exists(path: &Path, name: &str) -> vigil::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::metadata(path).map_err(|e| {
+        vigil::VigilError::Daemon(format!(
+            "smoke test failed for {}: cannot stat {}: {}",
+            name,
+            path.display(),
+            e
+        ))
+    })?;
+    if !meta.is_file() {
+        return Err(vigil::VigilError::Daemon(format!(
+            "smoke test failed for {}: {} is not a regular file",
+            name,
+            path.display()
+        )));
+    }
+    if meta.permissions().mode() & 0o111 == 0 {
+        return Err(vigil::VigilError::Daemon(format!(
+            "smoke test failed for {}: {} is not executable",
+            name,
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 /// Compute the backup path for an installed binary (e.g., `.vigil.backup`).
@@ -607,7 +632,7 @@ fn install_binaries_with_rollback(
         atomic_install(src_vigil, dst_vigil)?;
         atomic_install(src_vigild, dst_vigild)?;
         smoke_test_binary(dst_vigil, "installed vigil")?;
-        smoke_test_binary(dst_vigild, "installed vigild")?;
+        smoke_test_binary_exists(dst_vigild, "installed vigild")?;
         Ok(())
     })();
 
