@@ -61,13 +61,18 @@ fn run_coordinator_adversarial(seed: u64) {
     // different inode even on filesystems that aggressively reuse inode numbers.
     {
         let backup = dir.path().join("baseline_backup.db");
-        let blocker = dir.path().join("baseline_blocker");
+        // Create multiple blockers to prevent inode recycling on aggressive filesystems
+        let blockers: Vec<_> = (0..4)
+            .map(|i| dir.path().join(format!("baseline_blocker_{}", i)))
+            .collect();
         std::fs::copy(&baseline_path, &backup).unwrap();
         std::fs::remove_file(&baseline_path).unwrap();
-        std::fs::write(&blocker, b"blocker").unwrap(); // occupy freed inode
+        for b in &blockers {
+            std::fs::write(b, b"blocker").unwrap();
+        }
         std::fs::copy(&backup, &baseline_path).unwrap();
         std::fs::remove_file(&backup).unwrap();
-        std::fs::remove_file(&blocker).unwrap();
+        // Keep blockers alive until after the identity check below
     }
 
     // I12: Inode replacement detected.
@@ -95,13 +100,16 @@ fn run_coordinator_adversarial(seed: u64) {
 
     {
         let backup = dir.path().join("audit_backup.db");
-        let blocker = dir.path().join("audit_blocker");
+        let blockers: Vec<_> = (0..4)
+            .map(|i| dir.path().join(format!("audit_blocker_{}", i)))
+            .collect();
         std::fs::copy(&audit_path, &backup).unwrap();
         std::fs::remove_file(&audit_path).unwrap();
-        std::fs::write(&blocker, b"blocker").unwrap();
+        for b in &blockers {
+            std::fs::write(b, b"blocker").unwrap();
+        }
         std::fs::copy(&backup, &audit_path).unwrap();
         std::fs::remove_file(&backup).unwrap();
-        std::fs::remove_file(&blocker).unwrap();
     }
 
     engine.check(
@@ -124,13 +132,16 @@ fn run_coordinator_adversarial(seed: u64) {
 
     {
         let backup = dir.path().join("wal_backup.wal");
-        let blocker = dir.path().join("wal_blocker");
+        let blockers: Vec<_> = (0..4)
+            .map(|i| dir.path().join(format!("wal_blocker_{}", i)))
+            .collect();
         std::fs::copy(&wal_path, &backup).unwrap();
         std::fs::remove_file(&wal_path).unwrap();
-        std::fs::write(&blocker, b"blocker").unwrap();
+        for b in &blockers {
+            std::fs::write(b, b"blocker").unwrap();
+        }
         std::fs::copy(&backup, &wal_path).unwrap();
         std::fs::remove_file(&backup).unwrap();
-        std::fs::remove_file(&blocker).unwrap();
     }
 
     engine.check(
