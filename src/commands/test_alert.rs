@@ -103,10 +103,7 @@ pub(crate) fn cmd_test_alert(
         .iter()
         .filter(|r| r.status != "unconfigured")
         .count();
-    let failed_count = results
-        .iter()
-        .filter(|r| r.status == "failed")
-        .count();
+    let failed_count = results.iter().filter(|r| r.status == "failed").count();
 
     if format == OutputFormat::Json {
         let json = serde_json::json!({
@@ -176,11 +173,7 @@ fn test_dbus_notification(severity: &Severity) -> ChannelResult {
         Ok(output) => ChannelResult {
             channel: "desktop_notification".to_string(),
             status: "failed".to_string(),
-            detail: Some(
-                String::from_utf8_lossy(&output.stderr)
-                    .trim()
-                    .to_string(),
-            ),
+            detail: Some(String::from_utf8_lossy(&output.stderr).trim().to_string()),
         },
         Err(e) => ChannelResult {
             channel: "desktop_notification".to_string(),
@@ -211,11 +204,7 @@ fn test_journald(severity: &Severity) -> ChannelResult {
         Ok(output) => ChannelResult {
             channel: "journald".to_string(),
             status: "failed".to_string(),
-            detail: Some(
-                String::from_utf8_lossy(&output.stderr)
-                    .trim()
-                    .to_string(),
-            ),
+            detail: Some(String::from_utf8_lossy(&output.stderr).trim().to_string()),
         },
         Err(e) => ChannelResult {
             channel: "journald".to_string(),
@@ -246,7 +235,11 @@ fn test_json_log(log_file: &Path, severity: &Severity) -> ChannelResult {
     {
         Ok(mut file) => {
             use std::io::Write;
-            match writeln!(file, "{}", serde_json::to_string(&entry).unwrap_or_default()) {
+            match writeln!(
+                file,
+                "{}",
+                serde_json::to_string(&entry).unwrap_or_default()
+            ) {
                 Ok(()) => ChannelResult {
                     channel: "json_log".to_string(),
                     status: "ok".to_string(),
@@ -278,7 +271,11 @@ fn test_signal_socket(socket_path: &str) -> ChannelResult {
                 "severity": "info",
                 "message": "Test alert from vigil test alert",
             });
-            match writeln!(stream, "{}", serde_json::to_string(&payload).unwrap_or_default()) {
+            match writeln!(
+                stream,
+                "{}",
+                serde_json::to_string(&payload).unwrap_or_default()
+            ) {
                 Ok(()) => ChannelResult {
                     channel: "signal_socket".to_string(),
                     status: "ok".to_string(),

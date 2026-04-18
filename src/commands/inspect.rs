@@ -40,10 +40,10 @@ pub(crate) fn cmd_inspect(
     };
 
     let conn = doctor::open_existing_db_pub(&db_path).map_err(|e| {
-        vigil::VigilError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("cannot open baseline database: {}", e),
-        ))
+        vigil::VigilError::Io(std::io::Error::other(format!(
+            "cannot open baseline database: {}",
+            e
+        )))
     })?;
 
     let paths_to_inspect = if recursive && target_path.is_dir() {
@@ -72,20 +72,18 @@ pub(crate) fn cmd_inspect(
         };
 
         match baseline_ops::get_by_path(&conn, &baseline_path) {
-            Ok(Some(entry)) => {
-                match inspect_file(path, &entry, &baseline_path) {
-                    Ok(Some(dev)) => deviations.push(dev),
-                    Ok(None) => clean_count += 1,
-                    Err(e) => {
-                        deviations.push(InspectDeviation {
-                            path: path.display().to_string(),
-                            baseline_path: baseline_path.clone(),
-                            differences: vec![format!("error: {}", e)],
-                        });
-                        error_count += 1;
-                    }
+            Ok(Some(entry)) => match inspect_file(path, &entry, &baseline_path) {
+                Ok(Some(dev)) => deviations.push(dev),
+                Ok(None) => clean_count += 1,
+                Err(e) => {
+                    deviations.push(InspectDeviation {
+                        path: path.display().to_string(),
+                        baseline_path: baseline_path.clone(),
+                        differences: vec![format!("error: {}", e)],
+                    });
+                    error_count += 1;
                 }
-            }
+            },
             Ok(None) => {
                 missing_in_baseline += 1;
                 deviations.push(InspectDeviation {
@@ -146,7 +144,11 @@ pub(crate) fn cmd_inspect(
     // Full output
     for dev in &deviations {
         println!("{}", dev.path);
-        println!("  baseline:     {} (from {})", dev.baseline_path, db_path.display());
+        println!(
+            "  baseline:     {} (from {})",
+            dev.baseline_path,
+            db_path.display()
+        );
         for diff in &dev.differences {
             println!("  {}", diff);
         }
@@ -206,16 +208,21 @@ fn inspect_file(
         }
 
         // Compare owner
-        if meta.uid() != baseline.permissions.owner_uid || meta.gid() != baseline.permissions.owner_gid {
+        if meta.uid() != baseline.permissions.owner_uid
+            || meta.gid() != baseline.permissions.owner_gid
+        {
             diffs.push(format!(
                 "owner:        changed (baseline {}:{} actual {}:{})",
-                baseline.permissions.owner_uid, baseline.permissions.owner_gid,
-                meta.uid(), meta.gid()
+                baseline.permissions.owner_uid,
+                baseline.permissions.owner_gid,
+                meta.uid(),
+                meta.gid()
             ));
         } else {
             diffs.push(format!(
                 "owner:        unchanged ({}:{})",
-                meta.uid(), meta.gid()
+                meta.uid(),
+                meta.gid()
             ));
         }
 
@@ -223,7 +230,8 @@ fn inspect_file(
         if meta.ino() != baseline.identity.inode {
             diffs.push(format!(
                 "inode:        replaced (baseline {} actual {})",
-                baseline.identity.inode, meta.ino()
+                baseline.identity.inode,
+                meta.ino()
             ));
         }
 
@@ -241,9 +249,8 @@ fn inspect_file(
     if meta.is_file() {
         match std::fs::File::open(path).and_then(|f| {
             let size = f.metadata()?.len();
-            vigil::hash::blake3_hash_fd(&f, size, 1_048_576).map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-            })
+            vigil::hash::blake3_hash_fd(&f, size, 1_048_576)
+                .map_err(|e| std::io::Error::other(e.to_string()))
         }) {
             Ok(hash) => {
                 if hash != baseline.content.hash {
@@ -264,7 +271,10 @@ fn inspect_file(
 
     // If all lines contain "unchanged" and no "changed"/"replaced"/"error", it's clean
     let has_deviation = diffs.iter().any(|d| {
-        d.contains("changed") || d.contains("replaced") || d.contains("error") || d.contains("permission denied")
+        d.contains("changed")
+            || d.contains("replaced")
+            || d.contains("error")
+            || d.contains("permission denied")
     });
 
     if has_deviation {

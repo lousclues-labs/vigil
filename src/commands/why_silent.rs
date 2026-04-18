@@ -19,10 +19,7 @@ pub(crate) fn cmd_why_silent(
     }
 
     if summary.backend_degraded {
-        reasons.push(format!(
-            "backend {} — reduced coverage",
-            summary.backend
-        ));
+        reasons.push(format!("backend {} — reduced coverage", summary.backend));
     }
 
     if summary.audit_chain_status == "broken" {

@@ -671,11 +671,18 @@ pub fn insert_receipt_entry(
     let path = "vigil:check_completed";
     let severity = "info";
 
-    let chain_hash = compute_chain_hash(previous_chain_hash, timestamp, path, payload_json, severity);
+    let chain_hash =
+        compute_chain_hash(previous_chain_hash, timestamp, path, payload_json, severity);
 
     let hmac = hmac_key.map(|key| {
         let data = crate::hmac::build_audit_hmac_data(
-            timestamp, path, "check_completed", severity, None, None, previous_chain_hash,
+            timestamp,
+            path,
+            "check_completed",
+            severity,
+            None,
+            None,
+            previous_chain_hash,
         );
         crate::hmac::compute_hmac(key, &data).unwrap_or_default()
     });
@@ -722,11 +729,18 @@ pub fn insert_self_check_entry(
         _ => "info",
     };
 
-    let chain_hash = compute_chain_hash(previous_chain_hash, timestamp, path, payload_json, severity);
+    let chain_hash =
+        compute_chain_hash(previous_chain_hash, timestamp, path, payload_json, severity);
 
     let hmac = hmac_key.map(|key| {
         let data = crate::hmac::build_audit_hmac_data(
-            timestamp, path, "self_check", severity, None, None, previous_chain_hash,
+            timestamp,
+            path,
+            "self_check",
+            severity,
+            None,
+            None,
+            previous_chain_hash,
         );
         crate::hmac::compute_hmac(key, &data).unwrap_or_default()
     });
@@ -768,11 +782,18 @@ pub fn insert_test_alert_entry(
     let timestamp = Utc::now().timestamp();
     let path = "vigil:test_alert";
 
-    let chain_hash = compute_chain_hash(previous_chain_hash, timestamp, path, payload_json, severity);
+    let chain_hash =
+        compute_chain_hash(previous_chain_hash, timestamp, path, payload_json, severity);
 
     let hmac = hmac_key.map(|key| {
         let data = crate::hmac::build_audit_hmac_data(
-            timestamp, path, "test_alert", severity, None, None, previous_chain_hash,
+            timestamp,
+            path,
+            "test_alert",
+            severity,
+            None,
+            None,
+            previous_chain_hash,
         );
         crate::hmac::compute_hmac(key, &data).unwrap_or_default()
     });

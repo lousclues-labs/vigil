@@ -130,9 +130,7 @@ pub(crate) fn build_status_summary(cfg: &vigil::config::Config) -> StatusSummary
         reason,
         daemon_running: daemon.running,
         daemon_pid: daemon.pid,
-        daemon_uptime: daemon
-            .uptime_seconds
-            .map(doctor::format_compact_duration),
+        daemon_uptime: daemon.uptime_seconds.map(doctor::format_compact_duration),
         version: env!("CARGO_PKG_VERSION").to_string(),
         backend: if daemon.running {
             backend

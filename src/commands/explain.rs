@@ -109,28 +109,23 @@ pub(crate) fn cmd_explain(
             };
             println!(
                 "  baseline:       hash {} mode {:04o} owner {}:{} inode {}",
-                hash_display, entry.permissions.mode, entry.permissions.owner_uid, entry.permissions.owner_gid, entry.identity.inode
+                hash_display,
+                entry.permissions.mode,
+                entry.permissions.owner_uid,
+                entry.permissions.owner_gid,
+                entry.identity.inode
             );
 
             if let Some(ts) = chrono::DateTime::from_timestamp(entry.updated_at, 0) {
-                println!(
-                    "  last verified:  {}",
-                    ts.format("%Y-%m-%d %H:%M:%S UTC")
-                );
+                println!("  last verified:  {}", ts.format("%Y-%m-%d %H:%M:%S UTC"));
             }
         } else {
-            println!(
-                "  baseline:       no entry (run `vigil init` or `vigil check --accept`)"
-            );
+            println!("  baseline:       no entry (run `vigil init` or `vigil check --accept`)");
         }
 
         if !audit_entries.is_empty() {
             let label = if verbose { "all" } else { "recent" };
-            println!(
-                "  audit history:  {} {} events",
-                audit_entries.len(),
-                label
-            );
+            println!("  audit history:  {} {} events", audit_entries.len(), label);
             if verbose {
                 for entry in &audit_entries {
                     let ts = chrono::DateTime::from_timestamp(entry.timestamp, 0)
@@ -148,8 +143,11 @@ pub(crate) fn cmd_explain(
                     };
                     println!(
                         "    {} {} {}{}{}",
-                        ts, entry.severity, summarize_changes(&entry.changes_json),
-                        suppressed, maintenance
+                        ts,
+                        entry.severity,
+                        summarize_changes(&entry.changes_json),
+                        suppressed,
+                        maintenance
                     );
                 }
             }
@@ -163,7 +161,7 @@ pub(crate) fn cmd_explain(
         // Find nearby watched paths
         let mut nearby: Vec<String> = Vec::new();
         let parent = target.parent();
-        for (_name, group) in &cfg.watch {
+        for group in cfg.watch.values() {
             for pattern in &group.paths {
                 let expanded = expand_path(pattern);
                 // Check if parent is watched
@@ -235,10 +233,8 @@ fn summarize_changes(changes_json: &str) -> String {
             // Changes are serialized as enum variants
             if let Some(obj) = c.as_object() {
                 obj.keys().next().map(|k| k.to_string())
-            } else if let Some(s) = c.as_str() {
-                Some(s.to_string())
             } else {
-                None
+                c.as_str().map(|s| s.to_string())
             }
         })
         .collect::<Vec<_>>()

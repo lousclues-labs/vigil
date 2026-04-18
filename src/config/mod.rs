@@ -690,17 +690,12 @@ fn default_syslog_facility() -> SyslogFacility {
 }
 
 /// Watch mode for a watch group.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WatchMode {
+    #[default]
     PerFile,
     ClosedSet,
-}
-
-impl Default for WatchMode {
-    fn default() -> Self {
-        WatchMode::PerFile
-    }
 }
 
 impl WatchMode {

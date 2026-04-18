@@ -131,9 +131,7 @@ fn run(cli: Cli) -> vigil::Result<i32> {
         Command::Doctor {
             format: doctor_format,
             now: _now,
-        } => {
-            cmd_doctor(config_path.as_deref(), doctor_format.unwrap_or(format))
-        }
+        } => cmd_doctor(config_path.as_deref(), doctor_format.unwrap_or(format)),
         Command::Update {
             repo,
             quiet,
