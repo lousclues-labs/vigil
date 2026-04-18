@@ -63,9 +63,11 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<Base
     conn.execute_batch("BEGIN IMMEDIATE")?;
 
     // Build package ownership cache upfront (single command)
-    // instead of per-file subprocess calls
+    // instead of per-file subprocess calls.
+    // Returns None on failure (lock contention, timeout) — falls back to
+    // per-file queries in that case.
     let package_cache = if !skip_package_owner {
-        Some(crate::package::build_package_cache(&config.package_manager))
+        crate::package::build_package_cache(&config.package_manager)
     } else {
         None
     };

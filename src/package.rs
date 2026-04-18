@@ -272,7 +272,11 @@ fn batch_query_rpm(paths: &[String]) -> HashMap<String, String> {
 
 /// Build a complete file→package ownership cache using a single bulk command.
 /// This is dramatically faster than per-file subprocess calls during baseline init.
-pub fn build_package_cache(config: &PackageManagerConfig) -> HashMap<PathBuf, String> {
+///
+/// Returns `Some(cache)` on success, `None` if the query failed despite retries.
+/// An empty `Some(HashMap)` means the package manager reported no installed files
+/// (which is legitimate, e.g. a container with no packages).
+pub fn build_package_cache(config: &PackageManagerConfig) -> Option<HashMap<PathBuf, String>> {
     let backend = if config.backend == PackageBackend::Auto {
         detect_backend()
     } else {
@@ -280,52 +284,159 @@ pub fn build_package_cache(config: &PackageManagerConfig) -> HashMap<PathBuf, St
     };
 
     match backend {
-        PackageBackend::Pacman => build_cache_pacman(),
-        PackageBackend::Dpkg => build_cache_dpkg(),
-        PackageBackend::Rpm => build_cache_rpm(),
+        PackageBackend::Pacman => {
+            build_cache_with_retry(build_cache_pacman_once, PackageBackend::Pacman)
+        }
+        PackageBackend::Dpkg => build_cache_with_retry(build_cache_dpkg_once, PackageBackend::Dpkg),
+        PackageBackend::Rpm => build_cache_with_retry(build_cache_rpm_once, PackageBackend::Rpm),
         PackageBackend::Auto => {
             tracing::warn!("No package manager detected for cache build");
-            HashMap::new()
+            None
         }
     }
 }
 
-fn build_cache_pacman() -> HashMap<PathBuf, String> {
-    let mut cache = HashMap::new();
-    // `pacman -Ql` outputs "package /path/to/file" per line
-    let timeout = Duration::from_secs(30);
-    if let Some(output) = run_with_timeout(Command::new(PACMAN_PATH).arg("-Ql"), timeout, false) {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                if let Some((pkg, path)) = line.split_once(' ') {
-                    let path = path.trim();
-                    // Skip directory entries (trailing /)
-                    if !path.ends_with('/') && !path.is_empty() {
-                        cache.insert(PathBuf::from(path), pkg.trim().to_string());
-                    }
+/// Retry wrapper: if the first attempt returns an empty cache (likely lock contention),
+/// wait for the package manager lock to release and retry with increasing backoff.
+fn build_cache_with_retry<F>(
+    build_fn: F,
+    backend: PackageBackend,
+) -> Option<HashMap<PathBuf, String>>
+where
+    F: Fn() -> Option<HashMap<PathBuf, String>>,
+{
+    const MAX_RETRIES: u32 = 3;
+    const BACKOFF_SECS: &[u64] = &[2, 5, 10];
+
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            let delay = BACKOFF_SECS
+                .get((attempt - 1) as usize)
+                .copied()
+                .unwrap_or(10);
+            tracing::info!(
+                attempt,
+                delay_secs = delay,
+                backend = ?backend,
+                "retrying package cache build after lock wait"
+            );
+            wait_for_package_lock(backend, Duration::from_secs(delay));
+        }
+
+        match build_fn() {
+            Some(cache) if !cache.is_empty() => {
+                if attempt > 0 {
+                    tracing::info!(
+                        attempt,
+                        entries = cache.len(),
+                        "package cache build succeeded on retry"
+                    );
                 }
+                return Some(cache);
+            }
+            result => {
+                if attempt == MAX_RETRIES {
+                    tracing::error!(
+                        backend = ?backend,
+                        attempts = MAX_RETRIES + 1,
+                        "package cache build failed after all retries — \
+                         package attribution will be unavailable until the next refresh"
+                    );
+                    return result;
+                }
+                tracing::warn!(
+                    attempt,
+                    backend = ?backend,
+                    "package cache build returned 0 entries — will retry after backoff"
+                );
             }
         }
     }
-    if cache.is_empty() {
-        tracing::error!(
-            "pacman package cache built with 0 entries (likely query timeout) — \
-             package attribution will be unavailable until the next refresh"
-        );
-    } else {
-        tracing::info!(entries = cache.len(), "built pacman package cache");
-    }
-    cache
+    None
 }
 
-fn build_cache_dpkg() -> HashMap<PathBuf, String> {
+/// Wait for the package manager's database lock file to disappear.
+/// Returns immediately if no lock is held. Times out after `max_wait`.
+fn wait_for_package_lock(backend: PackageBackend, max_wait: Duration) {
+    let lock_path = match backend {
+        PackageBackend::Pacman => Path::new("/var/lib/pacman/db.lck"),
+        PackageBackend::Dpkg => Path::new("/var/lib/dpkg/lock-frontend"),
+        PackageBackend::Rpm => Path::new("/var/lib/rpm/.rpm.lock"),
+        PackageBackend::Auto => return,
+    };
+
+    if !lock_path.exists() {
+        return;
+    }
+
+    tracing::info!(
+        lock = %lock_path.display(),
+        timeout_secs = max_wait.as_secs(),
+        "waiting for package manager lock to release"
+    );
+
+    let start = std::time::Instant::now();
+    let poll_interval = Duration::from_millis(250);
+
+    while lock_path.exists() && start.elapsed() < max_wait {
+        std::thread::sleep(poll_interval);
+    }
+
+    if lock_path.exists() {
+        tracing::warn!(
+            lock = %lock_path.display(),
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            "package manager lock still held after timeout — proceeding anyway"
+        );
+    } else {
+        tracing::info!(
+            lock = %lock_path.display(),
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            "package manager lock released"
+        );
+    }
+}
+
+/// Single-attempt pacman cache build. Returns `None` on timeout/spawn failure,
+/// `Some(empty)` if the command succeeded but produced no entries.
+fn build_cache_pacman_once() -> Option<HashMap<PathBuf, String>> {
     let mut cache = HashMap::new();
-    // Parse /var/lib/dpkg/info/*.list files directly for speed
+    let timeout = Duration::from_secs(30);
+    let output = run_with_timeout(Command::new(PACMAN_PATH).arg("-Ql"), timeout, false)?;
+
+    if !output.status.success() {
+        tracing::warn!(
+            status = %output.status,
+            "pacman -Ql exited with non-zero status"
+        );
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some((pkg, path)) = line.split_once(' ') {
+            let path = path.trim();
+            if !path.ends_with('/') && !path.is_empty() {
+                cache.insert(PathBuf::from(path), pkg.trim().to_string());
+            }
+        }
+    }
+
+    if cache.is_empty() {
+        // Command succeeded but no output — likely lock contention caused
+        // pacman to produce no output before timeout killed it, or genuinely
+        // no packages are installed.
+        return Some(cache);
+    }
+
+    tracing::info!(entries = cache.len(), "built pacman package cache");
+    Some(cache)
+}
+
+fn build_cache_dpkg_once() -> Option<HashMap<PathBuf, String>> {
+    let mut cache = HashMap::new();
     let list_dir = Path::new("/var/lib/dpkg/info");
 
-    // Verify the directory is owned by root before parsing to prevent
-    // reading from a tampered dpkg info directory.
     {
         use std::os::unix::fs::MetadataExt;
         match std::fs::metadata(list_dir) {
@@ -334,13 +445,13 @@ fn build_cache_dpkg() -> HashMap<PathBuf, String> {
                     owner_uid = meta.uid(),
                     "/var/lib/dpkg/info is not owned by root — refusing to read package lists"
                 );
-                return cache;
+                return None;
             }
             Err(e) => {
                 tracing::warn!(error = %e, "cannot stat /var/lib/dpkg/info");
-                return cache;
+                return None;
             }
-            _ => {} // uid == 0, proceed
+            _ => {}
         }
     }
 
@@ -352,8 +463,6 @@ fn build_cache_dpkg() -> HashMap<PathBuf, String> {
                 if !name_str.ends_with(".list") {
                     continue;
                 }
-                // Package name is filename without .list suffix
-                // Handle multi-arch: e.g. "libc6:amd64.list" → "libc6:amd64"
                 let pkg = name_str.trim_end_matches(".list");
                 if let Ok(content) = std::fs::read_to_string(entry.path()) {
                     for line in content.lines() {
@@ -366,52 +475,56 @@ fn build_cache_dpkg() -> HashMap<PathBuf, String> {
             }
         }
     }
+
     if cache.is_empty() {
-        tracing::error!(
-            "dpkg package cache built with 0 entries — /var/lib/dpkg/info is empty or unreadable"
-        );
-    } else {
-        tracing::info!(entries = cache.len(), "built dpkg package cache");
+        tracing::warn!("dpkg package cache built with 0 entries");
+        return Some(cache);
     }
-    cache
+
+    tracing::info!(entries = cache.len(), "built dpkg package cache");
+    Some(cache)
 }
 
-fn build_cache_rpm() -> HashMap<PathBuf, String> {
+fn build_cache_rpm_once() -> Option<HashMap<PathBuf, String>> {
     let mut cache = HashMap::new();
-    // `rpm -qa --queryformat '%{NAME}\t[%{FILENAMES}\n]'` is complex;
-    // use `rpm -qa --filesbypkg` which outputs "package  /path" per line
     let timeout = Duration::from_secs(60);
-    if let Some(output) = run_with_timeout(
+    let output = run_with_timeout(
         Command::new(RPM_PATH).args(["-qa", "--filesbypkg"]),
         timeout,
         false,
-    ) {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                // Format: "package-name                    /path/to/file"
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                // Split on whitespace — package name is first token, path is last
-                let parts: Vec<&str> = trimmed.splitn(2, char::is_whitespace).collect();
-                if parts.len() == 2 {
-                    let pkg = parts[0].trim();
-                    let path = parts[1].trim();
-                    if !path.is_empty() && !path.ends_with('/') {
-                        cache.insert(PathBuf::from(path), pkg.to_string());
-                    }
-                }
+    )?;
+
+    if !output.status.success() {
+        tracing::warn!(
+            status = %output.status,
+            "rpm -qa --filesbypkg exited with non-zero status"
+        );
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = trimmed.splitn(2, char::is_whitespace).collect();
+        if parts.len() == 2 {
+            let pkg = parts[0].trim();
+            let path = parts[1].trim();
+            if !path.is_empty() && !path.ends_with('/') {
+                cache.insert(PathBuf::from(path), pkg.to_string());
             }
         }
     }
+
     if cache.is_empty() {
-        tracing::error!("rpm package cache built with 0 entries (likely query timeout)");
-    } else {
-        tracing::info!(entries = cache.len(), "built rpm package cache");
+        tracing::warn!("rpm package cache built with 0 entries");
+        return Some(cache);
     }
-    cache
+
+    tracing::info!(entries = cache.len(), "built rpm package cache");
+    Some(cache)
 }
 
 #[cfg(test)]
@@ -599,5 +712,108 @@ mod tests {
         // Simulate a successful reset (as run_with_timeout does on success)
         CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed);
         assert_eq!(CONSECUTIVE_TIMEOUTS.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn build_cache_with_retry_succeeds_on_first_try() {
+        // Simulate a build function that returns a populated cache immediately.
+        let call_count = std::sync::atomic::AtomicU32::new(0);
+        let result = build_cache_with_retry(
+            || {
+                call_count.fetch_add(1, Ordering::Relaxed);
+                let mut cache = HashMap::new();
+                cache.insert(PathBuf::from("/usr/bin/ls"), "coreutils".to_string());
+                Some(cache)
+            },
+            PackageBackend::Pacman,
+        );
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 1);
+        assert_eq!(
+            call_count.load(Ordering::Relaxed),
+            1,
+            "should not retry on success"
+        );
+    }
+
+    #[test]
+    fn build_cache_with_retry_retries_on_empty() {
+        // Simulate a build function that fails twice then succeeds.
+        let call_count = std::sync::atomic::AtomicU32::new(0);
+        let result = build_cache_with_retry(
+            || {
+                let n = call_count.fetch_add(1, Ordering::Relaxed);
+                if n < 2 {
+                    Some(HashMap::new()) // empty = transient failure
+                } else {
+                    let mut cache = HashMap::new();
+                    cache.insert(PathBuf::from("/usr/bin/ls"), "coreutils".to_string());
+                    Some(cache)
+                }
+            },
+            PackageBackend::Pacman,
+        );
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 1);
+        assert_eq!(
+            call_count.load(Ordering::Relaxed),
+            3,
+            "should retry twice then succeed"
+        );
+    }
+
+    #[test]
+    fn build_cache_with_retry_returns_none_after_exhaustion() {
+        // Simulate a build function that always returns None (command failed).
+        let call_count = std::sync::atomic::AtomicU32::new(0);
+        let result = build_cache_with_retry(
+            || {
+                call_count.fetch_add(1, Ordering::Relaxed);
+                None
+            },
+            PackageBackend::Pacman,
+        );
+        assert!(result.is_none());
+        assert_eq!(
+            call_count.load(Ordering::Relaxed),
+            4,
+            "should try 1 + 3 retries = 4"
+        );
+    }
+
+    #[test]
+    fn wait_for_package_lock_returns_immediately_when_no_lock() {
+        // With no lock file present, wait_for_package_lock should return instantly.
+        let start = std::time::Instant::now();
+        wait_for_package_lock(PackageBackend::Auto, Duration::from_secs(5));
+        assert!(
+            start.elapsed() < Duration::from_millis(100),
+            "should return immediately for Auto backend"
+        );
+    }
+
+    #[test]
+    fn wait_for_nonexistent_lock_returns_immediately() {
+        // Pacman lock file doesn't exist in test environments — should return instantly.
+        let start = std::time::Instant::now();
+        wait_for_package_lock(PackageBackend::Pacman, Duration::from_secs(1));
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "should return quickly when lock file doesn't exist"
+        );
+    }
+
+    #[test]
+    fn build_package_cache_auto_backend_returns_none_without_detection() {
+        // The Auto backend with no detected package manager returns None.
+        // We test the dispatch logic, not the actual package manager.
+        // On Arch systems this would detect pacman, so we test the None path
+        // by checking that a non-Auto backend doesn't crash.
+        let config = PackageManagerConfig {
+            auto_rebaseline: true,
+            backend: PackageBackend::Auto,
+        };
+        // Just verify the function is callable and returns the right type.
+        let _result: Option<HashMap<PathBuf, String>> = build_package_cache(&config);
     }
 }

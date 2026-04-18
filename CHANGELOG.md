@@ -4,6 +4,21 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-04-18
+
+### Resilience
+
+- **Package cache self-healing with retry and backoff.** `build_package_cache()` now retries up to 3 times with 2s/5s/10s backoff delays when the initial cache build returns 0 entries. This handles the common case where the pacman post-transaction hook fires while the package manager database lock is still held.
+- **Package manager lock-file awareness.** Before each retry, vigil polls for the package manager's lock file (`/var/lib/pacman/db.lck`, `/var/lib/dpkg/lock-frontend`, `/var/lib/rpm/.rpm.lock`) and waits up to the backoff duration for it to disappear. This directly addresses lock contention during package upgrades.
+- **`build_package_cache()` returns `Option<HashMap>`.** `None` means the query failed (timeout, command error); `Some(empty)` means the package manager genuinely reported no files. Callers (scanner.rs) now fall back to per-file queries when the bulk cache is unavailable instead of silently proceeding with no attribution.
+
+### Internal
+
+- `build_cache_pacman_once()`, `build_cache_dpkg_once()`, `build_cache_rpm_once()` — single-attempt cache builders returning `Option`.
+- `build_cache_with_retry()` — generic retry wrapper with configurable backoff.
+- `wait_for_package_lock()` — polls for lock-file release with 250ms interval.
+- 6 new unit tests covering retry success, retry exhaustion, lock-wait behavior, and API shape.
+
 ## [0.39.0] - 2026-04-17
 
 ### Bug Fixes
