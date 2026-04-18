@@ -659,6 +659,150 @@ pub fn get_group_counts(
     Ok(out)
 }
 
+/// Insert a check_completed receipt into the audit chain.
+pub fn insert_receipt_entry(
+    conn: &Connection,
+    _receipt: &crate::receipt::CheckReceipt,
+    payload_json: &str,
+    previous_chain_hash: &str,
+    hmac_key: Option<&[u8]>,
+) -> Result<String> {
+    let timestamp = Utc::now().timestamp();
+    let path = "vigil:check_completed";
+    let severity = "info";
+
+    let chain_hash = compute_chain_hash(previous_chain_hash, timestamp, path, payload_json, severity);
+
+    let hmac = hmac_key.map(|key| {
+        let data = crate::hmac::build_audit_hmac_data(
+            timestamp, path, "check_completed", severity, None, None, previous_chain_hash,
+        );
+        crate::hmac::compute_hmac(key, &data).unwrap_or_default()
+    });
+
+    conn.prepare_cached(
+        "INSERT INTO audit_log (
+            timestamp, path, changes_json, severity, monitored_group,
+            process_json, package, maintenance, suppressed, hmac, chain_hash
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5,
+            ?6, ?7, ?8, ?9, ?10, ?11
+        )",
+    )?
+    .execute(params![
+        timestamp,
+        path,
+        payload_json,
+        severity,
+        Option::<String>::None,
+        Option::<String>::None,
+        Option::<String>::None,
+        0,
+        0,
+        hmac,
+        chain_hash,
+    ])?;
+
+    Ok(chain_hash)
+}
+
+/// Insert a self_check entry into the audit chain.
+pub fn insert_self_check_entry(
+    conn: &Connection,
+    payload_json: &str,
+    overall_status: &str,
+    previous_chain_hash: &str,
+    hmac_key: Option<&[u8]>,
+) -> Result<String> {
+    let timestamp = Utc::now().timestamp();
+    let path = "vigil:self_check";
+    let severity = match overall_status {
+        "Fail" => "critical",
+        "Warn" => "warning",
+        _ => "info",
+    };
+
+    let chain_hash = compute_chain_hash(previous_chain_hash, timestamp, path, payload_json, severity);
+
+    let hmac = hmac_key.map(|key| {
+        let data = crate::hmac::build_audit_hmac_data(
+            timestamp, path, "self_check", severity, None, None, previous_chain_hash,
+        );
+        crate::hmac::compute_hmac(key, &data).unwrap_or_default()
+    });
+
+    conn.prepare_cached(
+        "INSERT INTO audit_log (
+            timestamp, path, changes_json, severity, monitored_group,
+            process_json, package, maintenance, suppressed, hmac, chain_hash
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5,
+            ?6, ?7, ?8, ?9, ?10, ?11
+        )",
+    )?
+    .execute(params![
+        timestamp,
+        path,
+        payload_json,
+        severity,
+        Option::<String>::None,
+        Option::<String>::None,
+        Option::<String>::None,
+        0,
+        0,
+        hmac,
+        chain_hash,
+    ])?;
+
+    Ok(chain_hash)
+}
+
+/// Insert a test_alert entry into the audit chain.
+pub fn insert_test_alert_entry(
+    conn: &Connection,
+    payload_json: &str,
+    severity: &str,
+    previous_chain_hash: &str,
+    hmac_key: Option<&[u8]>,
+) -> Result<String> {
+    let timestamp = Utc::now().timestamp();
+    let path = "vigil:test_alert";
+
+    let chain_hash = compute_chain_hash(previous_chain_hash, timestamp, path, payload_json, severity);
+
+    let hmac = hmac_key.map(|key| {
+        let data = crate::hmac::build_audit_hmac_data(
+            timestamp, path, "test_alert", severity, None, None, previous_chain_hash,
+        );
+        crate::hmac::compute_hmac(key, &data).unwrap_or_default()
+    });
+
+    conn.prepare_cached(
+        "INSERT INTO audit_log (
+            timestamp, path, changes_json, severity, monitored_group,
+            process_json, package, maintenance, suppressed, hmac, chain_hash
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5,
+            ?6, ?7, ?8, ?9, ?10, ?11
+        )",
+    )?
+    .execute(params![
+        timestamp,
+        path,
+        payload_json,
+        severity,
+        Option::<String>::None,
+        Option::<String>::None,
+        Option::<String>::None,
+        0,
+        0,
+        hmac,
+        chain_hash,
+    ])?;
+
+    Ok(chain_hash)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

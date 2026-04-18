@@ -106,6 +106,7 @@ mod tests {
             crate::config::WatchGroup {
                 severity: crate::types::Severity::Low,
                 paths: vec!["/tmp".into()],
+                mode: crate::config::WatchMode::PerFile,
             },
         );
         let diffs = diff_config(&old, &new);

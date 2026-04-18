@@ -17,6 +17,7 @@ pub mod hmac;
 pub mod metrics;
 pub mod monitor;
 pub mod package;
+pub mod receipt;
 pub mod scan_scheduler;
 pub mod scanner;
 pub mod types;

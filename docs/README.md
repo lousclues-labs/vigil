@@ -20,6 +20,8 @@ Use this index when you need answers fast.
 | [Architecture](ARCHITECTURE.md) | System design, data flow, module structure |
 | [Threat Model](THREAT_MODEL.md) | What Vigil Baseline detects, what it doesn't, adversary assumptions |
 | [Resilience](RESILIENCE.md) | Failure modes, fallback behavior, recovery procedures |
+| [Minimum Viable Trust](MINIMUM_VIABLE.md) | Smallest deployment and what it provides |
+| [Forensics](FORENSICS.md) | Offline comparison workflows with `vigil inspect` |
 | [Security](SECURITY.md) | Security policy, dependency justification, trust model |
 | [Vulnerabilities](VULNERABILITIES.md) | All remediated vulnerabilities with VIGIL-VULN tracking IDs |
 

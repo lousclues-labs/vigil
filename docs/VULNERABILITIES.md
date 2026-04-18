@@ -87,6 +87,14 @@ Use this as a reference when assessing Vigil Baseline's security posture or audi
 | VIGIL-VULN-064 | Medium | 0.34.0 | fanotify queue overflow silently logged — no Degraded state, no recovery scan |
 | VIGIL-VULN-065 | Medium | 0.34.0 | fanotify mountinfo octal escapes not decoded — mount points with whitespace not marked |
 | VIGIL-VULN-066 | Medium | 0.34.0 | fanotify mark/read failures silently ignored — daemon ran without real-time monitoring |
+| VIGIL-VULN-067 | Critical | 0.35.0 | WAL HMAC verification bypass via zero-HMAC injection |
+| VIGIL-VULN-068 | High | 0.35.0 | fanotify silently drops events for deleted files |
+| VIGIL-VULN-069 | High | 0.35.0 | New-mount evasion: fanotify marks not applied to overlapping mounts |
+| VIGIL-VULN-070 | Medium | 0.35.0 | Clock manipulation evades audit retention via slow drift |
+| VIGIL-VULN-071 | Medium | 0.35.0 | Coordinator uses stale DB connections after Degraded transition |
+| VIGIL-VULN-072 | Medium | 0.35.0 | User-space event loss not surfaced as Degraded state |
+| VIGIL-VULN-073 | Medium | 0.35.0 | v0.34.0 follow-up bugs (composite) |
+| VIGIL-VULN-074 | Medium | 0.35.0 | Key material in non-zeroizing buffers; fd leak across exec (composite) |
 
 ---
 

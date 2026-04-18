@@ -298,3 +298,34 @@ Include these artifacts in your issue:
 - recent `journalctl -u vigild` lines
 - sanitized config excerpt
 - exact command sequence
+
+---
+
+## Quick Diagnostic Commands
+
+| Question | Command |
+|---|---|
+| Is Vigil working? | `vigil why-silent` |
+| What's the current state? | `vigil status` |
+| Why is this path watched? | `vigil explain /path/to/file` |
+| Can alerts reach me? | `vigil test alert` |
+| Is the system healthy? | `vigil doctor` |
+| What changed recently? | `vigil audit show -n 20` |
+
+### After install, after reboot, after OS upgrade
+
+```bash
+vigil doctor
+vigil test alert
+vigil why-silent
+```
+
+### Understanding watch coverage
+
+```bash
+vigil explain /etc/sudoers
+vigil explain /home/user/.ssh/authorized_keys
+```
+
+Shows which watch group covers a path, the matching rule, baseline entry,
+and audit history. If the path is not watched, shows nearby watched paths.

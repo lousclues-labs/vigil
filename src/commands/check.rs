@@ -21,6 +21,7 @@ pub(crate) struct CheckOpts {
     pub brief: bool,
     pub no_pager: bool,
     pub since: Option<String>,
+    pub reason: bool,
 }
 
 pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
@@ -161,6 +162,41 @@ pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
             });
         }
     }
+
+    // Record verification receipt if --reason is set (before report consumes result)
+    let receipt_msg = if opts.reason {
+        let receipt = vigil::receipt::CheckReceipt::from_scan(
+            scan_finished_at - (result.duration_ms as i64 / 1000).max(1),
+            scan_finished_at,
+            mode,
+            &result,
+        );
+        if let Ok(audit_conn) = vigil::db::open_audit_db(&cfg) {
+            let last_hash = vigil::db::audit_ops::get_last_chain_hash(&audit_conn)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| {
+                    blake3::hash(b"vigil-audit-chain-genesis")
+                        .to_hex()
+                        .to_string()
+                });
+
+            match receipt.record(&audit_conn, &last_hash, None) {
+                Ok(_) => Some(format!(
+                    "blake3:{}",
+                    &receipt.receipt_hash[..16.min(receipt.receipt_hash.len())]
+                )),
+                Err(e) => {
+                    eprintln!("warning: failed to record receipt: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Gather baseline metadata
     let baseline_fingerprint = vigil::db::baseline_ops::get_baseline_fingerprint(&conn);
@@ -415,6 +451,13 @@ pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
             }
         } else {
             println!("  No changes matched the accept filters. Nothing to accept.");
+        }
+    }
+
+    // Print receipt reference if recorded
+    if let Some(ref receipt_hash) = receipt_msg {
+        if opts.format != OutputFormat::Json {
+            println!("  Receipt:   {} (recorded in audit chain)", receipt_hash);
         }
     }
 

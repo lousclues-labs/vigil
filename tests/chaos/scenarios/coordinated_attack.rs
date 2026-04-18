@@ -69,6 +69,7 @@ fn run_coordinated_attack(seed: u64) {
         vigil::config::WatchGroup {
             severity: Severity::High,
             paths: vec![fs_root.to_string_lossy().to_string()],
+            mode: vigil::config::WatchMode::PerFile,
         },
     );
 

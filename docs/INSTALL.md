@@ -217,6 +217,10 @@ Start foreground monitor (optional quick test):
 vigil watch
 ```
 
+For constrained environments (live USB, containers, embedded systems) where
+a full daemon deployment is not possible, see
+[Minimum Viable Trust](MINIMUM_VIABLE.md) for the smallest useful deployment.
+
 ---
 
 ## Uninstall (Manual)

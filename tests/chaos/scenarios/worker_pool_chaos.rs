@@ -59,6 +59,7 @@ fn run_worker_pool_chaos(seed: u64) {
         vigil::config::WatchGroup {
             severity: Severity::High,
             paths: vec![fs_root.to_string_lossy().to_string()],
+            mode: vigil::config::WatchMode::PerFile,
         },
     );
 

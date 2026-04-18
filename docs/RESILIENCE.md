@@ -270,3 +270,12 @@ Vigil Baseline promises explicit degradation signals and preserved audit truth u
 That is the point.
 
 *Resilient systems are honest about blind spots.*
+
+---
+
+## Degraded Environments
+
+For environments where a full daemon deployment is not possible (live USB,
+containers, recovery shells, embedded systems), see
+[Minimum Viable Trust](MINIMUM_VIABLE.md) for the smallest deployment that
+still provides integrity checking.

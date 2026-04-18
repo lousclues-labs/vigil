@@ -6,8 +6,9 @@ use vigil::cli::{Cli, Command};
 
 mod commands;
 use commands::{
-    cmd_audit, cmd_baseline, cmd_check, cmd_check_live, cmd_config, cmd_diff, cmd_doctor, cmd_init,
-    cmd_log, cmd_maintenance, cmd_setup, cmd_status, cmd_update, cmd_watch, CheckOpts,
+    cmd_audit, cmd_baseline, cmd_check, cmd_check_live, cmd_config, cmd_diff, cmd_doctor,
+    cmd_explain, cmd_init, cmd_inspect, cmd_log, cmd_maintenance, cmd_setup, cmd_status,
+    cmd_test_alert, cmd_update, cmd_watch, cmd_why_silent, CheckOpts,
 };
 
 fn main() {
@@ -55,6 +56,7 @@ fn run(cli: Cli) -> vigil::Result<i32> {
             brief,
             no_pager,
             since,
+            reason,
         } => {
             if now && accept {
                 eprintln!("error: --accept cannot be used with --now (baseline updates require direct database access)");
@@ -83,6 +85,7 @@ fn run(cli: Cli) -> vigil::Result<i32> {
                     brief,
                     no_pager,
                     since,
+                    reason,
                 })
             }
         }
@@ -94,9 +97,43 @@ fn run(cli: Cli) -> vigil::Result<i32> {
             cmd_status(config_path.as_deref(), format)?;
             Ok(0)
         }
+        Command::Explain { path, verbose } => {
+            cmd_explain(config_path.as_deref(), &path, verbose, format)?;
+            Ok(0)
+        }
+        Command::WhySilent => {
+            cmd_why_silent(config_path.as_deref(), format)?;
+            Ok(0)
+        }
+        Command::Inspect {
+            path,
+            baseline_db,
+            recursive,
+            root,
+            brief,
+        } => {
+            cmd_inspect(
+                config_path.as_deref(),
+                &path,
+                baseline_db.as_deref(),
+                recursive,
+                root.as_deref(),
+                brief,
+                format,
+            )?;
+            Ok(0)
+        }
+        Command::Test { action } => match action {
+            vigil::cli::TestAction::Alert { severity } => {
+                cmd_test_alert(config_path.as_deref(), severity, format)
+            }
+        },
         Command::Doctor {
             format: doctor_format,
-        } => cmd_doctor(config_path.as_deref(), doctor_format.unwrap_or(format)),
+            now: _now,
+        } => {
+            cmd_doctor(config_path.as_deref(), doctor_format.unwrap_or(format))
+        }
         Command::Update {
             repo,
             quiet,

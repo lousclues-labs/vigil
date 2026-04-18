@@ -220,10 +220,31 @@ paths = [
 
 ### `[watch.<group>]`
 
-| Option | Type | Required | Notes |
-|--------|------|----------|-------|
-| `severity` | enum | yes | `low`, `medium`, `high`, `critical` |
-| `paths` | string[] | yes | watched file or directory paths |
+| Option | Type | Required | Default | Notes |
+|--------|------|----------|---------|-------|
+| `severity` | enum | yes | — | `low`, `medium`, `high`, `critical` |
+| `paths` | string[] | yes | — | watched file or directory paths |
+| `mode` | enum | no | `per_file` | `per_file` or `closed_set` |
+
+#### Watch Modes
+
+- `per_file` (default): track each file's content and metadata individually.
+  This is the existing behavior for all watch groups.
+- `closed_set`: additionally track the set of immediate directory entries.
+  Any addition or removal of a file in the directory is a structural deviation.
+  Per-file tracking still applies to each entry in the set.
+
+Closed-set mode is recommended for directories where the set of filenames is
+fixed and any new file is suspicious: `~/.ssh/`, `/etc/cron.d/`,
+`/etc/sudoers.d/`.
+
+Use `vigil explain <path>` to verify a config change matched what you intended.
+
+### `[daemon]`
+
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `self_check_interval` | string | `"6h"` | interval for daemon-driven self-health checks. `"0"` disables. |
 
 ---
 

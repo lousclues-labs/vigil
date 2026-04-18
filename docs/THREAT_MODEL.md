@@ -149,3 +149,45 @@ Vigil Baseline is not a silver bullet.
 It is a high-signal boundary witness.
 
 *No heuristics. No guessing. Changed or unchanged.*
+
+---
+
+## Closed-Set Directory Watches
+
+Closed-set mode (`mode = "closed_set"`) detects persistence via unknown
+filenames. The per-file baseline cannot detect a new file in a watched
+directory unless the operator predicted its name. Closed-set declares:
+"this directory's set of entries is fixed; any addition or removal is a
+structural deviation."
+
+Default closed-set directories: `~/.ssh/`, `/etc/cron.d/`, `/etc/cron.daily/`,
+`/etc/cron.hourly/`, `/etc/cron.weekly/`, `/etc/cron.monthly/`,
+`/etc/sudoers.d/`.
+
+---
+
+## Absence of Receipts
+
+When `vigil check --reason` is used, each check records a `check_completed`
+entry in the audit chain. The absence of receipts over a period is itself
+a detection signal: it means either Vigil was not running checks, or an
+attacker suppressed Vigil during that window.
+
+Operators can query receipts:
+```
+vigil audit show --path 'vigil:check_completed'
+```
+
+---
+
+## Alert Delivery Degradation
+
+Per-channel delivery status is recorded with every alert. Historical
+delivery failures are queryable:
+```
+vigil audit show --path 'vigil:test_alert'
+```
+
+An attacker who degrades alert channels (e.g., kills the notification daemon)
+leaves a trail in the audit log showing that alerts were generated but
+delivery partially failed.

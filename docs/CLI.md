@@ -26,7 +26,11 @@ vigil [GLOBAL_OPTIONS] <COMMAND> [COMMAND_OPTIONS]
 | `watch` | start real-time monitoring daemon in foreground |
 | `check` | run one-shot integrity check |
 | `diff` | compare a single file against its baseline |
-| `status` | daemon and baseline health summary |
+| `status` | one-shot query of current state with verdict |
+| `explain` | query why a path is watched (or not) |
+| `why-silent` | query why Vigil is currently quiet |
+| `inspect` | offline forensic comparison against arbitrary paths/baselines |
+| `test alert` | synthetic alert through full delivery pipeline |
 | `doctor` | system health diagnostics |
 | `update` | build and install from local git repo |
 | `audit` | audit log operations (show, stats, verify) |
@@ -95,6 +99,7 @@ vigil check [OPTIONS]
 | `--brief` | single-line summary output |
 | `--no-pager` | disable automatic paging of long output |
 | `--since <TIME>` | show only current changes with audit evidence since this time (`24h`, `7d`, `today`, `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS`, unix timestamp) |
+| `--reason` | record a verification receipt in the audit chain |
 
 The `--since` flag filters current scan results against the audit database. Only changes
 with audit evidence in the specified time window are shown. Changes with no prior audit
@@ -212,13 +217,195 @@ Vigil Baseline — Diff: /etc/passwd
 
 ## `status`
 
-Show baseline counts, daemon state, backend, DB path, and daemon PID if available.
+One-shot query of Vigil's current state. Works whether vigild is running or not.
 
 ```bash
-vigil status
+vigil status [--format json]
 ```
 
+Reports a verdict (`ok`, `degraded`, or `down`) followed by: daemon liveness,
+version, backend, paths watched, baseline state, last check, audit chain
+status, suppressions, and WAL state.
+
 Falls back to `/run/vigil/health.json` for baseline counts when the active user cannot read root-owned DB files directly. For automation, `vigil status --format json` includes a `health` object with the raw daemon health snapshot when present.
+
+### `status` JSON Schema (stable contract)
+
+```json
+{
+  "verdict": "ok | degraded | down",
+  "reason": "string | null",
+  "daemon_running": true,
+  "daemon_pid": 8432,
+  "daemon_uptime": "3d 14h",
+  "version": "0.41.0",
+  "backend": "fanotify",
+  "backend_degraded": false,
+  "watching_paths": 4217,
+  "watching_groups": 6,
+  "baseline_epoch": "1",
+  "baseline_entries": 4217,
+  "last_check": "2026-04-18 14:22:01 UTC",
+  "last_check_result": "clean",
+  "audit_chain_status": "intact",
+  "audit_chain_last_verified": "2026-04-18 09:00:00 UTC",
+  "suppressions": 0,
+  "wal_state": "empty"
+}
+```
+
+No fields are ever omitted; absent values are explicit `null`.
+
+---
+
+## `explain`
+
+Query why a path is watched (or not).
+
+```bash
+vigil explain <path> [--verbose] [--format json]
+```
+
+Reports the matching watch group, severity, match rule, baseline entry,
+last verification time, and audit history summary. If the path is not
+watched, lists nearby watched paths.
+
+`--verbose` adds: full hash, full xattr list, full audit entry list.
+
+### `explain` JSON Schema (stable contract)
+
+```json
+{
+  "path": "/etc/sudoers",
+  "watch_group": {
+    "name": "system_critical",
+    "severity": "critical",
+    "matched_by": "literal path in [watch.system_critical]",
+    "mode": "per_file"
+  },
+  "baseline": {
+    "hash": "a7f2...",
+    "mode": 288,
+    "owner_uid": 0,
+    "owner_gid": 0,
+    "inode": 1234567,
+    "mtime": 1713456121,
+    "size": 1024
+  },
+  "audit_history_count": 3
+}
+```
+
+---
+
+## `why-silent`
+
+Query why Vigil is currently quiet.
+
+```bash
+vigil why-silent [--format json]
+```
+
+Reports watching status, backend, suppressions, last check, WAL state,
+audit chain status, and daemon liveness. Ends with a single sentence:
+`Reason for current silence: <X>`.
+
+Works with daemon running or not.
+
+### `why-silent` JSON Schema (stable contract)
+
+```json
+{
+  "watching_paths": 4217,
+  "watching_groups": 6,
+  "backend": "fanotify",
+  "backend_degraded": false,
+  "daemon_running": true,
+  "suppressions": 0,
+  "wal_state": "empty",
+  "audit_chain_status": "intact",
+  "last_check": "2026-04-18 14:22:01 UTC",
+  "last_check_result": "clean",
+  "reason": "nothing has changed.",
+  "issues": []
+}
+```
+
+---
+
+## `inspect`
+
+Offline forensic comparison against arbitrary paths and baselines.
+
+```bash
+vigil inspect <path> [--baseline-db <path>] [--recursive] [--root <prefix>]
+                     [--format json] [--brief]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--baseline-db <path>` | path to a baseline DB file (defaults to local DB) |
+| `--recursive` | walk directory and compare every entry |
+| `--root <prefix>` | path prefix for baseline lookup translation |
+| `--brief` | single-line summary |
+
+No daemon required. Strictly read-only. See `docs/FORENSICS.md` for workflows.
+
+### `inspect` JSON Schema (stable contract)
+
+```json
+{
+  "target": "/mnt/recovered/etc/sudoers",
+  "baseline_db": "/backups/2025-12.db",
+  "root_prefix": "/mnt/recovered",
+  "total_inspected": 1,
+  "clean": 0,
+  "deviations": 1,
+  "errors": 0,
+  "missing_in_baseline": 0,
+  "details": [{"path": "...", "baseline_path": "...", "differences": ["..."]}]
+}
+```
+
+---
+
+## `test alert`
+
+Send a synthetic alert through all configured delivery channels.
+
+```bash
+vigil test alert [--severity info|warning|critical] [--format json]
+```
+
+Default severity: `info`. Tests each backend and reports per-channel
+delivery status. Records a `test_alert` entry in the audit chain.
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | all configured channels delivered successfully |
+| `1` | one or more configured channels failed |
+| `2` | usage error |
+
+### `test alert` JSON Schema (stable contract)
+
+```json
+{
+  "test": true,
+  "severity": "info",
+  "channels": [
+    {"channel": "desktop_notification", "status": "ok", "detail": "..."},
+    {"channel": "journald", "status": "ok", "detail": "..."},
+    {"channel": "json_log", "status": "ok", "detail": "..."},
+    {"channel": "signal_socket", "status": "unconfigured", "detail": null}
+  ],
+  "configured": 3,
+  "failed": 0
+}
+```
+
+Per-channel status values: `ok`, `failed`, `no_listener`, `unconfigured`.
 
 ---
 
@@ -227,8 +414,13 @@ Falls back to `/run/vigil/health.json` for baseline counts when the active user 
 Run environment and health diagnostics.
 
 ```bash
-vigil doctor [--format <human|json>]
+vigil doctor [--format <human|json>] [--now]
 ```
+
+| Option | Description |
+|--------|-------------|
+| `--format` | output format (human or json) |
+| `--now` | trigger a self-check on the running daemon via control socket |
 
 What it checks:
 - fanotify availability

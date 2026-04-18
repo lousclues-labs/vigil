@@ -2,7 +2,40 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
-## [Unreleased]
+## [0.41.0] - 2026-04-18
+
+### Features
+
+- **`vigil status` (enhanced):** one-shot query of Vigil's current state with `ok`/`degraded`/`down` verdict. Works with or without daemon running. Stable JSON schema.
+- **`vigil explain <path>`:** query why a path is watched, its watch group, severity, baseline entry, and audit history. Shows nearby watched paths when a path is not covered.
+- **`vigil why-silent`:** query every reason Vigil could currently be silent. Ends with a single-sentence headline reason.
+- **`vigil check --reason`:** record a verification receipt (`check_completed`) in the audit chain after each check. Receipt hash commits the verifier to the exact paths considered and results.
+- **Closed-set directory watches:** new `mode = "closed_set"` for watch groups. Detects unknown-filename additions and removals. Default closed-set on `~/.ssh/`, cron directories, `/etc/sudoers.d/`.
+- **Daemon-driven `vigil doctor`:** `self_check_interval` config field (default `"6h"`) for periodic self-health checks written to the audit chain. `vigil doctor --now` flag.
+- **`vigil inspect`:** offline forensic comparator against arbitrary paths and baselines. `--baseline-db`, `--recursive`, `--root` prefix translation. Strictly read-only. No daemon required.
+- **`vigil test alert`:** synthetic alert through full delivery pipeline with per-channel status reporting. Records `test_alert` audit entry.
+- **Per-channel delivery status in alert log:** each alert entry includes per-channel delivery result (`ok`, `failed`, `no_listener`, `unconfigured`).
+
+### Documentation
+
+- **`docs/MINIMUM_VIABLE.md`:** documented "minimum viable trust" mode for constrained environments.
+- **`docs/FORENSICS.md`:** offline comparison workflows with `vigil inspect`.
+- **`docs/TROUBLESHOOTING.md`:** added quick diagnostic commands table, `vigil why-silent` and `vigil test alert` recommendations.
+- **`docs/CLI.md`:** added `explain`, `why-silent`, `inspect`, `test alert` references. Documented stable JSON schemas. Added `--reason` flag to `check`. Added `--now` flag to `doctor`.
+- **`docs/CONFIGURATION.md`:** documented `mode` field for watch groups and `self_check_interval` daemon config.
+- **`docs/THREAT_MODEL.md`:** added closed-set detection, absence-of-receipts signal, alert delivery degradation tracking.
+
+### New Audit Entry Types
+
+- `check_completed` — verification receipt from `vigil check --reason`
+- `self_check` — daemon-driven or operator-invoked health check result
+- `self_check_skipped` — daemon skipped a scheduled self-check
+- `test_alert` — synthetic alert from `vigil test alert`
+
+### Schema Extensions
+
+- `delivery` field added to alert log entries (non-breaking; old entries without it remain valid)
+- `dirent_set` tracking for closed-set watch groups in baseline DB
 
 ## [0.40.0] - 2026-04-18
 
@@ -308,6 +341,8 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 - **aur:** `aur/PKGBUILD` — Arch Linux AUR package build script for `vigil-baseline`. Installs binaries, systemd units, documentation, and example config (`aur/PKGBUILD`).
 - **aur:** `aur/vigil-baseline.install` — pacman install hook with quickstart instructions, upgrade guidance, and clean service stop/disable on removal (`aur/vigil-baseline.install`).
 - **ci:** `.github/workflows/release.yml` — automated release workflow triggered by version tags. Validates Cargo.toml version matches tag, runs tests, builds release binaries, strips them, creates GitHub Release with tarball + checksum, and publishes to crates.io (`.github/workflows/release.yml`).
+
+## [Unreleased]
 
 ## [0.32.1] - 2026-04-15
 

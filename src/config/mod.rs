@@ -221,6 +221,9 @@ pub struct DaemonConfig {
     pub detection_wal_persistent: bool,
     #[serde(default = "default_detection_wal_sync")]
     pub detection_wal_sync: DetectionWalSync,
+    /// Interval for daemon-driven self-health checks. "0" disables.
+    #[serde(default = "default_self_check_interval")]
+    pub self_check_interval: String,
 }
 
 impl Default for DaemonConfig {
@@ -240,8 +243,13 @@ impl Default for DaemonConfig {
             detection_wal_max_bytes: default_detection_wal_max_bytes(),
             detection_wal_persistent: false,
             detection_wal_sync: default_detection_wal_sync(),
+            self_check_interval: default_self_check_interval(),
         }
     }
+}
+
+fn default_self_check_interval() -> String {
+    "6h".to_string()
 }
 
 fn default_worker_threads() -> u32 {
@@ -681,10 +689,35 @@ fn default_syslog_facility() -> SyslogFacility {
     SyslogFacility::Authpriv
 }
 
+/// Watch mode for a watch group.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchMode {
+    PerFile,
+    ClosedSet,
+}
+
+impl Default for WatchMode {
+    fn default() -> Self {
+        WatchMode::PerFile
+    }
+}
+
+impl WatchMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WatchMode::PerFile => "per_file",
+            WatchMode::ClosedSet => "closed_set",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WatchGroup {
     pub severity: Severity,
     pub paths: Vec<String>,
+    #[serde(default)]
+    pub mode: WatchMode,
 }
 
 fn default_true() -> bool {
@@ -921,6 +954,7 @@ pub fn default_config() -> Config {
                 "/usr/bin/".into(),
                 "/usr/sbin/".into(),
             ],
+            mode: WatchMode::PerFile,
         },
     );
 
@@ -934,6 +968,33 @@ pub fn default_config() -> Config {
                 "/etc/systemd/system/".into(),
                 "/etc/profile".into(),
             ],
+            mode: WatchMode::PerFile,
+        },
+    );
+
+    // Closed-set watch groups: detect unknown-filename additions/removals
+    watch.insert(
+        "ssh_dir".into(),
+        WatchGroup {
+            severity: Severity::Critical,
+            paths: vec!["~/.ssh/".into()],
+            mode: WatchMode::ClosedSet,
+        },
+    );
+
+    watch.insert(
+        "cron_dirs".into(),
+        WatchGroup {
+            severity: Severity::High,
+            paths: vec![
+                "/etc/cron.d/".into(),
+                "/etc/cron.daily/".into(),
+                "/etc/cron.hourly/".into(),
+                "/etc/cron.weekly/".into(),
+                "/etc/cron.monthly/".into(),
+                "/etc/sudoers.d/".into(),
+            ],
+            mode: WatchMode::ClosedSet,
         },
     );
 
@@ -942,6 +1003,7 @@ pub fn default_config() -> Config {
         WatchGroup {
             severity: Severity::High,
             paths: vec!["~/.bashrc".into(), "~/.ssh/".into()],
+            mode: WatchMode::PerFile,
         },
     );
 
@@ -950,6 +1012,7 @@ pub fn default_config() -> Config {
         WatchGroup {
             severity: Severity::Medium,
             paths: vec!["/etc/hosts".into(), "/etc/resolv.conf".into()],
+            mode: WatchMode::PerFile,
         },
     );
 
@@ -963,6 +1026,7 @@ pub fn default_config() -> Config {
                 "/usr/bin/vigil".into(),
                 "/usr/bin/vigild".into(),
             ],
+            mode: WatchMode::PerFile,
         },
     );
 
@@ -1060,6 +1124,7 @@ mod tests {
             WatchGroup {
                 severity: Severity::Low,
                 paths: vec!["/usr/bin/".into()],
+                mode: WatchMode::PerFile,
             },
         );
         let warnings = validate_config_deep(&config).unwrap();

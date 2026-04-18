@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/badge/CI-GitHub_Actions-success)](.github/workflows/ci.yml)
 [![Security Audit](https://img.shields.io/badge/Security-Audit-success)](.github/workflows/scheduled.yml)
-[![Version](https://img.shields.io/badge/version-0.35.0-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.41.0-blue)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange.svg)](https://www.rust-lang.org/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
 
@@ -221,6 +221,8 @@ See [Configuration](docs/CONFIGURATION.md) for the full reference.
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | When things go wrong |
 | [FAQ](docs/FAQ.md) | Common questions answered |
 | [Resilience](docs/RESILIENCE.md) | Failure modes and recovery |
+| [Minimum Viable Trust](docs/MINIMUM_VIABLE.md) | Smallest deployment, what it provides |
+| [Forensics](docs/FORENSICS.md) | Offline comparison workflows |
 | [Principles](docs/PRINCIPLES.md) | Why it's built this way |
 | [Releasing](docs/RELEASING.md) | Release process and versioning |
 | [Licensing Guide](licenses/LICENSING.md) | File-level license coverage and policy |

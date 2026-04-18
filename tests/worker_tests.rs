@@ -51,6 +51,7 @@ fn process_event_detects_content_change() {
         vigil::config::WatchGroup {
             severity: vigil::types::Severity::High,
             paths: vec![dir.path().to_string_lossy().to_string()],
+            mode: vigil::config::WatchMode::PerFile,
         },
     );
 

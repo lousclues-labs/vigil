@@ -79,6 +79,10 @@ pub enum Command {
         /// Show only current changes with audit evidence since this time (e.g. 24h, 7d, today, 2026-04-07)
         #[arg(long)]
         since: Option<String>,
+
+        /// Record a verification receipt in the audit chain
+        #[arg(long)]
+        reason: bool,
     },
 
     /// Compare a single file against its baseline entry
@@ -90,11 +94,56 @@ pub enum Command {
     /// Show daemon status
     Status,
 
+    /// Query why a path is watched (or not)
+    Explain {
+        /// Path to explain
+        path: PathBuf,
+
+        /// Show full hash, xattr list, and audit history
+        #[arg(long)]
+        verbose: bool,
+    },
+
+    /// Query why Vigil is currently silent
+    WhySilent,
+
+    /// Inspect files against a baseline (offline forensic comparison)
+    Inspect {
+        /// Path to inspect (file or directory)
+        path: PathBuf,
+
+        /// Path to a baseline database file
+        #[arg(long = "baseline-db")]
+        baseline_db: Option<PathBuf>,
+
+        /// Inspect directory recursively
+        #[arg(long)]
+        recursive: bool,
+
+        /// Path prefix to strip when looking up baseline paths
+        #[arg(long)]
+        root: Option<String>,
+
+        /// Single-line summary output
+        #[arg(long)]
+        brief: bool,
+    },
+
+    /// Test operations
+    Test {
+        #[command(subcommand)]
+        action: TestAction,
+    },
+
     /// Run system health diagnostics
     Doctor {
         /// Output format
         #[arg(long, default_value = "human", value_enum)]
         format: Option<OutputFormat>,
+
+        /// Trigger a self-check on the running daemon via control socket
+        #[arg(long)]
+        now: bool,
     },
 
     /// Update Vigil Baseline from a local git repository
@@ -154,6 +203,16 @@ pub enum Command {
 
     /// Print version
     Version,
+}
+
+#[derive(Subcommand)]
+pub enum TestAction {
+    /// Send a synthetic alert through all configured delivery channels
+    Alert {
+        /// Severity of the test alert
+        #[arg(long, default_value = "info")]
+        severity: Severity,
+    },
 }
 
 #[derive(Subcommand)]
@@ -325,7 +384,7 @@ mod tests {
         let cli = Cli::try_parse_from(["vigil", "doctor", "--format", "json"])
             .expect("parse doctor --format json");
         match cli.command {
-            Command::Doctor { format } => assert_eq!(format, Some(OutputFormat::Json)),
+            Command::Doctor { format, .. } => assert_eq!(format, Some(OutputFormat::Json)),
             _ => panic!("expected doctor command"),
         }
     }

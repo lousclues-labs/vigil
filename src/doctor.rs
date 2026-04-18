@@ -1409,11 +1409,16 @@ fn state_path(config: &Config) -> PathBuf {
     config.daemon.runtime_dir.join("state.json")
 }
 
-fn open_existing_db(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
+/// Open a database read-only (public for status/explain queries).
+pub fn open_existing_db_pub(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
     rusqlite::Connection::open_with_flags(
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
+}
+
+fn open_existing_db(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
+    open_existing_db_pub(path)
 }
 
 fn has_sqlite_read_access(path: &Path) -> bool {

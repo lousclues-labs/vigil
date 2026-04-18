@@ -29,6 +29,7 @@ fn daemon_start_and_shutdown_smoke_test() {
         vigil::config::WatchGroup {
             severity: vigil::types::Severity::Medium,
             paths: vec![watch_dir.to_string_lossy().to_string()],
+            mode: vigil::config::WatchMode::PerFile,
         },
     );
 
