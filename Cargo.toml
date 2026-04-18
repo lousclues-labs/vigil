@@ -56,6 +56,7 @@ path = "src/lib.rs"
 [dependencies]
 # Hashing
 blake3 = { version = "1", features = ["mmap"] }
+constant_time_eq = ">=0.3, <0.4.3"  # pin below 0.4.3 which requires rustc 1.95
 
 # Database
 rusqlite = { version = "0.31", features = ["bundled"] }
