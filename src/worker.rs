@@ -317,6 +317,7 @@ impl WorkerContext {
                 timestamp: chrono::Utc::now(),
                 event_fd: None,
                 process: None,
+                bloom_generation: 0,
             };
 
             if let Some(cr) = self.process_safe(&synthetic) {
@@ -649,6 +650,7 @@ mod tests {
             timestamp: Utc::now(),
             event_fd: None,
             process: None,
+            bloom_generation: 0,
         };
 
         let mut ctx = WorkerContext::for_test(conn, &cfg);
@@ -707,6 +709,7 @@ mod tests {
             timestamp: Utc::now(),
             event_fd: None,
             process: None,
+            bloom_generation: 0,
         };
 
         let mut ctx = WorkerContext::for_test(conn, &cfg);
@@ -734,6 +737,7 @@ mod tests {
             timestamp: Utc::now(),
             event_fd: None,
             process: None,
+            bloom_generation: 0,
         };
 
         // Each call should increment consecutive_db_errors

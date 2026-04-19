@@ -8,8 +8,8 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -63,6 +63,7 @@ pub struct ControlHandler {
     pub auth_enabled: bool,
     pub maintenance_active: Arc<AtomicBool>,
     pub maintenance_entered_at: Arc<AtomicI64>,
+    pub control_unauthenticated_connections: Arc<AtomicU64>,
 }
 
 pub fn spawn(
@@ -225,9 +226,14 @@ impl ControlHandler {
         let request = if self.auth_enabled {
             self.authenticate_and_read(&stream)?
         } else {
-            tracing::warn!(
-                "control socket connection without authentication (hmac_signing disabled)"
-            );
+            static AUTH_DISABLED_WARNED: OnceLock<()> = OnceLock::new();
+            AUTH_DISABLED_WARNED.get_or_init(|| {
+                tracing::info!(
+                    "control socket operating without authentication (hmac_signing disabled)"
+                );
+            });
+            self.control_unauthenticated_connections
+                .fetch_add(1, Ordering::Relaxed);
             match self.read_request(&stream) {
                 Ok(r) => r,
                 Err(_) => {
@@ -346,13 +352,9 @@ impl ControlHandler {
     }
 
     fn dispatch(&self, method: &str, request: &serde_json::Value) -> serde_json::Value {
-        // Log and count security-relevant control socket commands
-        if matches!(
-            method,
-            "reload" | "scan" | "maintenance_enter" | "maintenance_exit" | "baseline_refresh"
-        ) {
-            log_control_action(method, &self.metrics);
-        }
+        // Log and count control socket commands at appropriate levels.
+        // Read-only queries at debug; mutating commands at info.
+        log_control_action(method, &self.metrics);
 
         match method {
             "status" => self.handle_status(),
@@ -374,6 +376,12 @@ impl ControlHandler {
             DaemonState::Degraded { reason, .. } => format!("degraded: {}", reason),
         };
         let uptime_seconds = chrono::Utc::now().timestamp() - snap.uptime_start;
+        let baseline_count = {
+            let conn = self.baseline_conn.lock();
+            baseline_ops::count(&conn).unwrap_or(0)
+        };
+        let alerts_24h = snap.alerts_dispatched;
+        let critical_24h = 0u64; // TODO: track critical-specific counter
         serde_json::json!({
             "ok": true,
             "daemon": {
@@ -381,6 +389,9 @@ impl ControlHandler {
                 "uptime_seconds": uptime_seconds,
                 "version": env!("CARGO_PKG_VERSION"),
                 "maintenance_window": self.maintenance_active.load(Ordering::Acquire),
+                "baseline_count": baseline_count,
+                "alerts_24h": alerts_24h,
+                "critical_24h": critical_24h,
             },
             "metrics": snap.status_view(),
         })
@@ -518,7 +529,17 @@ fn read_bounded_line(stream: &std::os::unix::net::UnixStream) -> Result<String> 
 }
 
 fn log_control_action(method: &str, metrics: &Metrics) {
-    tracing::warn!(method = method, "control socket command executed");
+    match method {
+        "status" | "baseline_count" | "metrics_prometheus" => {
+            tracing::debug!(method = method, "control socket query");
+        }
+        "reload" | "scan" | "maintenance_enter" | "maintenance_exit" | "baseline_refresh" => {
+            tracing::info!(method = method, "control socket command executed");
+        }
+        _ => {
+            tracing::debug!(method = method, "control socket unknown method");
+        }
+    }
     metrics.control_commands.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -619,6 +640,7 @@ mod tests {
             auth_enabled: false,
             maintenance_active: Arc::new(AtomicBool::new(false)),
             maintenance_entered_at: Arc::new(AtomicI64::new(0)),
+            control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
         };
         let handle = spawn(socket_path.clone(), handler, shutdown.clone()).unwrap();
 
@@ -740,6 +762,7 @@ mod tests {
             auth_enabled: false,
             maintenance_active: Arc::new(AtomicBool::new(false)),
             maintenance_entered_at: Arc::new(AtomicI64::new(0)),
+            control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
         };
 
         let result = handler.dispatch("status", &serde_json::json!({"method": "status"}));
@@ -776,6 +799,7 @@ mod tests {
             auth_enabled: false,
             maintenance_active: Arc::new(AtomicBool::new(false)),
             maintenance_entered_at: Arc::new(AtomicI64::new(0)),
+            control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
         };
 
         handler.dispatch("reload", &serde_json::json!({"method": "reload"}));
@@ -843,6 +867,7 @@ mod tests {
             auth_enabled: false,
             maintenance_active: Arc::new(AtomicBool::new(false)),
             maintenance_entered_at: Arc::new(AtomicI64::new(0)),
+            control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
         };
 
         let result = handler.handle_baseline_refresh();

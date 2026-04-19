@@ -70,6 +70,7 @@ fn run_coordinated_attack(seed: u64) {
             severity: Severity::High,
             paths: vec![fs_root.to_string_lossy().to_string()],
             mode: vigil::config::WatchMode::PerFile,
+            expect_present: false,
         },
     );
 
@@ -210,6 +211,7 @@ fn run_coordinated_attack(seed: u64) {
                 timestamp: chrono::Utc::now(),
                 event_fd: None,
                 process: None,
+                bloom_generation: 0,
             };
             let _ = event_tx.try_send(event);
             total_events_sent += 1;

@@ -95,6 +95,10 @@ hmac_key_path = "/etc/vigil/hmac.key"
 verify_config_integrity = true
 control_socket_auth = true        # challenge-response auth on control socket
 # trust_baseline_on_hmac_mismatch = false  # set true temporarily after version upgrades
+# auto_recover_inode_changes = false        # accept inode changes if content verification passes
+
+[update]
+backup_retention_count = 5                 # binary backup archives to keep
 
 [monitor]
 event_loss_alert_threshold = 10   # user-space or kernel event drops per tick before Degraded
@@ -224,6 +228,32 @@ and critical escalation semantics), see `docs/NOTIFICATIONS.md`.
 | `verify_config_integrity` | bool | `true` | integrity check toggle |
 | `control_socket_auth` | bool | `true` | enables challenge-response authentication on the control socket (requires `hmac_signing = true`) |
 | `trust_baseline_on_hmac_mismatch` | bool | `false` | when true, HMAC mismatch on startup recomputes and stores rather than entering Degraded state. Use temporarily after version upgrades that change HMAC field coverage, then disable. |
+| `auto_recover_inode_changes` | bool | `false` | when true, automatically accept inode changes if content verification passes (re-stat, verify schema sentinel or HMAC fingerprint). When false (default), inode changes always enter Degraded and require operator restart. |
+
+### `[update]`
+
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `backup_retention_count` | integer | `5` | maximum number of binary backup archives kept under `/var/lib/vigil/binary-backups/`. `vigil update` prunes after a successful install. |
+
+### `[notifications]`
+
+Severity-aware delivery policies. Each severity level has its own sub-table.
+
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `storm_threshold` | integer | `50` | events within `storm_window_secs` before storm suppression activates for non-critical alerts. |
+| `storm_window_secs` | integer | `60` | rolling window for storm detection. |
+
+#### `[notifications.critical]`, `[notifications.high]`, `[notifications.medium]`, `[notifications.low]`
+
+| Option | Type | Default (critical) | Notes |
+|--------|------|---------------------|-------|
+| `deliver` | enum | `immediate` | `immediate`, `coalesce`, or `digest`. Critical always uses `immediate`. |
+| `coalesce_within_secs` | integer | `0` | window for grouping events by (group, parent, kind). 0 disables. |
+| `digest_interval_secs` | integer | `0` | periodic digest interval. 0 disables. |
+| `escalate_at_secs` | integer[] | `[300, 3600]` | escalation schedule for unacknowledged alerts. Empty disables. Critical: twice then stop. |
+| `channels` | string[] | `["desktop", "journald", "socket"]` | delivery channels. No webhook or MQTT -- the signal socket is the extension point. |
 
 ### `[monitor]`
 
@@ -254,6 +284,7 @@ and critical escalation semantics), see `docs/NOTIFICATIONS.md`.
 | `severity` | enum | yes | -- | `low`, `medium`, `high`, `critical` |
 | `paths` | string[] | yes | -- | watched file or directory paths |
 | `mode` | enum | no | `per_file` | `per_file` or `closed_set` |
+| `expect_present` | bool | no | `false` | when true, a warning is raised if any path in this group does not exist. Defaults to false for shipped default groups (so default installs produce zero missing-path warnings). Set to true for paths the operator explicitly added. |
 
 #### Watch Modes
 

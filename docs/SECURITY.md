@@ -175,8 +175,10 @@ It does not:
 | event channel flooding | event drop detection with coordinator-level alerting |
 | persistence via `/run/` | `/run/*` not blanket-excluded; targeted exclusions only |
 | detection loss during daemon crash | Detection WAL provides crash-safe buffering; AuditWriter replays on restart with deduplication |
-| WAL entry tampering | per-entry HMAC-SHA256 when HMAC signing enabled; entries with invalid HMAC are skipped |
+| WAL entry tampering | per-entry HMAC-SHA256 over `(instance_nonce \|\| sequence \|\| payload)` when HMAC signing enabled; entries with invalid HMAC are skipped. Instance nonce binding prevents cross-host WAL replay. |
 | WAL file replacement | coordinator periodic TOCTOU check on WAL inode/device; Degraded state on replacement |
+| WAL header fingerprint downgrade | header fingerprint cached in memory at open time; not re-read from disk on subsequent scans. An attacker with WAL write access cannot zero the fingerprint to downgrade HMAC policy. |
+| WAL truncate data loss | replacement file opened BEFORE rename; if open fails, old WAL remains canonical and no entries are lost |
 | WAL gap scanning DoS | `MAX_GAP_BYTES` (64KB) bounds gap scanning; scanner stops after limit, preventing adversarial CPU exhaustion via large zeroed regions |
 | baseline HMAC auto-recompute bypass | HMAC mismatch on startup enters Degraded state unless `trust_baseline_on_hmac_mismatch` is explicitly set |
 | control socket config bypass via baseline_refresh | `baseline_refresh` uses the daemon's live (HMAC-verified) config, not a fresh disk read |

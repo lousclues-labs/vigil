@@ -189,6 +189,10 @@ pub struct Config {
     #[serde(default)]
     pub maintenance: MaintenanceConfig,
     #[serde(default)]
+    pub update: UpdateConfig,
+    #[serde(default)]
+    pub notifications: NotificationsConfig,
+    #[serde(default)]
     pub watch: HashMap<String, WatchGroup>,
 }
 
@@ -578,6 +582,10 @@ pub struct SecurityConfig {
     /// upgrades that change the baseline HMAC field coverage. Default: false.
     #[serde(default)]
     pub trust_baseline_on_hmac_mismatch: bool,
+    /// When true, automatically accept inode changes if content verification
+    /// passes. When false (default), inode changes always enter Degraded.
+    #[serde(default)]
+    pub auto_recover_inode_changes: bool,
 }
 
 impl Default for SecurityConfig {
@@ -588,6 +596,7 @@ impl Default for SecurityConfig {
             verify_config_integrity: true,
             control_socket_auth: true,
             trust_baseline_on_hmac_mismatch: false,
+            auto_recover_inode_changes: false,
         }
     }
 }
@@ -745,11 +754,133 @@ impl WatchMode {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UpdateConfig {
+    /// Maximum number of binary backup archives to keep.
+    #[serde(default = "default_backup_retention_count")]
+    pub backup_retention_count: usize,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            backup_retention_count: default_backup_retention_count(),
+        }
+    }
+}
+
+fn default_backup_retention_count() -> usize {
+    5
+}
+
+/// Severity-aware notification delivery policies.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct NotificationsConfig {
+    #[serde(default)]
+    pub critical: NotificationPolicy,
+    #[serde(default)]
+    pub high: NotificationPolicy,
+    #[serde(default)]
+    pub medium: NotificationPolicy,
+    #[serde(default)]
+    pub low: NotificationPolicy,
+    /// Events per window that triggers storm suppression.
+    #[serde(default = "default_storm_threshold_notif")]
+    pub storm_threshold: u64,
+    /// Storm window in seconds.
+    #[serde(default = "default_storm_window_secs_notif")]
+    pub storm_window_secs: u64,
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            critical: NotificationPolicy {
+                deliver: DeliverMode::Immediate,
+                coalesce_within_secs: 0,
+                digest_interval_secs: 0,
+                escalate_at_secs: vec![300, 3600],
+                channels: vec!["desktop".into(), "journald".into(), "socket".into()],
+            },
+            high: NotificationPolicy {
+                deliver: DeliverMode::Immediate,
+                coalesce_within_secs: 30,
+                digest_interval_secs: 0,
+                escalate_at_secs: vec![],
+                channels: vec!["desktop".into(), "journald".into(), "socket".into()],
+            },
+            medium: NotificationPolicy {
+                deliver: DeliverMode::Coalesce,
+                coalesce_within_secs: 300,
+                digest_interval_secs: 0,
+                escalate_at_secs: vec![],
+                channels: vec!["journald".into(), "socket".into()],
+            },
+            low: NotificationPolicy {
+                deliver: DeliverMode::Digest,
+                coalesce_within_secs: 0,
+                digest_interval_secs: 3600,
+                escalate_at_secs: vec![],
+                channels: vec!["journald".into()],
+            },
+            storm_threshold: default_storm_threshold_notif(),
+            storm_window_secs: default_storm_window_secs_notif(),
+        }
+    }
+}
+
+fn default_storm_threshold_notif() -> u64 {
+    50
+}
+
+fn default_storm_window_secs_notif() -> u64 {
+    60
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct NotificationPolicy {
+    #[serde(default)]
+    pub deliver: DeliverMode,
+    #[serde(default)]
+    pub coalesce_within_secs: u64,
+    #[serde(default)]
+    pub digest_interval_secs: u64,
+    #[serde(default)]
+    pub escalate_at_secs: Vec<u64>,
+    #[serde(default)]
+    pub channels: Vec<String>,
+}
+
+impl Default for NotificationPolicy {
+    fn default() -> Self {
+        Self {
+            deliver: DeliverMode::Immediate,
+            coalesce_within_secs: 0,
+            digest_interval_secs: 0,
+            escalate_at_secs: vec![],
+            channels: vec!["journald".into()],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeliverMode {
+    #[default]
+    Immediate,
+    Coalesce,
+    Digest,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WatchGroup {
     pub severity: Severity,
     pub paths: Vec<String>,
     #[serde(default)]
     pub mode: WatchMode,
+    /// When true, a warning is raised if any path in this group does not exist.
+    /// Defaults to false for shipped default groups, true for operator-added groups.
+    #[serde(default)]
+    pub expect_present: bool,
 }
 
 fn default_true() -> bool {
@@ -909,19 +1040,29 @@ pub fn validate_config_deep(config: &Config) -> Result<Vec<String>> {
     }
 
     let mut any_exists = false;
+    let mut info_missing = 0u32;
     for (group_name, group) in &config.watch {
         let expanded = expand_user_paths(&group.paths);
         for p in &expanded {
             if p.exists() {
                 any_exists = true;
-            } else {
+            } else if group.expect_present {
                 warnings.push(format!(
                     "watch.{}: path {} does not exist yet",
                     group_name,
                     p.display()
                 ));
+            } else {
+                // Default-shipped groups: informational only, not a warning.
+                info_missing += 1;
             }
         }
+    }
+    if info_missing > 0 {
+        tracing::info!(
+            count = info_missing,
+            "default watch paths not present yet (this is expected on some systems)"
+        );
     }
 
     if !any_exists && !config.watch.is_empty() {
@@ -987,6 +1128,7 @@ pub fn default_config() -> Config {
                 "/usr/sbin/".into(),
             ],
             mode: WatchMode::PerFile,
+            expect_present: false,
         },
     );
 
@@ -1001,6 +1143,7 @@ pub fn default_config() -> Config {
                 "/etc/profile".into(),
             ],
             mode: WatchMode::PerFile,
+            expect_present: false,
         },
     );
 
@@ -1011,6 +1154,7 @@ pub fn default_config() -> Config {
             severity: Severity::Critical,
             paths: vec!["~/.ssh/".into()],
             mode: WatchMode::ClosedSet,
+            expect_present: false,
         },
     );
 
@@ -1027,6 +1171,7 @@ pub fn default_config() -> Config {
                 "/etc/sudoers.d/".into(),
             ],
             mode: WatchMode::ClosedSet,
+            expect_present: false,
         },
     );
 
@@ -1036,6 +1181,7 @@ pub fn default_config() -> Config {
             severity: Severity::High,
             paths: vec!["~/.bashrc".into(), "~/.ssh/".into()],
             mode: WatchMode::PerFile,
+            expect_present: false,
         },
     );
 
@@ -1045,6 +1191,7 @@ pub fn default_config() -> Config {
             severity: Severity::Medium,
             paths: vec!["/etc/hosts".into(), "/etc/resolv.conf".into()],
             mode: WatchMode::PerFile,
+            expect_present: false,
         },
     );
 
@@ -1059,6 +1206,7 @@ pub fn default_config() -> Config {
                 "/usr/bin/vigild".into(),
             ],
             mode: WatchMode::PerFile,
+            expect_present: false,
         },
     );
 
@@ -1074,6 +1222,8 @@ pub fn default_config() -> Config {
         database: DatabaseConfig::default(),
         monitor: MonitorConfig::default(),
         maintenance: MaintenanceConfig::default(),
+        update: UpdateConfig::default(),
+        notifications: NotificationsConfig::default(),
         watch,
     }
 }
@@ -1157,6 +1307,7 @@ mod tests {
                 severity: Severity::Low,
                 paths: vec!["/usr/bin/".into()],
                 mode: WatchMode::PerFile,
+                expect_present: false,
             },
         );
         let warnings = validate_config_deep(&config).unwrap();

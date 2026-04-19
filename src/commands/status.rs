@@ -190,7 +190,51 @@ pub(crate) fn cmd_status(config_path: Option<&Path>, format: OutputFormat) -> vi
         return Ok(());
     }
 
-    // Print the compact status output
+    // Default: compact operator-friendly output.
+    // Three lines. Everything an operator wants at 9am.
+    if let Some(ref live) = live_data {
+        if live.get("ok") == Some(&serde_json::Value::Bool(true)) {
+            let daemon = live.get("daemon").cloned().unwrap_or_default();
+            let state = daemon
+                .get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let uptime_secs = daemon
+                .get("uptime_seconds")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let baseline_count = daemon
+                .get("baseline_count")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let alerts_24h = daemon
+                .get("alerts_24h")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let critical_24h = daemon
+                .get("critical_24h")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+
+            let uptime_str = doctor::format_compact_duration(uptime_secs);
+            let last_scan_str = summary.last_check.as_deref().unwrap_or("never");
+            let last_changes = summary.last_check_result.as_deref().unwrap_or("unknown");
+
+            eprintln!(
+                "vigild {}. uptime {}. baseline {} entries.",
+                state,
+                uptime_str,
+                format_count(baseline_count.max(0) as u64)
+            );
+            eprintln!(
+                "last scan: {} ({}). {} alerts in 24h ({} critical).",
+                last_scan_str, last_changes, alerts_24h, critical_24h
+            );
+            return Ok(());
+        }
+    }
+
+    // Fallback: offline summary
     println!("{}", summary.verdict);
 
     if summary.daemon_running {

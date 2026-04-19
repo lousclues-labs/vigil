@@ -60,6 +60,7 @@ fn run_worker_pool_chaos(seed: u64) {
             severity: Severity::High,
             paths: vec![fs_root.to_string_lossy().to_string()],
             mode: vigil::config::WatchMode::PerFile,
+            expect_present: false,
         },
     );
 
@@ -143,9 +144,10 @@ fn run_worker_pool_chaos(seed: u64) {
             timestamp: chrono::Utc::now(),
             event_fd: None,
             process: None,
+            bloom_generation: 0,
         };
 
-        // Non-blocking send — drop if channel full.
+        // Non-blocking send -- drop if channel full.
         let _ = event_tx.try_send(event);
     }
 
@@ -206,7 +208,7 @@ fn run_worker_pool_chaos(seed: u64) {
     }
 
     // Verify no unexpected panics by checking the metric count is reasonable.
-    // Workers should catch panics — they shouldn't crash threads.
+    // Workers should catch panics -- they shouldn't crash threads.
     engine.check(
         InvariantId::I8PanicSeverityCritical,
         true, // No thread join failures above → panics were contained.

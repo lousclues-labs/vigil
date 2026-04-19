@@ -109,6 +109,7 @@ mod tests {
                 severity: crate::types::Severity::Low,
                 paths: vec!["/tmp".into()],
                 mode: crate::config::WatchMode::PerFile,
+                expect_present: false,
             },
         );
         let diffs = diff_config(&old, &new);

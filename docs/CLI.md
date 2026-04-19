@@ -224,6 +224,15 @@ One-shot query of Vigil's current state. Works whether vigild is running or not.
 vigil status [--format json]
 ```
 
+Default output (no flags) is a compact two-line summary for operators:
+
+```
+vigild healthy. uptime 4d 2h. baseline 59,122 entries.
+last scan: 2026-04-19 03:01 (0 changes). 226 alerts in 24h (0 critical).
+```
+
+Use `--format json` for the full structured response (stable schema for scripts).
+
 Reports a verdict (`ok`, `degraded`, or `down`) followed by: daemon liveness,
 version, backend, paths watched, baseline state, last check, audit chain
 status, suppressions, and WAL state.
@@ -477,7 +486,9 @@ path is never checked twice. If no valid repository is found, the error message 
 - **Pre-install smoke test**: build artifacts are run with `--version` before any installed
   binary is touched. A corrupt build is caught immediately.
 - **Binary backup**: existing `/usr/local/bin/vigil` and `vigild` are backed up to
-  `.vigil.backup` and `.vigild.backup` before installation.
+  `.vigil.backup` and `.vigild.backup` before installation. After a successful install,
+  backups are archived under `/var/lib/vigil/binary-backups/`. Retention is controlled
+  by `[update] backup_retention_count` (default 5).
 - **Atomic install**: each binary is installed via copy → chmod 755 → rename, so a crash
   mid-update cannot leave a corrupted binary.
 - **Post-install smoke test**: installed binaries are verified with `--version` after

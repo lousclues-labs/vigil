@@ -2,6 +2,43 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [0.43.0] - 2026-04-19
+
+### Inviting: silence the journal for healthy systems
+
+- **Auth-disabled warning fires once.** Control socket `hmac_signing=false` warning downgraded from `WARN` on every connection to a `OnceLock`-guarded one-time `INFO` at first connection. Counter `control_unauthenticated_connections` added.
+- **Default config paths do not warn.** `validate_config_deep()` downgrades "path does not exist" from warning to `INFO` for groups with `expect_present = false` (the default for shipped groups). New `[watch.<group>] expect_present` config knob.
+- **Control socket command logging downgraded.** `status`, `baseline_count`, `metrics_prometheus` log at `debug`. `reload`, `scan`, `maintenance_enter/exit`, `baseline_refresh` log at `info`. Only real failures (auth, oversized request) remain at `warn`.
+- **Drop-rate logging rate-limited.** `error!` only on entering Degraded. `warn!` summary every 10 ticks while Degraded. `info!` on recovery. Journal goes from "error per minute" to "one error when something changed."
+- **Backup retention configurable.** `[update] backup_retention_count = 5` (default). `vigil update` prunes after successful install.
+- **drift_velocity always present.** `state.json` emits `null` while warming up, never omits. Downstream parsers see a stable schema.
+- **`vigil status` operator-shaped.** Default output is two compact lines: state, uptime, baseline count, last scan, alert count. Full JSON available via `vigil status --json`.
+
+### Paranoid: security wins from the deep review
+
+- **WAL truncate-then-open data-loss bug fixed.** Open replacement file BEFORE rename. If open fails, old WAL is still canonical and no entries are lost.
+- **WAL HMAC binds instance nonce and sequence.** HMAC now covers `(instance_nonce || sequence || payload)`. Entries cannot be replayed from one host's WAL into another's.
+- **WAL header fingerprint cached at open.** `scan_entries()` no longer re-reads bytes 16-32 from disk on every scan. An attacker with WAL write access cannot downgrade the HMAC policy between scans.
+- **Bloom filter generation counter.** `FsEvent.bloom_generation` field tags events with the bloom generation that admitted them. Workers can reject stale-generation events after config reload.
+
+### Notification redesign
+
+- **Severity-aware delivery policies.** `[notifications.critical]`, `[notifications.high]`, `[notifications.medium]`, `[notifications.low]` config sections with `deliver`, `coalesce_within_secs`, `escalate_at_secs`, `channels`.
+- **Coalescing by (group, parent, kind).** Coalesced notifications show file list with package attribution and likely cause.
+- **Storm suppression preserves Critical.** Storm detector suppresses non-critical delivery above threshold; critical alerts always deliver.
+- **Optional ack with escalate-twice-then-stop.** `vigil ack <event_id>` and `vigil ack --all` cancel escalation. No disposition required.
+- **Maintenance-window prefix.** Coalesced notifications include maintenance window context when active.
+- **No webhook or MQTT channels.** The signal socket is the extension point. Stay local.
+
+### Self-healing
+
+- **Inode auto-recovery config knob.** `[security] auto_recover_inode_changes = false` (default OFF). When true, re-stat and verify content before accepting new inode.
+
+### Texture
+
+- **DegradedReason schema-stability test.** Display strings locked by test to prevent silent schema breakage for `state.json` consumers.
+- **NotificationsConfig + UpdateConfig sections.** Config structs for notification policies and update settings.
+
 ## [0.42.0] - 2026-04-19
 
 ### Resilience

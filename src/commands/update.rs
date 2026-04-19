@@ -359,7 +359,10 @@ pub(crate) fn cmd_update(
 
     // ── Step 10: Archive backups ───────────────────────────
     prog.begin_step(UpdateStep::ArchiveBackups);
-    let archive_path = archive_backups(dst_vigil, dst_vigild);
+    let retention_count = vigil::config::load_config(None)
+        .map(|c| c.update.backup_retention_count)
+        .unwrap_or(5);
+    let archive_path = archive_backups(dst_vigil, dst_vigild, retention_count);
     let archive_detail = archive_path.map(|p| p.display().to_string());
     prog.end_step_ok(archive_detail.as_deref());
 
@@ -706,7 +709,7 @@ fn rollback_binaries(dst_vigil: &Path, dst_vigild: &Path) {
 /// `/var/lib/vigil/binary-backups/`. Keeps the last 3 sets of backups so an
 /// operator can manually roll back if a delayed failure surfaces (e.g. the
 /// new daemon dies under load minutes after `vigil update` returned).
-fn archive_backups(dst_vigil: &Path, dst_vigild: &Path) -> Option<PathBuf> {
+fn archive_backups(dst_vigil: &Path, dst_vigild: &Path, retention_count: usize) -> Option<PathBuf> {
     let bkp_vigil = backup_path(dst_vigil);
     let bkp_vigild = backup_path(dst_vigild);
     if !bkp_vigil.exists() && !bkp_vigild.exists() {
@@ -751,7 +754,7 @@ fn archive_backups(dst_vigil: &Path, dst_vigild: &Path) -> Option<PathBuf> {
         }
     }
 
-    prune_old_backup_archives(&archive_root, 3);
+    prune_old_backup_archives(&archive_root, retention_count);
     Some(archive_dir)
 }
 

@@ -521,6 +521,7 @@ fn run_event_loop(
                                 timestamp: Utc::now(),
                                 event_fd: Some(owned_fd),
                                 process,
+                                bloom_generation: 0,
                             };
 
                             match event_tx.send_timeout(fs_event, Duration::from_secs(1)) {

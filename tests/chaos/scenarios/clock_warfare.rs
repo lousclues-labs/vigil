@@ -207,6 +207,7 @@ fn run_clock_warfare(seed: u64) {
             timestamp: chrono::Utc::now(),
             event_fd: None,
             process: None,
+            bloom_generation: 0,
         };
         let _ = filter.should_process(&event);
     }

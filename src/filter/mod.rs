@@ -130,6 +130,7 @@ mod tests {
             timestamp: Utc::now(),
             event_fd: None,
             process: None,
+            bloom_generation: 0,
         }
     }
 

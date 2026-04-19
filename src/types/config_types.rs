@@ -313,4 +313,48 @@ mod tests {
         let parsed: Severity = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, Severity::Critical);
     }
+
+    /// Schema stability test: DegradedReason Display strings must not change
+    /// because downstream consumers of state.json parse them.
+    #[test]
+    fn degraded_reason_display_schema_stability() {
+        let cases = vec![
+            (DegradedReason::BaselineDbReplaced, "baseline_db_replaced"),
+            (DegradedReason::AuditDbReplaced, "audit_db_replaced"),
+            (DegradedReason::WalFileReplaced, "wal_file_replaced"),
+            (DegradedReason::EventBackpressure, "event_backpressure"),
+            (
+                DegradedReason::EventLossDetected {
+                    drop_delta: 100,
+                    threshold: 10,
+                },
+                "event_loss_detected (drop_delta=100, threshold=10)",
+            ),
+            (
+                DegradedReason::ClockSkewDetected { skew_secs: 42 },
+                "clock_skew_detected (skew=42s)",
+            ),
+            (DegradedReason::FanotifyReadFailed, "fanotify_read_failed"),
+            (
+                DegradedReason::WorkerDbUnrecoverable,
+                "worker_db_unrecoverable",
+            ),
+            (
+                DegradedReason::BaselineHmacMismatch,
+                "baseline_hmac_mismatch",
+            ),
+            (
+                DegradedReason::FanotifyQueueOverflow,
+                "fanotify_queue_overflow",
+            ),
+        ];
+        for (reason, expected) in cases {
+            assert_eq!(
+                reason.to_string(),
+                expected,
+                "DegradedReason::Display schema changed for {:?}",
+                reason
+            );
+        }
+    }
 }

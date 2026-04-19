@@ -262,13 +262,8 @@ impl NotificationRouter {
             SeverityPolicy {
                 deliver: DeliverPolicy::Immediate,
                 escalate_after_secs: 300,
-                escalation_intervals_secs: vec![300, 900, 3600, 86400],
-                channels: vec![
-                    "desktop".into(),
-                    "journald".into(),
-                    "socket".into(),
-                    "webhook".into(),
-                ],
+                escalation_intervals_secs: vec![300, 3600],
+                channels: vec!["desktop".into(), "journald".into(), "socket".into()],
                 ..SeverityPolicy::default()
             },
         );
@@ -448,7 +443,12 @@ pub enum RoutingDecision {
 }
 
 /// Format a coalesced notification for display.
-pub fn format_coalesced(notification: &CoalescedNotification) -> String {
+pub fn format_coalesced(
+    notification: &CoalescedNotification,
+    maintenance_window: bool,
+    maintenance_pkg: Option<&str>,
+    maintenance_started: Option<&str>,
+) -> String {
     let count = notification.events.len();
     let mut lines = vec![format!(
         "{} files modified in {} ({}) in last window:",
@@ -460,13 +460,22 @@ pub fn format_coalesced(notification: &CoalescedNotification) -> String {
             .as_deref()
             .map(|p| format!(", package: {}", p))
             .unwrap_or_default();
-        lines.push(format!("  - {}  ({}{})", event.path, event.changes, pkg));
+        lines.push(format!("  {}   {}{}", event.path, event.changes, pkg));
     }
 
     // Compute likely cause.
     let all_package = notification.events.iter().all(|e| e.package.is_some());
     if all_package {
-        lines.push("Likely cause: package install".into());
+        lines.push("Likely cause: package install.".into());
+    }
+
+    if maintenance_window {
+        let pkg_info = maintenance_pkg.unwrap_or("unknown");
+        let started = maintenance_started.unwrap_or("?");
+        lines.push(format!(
+            "Maintenance window: yes ({}, started {}).",
+            pkg_info, started
+        ));
     }
 
     lines.join("\n")
@@ -475,9 +484,9 @@ pub fn format_coalesced(notification: &CoalescedNotification) -> String {
 /// Format a storm notification for display.
 pub fn format_storm(event_count: u64, window_secs: u64) -> String {
     format!(
-        "ALERT STORM: {} events in last {}s. Channel suppressed.\n\
-         Run `vigil audit show --since 1m` for details.\n\
-         Storm will end when event rate drops below threshold for 30s.",
+        "ALERT STORM. {} events in last {}s. Channel suppressed for non-critical.\n\
+         Critical alerts continue to deliver normally.\n\
+         Run `vigil audit show --since 1m` for details.",
         event_count, window_secs
     )
 }

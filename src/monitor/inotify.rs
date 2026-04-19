@@ -105,6 +105,7 @@ pub fn start(
                                         timestamp: Utc::now(),
                                         event_fd: None,
                                         process: None,
+                                        bloom_generation: 0,
                                     };
 
                                     match event_tx.send_timeout(fs_event, Duration::from_secs(1)) {

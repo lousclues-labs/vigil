@@ -1,6 +1,6 @@
 [package]
 name = "vigil-baseline"
-version = "0.42.0"
+version = "0.43.0"
 edition = "2021"
 rust-version = "1.85"
 description = "Lightweight file integrity monitor for Linux desktops"
@@ -86,7 +86,7 @@ nix = { version = "0.28", features = [
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
 
-# Logging (tracing only — no log crate bridge)
+# Logging (tracing only -- no log crate bridge)
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 

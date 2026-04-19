@@ -49,6 +49,7 @@ fn process_event_detects_content_change() {
             severity: vigil::types::Severity::High,
             paths: vec![dir.path().to_string_lossy().to_string()],
             mode: vigil::config::WatchMode::PerFile,
+            expect_present: false,
         },
     );
 
@@ -64,6 +65,7 @@ fn process_event_detects_content_change() {
         timestamp: Utc::now(),
         event_fd: None,
         process: None,
+        bloom_generation: 0,
     };
 
     let mut ctx = vigil::worker::WorkerContext::for_test(conn2, &cfg2);

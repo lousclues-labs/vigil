@@ -682,6 +682,7 @@ impl DaemonRuntime {
                 auth_enabled: daemon.startup_hmac_key.is_some(),
                 maintenance_active: daemon.maintenance_active.clone(),
                 maintenance_entered_at: daemon.maintenance_entered_at.clone(),
+                control_unauthenticated_connections: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             };
             Some(control::spawn(
                 cfg.daemon.control_socket.clone(),

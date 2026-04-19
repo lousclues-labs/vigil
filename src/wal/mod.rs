@@ -264,6 +264,7 @@ impl DetectionWal {
             &file,
             file_len,
             hmac_key.map(|k| k.as_slice()),
+            &instance_nonce,
             false,
             false,
         )?;
@@ -321,7 +322,12 @@ impl DetectionWal {
         buf.extend_from_slice(&(entry_size as u32).to_le_bytes());
         buf.extend_from_slice(&sequence.to_le_bytes());
         buf.extend_from_slice(&0u16.to_le_bytes());
-        buf.extend_from_slice(&compute_entry_hmac(self.hmac_key.as_ref(), &payload)?);
+        buf.extend_from_slice(&compute_entry_hmac(
+            self.hmac_key.as_ref(),
+            &self.instance_nonce,
+            sequence,
+            &payload,
+        )?);
         buf.extend_from_slice(&payload);
         let crc = crc32fast::hash(&buf);
         buf.extend_from_slice(&crc.to_le_bytes());
@@ -375,6 +381,7 @@ impl DetectionWal {
             &file,
             file_len,
             self.hmac_key.as_ref().map(|k| k.as_slice()),
+            &self.instance_nonce,
             false,
             false,
         )?;
@@ -409,6 +416,7 @@ impl DetectionWal {
             &file,
             file_len,
             self.hmac_key.as_ref().map(|k| k.as_slice()),
+            &self.instance_nonce,
             true,
             true,
         )?;
@@ -445,8 +453,21 @@ impl DetectionWal {
             tmp.sync_data()?;
         }
 
+        // Open the replacement file BEFORE rename. If open fails (e.g. ENOSPC
+        // on inode allocation), the old WAL is still canonical and no entries
+        // are lost. The previous code opened AFTER rename, which left the mutex
+        // holding a stale fd to an unlinked inode on failure; subsequent
+        // appends silently wrote to the dead inode and were lost on restart.
+        let reopened = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&tmp_path)
+            .inspect_err(|_e| {
+                // Clean up the temp file on failure; old WAL stays intact.
+                let _ = std::fs::remove_file(&tmp_path);
+            })?;
+
         std::fs::rename(&tmp_path, &self.path)?;
-        let reopened = OpenOptions::new().read(true).write(true).open(&self.path)?;
         *file = reopened;
 
         let new_len =
@@ -571,11 +592,20 @@ fn random_nonce() -> Result<[u8; 32]> {
     Ok(nonce)
 }
 
-fn compute_entry_hmac(key: Option<&Zeroizing<Vec<u8>>>, payload: &[u8]) -> Result<[u8; 32]> {
+fn compute_entry_hmac(
+    key: Option<&Zeroizing<Vec<u8>>>,
+    instance_nonce: &[u8; 32],
+    sequence: u64,
+    payload: &[u8],
+) -> Result<[u8; 32]> {
     match key {
         Some(k) => {
             let mut mac = HmacSha256::new_from_slice(k)
                 .map_err(|e| VigilError::Wal(format!("failed to initialize entry HMAC: {}", e)))?;
+            // Bind HMAC to the WAL instance so entries cannot be replayed
+            // from one host's WAL into another's.
+            mac.update(instance_nonce);
+            mac.update(&sequence.to_le_bytes());
             mac.update(payload);
             let mut out = [0u8; 32];
             out.copy_from_slice(&mac.finalize().into_bytes());
@@ -585,9 +615,17 @@ fn compute_entry_hmac(key: Option<&Zeroizing<Vec<u8>>>, payload: &[u8]) -> Resul
     }
 }
 
-fn verify_entry_hmac(key: &[u8], payload: &[u8], expected: &[u8]) -> Result<bool> {
+fn verify_entry_hmac(
+    key: &[u8],
+    instance_nonce: &[u8; 32],
+    sequence: u64,
+    payload: &[u8],
+    expected: &[u8],
+) -> Result<bool> {
     let mut mac = HmacSha256::new_from_slice(key)
         .map_err(|e| VigilError::Wal(format!("failed to initialize entry HMAC verify: {}", e)))?;
+    mac.update(instance_nonce);
+    mac.update(&sequence.to_le_bytes());
     mac.update(payload);
     Ok(mac.verify_slice(expected).is_ok())
 }
@@ -596,19 +634,16 @@ fn scan_entries(
     file: &File,
     file_len: u64,
     hmac_key: Option<&[u8]>,
+    instance_nonce: &[u8; 32],
     include_consumed: bool,
     keep_bytes: bool,
 ) -> Result<Vec<ScannedEntry>> {
-    // VIGIL-VULN-067: determine if HMAC is mandatory from the header fingerprint.
-    // When the header has a non-zero fingerprint, entries with all-zero HMAC fields
-    // are forged (the legitimate writer always produces a real HMAC).
-    let hmac_required = if file_len >= WAL_HEADER_SIZE {
-        let mut fp = [0u8; 16];
-        read_exact_at(file, &mut fp, 16)?;
-        fp != [0u8; 16]
-    } else {
-        false
-    };
+    // VIGIL-VULN-067: determine if HMAC is mandatory from the cached
+    // fingerprint (passed via instance_nonce context, not re-read from disk).
+    // Re-reading from disk on every scan would allow an attacker with WAL
+    // write access to zero out the fingerprint between scans, downgrading
+    // the HMAC policy.
+    let hmac_required = hmac_key.is_some();
 
     let mut offset = WAL_HEADER_SIZE;
     let mut out = Vec::new();
@@ -716,7 +751,7 @@ fn scan_entries(
             continue;
         }
         if let Some(key) = hmac_key {
-            if any_hmac && !verify_entry_hmac(key, payload, entry_hmac)? {
+            if any_hmac && !verify_entry_hmac(key, instance_nonce, sequence, payload, entry_hmac)? {
                 tracing::error!(
                     sequence = sequence,
                     offset = offset,
@@ -1115,7 +1150,7 @@ mod tests {
         // unlimited scanning, but should be missed due to MAX_GAP_BYTES).
         // We can't easily inject one, so just verify the scanner stops.
         let new_file_len = after_entry1 + gap_size as u64;
-        let scanned = scan_entries(&file, new_file_len, None, false, false).unwrap();
+        let scanned = scan_entries(&file, new_file_len, None, &[0u8; 32], false, false).unwrap();
 
         // Only entry 1 should be recovered; the scanner should have stopped
         // at the gap limit without trying to scan beyond.

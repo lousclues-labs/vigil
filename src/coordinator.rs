@@ -83,6 +83,7 @@ struct Coordinator {
     last_tick_monotonic: std::time::Instant,
     last_kernel_overflows: u64,
     clean_ticks_since_event_loss: u32,
+    drop_rate_log_counter: u32,
 }
 
 pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()>> {
@@ -146,6 +147,7 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
         last_tick_monotonic: std::time::Instant::now(),
         last_kernel_overflows: 0,
         clean_ticks_since_event_loss: 0,
+        drop_rate_log_counter: 0,
     };
 
     // Clone identity data for guardian before coordinator is moved.
@@ -944,15 +946,6 @@ impl Coordinator {
         let drop_delta = current_dropped.saturating_sub(self.last_dropped);
         let overflow_delta = current_overflows.saturating_sub(self.last_kernel_overflows);
 
-        if drop_delta > 0 || overflow_delta > 0 {
-            tracing::error!(
-                dropped = drop_delta,
-                total_dropped = current_dropped,
-                kernel_overflows = overflow_delta,
-                "filesystem events are being dropped; possible evasion attack or I/O overload"
-            );
-        }
-
         let cfg = self.config.load();
         let threshold = cfg.monitor.event_loss_alert_threshold.unwrap_or(10);
 
@@ -974,6 +967,18 @@ impl Coordinator {
                     threshold,
                     "event loss threshold exceeded; entering Degraded state"
                 );
+                self.drop_rate_log_counter = 0;
+            } else {
+                // Already Degraded: rate-limited summary every 10 ticks.
+                self.drop_rate_log_counter += 1;
+                if self.drop_rate_log_counter % 10 == 0 {
+                    tracing::warn!(
+                        dropped = drop_delta,
+                        total_dropped = current_dropped,
+                        kernel_overflows = overflow_delta,
+                        "event drops continue while Degraded"
+                    );
+                }
             }
         } else {
             // Recovery: allow deltas at or below the recovery threshold to count
@@ -989,11 +994,10 @@ impl Coordinator {
                             let mut s = self.state.write();
                             if let DaemonState::Degraded { reason, .. } = &*s {
                                 if matches!(reason, DegradedReason::EventLossDetected { .. }) {
-                                    tracing::info!(
-                                        "event loss recovered for 5 consecutive ticks; returning to Healthy"
-                                    );
+                                    tracing::info!("event drops resolved; returning to Healthy");
                                     *s = DaemonState::Healthy;
                                     self.clean_ticks_since_event_loss = 0;
+                                    self.drop_rate_log_counter = 0;
                                 }
                             }
                         }
@@ -1256,6 +1260,7 @@ mod tests {
             last_tick_monotonic: std::time::Instant::now(),
             last_kernel_overflows: 0,
             clean_ticks_since_event_loss: 0,
+            drop_rate_log_counter: 0,
         }
     }
 
@@ -1318,6 +1323,7 @@ mod tests {
             last_tick_monotonic: std::time::Instant::now(),
             last_kernel_overflows: 0,
             clean_ticks_since_event_loss: 0,
+            drop_rate_log_counter: 0,
         };
 
         // Simulate inode change by copying the file to a new one and replacing.
@@ -1401,6 +1407,7 @@ mod tests {
             last_tick_monotonic: std::time::Instant::now(),
             last_kernel_overflows: 0,
             clean_ticks_since_event_loss: 0,
+            drop_rate_log_counter: 0,
         };
 
         // Replace with an empty (no schema) SQLite database.

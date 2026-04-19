@@ -16,6 +16,11 @@ pub struct FsEvent {
     /// (zero re-open TOCTOU). Inotify backend sets this to None.
     pub event_fd: Option<OwnedFd>,
     pub process: Option<ProcessAttribution>,
+    /// Generation counter of the bloom filter that admitted this event.
+    /// Workers reject events whose generation is older than the current
+    /// WatchGroupIndex generation, eliminating transient false alerts after
+    /// config reload.
+    pub bloom_generation: u64,
 }
 
 // FsEvent contains OwnedFd which is Send but we need to make sure the
