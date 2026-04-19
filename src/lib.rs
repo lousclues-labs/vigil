@@ -478,8 +478,8 @@ impl DaemonRuntime {
             daemon.shutdown.clone(),
             daemon.watch_index.clone(),
             daemon.metrics.clone(),
-            Some(daemon.state.clone()),
-            Some(scan_trigger_tx.clone()),
+            daemon.state.clone(),
+            scan_trigger_tx.clone(),
         )?;
         send_watchdog_heartbeat();
 

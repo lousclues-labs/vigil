@@ -36,6 +36,38 @@ pub fn start_monitor(
     shutdown: Arc<AtomicBool>,
     watch_index: Arc<ArcSwap<WatchGroupIndex>>,
     metrics: Arc<Metrics>,
+    state: Arc<RwLock<DaemonState>>,
+    scan_trigger: Sender<crate::control::ScanRequest>,
+) -> Result<MonitorHandle> {
+    start_monitor_inner(
+        config,
+        event_tx,
+        shutdown,
+        watch_index,
+        metrics,
+        Some(state),
+        Some(scan_trigger),
+    )
+}
+
+/// Start monitor for tests with no-op state and scan trigger.
+#[cfg(test)]
+pub fn start_monitor_for_test(
+    config: &Config,
+    event_tx: Sender<FsEvent>,
+    shutdown: Arc<AtomicBool>,
+    watch_index: Arc<ArcSwap<WatchGroupIndex>>,
+    metrics: Arc<Metrics>,
+) -> Result<MonitorHandle> {
+    start_monitor_inner(config, event_tx, shutdown, watch_index, metrics, None, None)
+}
+
+fn start_monitor_inner(
+    config: &Config,
+    event_tx: Sender<FsEvent>,
+    shutdown: Arc<AtomicBool>,
+    watch_index: Arc<ArcSwap<WatchGroupIndex>>,
+    metrics: Arc<Metrics>,
     state: Option<Arc<RwLock<DaemonState>>>,
     scan_trigger: Option<Sender<crate::control::ScanRequest>>,
 ) -> Result<MonitorHandle> {
