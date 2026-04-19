@@ -1,6 +1,3 @@
-use std::sync::Arc;
-
-use arc_swap::ArcSwap;
 use chrono::Utc;
 use rusqlite::Connection;
 use vigil::db::{baseline_ops, schema};
@@ -55,6 +52,12 @@ fn process_event_detects_content_change() {
         },
     );
 
+    // Re-open in-memory conn with baseline data for the worker context.
+    // We need a fresh connection since WorkerContext takes ownership.
+    let conn2 = Connection::open_in_memory().unwrap();
+    schema::create_baseline_tables(&conn2).unwrap();
+    baseline_ops::upsert(&conn2, &entry).unwrap();
+
     let event = FsEvent {
         path: std::sync::Arc::new(path.clone()),
         event_type: FsEventType::Modify,
@@ -63,16 +66,8 @@ fn process_event_detects_content_change() {
         process: None,
     };
 
-    let out = vigil::worker::process_event(
-        &conn,
-        &event,
-        &Arc::new(ArcSwap::from_pointee(cfg2.clone())),
-        &Arc::new(ArcSwap::from_pointee(
-            vigil::watch_index::WatchGroupIndex::from_config(&cfg2),
-        )),
-        &vigil::metrics::Metrics::new(),
-    )
-    .unwrap();
+    let mut ctx = vigil::worker::WorkerContext::for_test(conn2, &cfg2);
+    let out = ctx.evaluate(&event).unwrap();
 
     let result = out.expect("expected change");
     assert!(result

@@ -87,7 +87,7 @@ pub struct WorkerSpawnArgs {
 }
 
 /// Per-worker processing context holding connection, cache, and filter state.
-struct WorkerContext {
+pub struct WorkerContext {
     conn: Connection,
     db_path: PathBuf,
     config: Arc<ArcSwap<Config>>,
@@ -108,6 +108,30 @@ struct WorkerContext {
 }
 
 impl WorkerContext {
+    /// Construct a minimal WorkerContext for tests.
+    pub fn for_test(conn: Connection, config: &Config) -> Self {
+        let metrics = Arc::new(Metrics::new());
+        Self {
+            conn,
+            db_path: PathBuf::from("/dev/null"),
+            config: Arc::new(ArcSwap::from_pointee(config.clone())),
+            watch_index: Arc::new(ArcSwap::from_pointee(WatchGroupIndex::from_config(config))),
+            metrics,
+            filter: EventFilter::with_metrics(config, None),
+            cache: LruCache::new(std::num::NonZeroUsize::new(64).unwrap()),
+            local_generation: 0,
+            generation: Arc::new(AtomicU64::new(0)),
+            drain_counter: 0,
+            last_drain: std::time::Instant::now(),
+            wal: None,
+            maintenance_active: Arc::new(AtomicBool::new(false)),
+            consecutive_db_errors: 0,
+            consecutive_reopen_failures: 0,
+            last_reopen_attempt: None,
+            state: None,
+        }
+    }
+
     fn refresh_cache_if_stale(&mut self) {
         let current_gen = self.generation.load(Ordering::Acquire);
         if current_gen != self.local_generation {
@@ -116,7 +140,7 @@ impl WorkerContext {
         }
     }
 
-    fn evaluate(&mut self, event: &FsEvent) -> Result<Option<ChangeResult>> {
+    pub fn evaluate(&mut self, event: &FsEvent) -> Result<Option<ChangeResult>> {
         let cfg = self.config.load();
         let idx = self.watch_index.load();
         let path_cow = event.path.to_string_lossy();
@@ -494,41 +518,6 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
     handles
 }
 
-pub fn process_event(
-    conn: &Connection,
-    event: &FsEvent,
-    config: &Arc<ArcSwap<Config>>,
-    watch_index: &Arc<ArcSwap<WatchGroupIndex>>,
-    metrics: &Metrics,
-) -> Result<Option<ChangeResult>> {
-    let cfg = config.load();
-    let idx = watch_index.load();
-
-    let path_str = event.path.to_string_lossy();
-    let baseline = match baseline_ops::get_by_path(conn, path_str.as_ref())? {
-        Some(b) => b,
-        None => {
-            if matches!(event.event_type, FsEventType::Create | FsEventType::MovedTo) {
-                if let Some((group_name, severity)) = idx.lookup(&event.path) {
-                    return Ok(Some(ChangeResult {
-                        path: event.path.clone(),
-                        changes: vec![Change::Created],
-                        severity,
-                        monitored_group: group_name.to_string(),
-                        process: event.process.clone(),
-                        package: None,
-                        package_update: false,
-                    }));
-                }
-                tracing::info!(path = %event.path.display(), "new file detected (not in baseline)");
-            }
-            return Ok(None);
-        }
-    };
-
-    process_event_inner(event, &cfg, &idx, metrics, baseline)
-}
-
 fn process_event_inner(
     event: &FsEvent,
     cfg: &Config,
@@ -648,12 +637,11 @@ mod tests {
     }
 
     #[test]
-    fn process_event_returns_none_for_non_baselined_create() {
+    fn evaluate_returns_none_for_non_baselined_create() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::db::schema::create_baseline_tables(&conn).unwrap();
 
         let cfg = crate::config::default_config();
-        let watch = WatchGroupIndex::from_config(&cfg);
 
         let event = FsEvent {
             path: Arc::new("/tmp/nonexistent-baseline".into()),
@@ -663,14 +651,8 @@ mod tests {
             process: None,
         };
 
-        let out = process_event(
-            &conn,
-            &event,
-            &Arc::new(ArcSwap::from_pointee(cfg)),
-            &Arc::new(ArcSwap::from_pointee(watch)),
-            &Metrics::new(),
-        )
-        .unwrap();
+        let mut ctx = WorkerContext::for_test(conn, &cfg);
+        let out = ctx.evaluate(&event).unwrap();
 
         assert!(out.is_none());
     }
@@ -704,12 +686,11 @@ mod tests {
     }
 
     #[test]
-    fn process_event_detects_new_file_under_watched_path() {
+    fn evaluate_detects_new_file_under_watched_path() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::db::schema::create_baseline_tables(&conn).unwrap();
 
         let cfg = crate::config::default_config();
-        let watch = WatchGroupIndex::from_config(&cfg);
 
         // Use a path under a configured watch group (e.g., /etc/something)
         let watched_path = cfg
@@ -728,21 +709,13 @@ mod tests {
             process: None,
         };
 
-        let result = process_event(
-            &conn,
-            &event,
-            &Arc::new(ArcSwap::from_pointee(cfg)),
-            &Arc::new(ArcSwap::from_pointee(watch)),
-            &Metrics::new(),
-        )
-        .unwrap();
+        let mut ctx = WorkerContext::for_test(conn, &cfg);
+        let result = ctx.evaluate(&event).unwrap();
 
         // Should detect new file if path is under a watch group
         if let Some(cr) = result {
             assert!(cr.changes.iter().any(|c| matches!(c, Change::Created)));
         }
-        // If the default config doesn't have a watch group covering this exact path,
-        // that's also valid.  The test documents the intended behavior.
     }
 
     #[test]
@@ -753,27 +726,7 @@ mod tests {
         // Intentionally do NOT create baseline tables.  Queries will error.
 
         let cfg = crate::config::default_config();
-        let metrics = Arc::new(Metrics::new());
-
-        let mut ctx = WorkerContext {
-            conn,
-            db_path: PathBuf::from("/dev/null"),
-            config: Arc::new(ArcSwap::from_pointee(cfg.clone())),
-            watch_index: Arc::new(ArcSwap::from_pointee(WatchGroupIndex::from_config(&cfg))),
-            metrics,
-            filter: EventFilter::with_metrics(&cfg, None),
-            cache: LruCache::new(std::num::NonZeroUsize::new(64).unwrap()),
-            local_generation: 0,
-            generation: Arc::new(AtomicU64::new(0)),
-            drain_counter: 0,
-            last_drain: std::time::Instant::now(),
-            wal: None,
-            maintenance_active: Arc::new(AtomicBool::new(false)),
-            consecutive_db_errors: 0,
-            consecutive_reopen_failures: 0,
-            last_reopen_attempt: None,
-            state: None,
-        };
+        let mut ctx = WorkerContext::for_test(conn, &cfg);
 
         let event = FsEvent {
             path: Arc::new("/etc/test_file".into()),
