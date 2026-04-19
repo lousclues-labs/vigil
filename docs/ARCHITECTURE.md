@@ -68,14 +68,14 @@ Vigil Baseline has one job. Detect filesystem boundary changes and record them.
 `vigild` runs a small fixed set of threads, all owned by `DaemonRuntime` (in `src/lib.rs`).
 
 - monitor thread in `src/monitor/fanotify.rs` or `src/monitor/inotify.rs`
-- worker thread pool in `src/worker.rs` — each worker holds a `WorkerContext` struct
-- WAL audit writer thread (`vigil-wal-audit`) in `src/wal/audit_writer.rs` — drains WAL to audit DB (when WAL enabled)
-- WAL sink runner thread (`vigil-wal-sinks`) in `src/wal/sink_runner.rs` — dispatches alerts from WAL to sinks (when WAL enabled)
-- alert dispatcher thread in `src/alert/mod.rs` — runs `AlertDispatcher::run()` (handles fallback alerts; skips audit writes when WAL active)
-- baseline writer thread in `src/lib.rs` — batches auto-rebaseline writes
-- coordinator thread in `src/coordinator.rs` — runs a `Coordinator` struct's tick loop
+- worker thread pool in `src/worker.rs`. Each worker holds a `WorkerContext` struct.
+- WAL audit writer thread (`vigil-wal-audit`) in `src/wal/audit_writer.rs`. Drains WAL to audit DB (when WAL enabled).
+- WAL sink runner thread (`vigil-wal-sinks`) in `src/wal/sink_runner.rs`. Dispatches alerts from WAL to sinks (when WAL enabled).
+- alert dispatcher thread in `src/alert/mod.rs`. Runs `AlertDispatcher::run()` (handles fallback alerts, skips audit writes when WAL active).
+- baseline writer thread in `src/lib.rs`. Batches auto-rebaseline writes.
+- coordinator thread in `src/coordinator.rs`. Runs a `Coordinator` struct's tick loop.
 - scan scheduler thread in `src/scan_scheduler.rs`
-- control socket thread in `src/control.rs` — dispatches via a `ControlHandler` struct
+- control socket thread in `src/control.rs`. Dispatches via a `ControlHandler` struct.
 
 The `DaemonRuntime` owns all `JoinHandle`s, channel senders, and shutdown state.
 The coordinator owns lifecycle coordination and periodic housekeeping.
@@ -94,6 +94,17 @@ src/
 |   |-- remote_syslog.rs    # Remote syslog forwarding over TCP or UDP.
 |   `-- socket.rs           # Unix signal socket event writer.
 |
+|-- attest/
+|   |-- mod.rs              # Attestation engine: create, verify, diff, show, list.
+|   |-- create.rs           # Attestation creation with CBOR serialization.
+|   |-- verify.rs           # Standalone attestation verification (file + key).
+|   |-- diff.rs             # Structural diff between attestations or against current state.
+|   |-- show.rs             # Attestation metadata display.
+|   |-- list.rs             # Directory listing of .vatt files.
+|   |-- format.rs           # Wire format constants, CBOR layout, magic bytes.
+|   |-- key.rs              # Attestation signing key management and key ID derivation.
+|   `-- error.rs            # Attestation-specific error types.
+|
 |-- commands/
 |   |-- mod.rs              # Re-exports all command handlers.
 |   |-- common.rs           # Shared CLI helpers: headers, formatting, pager, config path, TOML updates, control socket.
@@ -102,10 +113,15 @@ src/
 |   |-- watch.rs            # vigil watch command.
 |   |-- diff.rs             # vigil diff command with audit history panel.
 |   |-- status.rs           # vigil status command (live + file-based fallback).
+|   |-- explain.rs          # vigil explain command.
+|   |-- why_silent.rs       # vigil why-silent command.
+|   |-- inspect.rs          # vigil inspect command (offline forensic comparator).
+|   |-- test_alert.rs       # vigil test alert command.
 |   |-- doctor.rs           # vigil doctor command and check rendering.
 |   |-- audit.rs            # vigil audit show/stats/verify commands.
 |   |-- config.rs           # vigil config show/validate commands.
-|   |-- setup.rs            # vigil setup hmac/socket commands.
+|   |-- setup.rs            # vigil setup hmac/socket/attest commands.
+|   |-- attest.rs           # vigil attest create/verify/diff/show/list commands.
 |   |-- log.rs              # vigil log show/errors commands.
 |   |-- maintenance.rs      # vigil maintenance enter/exit/status commands.
 |   |-- baseline.rs         # vigil baseline refresh command.
@@ -157,6 +173,10 @@ src/
 |   |-- audit_writer.rs     # AuditWriter: WAL -> audit DB consumer thread.
 |   `-- sink_runner.rs      # SinkRunner: WAL -> alert sink dispatch thread.
 |
+|-- ui/
+|   |-- mod.rs              # Update progress renderer module.
+|   `-- progress.rs         # TTY/plain/JSON progress output for vigil update.
+|
 |-- bloom.rs                # Bloom filter for fast path membership reject.
 |-- cli.rs                  # clap command tree and flags.
 |-- control.rs              # Unix control socket. ControlHandler struct dispatches methods.
@@ -171,6 +191,7 @@ src/
 |-- main.rs                 # CLI entrypoint (~120 lines): tracing init + command dispatch into commands::*.
 |-- metrics.rs              # Runtime counters, snapshot serialization, and record_scan helper.
 |-- package.rs              # Package manager detection and ownership query.
+|-- receipt.rs              # Verification receipt types for check --reason.
 |-- scan_scheduler.rs       # Cron-based scan scheduling with croner.
 |-- scanner.rs              # Scheduled scans and baseline refresh work.
 |-- watch_index.rs          # Path to watch-group lookup index.
@@ -183,17 +204,17 @@ src/
 
 These modules are easy to miss. They are core to the runtime.
 
-- `src/display/` is the consolidated rendering layer for all CLI output (~1,960 lines across 6 files). `mod.rs` defines the public API: `CheckReport`, `CheckReportMeta`, `InitReport`, `BaselineProfile` structs and `render_check()`/`render_init()` dispatch functions. `check.rs` builds `CheckReport` from `ScanResult` + metadata, renders human/brief/JSON output for both check and init commands, with severity triage, progressive disclosure, and package grouping. `format.rs` provides the shared ANSI color system (`Style`/`Styled`), number formatting (`format_count`, `format_size`, `format_age`), hash/fingerprint display, smart path truncation with `$HOME` collapse, and exit code descriptions. `explain.rs` maps structural changes to human-readable "why" lines (e.g. setuid bit → "setuid bit added — investigate") — pure function, no heuristics (Principle III). `term.rs` detects terminal capabilities (`TermInfo`): TTY status, `NO_COLOR`, width/height via ioctl with env fallback. `widgets.rs` renders the severity histogram and change comparison tables. Doctor and `commands/` delegate formatting to display via re-exports (`fmt_count`, `fmt_size`, `truncate_hash`, `format_fingerprint`).
+- `src/display/` is the consolidated rendering layer for all CLI output (~1,960 lines across 6 files). `mod.rs` defines the public API: `CheckReport`, `CheckReportMeta`, `InitReport`, `BaselineProfile` structs and `render_check()`/`render_init()` dispatch functions. `check.rs` builds `CheckReport` from `ScanResult` + metadata, renders human/brief/JSON output for both check and init commands, with severity triage, progressive disclosure, and package grouping. `format.rs` provides the shared ANSI color system (`Style`/`Styled`), number formatting (`format_count`, `format_size`, `format_age`), hash/fingerprint display, smart path truncation with `$HOME` collapse, and exit code descriptions. `explain.rs` maps structural changes to human-readable "why" lines (e.g. setuid bit to "setuid bit added, investigate"). Pure function, no heuristics (Principle III). `term.rs` detects terminal capabilities (`TermInfo`): TTY status, `NO_COLOR`, width/height via ioctl with env fallback. `widgets.rs` renders the severity histogram and change comparison tables. Doctor and `commands/` delegate formatting to display via re-exports (`fmt_count`, `fmt_size`, `truncate_hash`, `format_fingerprint`).
 
 - `src/commands/` is the CLI command implementation layer (~2,700 lines across 15 files). Each command handler lives in its own file (e.g. `check.rs`, `audit.rs`, `update.rs`). `common.rs` provides shared helpers: `print_header`, `format_count`, `truncate_hash`, `print_change_detail`, `pipe_to_pager`, `parse_time_filter`/`parse_time_filter_strict`, `resolve_config_path`, `update_config_toml`, `format_audit_timestamp`, and `query_control_socket`/`query_control_socket_authenticated`. `main.rs` is now ~120 lines: `init_tracing()` + the `run()` match dispatch calling into `commands::*`.
 
-- `src/detection.rs` provides `dispatch_detection()` — the shared WAL-or-alert dispatch helper. Tries WAL append first (incrementing `detections_wal_appends`), falls back to alert channel on WAL failure (incrementing `detections_wal_full` and logging at error), logs at error level if the alert channel is disconnected (detection would be lost). Used by `worker.rs` (realtime events), `scan_scheduler.rs` (on-demand and scheduled scans). The `drain_debounced` path in `worker.rs` uses inline logic instead because it collects alerts into a local `Vec` rather than sending directly to the channel.
+- `src/detection.rs` provides `dispatch_detection()`, the shared WAL-or-alert dispatch helper. Tries WAL append first (incrementing `detections_wal_appends`), falls back to alert channel on WAL failure (incrementing `detections_wal_full` and logging at error), logs at error level if the alert channel is disconnected (detection would be lost). Used by `worker.rs` (realtime events), `scan_scheduler.rs` (on-demand and scheduled scans). The `drain_debounced` path in `worker.rs` uses inline logic instead because it collects alerts into a local `Vec` rather than sending directly to the channel.
 
 - `src/lib.rs` defines `Daemon` (config, connections, startup) and `DaemonRuntime` (thread ownership, channel lifecycle). `Daemon::run()` is ~11 lines: harden, record binary hash, start runtime, wait, drain. `DaemonRuntime::start()` wires all channels, spawns all threads (including WAL AuditWriter and SinkRunner when `detection_wal = true`), runs WAL self-test, calls `AuditWriter::recover()`, emits `sd_notify(Ready)`. `DaemonRuntime::drain()` joins threads in dependency order: workers → baseline_writer → audit_writer → sink_runner → alert → coordinator → scan_scheduler → final WAL truncation. A `send_watchdog_heartbeat()` helper sends `sd_notify(Watchdog)` guarded by `is_notify_socket_safe()` and is called throughout pre-flight and startup to prevent systemd from killing the daemon before the coordinator thread exists.
-- `src/wal/mod.rs` defines `DetectionWal` — the crash-safe binary WAL for detection records. The WAL decouples detection output from audit persistence and alert dispatch. Workers, scan scheduler, and debounce write `DetectionRecord` entries via `append()` (pwrite + fdatasync). Two independent consumer threads read entries via `iter_unconsumed()` with gap-scanning recovery: the AuditWriter persists to the audit DB with priority ordering; the SinkRunner dispatches to alert sinks with bounded cooldowns. Entries have independent `audit_done` / `sink_done` flags — flag updates via `mark_flag()` are non-atomic read-modify-write operations protected by the global `write_lock` to prevent concurrent flag overwrites. The WAL uses CRC32 checksums for crash recovery and optional per-entry HMAC-SHA256 for tamper detection. Gap scanning is bounded by `MAX_GAP_BYTES` (64KB) to prevent adversarial DoS via large zeroed regions. File permissions are enforced at 0o600. When the WAL is disabled or full, detections fall back to the pre-WAL `alert_tx` channel.
-- `src/wal/audit_writer.rs` defines `AuditWriter` — the `vigil-wal-audit` background thread. Consumes WAL entries sorted by severity (Critical first), writes to audit DB with HMAC chain integrity. Features: sequence gap detection (`detections_wal_gaps` metric), crash recovery with deduplication, DB connection reopen after 3 consecutive failures, periodic compaction every 60s. On shutdown, drains completely before exiting — no entries can be lost.
-- `src/wal/sink_runner.rs` defines `SinkRunner` — the `vigil-wal-sinks` background thread. Consumes WAL entries sorted by sequence, dispatches to configured alert sinks. Uses an `LruCache<String, Instant>` bounded to 10,000 entries for path cooldowns. Suppressed entries are marked `sink_done` immediately (no infinite retry). Operates independently of AuditWriter.
-- `src/control.rs` defines `ControlHandler` — a struct holding metrics, state, reload flag, scan trigger, DB path, HMAC key, and auth flag. Methods: `handle_connection` (auth-or-read, dispatch, write), `authenticate_and_read` (challenge-response), `read_request`, `write_response`, `dispatch`. When HMAC signing is enabled, connections are authenticated via nonce-based challenge-response. All `reload` and `scan` commands are logged with peer credentials.
+- `src/wal/mod.rs` defines `DetectionWal`, the crash-safe binary WAL for detection records. The WAL decouples detection output from audit persistence and alert dispatch. Workers, scan scheduler, and debounce write `DetectionRecord` entries via `append()` (pwrite + fdatasync). Two independent consumer threads read entries via `iter_unconsumed()` with gap-scanning recovery: the AuditWriter persists to the audit DB with priority ordering; the SinkRunner dispatches to alert sinks with bounded cooldowns. Entries have independent `audit_done` / `sink_done` flags. Flag updates via `mark_flag()` are non-atomic read-modify-write operations protected by the global `write_lock` to prevent concurrent flag overwrites. The WAL uses CRC32 checksums for crash recovery and optional per-entry HMAC-SHA256 for tamper detection. Gap scanning is bounded by `MAX_GAP_BYTES` (64KB) to prevent adversarial DoS via large zeroed regions. File permissions are enforced at 0o600. When the WAL is disabled or full, detections fall back to the pre-WAL `alert_tx` channel.
+- `src/wal/audit_writer.rs` defines `AuditWriter`, the `vigil-wal-audit` background thread. Consumes WAL entries sorted by severity (Critical first), writes to audit DB with HMAC chain integrity. Features: sequence gap detection (`detections_wal_gaps` metric), crash recovery with deduplication, DB connection reopen after 3 consecutive failures, periodic compaction every 60s. On shutdown, drains completely before exiting. No entries can be lost.
+- `src/wal/sink_runner.rs` defines `SinkRunner`, the `vigil-wal-sinks` background thread. Consumes WAL entries sorted by sequence, dispatches to configured alert sinks. Uses an `LruCache<String, Instant>` bounded to 10,000 entries for path cooldowns. Suppressed entries are marked `sink_done` immediately (no infinite retry). Operates independently of AuditWriter.
+- `src/control.rs` defines `ControlHandler`, a struct holding metrics, state, reload flag, scan trigger, DB path, HMAC key, and auth flag. Methods: `handle_connection` (auth-or-read, dispatch, write), `authenticate_and_read` (challenge-response), `read_request`, `write_response`, `dispatch`. When HMAC signing is enabled, connections are authenticated via nonce-based challenge-response. All `reload` and `scan` commands are logged with peer credentials.
 - `src/coordinator.rs` defines `CoordinatorConfig` (spawn arguments) and `Coordinator` (runtime state). The main loop calls `handle_reload()` on flag and `tick()` every 60 seconds. `tick()` sequences: `check_baseline_db_identity`, `check_audit_db_identity`, `check_wal_identity`, `check_mount_evasion`, `notify_watchdog`, `detect_clock_anomaly`, `rotate_audit_log`, `notify_watchdog`, `write_snapshots`, `notify_watchdog`, `check_backpressure`, `check_event_drops`, `maybe_checkpoint_wal`, `check_maintenance_timeout`, `check_drift_velocity`. Watchdog pings are interleaved between expensive sub-methods within `tick()` and also sent on every loop iteration (~1s) via `notify_watchdog()`. DB connections are held as `Option<Connection>` and intentionally dropped to `None` on Degraded transitions for `*_db_replaced` or `wal_file_replaced` (VIGIL-VULN-071); operator restart is required to recover. Clock anomaly detection uses monotonic-time comparison (VIGIL-VULN-070). Mount evasion sends dynamic fanotify marks via `mount_mark_tx` channel (VIGIL-VULN-069).
 - `src/worker.rs` defines `WorkerSpawnArgs` (spawn arguments) and `WorkerContext` (per-worker state: connection, config, watch index, metrics, filter, LRU cache, generation tracker). Key methods: `evaluate` (cache lookup + baseline + snapshot + diff + classify), `process_safe` (catch_unwind wrapper), `drain_debounced` (debounced re-check). Logs self-protection warnings when config or HMAC key files are modified.
 - `src/alert/mod.rs` defines `AlertDispatcher` with extracted methods: `record_audit` (DB write + error recovery + retry buffer + DB reopen) and `dispatch_to_sinks` (sink iteration). `run()` is ~17 lines.
@@ -253,7 +274,7 @@ filesystem event
 ```
 
 Comparison and classification run in `src/worker.rs` (`WorkerContext`) and `src/types/snapshot.rs`.
-The WAL decouples detection from persistence — a blocked audit DB write cannot delay alert delivery.
+The WAL decouples detection from persistence. A blocked audit DB write cannot delay alert delivery.
 
 ### 3) Scheduled Scan Pipeline
 
@@ -423,7 +444,7 @@ MessagePack is compact, fast, and schema-flexible. WAL entries use `rmp_serde::t
 
 ### 9) `crc32fast` for WAL entry integrity
 
-CRC32 (ISO 3309) with hardware acceleration. Each WAL entry includes a trailing CRC32 over all preceding bytes. Gap-scanning recovery uses CRC validation to skip corrupted entries and find the next valid entry by advancing byte-by-byte. Gap scanning is bounded by `MAX_GAP_BYTES` (64KB) — if the scanner advances more than 64KB without finding a valid entry, it stops and returns entries recovered so far, preventing adversarial DoS via large corrupted regions.
+CRC32 (ISO 3309) with hardware acceleration. Each WAL entry includes a trailing CRC32 over all preceding bytes. Gap-scanning recovery uses CRC validation to skip corrupted entries and find the next valid entry by advancing byte-by-byte. Gap scanning is bounded by `MAX_GAP_BYTES` (64KB). If the scanner advances more than 64KB without finding a valid entry, it stops and returns entries recovered so far, preventing adversarial DoS via large corrupted regions.
 
 ---
 
@@ -453,14 +474,14 @@ The daemon startup path follows two stages: `Daemon::run()` handles pre-flight c
 
 **`Daemon::run()` (pre-flight):**
 
-1. `harden_process()` — sets umask, disables ptrace, locks privileges
-2. `raise_nofile_limit()` — attempts to raise `RLIMIT_NOFILE`
-3. `send_watchdog_heartbeat()` — keep systemd alive before slow binary hash
-4. `record_binary_hash()` — BLAKE3 hash of `/proc/self/exe`
-5. `send_watchdog_heartbeat()` — keep systemd alive before baseline health check
-6. `log_startup_diagnostics()` — log baseline DB path, existence, file size, readability, and HMAC signing status
-7. `ensure_baseline_health()` — integrity check, emptiness check (with version-upgrade recovery), HMAC verification. Sends watchdog heartbeats before and after each `build_initial_baseline()` call. The scanner itself sends heartbeats every 5,000 files, after transaction COMMIT, and after HMAC computation.
-8. `send_watchdog_heartbeat()` — keep systemd alive before thread wiring
+1. `harden_process()` -- sets umask, disables ptrace, locks privileges
+2. `raise_nofile_limit()` -- attempts to raise `RLIMIT_NOFILE`
+3. `send_watchdog_heartbeat()` -- keep systemd alive before slow binary hash
+4. `record_binary_hash()` -- BLAKE3 hash of `/proc/self/exe`
+5. `send_watchdog_heartbeat()` -- keep systemd alive before baseline health check
+6. `log_startup_diagnostics()` -- log baseline DB path, existence, file size, readability, and HMAC signing status
+7. `ensure_baseline_health()` -- integrity check, emptiness check (with version-upgrade recovery), HMAC verification. Sends watchdog heartbeats before and after each `build_initial_baseline()` call. The scanner itself sends heartbeats every 5,000 files, after transaction COMMIT, and after HMAC computation.
+8. `send_watchdog_heartbeat()` -- keep systemd alive before thread wiring
 
 **`DaemonRuntime::start()` (thread wiring):**
 
@@ -471,7 +492,7 @@ The daemon startup path follows two stages: `Daemon::run()` handles pre-flight c
 13. Spawn SinkRunner with configured alert sinks
 14. Spawn worker pool (`WorkerSpawnArgs` with WAL handle), baseline writer, alert dispatcher (with `wal_active` flag) + watchdog heartbeat
 15. Spawn coordinator (`CoordinatorConfig` with WAL identity for TOCTOU checking) + watchdog heartbeat
-16. `send_watchdog_heartbeat()` + `sd_notify(Ready)` — signal systemd that startup is complete
+16. `send_watchdog_heartbeat()` + `sd_notify(Ready)` -- signal systemd that startup is complete
 17. Spawn control socket (`ControlHandler`)
 
 **`DaemonRuntime::wait_for_shutdown()` + `DaemonRuntime::drain()`:**
@@ -483,7 +504,7 @@ The daemon startup path follows two stages: `Daemon::run()` handles pre-flight c
 22. Join AuditWriter (drains all remaining WAL entries to audit DB)
 23. Join SinkRunner (dispatches all remaining WAL entries to sinks)
 24. Join alert dispatcher, coordinator, scan scheduler
-25. Final `wal.truncate_consumed()` — compact or reset WAL file
+25. Final `wal.truncate_consumed()` -- compact or reset WAL file
 26. Cleanup PID file
 
 If any step before `sd_notify(Ready)` fails, the daemon exits with the error printed to both tracing and stderr.

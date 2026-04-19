@@ -38,7 +38,7 @@ event_channel_capacity = 4096    # event channel buffer size
 detection_wal = true              # enable Detection WAL for crash-safe detection output
 detection_wal_max_bytes = 67108864  # 64 MiB max WAL size (valid: 1 MiB - 1 GiB)
 detection_wal_persistent = false  # false = tmpfs (/run/vigil), true = alongside baseline DB
-detection_wal_sync = "every"      # every, batched, none — fdatasync after WAL append
+detection_wal_sync = "every"      # every, batched, none -- fdatasync after WAL append
 
 [scanner]
 schedule = "0 3 * * *"
@@ -92,6 +92,12 @@ hmac_key_path = "/etc/vigil/hmac.key"
 verify_config_integrity = true
 control_socket_auth = true        # challenge-response auth on control socket
 # trust_baseline_on_hmac_mismatch = false  # set true temporarily after version upgrades
+
+[monitor]
+event_loss_alert_threshold = 10   # user-space or kernel event drops per tick before Degraded
+
+[maintenance]
+max_window_seconds = 1800         # safety timeout for maintenance windows (30 min)
 
 [database]
 wal_mode = true
@@ -147,6 +153,7 @@ paths = [
 | `mmap_threshold` | integer | `1048576` | bytes |
 | `scheduled_mode` | enum | `full` | mode used by scheduler. `full` rehashes every file regardless of mtime for protection against mtime-reset attacks |
 | `parallel` | bool | `false` | enables optional parallel scanning paths |
+| `drift_velocity_threshold` | integer (optional) | `50` | average baseline changes per coordinator tick (60s) before a high-drift-velocity warning. Set to `null` or omit to use the default. |
 
 ### `[alerts]`
 
@@ -207,6 +214,19 @@ paths = [
 | `hmac_key_path` | path | `/etc/vigil/hmac.key` | HMAC key file |
 | `verify_config_integrity` | bool | `true` | integrity check toggle |
 | `control_socket_auth` | bool | `true` | enables challenge-response authentication on the control socket (requires `hmac_signing = true`) |
+| `trust_baseline_on_hmac_mismatch` | bool | `false` | when true, HMAC mismatch on startup recomputes and stores rather than entering Degraded state. Use temporarily after version upgrades that change HMAC field coverage, then disable. |
+
+### `[monitor]`
+
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `event_loss_alert_threshold` | integer (optional) | `10` | user-space `events_dropped` or kernel `kernel_queue_overflows` delta per coordinator tick that triggers Degraded state. Recovery after 5 consecutive zero-delta ticks. |
+
+### `[maintenance]`
+
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `max_window_seconds` | integer | `1800` | maximum maintenance window duration in seconds (safety timeout). If the post-hook fails or the package manager crashes, the window closes automatically after this duration. |
 
 ### `[database]`
 
@@ -222,8 +242,8 @@ paths = [
 
 | Option | Type | Required | Default | Notes |
 |--------|------|----------|---------|-------|
-| `severity` | enum | yes | — | `low`, `medium`, `high`, `critical` |
-| `paths` | string[] | yes | — | watched file or directory paths |
+| `severity` | enum | yes | -- | `low`, `medium`, `high`, `critical` |
+| `paths` | string[] | yes | -- | watched file or directory paths |
 | `mode` | enum | no | `per_file` | `per_file` or `closed_set` |
 
 #### Watch Modes

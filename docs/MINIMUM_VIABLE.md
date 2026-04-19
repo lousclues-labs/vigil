@@ -23,16 +23,16 @@ was and what it is now.
 - **Initial baseline** of all default-watched paths (`/etc/passwd`, `/etc/shadow`,
   `/etc/sudoers`, `/boot/`, `/usr/bin/`, `/usr/sbin/`, cron directories, `~/.ssh/`,
   `~/.bashrc`, `/etc/hosts`, Vigil's own config and binaries)
-- **On-demand integrity checking** via `vigil check` — compare current filesystem
+- **On-demand integrity checking** via `vigil check` -- compare current filesystem
   state against the baseline, report structural deviations
-- **Closed-set directory protection** on `~/.ssh/` and cron directories — detect
+- **Closed-set directory protection** on `~/.ssh/` and cron directories -- detect
   unknown filename additions or removals
-- **Append-only audit log** — ordered and queryable, though unsigned without an HMAC key
+- **Append-only audit log** -- ordered and queryable, though unsigned without an HMAC key
 - **Doctor diagnostics** on demand via `vigil doctor`
 - **Forensic comparison** via `vigil inspect` against arbitrary paths and baselines
-- **Status query** via `vigil status` — works without the daemon
-- **Silence query** via `vigil why-silent` — understand why Vigil is quiet
-- **Path explanation** via `vigil explain <path>` — understand watch coverage
+- **Status query** via `vigil status` -- works without the daemon
+- **Silence query** via `vigil why-silent` -- understand why Vigil is quiet
+- **Path explanation** via `vigil explain <path>` -- understand watch coverage
 
 ---
 

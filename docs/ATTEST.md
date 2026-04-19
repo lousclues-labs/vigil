@@ -101,6 +101,27 @@ vigil attest create --scope full --out pre-travel.vatt
 vigil attest verify pre-incident.vatt --key-path /secure/attest.key
 ```
 
+### Offline verification on a different machine
+
+Create an attestation on the source host, copy it to an analyst workstation,
+and verify it there using only the binary and the signing key.
+
+```bash
+# On the source host:
+sudo vigil attest create --scope full --out /media/usb/host-a-2026-04.vatt
+
+# Copy the attestation key to the same USB (or a separate secure channel):
+sudo cp /etc/vigil/attest.key /media/usb/attest.key
+
+# On the analyst workstation (no daemon, no baseline DB, no config):
+vigil attest verify /media/usb/host-a-2026-04.vatt \
+  --key-path /media/usb/attest.key
+```
+
+Exit code 0 means the attestation is valid: magic bytes, format version,
+content hash, and HMAC-BLAKE3 signature all check out. Exit code 1 means
+verification failed. See the exit code table below for the full set.
+
 ### Compare two systems' declared state
 
 ```bash
@@ -211,7 +232,14 @@ Creates attestation signing key file.
 
 ## File Format Specification (`.vatt`)
 
-Encoding: CBOR via deterministic serialization rules.
+Encoding: deterministic CBOR per RFC 8949 section 4.2 (Core Deterministic Encoding Requirements).
+
+Determinism matters because the content hash covers the serialized bytes. If two
+serializers produce different byte sequences for the same logical content, the
+content hash will differ, and verification will fail. RFC 8949 section 4.2
+mandates specific canonical forms for map key ordering, integer encoding width,
+and floating-point representation. Vigil uses `ciborium` for serialization,
+which follows these rules.
 
 Top-level structure:
 

@@ -176,7 +176,7 @@ Output includes:
 - Current vs baseline comparison (hash, permissions, ownership, inode, etc.)
 - Structural change details with old → new values
 - Package attribution when available
-- **Recent audit history panel** — the last 8 audit entries for this path
+- **Recent audit history panel** -- the last 8 audit entries for this path
   from `audit.db`, showing timestamp, severity, change type summary, and
   maintenance/suppression flags
 
@@ -198,7 +198,7 @@ vigil diff /usr/bin/sudo
 Example output (with audit history):
 
 ```
-Vigil Baseline — Diff: /etc/passwd
+Vigil Baseline -- Diff: /etc/passwd
 ══════════════════════════════════
 
   ⚠ 1 change detected:
@@ -502,7 +502,7 @@ Example output (TTY mode, ANSI stripped):
 
 ```
 [ 1/11] Verify repository...
-  ✓ Verify repository (12ms) — /home/user/src/vigil
+  ✓ Verify repository (12ms) -- /home/user/src/vigil
 [ 2/11] Build release binaries...
 ╭─ cargo build --release ───────────────────────────
    Compiling vigil-baseline v0.36.0 (/home/user/src/vigil)
@@ -510,7 +510,7 @@ Example output (TTY mode, ANSI stripped):
 ╰──────────────────────────────────────────────────
   ✓ Build release binaries (2m 29s)
 [ 3/11] Verify artifacts...
-  ✓ Verify artifacts (120ms) — v0.35.0 → v0.36.0
+  ✓ Verify artifacts (120ms) -- v0.35.0 → v0.36.0
 [ 4/11] Stop daemon...
   ✓ Stop daemon (1.2s)
 [ 5/11] Back up existing binaries...
@@ -518,7 +518,7 @@ Example output (TTY mode, ANSI stripped):
 [ 6/11] Install new binaries (atomic)...
   ✓ Install new binaries (atomic) (210ms)
 [ 7/11] Install systemd units & hooks...
-  ✓ Install systemd units & hooks (45ms) — unchanged
+  ✓ Install systemd units & hooks (45ms) -- unchanged
 [ 8/11] Start daemon...
   ✓ Start daemon (1.1s)
 [ 9/11] Verify daemon health...
@@ -526,7 +526,7 @@ Example output (TTY mode, ANSI stripped):
 [10/11] Archive backups...
   ✓ Archive backups (52ms)
 [11/11] Post-install health check...
-  ✓ Post-install health check (310ms) — v0.35.0 → v0.36.0 | daemon: restarted | baseline: preserved (14,832 entries)
+  ✓ Post-install health check (310ms) -- v0.35.0 → v0.36.0 | daemon: restarted | baseline: preserved (14,832 entries)
 
   Update complete (2m 35s)
 ```
@@ -919,7 +919,7 @@ Maintenance window: inactive
 
 Notes:
 - `--quiet` mode is designed for package manager hooks. Hooks must never
-  block package operations — if the daemon is down, the command exits 0
+  block package operations -- if the daemon is down, the command exits 0
   silently instead of producing an error.
 - A safety timeout automatically exits maintenance after 30 minutes if
   the post-hook fails or the package manager crashes.
@@ -983,7 +983,7 @@ vigil version
 Output:
 
 ```text
-vigil 0.19.0
+vigil 0.41.0
 ```
 
 ---

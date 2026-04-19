@@ -12,6 +12,7 @@ The chaos engineering suite lives under `tests/chaos/`.
 ```
 tests/
 |-- alert_dispatcher_tests.rs
+|-- attest_tests.rs
 |-- audit_chain_tests.rs
 |-- baseline_json_tests.rs
 |-- baseline_tamper_tests.rs
@@ -113,6 +114,8 @@ Current fuzz targets in `fuzz/fuzz_targets/`:
 - `fuzz_db_roundtrip`
 - `fuzz_xattr_parsing`
 - `fuzz_wal_recovery`
+- `fuzz_attest_file`
+- `fuzz_attest_verify`
 
 Run them from the `fuzz/` workspace:
 
@@ -155,21 +158,21 @@ Prefer descriptive names like `audit_chain_tests.rs` over generic buckets.
 The Detection WAL has three layers of testing:
 
 **Unit tests (in-module):**
-- `src/wal/mod.rs` — 14 tests covering WAL format, append/read, CRC corruption, gap scanning, gap limit enforcement (MAX_GAP_BYTES DoS prevention), HMAC verification, truncation, concurrency (8 threads × 1,000 entries), and sentinel roundtrip
-- `src/wal/audit_writer.rs` — 5 tests covering drain-to-audit-DB, crash recovery deduplication, sequence gap detection, priority ordering (Critical first), and audit DB failure/reopen
-- `src/wal/sink_runner.rs` — 3 tests covering bounded cooldown LRU, independent sink dispatch, and suppressed entries marked consumed
+- `src/wal/mod.rs` -- 14 tests covering WAL format, append/read, CRC corruption, gap scanning, gap limit enforcement (MAX_GAP_BYTES DoS prevention), HMAC verification, truncation, concurrency (8 threads × 1,000 entries), and sentinel roundtrip
+- `src/wal/audit_writer.rs` -- 5 tests covering drain-to-audit-DB, crash recovery deduplication, sequence gap detection, priority ordering (Critical first), and audit DB failure/reopen
+- `src/wal/sink_runner.rs` -- 3 tests covering bounded cooldown LRU, independent sink dispatch, and suppressed entries marked consumed
 
 **Integration tests:**
-- `tests/wal_integration.rs` — 2 tests: `panic_produces_detection_record` (panic handler WAL roundtrip), `wal_disabled_uses_current_path` (fallback to alert channel when WAL disabled)
+- `tests/wal_integration.rs` -- 2 tests: `panic_produces_detection_record` (panic handler WAL roundtrip), `wal_disabled_uses_current_path` (fallback to alert channel when WAL disabled)
 
 **Fuzz target:**
-- `fuzz/fuzz_targets/fuzz_wal_recovery.rs` — feeds arbitrary bytes as WAL file, exercises `iter_unconsumed()` gap-scanning
+- `fuzz/fuzz_targets/fuzz_wal_recovery.rs` -- feeds arbitrary bytes as WAL file, exercises `iter_unconsumed()` gap-scanning
 
 ---
 
 ## Display Module Test Coverage (since v0.31.0)
 
-The display module (`src/display/`) has comprehensive unit tests across all 6 files:
+The display module (`src/display/`) has unit tests across all 6 files:
 
 **Format tests (`src/display/format.rs`):**
 - ANSI styling: `styled_emits_ansi_when_tty`, `styled_no_ansi_when_piped`, `severity_style_mapping`

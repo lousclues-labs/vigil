@@ -103,6 +103,37 @@ src/
 |   |-- json_log.rs
 |   |-- remote_syslog.rs
 |   `-- socket.rs
+|-- attest/
+|   |-- mod.rs
+|   |-- create.rs
+|   |-- verify.rs
+|   |-- diff.rs
+|   |-- show.rs
+|   |-- list.rs
+|   |-- format.rs
+|   |-- key.rs
+|   `-- error.rs
+|-- commands/
+|   |-- mod.rs
+|   |-- common.rs
+|   |-- init.rs
+|   |-- check.rs
+|   |-- watch.rs
+|   |-- diff.rs
+|   |-- status.rs
+|   |-- explain.rs
+|   |-- why_silent.rs
+|   |-- inspect.rs
+|   |-- test_alert.rs
+|   |-- doctor.rs
+|   |-- audit.rs
+|   |-- config.rs
+|   |-- setup.rs
+|   |-- attest.rs
+|   |-- log.rs
+|   |-- maintenance.rs
+|   |-- baseline.rs
+|   `-- update.rs
 |-- config/
 |   |-- mod.rs
 |   `-- diff.rs
@@ -112,6 +143,13 @@ src/
 |   |-- baseline_ops.rs
 |   |-- audit_ops.rs
 |   `-- migrate.rs
+|-- display/
+|   |-- mod.rs
+|   |-- check.rs
+|   |-- explain.rs
+|   |-- format.rs
+|   |-- term.rs
+|   `-- widgets.rs
 |-- filter/
 |   |-- mod.rs
 |   `-- exclusion.rs
@@ -131,11 +169,19 @@ src/
 |   |-- permissions.rs
 |   |-- security.rs
 |   `-- snapshot.rs
+|-- ui/
+|   |-- mod.rs
+|   `-- progress.rs
+|-- wal/
+|   |-- mod.rs
+|   |-- audit_writer.rs
+|   `-- sink_runner.rs
 |-- bloom.rs
 |-- cli.rs
 |-- control.rs
 |-- coordinator.rs
 |-- daemon.rs
+|-- detection.rs
 |-- doctor.rs
 |-- error.rs
 |-- hash.rs
@@ -144,6 +190,7 @@ src/
 |-- main.rs
 |-- metrics.rs
 |-- package.rs
+|-- receipt.rs
 |-- scan_scheduler.rs
 |-- scanner.rs
 |-- watch_index.rs
@@ -151,8 +198,10 @@ src/
 
 tests/
 |-- alert_dispatcher_tests.rs
+|-- attest_tests.rs
 |-- audit_chain_tests.rs
 |-- baseline_json_tests.rs
+|-- baseline_tamper_tests.rs
 |-- chaos.rs                     # chaos engineering entry point
 |-- chaos/                       # chaos test suite (~2,800 lines)
 |   |-- chaos_common.rs
@@ -171,7 +220,11 @@ tests/
 |-- filter_self_paths_tests.rs
 |-- hmac_chain_tamper_tests.rs
 |-- scan_deleted_file_tests.rs
+|-- security_hardening_v3_tests.rs
+|-- self_monitoring_tests.rs
 |-- snapshot_diff_tests.rs
+|-- version_upgrade_tests.rs
+|-- wal_integration.rs
 `-- worker_tests.rs
 
 fuzz/
@@ -182,7 +235,10 @@ fuzz/
     |-- fuzz_toml_config.rs
     |-- fuzz_event_filter.rs
     |-- fuzz_db_roundtrip.rs
-    `-- fuzz_xattr_parsing.rs
+    |-- fuzz_xattr_parsing.rs
+    |-- fuzz_wal_recovery.rs
+    |-- fuzz_attest_file.rs
+    `-- fuzz_attest_verify.rs
 ```
 
 ---
@@ -232,7 +288,7 @@ cargo +nightly fuzz build
 cargo +nightly fuzz list
 ```
 
-This workspace has seven fuzz targets:
+This workspace has ten fuzz targets:
 - `fuzz_config_parse`
 - `fuzz_baseline_compare`
 - `fuzz_scanner`
@@ -240,6 +296,9 @@ This workspace has seven fuzz targets:
 - `fuzz_event_filter`
 - `fuzz_db_roundtrip`
 - `fuzz_xattr_parsing`
+- `fuzz_wal_recovery`
+- `fuzz_attest_file`
+- `fuzz_attest_verify`
 
 Run one target:
 

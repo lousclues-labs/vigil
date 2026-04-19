@@ -47,11 +47,11 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ### New Audit Entry Types
 
-- `attestation_created` — recorded on successful attestation generation with content-hash reference
-- `check_completed` — verification receipt from `vigil check --reason`
-- `self_check` — daemon-driven or operator-invoked health check result
-- `self_check_skipped` — daemon skipped a scheduled self-check
-- `test_alert` — synthetic alert from `vigil test alert`
+- `attestation_created` -- recorded on successful attestation generation with content-hash reference
+- `check_completed` -- verification receipt from `vigil check --reason`
+- `self_check` -- daemon-driven or operator-invoked health check result
+- `self_check_skipped` -- daemon skipped a scheduled self-check
+- `test_alert` -- synthetic alert from `vigil test alert`
 
 ### Schema Extensions
 
@@ -68,22 +68,22 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ### Internal
 
-- `build_cache_pacman_once()`, `build_cache_dpkg_once()`, `build_cache_rpm_once()` — single-attempt cache builders returning `Option`.
-- `build_cache_with_retry()` — generic retry wrapper with configurable backoff.
-- `wait_for_package_lock()` — polls for lock-file release with 250ms interval.
+- `build_cache_pacman_once()`, `build_cache_dpkg_once()`, `build_cache_rpm_once()` -- single-attempt cache builders returning `Option`.
+- `build_cache_with_retry()` -- generic retry wrapper with configurable backoff.
+- `wait_for_package_lock()` -- polls for lock-file release with 250ms interval.
 - 6 new unit tests covering retry success, retry exhaustion, lock-wait behavior, and API shape.
 
 ## [0.39.0] - 2026-04-17
 
 ### Bug Fixes
 
-- **Fix duplicate ownership warnings.** Repository discovery no longer emits ownership warnings during candidate scanning — warnings now fire exactly once during the explicit validation step.
+- **Fix duplicate ownership warnings.** Repository discovery no longer emits ownership warnings during candidate scanning -- warnings now fire exactly once during the explicit validation step.
 - **Suppress orphan cargo `Finished` line on cached builds.** When cargo has nothing to compile, its lone `Finished` line is suppressed to avoid a contextless fragment in the output. `--verbose` still emits it.
 - **Fix step labels to use `vigild` not `daemon`.** Stop, start, and health check steps now reference the actual systemd unit name (`vigild`) for searchability in logs and journals.
 - **De-redundant binary step labels.** `Backing up existing binaries` → `Backing up vigil and vigild`; `Installing new binaries` → `Installing vigil and vigild`.
 - **Fix tautological `Checking post-install checks`.** PostCheck now renders as `Running post-install doctor ... ok`.
 - **Remove pipe-delimited PostCheck detail.** The version transition, daemon status, and baseline count were redundant with the header, prior steps, and doctor output. PostCheck now renders with no trailing detail.
-- **Add archive path to backup step.** `Archiving backups ... ok — /var/lib/vigil/binary-backups/<ts>` now shows the forensic recovery path.
+- **Add archive path to backup step.** `Archiving backups ... ok -- /var/lib/vigil/binary-backups/<ts>` now shows the forensic recovery path.
 - **Remove stray `⚠` eprintln in archive_backups.** Archive creation failure now logs via tracing instead of unscoped `eprintln!`.
 
 ### Internal
@@ -98,8 +98,8 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 - **Fix spinner collision with cargo output.** The spinner line was not erased before cargo's `Compiling`/`Finished` output streamed in, causing garbled lines. The spinner is now explicitly cleared (`\r\x1b[2K`) before any pass-through child output, and a 250ms grace period suppresses spinner drawing for sub-second steps.
 - **Fix header position.** The `Updating vigil-baseline X → Y` header now appears as the first output line, before any warnings or step output. Previously it printed after the build step.
-- **Fix build step double attribution.** The `BuildRelease` step is now silent in human mode — only cargo's native `Compiling`/`Finished` lines render. JSON `begin`/`ok` events still emit.
-- **Fix hyphen where em-dash specified.** Detail separators and the `Finished` summary line now use `—` (U+2014) instead of ` - `.
+- **Fix build step double attribution.** The `BuildRelease` step is now silent in human mode -- only cargo's native `Compiling`/`Finished` lines render. JSON `begin`/`ok` events still emit.
+- **Fix hyphen where em-dash specified.** Detail separators and the `Finished` summary line now use ` -- ` (U+2014) instead of ` - `.
 - **Fix ASCII arrow in header.** Version transitions now use `→` (U+2192) instead of `->`.
 - **Fix redundant step details.** Step details that duplicate header content (repo path, version transition) are no longer rendered.
 - **Fix skipped-step labels.** Short labels now match spec: `stop, backup, install, units, start, health, archive, doctor`. Previously labels like `daemon` appeared twice.
@@ -213,46 +213,46 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 ## [0.34.0] - 2026-04-17
 
 ### Release Summary
-- Security and resilience hardening sweep covering 24 audit findings across the daemon, control socket, fanotify monitor, update command, and package introspection. Two CRITICAL fixes: (1) control socket HMAC authentication now uses constant-time verification via `hmac::verify_hmac()` — the previous string-equality compare was both timing-leaky and bypassable on empty client responses (`unwrap_or_default()` produced an empty string that was compared against the expected MAC); (2) the fanotify event loop now validates `event_len` against the metadata header size and remaining buffer length before advancing the read offset — a malformed kernel event with `event_len == 0` previously caused an infinite loop pinning a CPU core. Additional security fixes: control socket peer UID enforcement (rejects connections from non-root, non-daemon-EUID peers), 8-connection concurrency cap to prevent thread-exhaustion DoS, package manager `--` separators to prevent path-as-flag injection, and absolute paths for all helper binary invocations (`systemctl`, `journalctl`, `notify-send`, `vigil`) as PATH-hijacking defense-in-depth. Resilience fixes: fanotify mark/read failures now degrade daemon state and increment dedicated counters, `FAN_Q_OVERFLOW` triggers a Full scan request and Degraded state, mountinfo octal-escape parsing for paths containing spaces or tabs, `vigil update` rolls back binaries when the daemon fails to start (not only when started-but-unhealthy), and binary backups are now archived under `/var/lib/vigil/binary-backups/<timestamp>/` keeping the last 3. All 262 tests pass (6 new regression tests), `cargo clippy --all-targets -- -D warnings` clean.
+- Security and resilience hardening sweep covering 24 audit findings across the daemon, control socket, fanotify monitor, update command, and package introspection. Two CRITICAL fixes: (1) control socket HMAC authentication now uses constant-time verification via `hmac::verify_hmac()` -- the previous string-equality compare was both timing-leaky and bypassable on empty client responses (`unwrap_or_default()` produced an empty string that was compared against the expected MAC); (2) the fanotify event loop now validates `event_len` against the metadata header size and remaining buffer length before advancing the read offset -- a malformed kernel event with `event_len == 0` previously caused an infinite loop pinning a CPU core. Additional security fixes: control socket peer UID enforcement (rejects connections from non-root, non-daemon-EUID peers), 8-connection concurrency cap to prevent thread-exhaustion DoS, package manager `--` separators to prevent path-as-flag injection, and absolute paths for all helper binary invocations (`systemctl`, `journalctl`, `notify-send`, `vigil`) as PATH-hijacking defense-in-depth. Resilience fixes: fanotify mark/read failures now degrade daemon state and increment dedicated counters, `FAN_Q_OVERFLOW` triggers a Full scan request and Degraded state, mountinfo octal-escape parsing for paths containing spaces or tabs, `vigil update` rolls back binaries when the daemon fails to start (not only when started-but-unhealthy), and binary backups are now archived under `/var/lib/vigil/binary-backups/<timestamp>/` keeping the last 3. All 262 tests pass (6 new regression tests), `cargo clippy --all-targets -- -D warnings` clean.
 
 ### Security
-- **VIGIL-VULN-057 (Critical):** control socket HMAC authentication used `client_response.unwrap_or_default() != expected_hmac` — non-constant-time string comparison and bypassable on EOF/empty responses. Replaced with `crate::hmac::verify_hmac(key, nonce.as_bytes(), client_response)` which uses the underlying `subtle::ConstantTimeEq` and fails closed on malformed input. Regression test `verify_hmac_rejects_empty_response` covers the bypass path (`src/control.rs`).
+- **VIGIL-VULN-057 (Critical):** control socket HMAC authentication used `client_response.unwrap_or_default() != expected_hmac` -- non-constant-time string comparison and bypassable on EOF/empty responses. Replaced with `crate::hmac::verify_hmac(key, nonce.as_bytes(), client_response)` which uses the underlying `subtle::ConstantTimeEq` and fails closed on malformed input. Regression test `verify_hmac_rejects_empty_response` covers the bypass path (`src/control.rs`).
 - **VIGIL-VULN-058 (Critical):** fanotify event reader incremented `offset += event.event_len as usize` without validating `event_len`. A kernel event with `event_len < FAN_EVENT_METADATA_LEN` or `offset + len > buffer_size` would either loop forever or read past the buffer. Now validates both bounds; on violation, increments `fanotify_read_errors`, logs at error, and breaks the resync loop (`src/monitor/fanotify.rs`).
 - **VIGIL-VULN-059 (High):** control socket accepted connections from any local UID. SO_PEERCRED was retrieved for logging only, not enforced. Now rejects the connection when SO_PEERCRED is unavailable, when the peer UID is not 0, and when the peer UID does not match the daemon's effective UID. Daemon EUID resolved via new `current_euid()` helper (`src/control.rs`).
-- **VIGIL-VULN-060 (High):** control socket spawned an unbounded thread per connection — a local attacker could exhaust the thread/FD budget. Now uses an `AtomicUsize` semaphore capping concurrent handler threads at `MAX_CONCURRENT_CONNECTIONS = 8`; excess connections receive a JSON rejection and are closed (`src/control.rs`).
+- **VIGIL-VULN-060 (High):** control socket spawned an unbounded thread per connection -- a local attacker could exhaust the thread/FD budget. Now uses an `AtomicUsize` semaphore capping concurrent handler threads at `MAX_CONCURRENT_CONNECTIONS = 8`; excess connections receive a JSON rejection and are closed (`src/control.rs`).
 - **VIGIL-VULN-061 (High):** `vigil update` only rolled back binaries when the daemon started but health-checked unhealthy. If `systemctl start vigild` itself failed, the new binaries remained installed even though the daemon was not running. Rollback now triggers on `backups_exist && (!daemon_started || !healthy)` (`src/commands/update.rs`).
 - **VIGIL-VULN-062 (High):** package manager queries (`pacman -Qo`, `dpkg -S`, `rpm -qf`) passed user-derived paths positionally without a `--` separator. A path beginning with `-` could be interpreted as a flag. All four call sites (`query_pacman`, `query_dpkg`, `query_rpm`, `batch_query_dpkg`) now insert `--` before the path argument(s) (`src/package.rs`).
 - **VIGIL-VULN-063 (High):** `vigil update` and helper binary invocations (`systemctl`, `journalctl`, `notify-send`, `vigil`) used bare command names, relying on PATH resolution. Now all call sites resolve to absolute paths (`/usr/bin/...` or `/bin/...`), with results cached in `OnceLock<Option<PathBuf>>` for `notify-send`. Fallback to PATH only when no canonical location matches, ensuring deterministic behavior even when a service runs with an unexpected PATH (`src/doctor.rs`, `src/commands/log.rs`, `src/commands/update.rs`, `src/alert/dbus.rs`, `src/lib.rs`).
-- **VIGIL-VULN-064 (Medium):** fanotify `FAN_Q_OVERFLOW` events were logged but produced no operational response — the kernel had dropped events and the baseline could silently drift. Now sets daemon state to `Degraded { reason: "fanotify_queue_overflow" }`, sends a `Full` `ScanRequest` via the scan trigger channel (try_send to avoid blocking the read loop), and increments the new `fanotify_overflow_scans_triggered` counter (`src/monitor/fanotify.rs`).
+- **VIGIL-VULN-064 (Medium):** fanotify `FAN_Q_OVERFLOW` events were logged but produced no operational response -- the kernel had dropped events and the baseline could silently drift. Now sets daemon state to `Degraded { reason: "fanotify_queue_overflow" }`, sends a `Full` `ScanRequest` via the scan trigger channel (try_send to avoid blocking the read loop), and increments the new `fanotify_overflow_scans_triggered` counter (`src/monitor/fanotify.rs`).
 - **VIGIL-VULN-065 (Medium):** fanotify mountinfo parsing did not decode the octal `\NNN` escapes the kernel uses for whitespace, backslash, and other special characters in mount points. Mount points containing spaces, tabs, or backslashes were misparsed and would not receive marks. New `unescape_mountinfo()` decodes `\040`, `\011`, `\134`, etc.; covered by 5 new unit tests (`src/monitor/fanotify.rs`).
 - **VIGIL-VULN-066 (Medium):** initial fanotify mark application failures were silently logged and ignored. The daemon would continue running with no real-time monitoring on the failed mounts. Now increments `fanotify_mark_failures` and, on the reload path where state is available, transitions to `Degraded { reason: "fanotify_mark_failure" }`. Read-side `read()` failures are similarly classified: EAGAIN/EWOULDBLOCK/EINTR are benign and continue the loop; other errno values increment `fanotify_read_errors`, degrade state, and stop the monitor cleanly (`src/monitor/fanotify.rs`).
 
 ### Added
-- **metrics:** five new counters exposed via Prometheus exposition — `fanotify_overflow_scans_triggered`, `fanotify_mark_failures`, `fanotify_read_errors`, `package_cache_failures`, plus the previously-defined-but-unexposed `control_commands` and `backpressure_events`. All are `AtomicU64` with relaxed ordering, accessible via the existing `Metrics` API (`src/metrics.rs`).
+- **metrics:** five new counters exposed via Prometheus exposition -- `fanotify_overflow_scans_triggered`, `fanotify_mark_failures`, `fanotify_read_errors`, `package_cache_failures`, plus the previously-defined-but-unexposed `control_commands` and `backpressure_events`. All are `AtomicU64` with relaxed ordering, accessible via the existing `Metrics` API (`src/metrics.rs`).
 - **control:** `MAX_CONCURRENT_CONNECTIONS = 8` with an `AtomicUsize` semaphore. `ControlHandler.baseline_conn` field type changed from `rusqlite::Connection` to `Arc<Mutex<rusqlite::Connection>>` (parking_lot Mutex) so the handler can be `Arc`-shared across worker threads. Connection access in `handle_baseline_count()` and `handle_baseline_refresh()` now locks the Mutex (`src/control.rs`).
-- **control:** `current_euid()` helper — returns the daemon's effective UID via `libc::geteuid()`. Annotated with `#[allow(unsafe_code)]` to override the crate-level `#![deny(unsafe_code)]` for this single FFI call (`src/control.rs`).
-- **monitor/fanotify:** `unescape_mountinfo(s: &str) -> String` — decodes the octal escape sequences the kernel uses for whitespace, backslash, and other special characters in `/proc/self/mountinfo` mount-point fields (`src/monitor/fanotify.rs`).
-- **commands/update:** `archive_backups(timestamp: &str)` — moves `.vigil.backup` and `.vigild.backup` files into `/var/lib/vigil/binary-backups/<timestamp>/` after a successful update so historical binaries can be restored manually for forensics or extended rollback (`src/commands/update.rs`).
-- **commands/update:** `prune_old_backup_archives()` — keeps the 3 most recent archive directories under `/var/lib/vigil/binary-backups/`, removing older ones to bound disk usage (`src/commands/update.rs`).
-- **commands/update:** `installed_vigil_path()` — returns the absolute path of the installed `vigil` binary (`/usr/local/bin/vigil`). Used by `installed_version()` and the post-update `vigil doctor` invocation to ensure the same binary is queried regardless of PATH state (`src/commands/update.rs`).
-- **commands/update:** `daemon_is_active()` helper — returns `true` when `systemctl is-active --quiet vigild` succeeds. Used to determine whether `systemctl stop` failure is fatal (active daemon) or benign (already stopped) (`src/commands/update.rs`).
+- **control:** `current_euid()` helper -- returns the daemon's effective UID via `libc::geteuid()`. Annotated with `#[allow(unsafe_code)]` to override the crate-level `#![deny(unsafe_code)]` for this single FFI call (`src/control.rs`).
+- **monitor/fanotify:** `unescape_mountinfo(s: &str) -> String` -- decodes the octal escape sequences the kernel uses for whitespace, backslash, and other special characters in `/proc/self/mountinfo` mount-point fields (`src/monitor/fanotify.rs`).
+- **commands/update:** `archive_backups(timestamp: &str)` -- moves `.vigil.backup` and `.vigild.backup` files into `/var/lib/vigil/binary-backups/<timestamp>/` after a successful update so historical binaries can be restored manually for forensics or extended rollback (`src/commands/update.rs`).
+- **commands/update:** `prune_old_backup_archives()` -- keeps the 3 most recent archive directories under `/var/lib/vigil/binary-backups/`, removing older ones to bound disk usage (`src/commands/update.rs`).
+- **commands/update:** `installed_vigil_path()` -- returns the absolute path of the installed `vigil` binary (`/usr/local/bin/vigil`). Used by `installed_version()` and the post-update `vigil doctor` invocation to ensure the same binary is queried regardless of PATH state (`src/commands/update.rs`).
+- **commands/update:** `daemon_is_active()` helper -- returns `true` when `systemctl is-active --quiet vigild` succeeds. Used to determine whether `systemctl stop` failure is fatal (active daemon) or benign (already stopped) (`src/commands/update.rs`).
 
 ### Changed
-- **monitor/fanotify:** `start()` signature gains two parameters — `state: Option<Arc<RwLock<DaemonState>>>` and `scan_trigger: Option<Sender<crate::control::ScanRequest>>`. Both are `Option` to preserve test ergonomics. Annotated `#[allow(clippy::too_many_arguments)]` (now 9 args). Reload path rebuilds the bloom filter *before* applying marks so a fresh start always uses the new filter (`src/monitor/fanotify.rs`).
+- **monitor/fanotify:** `start()` signature gains two parameters -- `state: Option<Arc<RwLock<DaemonState>>>` and `scan_trigger: Option<Sender<crate::control::ScanRequest>>`. Both are `Option` to preserve test ergonomics. Annotated `#[allow(clippy::too_many_arguments)]` (now 9 args). Reload path rebuilds the bloom filter *before* applying marks so a fresh start always uses the new filter (`src/monitor/fanotify.rs`).
 - **monitor/mod.rs:** `start_monitor()` accepts and forwards the new `state` and `scan_trigger` parameters to `fanotify::start()` (`src/monitor/mod.rs`).
 - **control:** `ControlHandler::write_response()` now propagates the underlying I/O error instead of silently dropping it via `let _ =`. Connection-level errors are now visible in logs and to the caller (`src/control.rs`).
-- **commands/update:** `verify_daemon_health()` now probes immediately on entry and sleeps only between retries — previously it slept first, then probed, adding 2 s of latency to the common success path. Total max wait unchanged (`src/commands/update.rs`).
+- **commands/update:** `verify_daemon_health()` now probes immediately on entry and sleeps only between retries -- previously it slept first, then probed, adding 2 s of latency to the common success path. Total max wait unchanged (`src/commands/update.rs`).
 - **commands/update:** `install_file_if_changed()` treats `ErrorKind::NotFound` from the source path as a benign skip (returns `Ok(false)`) instead of a fatal error. Allows running `vigil update` from a partial repository without manually pruning the file list (`src/commands/update.rs`).
 - **commands/update:** `systemctl stop vigild` failure now hard-fails the update when `daemon_is_active()` returns `true`. Previously, stop failures were warned about and the update continued, risking installation of a binary the running daemon had open (`src/commands/update.rs`).
 - **package:** `run_with_timeout()` signature gains an explicit `use_breaker: bool` parameter, replacing the prior heuristic that compared the timeout duration to a sentinel value to decide whether to engage the circuit breaker. All 7 call sites updated; the long-running `build_package_cache()` calls pass `false`, the short query calls pass `true` (`src/package.rs`).
-- **package:** empty package-cache builds (`build_cache_pacman/dpkg/rpm`) now log at `error` level instead of `info` — an empty cache means subsequent attribution will be wrong for every event, which is a degraded-mode condition deserving operator attention (`src/package.rs`).
+- **package:** empty package-cache builds (`build_cache_pacman/dpkg/rpm`) now log at `error` level instead of `info` -- an empty cache means subsequent attribution will be wrong for every event, which is a degraded-mode condition deserving operator attention (`src/package.rs`).
 - **db/baseline_ops:** `batch_upsert()` ROLLBACK failures now log at `error` level instead of being discarded via `let _ =`. A failed rollback after a transaction error indicates database corruption and must surface in logs (`src/db/baseline_ops.rs`).
 - **lib:** all 7 background thread `JoinHandle::join()` calls in the drain path (worker, baseline_writer, audit_writer, sink_runner, alert, coordinator, scan_scheduler) now log at `tracing::warn!` on join failure with the thread name. Previously these were `let _ = handle.join()` and panicked threads were silently lost (`src/lib.rs`).
 - **lib:** scan trigger channel is now created earlier in `Daemon::start()` (capacity 4, before the monitor) so it can be passed to `monitor::start_monitor()`. The duplicate creation site below was removed. Control handler's baseline DB connection is now wrapped in `Arc::new(parking_lot::Mutex::new(...))` to support the new concurrent control handler (`src/lib.rs`).
 - **alert/dbus:** `notify_desktop()` (also in `src/lib.rs`) refactored to resolve `notify-send` to an absolute path via a `OnceLock<Option<PathBuf>>` cache. Prefers `/usr/bin/notify-send`, then `/bin/notify-send`, falls back to PATH lookup (`src/lib.rs`, `src/alert/dbus.rs`).
 
 ### Tests
-- **control:** `verify_hmac_rejects_empty_response` — regression test for VIGIL-VULN-057. Generates an HMAC for a known nonce, verifies that an empty client response is rejected by `crate::hmac::verify_hmac()` (`src/control.rs`).
+- **control:** `verify_hmac_rejects_empty_response` -- regression test for VIGIL-VULN-057. Generates an HMAC for a known nonce, verifies that an empty client response is rejected by `crate::hmac::verify_hmac()` (`src/control.rs`).
 - **monitor/fanotify:** 5 new unit tests for `unescape_mountinfo()` covering: no escapes (passthrough), single space (`\040`), single tab (`\011`), backslash (`\134`), and mixed escapes in a realistic mount-point path (`src/monitor/fanotify.rs`).
 - All 4 existing control handler test sites updated to wrap the baseline DB connection in `Arc::new(parking_lot::Mutex::new(...))`.
 - All 262 tests pass (`cargo test --all-targets`); `cargo clippy --all-targets -- -D warnings` clean; `cargo fmt --check` clean; `cd fuzz && cargo check` clean.
@@ -267,51 +267,51 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 
 ### Security
 - **VIGIL-VULN-051 (Critical):** baseline HMAC mismatch in `ensure_baseline_health()` silently recomputed and stored the new HMAC, nullifying tamper-evidence. Now enters `Degraded` state with reason `baseline_hmac_mismatch` and sends `Critical` desktop notification. Escape hatch: `security.trust_baseline_on_hmac_mismatch = true` for genuine version upgrades (`src/lib.rs`).
-- **VIGIL-VULN-052 (Critical):** `handle_baseline_refresh()` called `load_config(None)` which re-read config from disk without HMAC verification, bypassing the coordinator's config integrity check. Now uses the daemon's live config via `Arc<ArcSwap<Config>>`. Additionally gated on daemon state — refuses execution when `Degraded` to prevent cementing compromised filesystem state (`src/control.rs`).
+- **VIGIL-VULN-052 (Critical):** `handle_baseline_refresh()` called `load_config(None)` which re-read config from disk without HMAC verification, bypassing the coordinator's config integrity check. Now uses the daemon's live config via `Arc<ArcSwap<Config>>`. Additionally gated on daemon state -- refuses execution when `Degraded` to prevent cementing compromised filesystem state (`src/control.rs`).
 - **VIGIL-VULN-053 (Critical):** `read_request()` and `authenticate_and_read()` used `BufReader::read_line()` with no size limit. A local process could OOM the daemon with a multi-gigabyte newline-less payload. Now bounded to 64KB via `read_bounded_line()` using `Read::take()` (`src/control.rs`).
 - **VIGIL-VULN-054 (High):** `check_hmac_key_permissions()` logged a warning when the HMAC key file was world-readable but continued using the key. Now returns `Err` in release builds (`#[cfg(not(any(test, debug_assertions)))]`) when mode & 0o077 != 0, refusing to load the key. Test/debug builds warn instead (`src/hmac.rs`).
-- **VIGIL-VULN-055 (High):** under `sudo vigil update`, `$HOME` may point to an unprivileged user's home. `discover_vigil_repo()` searched user-writable paths, and `validate_vigil_repo()` only checked the package name — a user-placed malicious Rust project could execute arbitrary code as root. Now skips `$HOME`-relative candidates when running as root (unless `$HOME=/root`). As defense-in-depth, `validate_vigil_repo()` checks directory and `Cargo.toml` ownership in release builds (`src/commands/update.rs`).
-- **VIGIL-VULN-056 (Medium):** process attribution via `/proc/{pid}/exe` did not distinguish successful from failed readlink — stale PID attribution was indistinguishable from valid attribution. Now detects exited processes and logs at `debug` level with `exe: None` flagging (`src/monitor/fanotify.rs`).
+- **VIGIL-VULN-055 (High):** under `sudo vigil update`, `$HOME` may point to an unprivileged user's home. `discover_vigil_repo()` searched user-writable paths, and `validate_vigil_repo()` only checked the package name -- a user-placed malicious Rust project could execute arbitrary code as root. Now skips `$HOME`-relative candidates when running as root (unless `$HOME=/root`). As defense-in-depth, `validate_vigil_repo()` checks directory and `Cargo.toml` ownership in release builds (`src/commands/update.rs`).
+- **VIGIL-VULN-056 (Medium):** process attribution via `/proc/{pid}/exe` did not distinguish successful from failed readlink -- stale PID attribution was indistinguishable from valid attribution. Now detects exited processes and logs at `debug` level with `exe: None` flagging (`src/monitor/fanotify.rs`).
 
 ### Added
-- **worker:** self-healing database connections — `WorkerContext` gains `consecutive_db_errors: u32` and `db_path: PathBuf` fields. On `get_by_path()` failure, the counter increments; on success, it resets to 0. After 5 consecutive failures, the worker attempts `open_baseline_db_readonly()` — on success, replaces the connection, clears the LRU cache, and resets the counter. On failure, logs at `error` and retries after 5 more failures. Never panics on reconnect failure (Principle IV) (`src/worker.rs`).
-- **package:** circuit breaker for package manager queries — module-level `CONSECUTIVE_TIMEOUTS: AtomicU32` and `CIRCUIT_OPEN_UNTIL: AtomicI64` statics. After 3 consecutive `run_with_timeout()` timeouts on the `PKG_QUERY_TIMEOUT` (5s) path, the circuit opens for 60 seconds — all queries return `None` immediately without spawning subprocesses. Successful queries reset the counter. `build_package_cache()` (30s timeout) is unaffected. `is_circuit_open()` logs at `info` when the circuit closes (`src/package.rs`).
-- **coordinator:** per-sub-method tick duration tracking — each of the 12 sub-method calls in `tick()` is wrapped with `Instant::now()` / `elapsed()`. Individual durations exceeding 5 seconds log at `warn` with method name. Total tick exceeding 10 seconds logs at `warn` with full breakdown. Negligible overhead (one `Instant::now()` per sub-method per 60-second tick). Does not change existing `notify_watchdog()` placement (`src/coordinator.rs`).
-- **coordinator:** backpressure auto-recovery — `check_backpressure()` now transitions back from `Degraded { reason: "event_backpressure" }` to `Healthy` when the backpressure flag clears. Only recovers from `event_backpressure` — security-related degradation (`baseline_db_replaced`, `audit_db_replaced`, `wal_file_replaced`, `baseline_hmac_mismatch`) requires daemon restart (`src/coordinator.rs`).
-- **coordinator:** drift velocity metric — `Coordinator` gains `drift_samples: [u64; 5]`, `drift_sample_idx: usize`, and `last_changes_seen: u64`. `check_drift_velocity()` computes the 5-minute rolling average of changes per tick. When the average exceeds `scanner.drift_velocity_threshold` (default 50) and no maintenance window is active, logs at `error`: "high baseline drift velocity — possible active compromise". Suppressed during maintenance windows. Included in `state.json` as `drift_velocity` field (`src/coordinator.rs`).
-- **config:** `scanner.drift_velocity_threshold: Option<u64>` — average baseline changes per coordinator tick that triggers a high-drift-velocity warning. `None` (default) uses hardcoded 50. (`src/config/mod.rs`).
-- **config:** `security.trust_baseline_on_hmac_mismatch: bool` — when `true`, HMAC mismatch on startup recomputes and stores the new HMAC (with warning) instead of entering Degraded state. Default `false`. Use temporarily after version upgrades that change baseline HMAC field coverage (`src/config/mod.rs`).
-- **error:** `VigilError::with_context(self, ctx: &str) -> Self` — prepends context to string-based error variants (Config, Daemon, Baseline, Alert, etc.). For variants wrapping external errors (Io, Database, TomlParse, Json, GlobPattern), converts to the appropriate string variant with context prefix. No new dependencies (`src/error.rs`).
-- **control:** `ControlHandler` gains `config: Arc<ArcSwap<Config>>` field — provides access to the daemon's live, HMAC-verified config. Threaded from `DaemonRuntime::start()` where `daemon.config` is available (`src/control.rs`, `src/lib.rs`).
-- **control:** `read_bounded_line()` helper — reads a single line from a `UnixStream` bounded to `MAX_REQUEST_LINE_BYTES` (64KB) using `Read::take()`. Returns `Err` on empty connection, size limit exceeded, or I/O error (`src/control.rs`).
+- **worker:** self-healing database connections -- `WorkerContext` gains `consecutive_db_errors: u32` and `db_path: PathBuf` fields. On `get_by_path()` failure, the counter increments; on success, it resets to 0. After 5 consecutive failures, the worker attempts `open_baseline_db_readonly()` -- on success, replaces the connection, clears the LRU cache, and resets the counter. On failure, logs at `error` and retries after 5 more failures. Never panics on reconnect failure (Principle IV) (`src/worker.rs`).
+- **package:** circuit breaker for package manager queries -- module-level `CONSECUTIVE_TIMEOUTS: AtomicU32` and `CIRCUIT_OPEN_UNTIL: AtomicI64` statics. After 3 consecutive `run_with_timeout()` timeouts on the `PKG_QUERY_TIMEOUT` (5s) path, the circuit opens for 60 seconds -- all queries return `None` immediately without spawning subprocesses. Successful queries reset the counter. `build_package_cache()` (30s timeout) is unaffected. `is_circuit_open()` logs at `info` when the circuit closes (`src/package.rs`).
+- **coordinator:** per-sub-method tick duration tracking -- each of the 12 sub-method calls in `tick()` is wrapped with `Instant::now()` / `elapsed()`. Individual durations exceeding 5 seconds log at `warn` with method name. Total tick exceeding 10 seconds logs at `warn` with full breakdown. Negligible overhead (one `Instant::now()` per sub-method per 60-second tick). Does not change existing `notify_watchdog()` placement (`src/coordinator.rs`).
+- **coordinator:** backpressure auto-recovery -- `check_backpressure()` now transitions back from `Degraded { reason: "event_backpressure" }` to `Healthy` when the backpressure flag clears. Only recovers from `event_backpressure` -- security-related degradation (`baseline_db_replaced`, `audit_db_replaced`, `wal_file_replaced`, `baseline_hmac_mismatch`) requires daemon restart (`src/coordinator.rs`).
+- **coordinator:** drift velocity metric -- `Coordinator` gains `drift_samples: [u64; 5]`, `drift_sample_idx: usize`, and `last_changes_seen: u64`. `check_drift_velocity()` computes the 5-minute rolling average of changes per tick. When the average exceeds `scanner.drift_velocity_threshold` (default 50) and no maintenance window is active, logs at `error`: "high baseline drift velocity -- possible active compromise". Suppressed during maintenance windows. Included in `state.json` as `drift_velocity` field (`src/coordinator.rs`).
+- **config:** `scanner.drift_velocity_threshold: Option<u64>` -- average baseline changes per coordinator tick that triggers a high-drift-velocity warning. `None` (default) uses hardcoded 50. (`src/config/mod.rs`).
+- **config:** `security.trust_baseline_on_hmac_mismatch: bool` -- when `true`, HMAC mismatch on startup recomputes and stores the new HMAC (with warning) instead of entering Degraded state. Default `false`. Use temporarily after version upgrades that change baseline HMAC field coverage (`src/config/mod.rs`).
+- **error:** `VigilError::with_context(self, ctx: &str) -> Self` -- prepends context to string-based error variants (Config, Daemon, Baseline, Alert, etc.). For variants wrapping external errors (Io, Database, TomlParse, Json, GlobPattern), converts to the appropriate string variant with context prefix. No new dependencies (`src/error.rs`).
+- **control:** `ControlHandler` gains `config: Arc<ArcSwap<Config>>` field -- provides access to the daemon's live, HMAC-verified config. Threaded from `DaemonRuntime::start()` where `daemon.config` is available (`src/control.rs`, `src/lib.rs`).
+- **control:** `read_bounded_line()` helper -- reads a single line from a `UnixStream` bounded to `MAX_REQUEST_LINE_BYTES` (64KB) using `Read::take()`. Returns `Err` on empty connection, size limit exceeded, or I/O error (`src/control.rs`).
 
 ### Changed
-- **lib:** `ensure_baseline_health()` — HMAC mismatch branch now checks `config.security.trust_baseline_on_hmac_mismatch`. When `false` (default): logs at `error`, sends `Critical` desktop notification, transitions to `Degraded`. When `true`: logs at `warn`, recomputes and stores the HMAC. Previously always recomputed silently (`src/lib.rs`).
+- **lib:** `ensure_baseline_health()` -- HMAC mismatch branch now checks `config.security.trust_baseline_on_hmac_mismatch`. When `false` (default): logs at `error`, sends `Critical` desktop notification, transitions to `Degraded`. When `true`: logs at `warn`, recomputes and stores the HMAC. Previously always recomputed silently (`src/lib.rs`).
 - **lib:** `db::open_baseline_db()` call in `Daemon::from_config()` now wrapped with `.map_err(|e| e.with_context("opening baseline database during daemon startup"))` (`src/lib.rs`).
 - **lib:** `db::open_audit_db()` call in `Daemon::from_config()` now wrapped with `.map_err(|e| e.with_context("opening audit database during startup"))` (`src/lib.rs`).
 - **lib:** `scanner::build_initial_baseline()` call in `ensure_baseline_health()` now wrapped with `.map_err(|e| e.with_context("building initial baseline"))` (`src/lib.rs`).
-- **control:** `handle_baseline_refresh()` — uses `self.config.load()` instead of `crate::config::load_config(None)`. Checks daemon state before execution and refuses with clear error when `Degraded` (`src/control.rs`).
-- **control:** `read_request()` and `authenticate_and_read()` — replaced `BufReader::read_line()` with `read_bounded_line()` (`src/control.rs`).
-- **hmac:** `check_hmac_key_permissions()` — changed from void function to `Result<()>`. In release builds, returns `Err(VigilError::HmacVerification(...))` on permissive mode. `load_hmac_key()` now propagates the error via `?` (`src/hmac.rs`).
-- **coordinator:** `write_state_snapshot()` — now takes an optional `drift_velocity: Option<u64>` parameter and includes it in the state JSON when available (`src/coordinator.rs`).
+- **control:** `handle_baseline_refresh()` -- uses `self.config.load()` instead of `crate::config::load_config(None)`. Checks daemon state before execution and refuses with clear error when `Degraded` (`src/control.rs`).
+- **control:** `read_request()` and `authenticate_and_read()` -- replaced `BufReader::read_line()` with `read_bounded_line()` (`src/control.rs`).
+- **hmac:** `check_hmac_key_permissions()` -- changed from void function to `Result<()>`. In release builds, returns `Err(VigilError::HmacVerification(...))` on permissive mode. `load_hmac_key()` now propagates the error via `?` (`src/hmac.rs`).
+- **coordinator:** `write_state_snapshot()` -- now takes an optional `drift_velocity: Option<u64>` parameter and includes it in the state JSON when available (`src/coordinator.rs`).
 - **commands/check:** `open_baseline_db()` call now wrapped with `.map_err(|e| e.with_context("opening baseline database for check"))` (`src/commands/check.rs`).
 - **commands/update:** `validate_vigil_repo()` call now wrapped with `.map_err(|e| e.with_context(...))` with the repo path in context (`src/commands/update.rs`).
-- **commands/update:** `discover_vigil_repo()` — when running as root, skips `$HOME`-relative candidates unless `$HOME` is `/root`. Logs at `debug` when skipping (`src/commands/update.rs`).
-- **commands/update:** `validate_vigil_repo()` — when running as root in release builds, checks directory and `Cargo.toml` ownership (UID must be 0) (`src/commands/update.rs`).
-- **monitor/fanotify:** process attribution — failed `/proc/{pid}/exe` readlink now logged at `debug` ("process exited before attribution — PID may be stale") and `ProcessAttribution` populated with `exe: None` (`src/monitor/fanotify.rs`).
+- **commands/update:** `discover_vigil_repo()` -- when running as root, skips `$HOME`-relative candidates unless `$HOME` is `/root`. Logs at `debug` when skipping (`src/commands/update.rs`).
+- **commands/update:** `validate_vigil_repo()` -- when running as root in release builds, checks directory and `Cargo.toml` ownership (UID must be 0) (`src/commands/update.rs`).
+- **monitor/fanotify:** process attribution -- failed `/proc/{pid}/exe` readlink now logged at `debug` ("process exited before attribution -- PID may be stale") and `ProcessAttribution` populated with `exe: None` (`src/monitor/fanotify.rs`).
 
 ### Tests
-- **worker:** `worker_consecutive_db_errors_increments` — creates a `WorkerContext` with an in-memory DB that lacks baseline tables, verifies `consecutive_db_errors` increments to 4 after 4 failed `evaluate()` calls (`src/worker.rs`).
-- **package:** `circuit_breaker_opens_after_threshold` — sets `CIRCUIT_OPEN_UNTIL` to future timestamp, verifies `is_circuit_open()` returns `true` (`src/package.rs`).
-- **package:** `circuit_breaker_closes_after_expiry` — sets `CIRCUIT_OPEN_UNTIL` to past timestamp, verifies `is_circuit_open()` returns `false` and counters reset (`src/package.rs`).
-- **package:** `circuit_breaker_resets_on_success` — verifies `CONSECUTIVE_TIMEOUTS` can be reset to 0 (`src/package.rs`).
-- **error:** `with_context_prepends_message` — verifies `VigilError::Config("missing field").with_context("loading config")` produces a message containing both strings (`src/error.rs`).
-- **error:** `with_context_io_becomes_daemon` — verifies `VigilError::Io(...)` converts to `VigilError::Daemon(...)` with context prefix and "I/O error" tag (`src/error.rs`).
-- **control:** `read_bounded_line_rejects_oversized_request` — sends 65KB+ without newline via `UnixStream::pair()`, verifies `read_bounded_line()` returns error mentioning "exceeds maximum size" (`src/control.rs`).
-- **control:** `baseline_refresh_refused_when_degraded` — constructs `ControlHandler` with `Degraded` state, verifies `handle_baseline_refresh()` returns `ok: false` with error mentioning "degraded" (`src/control.rs`).
-- **hmac:** `check_hmac_key_permissions_permissive_mode_in_test` — creates key with mode 0644, verifies test-build returns `Ok` (would fail in release), confirms underlying mode check would flag it (`src/hmac.rs`).
-- **hmac:** `check_hmac_key_permissions_strict_mode_ok` — creates key with mode 0600, verifies `check_hmac_key_permissions()` returns `Ok` (`src/hmac.rs`).
-- **update:** `validate_vigil_repo_ownership_check_logic` — creates temp repo, verifies ownership metadata (UID non-zero when non-root, zero when root) (`src/commands/update.rs`).
+- **worker:** `worker_consecutive_db_errors_increments` -- creates a `WorkerContext` with an in-memory DB that lacks baseline tables, verifies `consecutive_db_errors` increments to 4 after 4 failed `evaluate()` calls (`src/worker.rs`).
+- **package:** `circuit_breaker_opens_after_threshold` -- sets `CIRCUIT_OPEN_UNTIL` to future timestamp, verifies `is_circuit_open()` returns `true` (`src/package.rs`).
+- **package:** `circuit_breaker_closes_after_expiry` -- sets `CIRCUIT_OPEN_UNTIL` to past timestamp, verifies `is_circuit_open()` returns `false` and counters reset (`src/package.rs`).
+- **package:** `circuit_breaker_resets_on_success` -- verifies `CONSECUTIVE_TIMEOUTS` can be reset to 0 (`src/package.rs`).
+- **error:** `with_context_prepends_message` -- verifies `VigilError::Config("missing field").with_context("loading config")` produces a message containing both strings (`src/error.rs`).
+- **error:** `with_context_io_becomes_daemon` -- verifies `VigilError::Io(...)` converts to `VigilError::Daemon(...)` with context prefix and "I/O error" tag (`src/error.rs`).
+- **control:** `read_bounded_line_rejects_oversized_request` -- sends 65KB+ without newline via `UnixStream::pair()`, verifies `read_bounded_line()` returns error mentioning "exceeds maximum size" (`src/control.rs`).
+- **control:** `baseline_refresh_refused_when_degraded` -- constructs `ControlHandler` with `Degraded` state, verifies `handle_baseline_refresh()` returns `ok: false` with error mentioning "degraded" (`src/control.rs`).
+- **hmac:** `check_hmac_key_permissions_permissive_mode_in_test` -- creates key with mode 0644, verifies test-build returns `Ok` (would fail in release), confirms underlying mode check would flag it (`src/hmac.rs`).
+- **hmac:** `check_hmac_key_permissions_strict_mode_ok` -- creates key with mode 0600, verifies `check_hmac_key_permissions()` returns `Ok` (`src/hmac.rs`).
+- **update:** `validate_vigil_repo_ownership_check_logic` -- creates temp repo, verifies ownership metadata (UID non-zero when non-root, zero when root) (`src/commands/update.rs`).
 - All 266 tests pass (`cargo test --all-targets`), `cargo clippy --all-targets` clean.
 
 ### Documentation
@@ -330,95 +330,95 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 - **update:** `discover_vigil_repo()` error message now includes the *reason* each candidate was rejected (e.g., "Cargo.toml not found", "package name is 'foo', expected 'vigil-baseline'") instead of just listing the paths that were checked (`src/commands/update.rs`).
 
 ### Added
-- **update:** `smoke_test_binary()` — verifies build artifacts are functional (`--version` exits 0) before any installed binary is touched. If a corrupt artifact is detected, the update aborts early with the binary path and stderr output in the error message (`src/commands/update.rs`).
-- **update:** `install_binaries_with_rollback()` — backs up existing `/usr/local/bin/vigil` and `/usr/local/bin/vigild` to `.vigil.backup` / `.vigild.backup`, installs new binaries atomically (copy → chmod → rename), smoke-tests the installed copies, and automatically restores backups if any step fails (`src/commands/update.rs`).
-- **update:** `rollback_binaries()` — restores `.backup` files to their original paths via `sudo mv`, with per-binary success/failure reporting (`src/commands/update.rs`).
-- **update:** `verify_daemon_health()` — retries daemon health check up to 3 times with 2-second intervals (total max wait: 6 seconds) instead of a single check after a 2-second sleep. Returns `true` on first successful response, reports attempt progress (`src/commands/update.rs`).
-- **update:** post-restart rollback — if the daemon fails all 3 health checks and backup binaries exist, the update command stops the daemon, restores backup binaries, restarts the daemon with the old version, and returns an error explaining what happened. If no backups exist (first install), it warns instead (`src/commands/update.rs`).
-- **update:** version downgrade warning — when the new version string is lexicographically lower than the current version (after stripping `v` prefix), prints a `⚠ downgrade detected` warning. Does not block the update (`src/commands/update.rs`).
-- **update:** `backup_path()` helper — computes `.backup` path for a given binary destination (e.g., `/usr/local/bin/vigil` → `/usr/local/bin/.vigil.backup`) (`src/commands/update.rs`).
-- **update:** `cleanup_backups()` helper — removes `.backup` files after a fully successful update (`src/commands/update.rs`).
+- **update:** `smoke_test_binary()` -- verifies build artifacts are functional (`--version` exits 0) before any installed binary is touched. If a corrupt artifact is detected, the update aborts early with the binary path and stderr output in the error message (`src/commands/update.rs`).
+- **update:** `install_binaries_with_rollback()` -- backs up existing `/usr/local/bin/vigil` and `/usr/local/bin/vigild` to `.vigil.backup` / `.vigild.backup`, installs new binaries atomically (copy → chmod → rename), smoke-tests the installed copies, and automatically restores backups if any step fails (`src/commands/update.rs`).
+- **update:** `rollback_binaries()` -- restores `.backup` files to their original paths via `sudo mv`, with per-binary success/failure reporting (`src/commands/update.rs`).
+- **update:** `verify_daemon_health()` -- retries daemon health check up to 3 times with 2-second intervals (total max wait: 6 seconds) instead of a single check after a 2-second sleep. Returns `true` on first successful response, reports attempt progress (`src/commands/update.rs`).
+- **update:** post-restart rollback -- if the daemon fails all 3 health checks and backup binaries exist, the update command stops the daemon, restores backup binaries, restarts the daemon with the old version, and returns an error explaining what happened. If no backups exist (first install), it warns instead (`src/commands/update.rs`).
+- **update:** version downgrade warning -- when the new version string is lexicographically lower than the current version (after stripping `v` prefix), prints a `⚠ downgrade detected` warning. Does not block the update (`src/commands/update.rs`).
+- **update:** `backup_path()` helper -- computes `.backup` path for a given binary destination (e.g., `/usr/local/bin/vigil` → `/usr/local/bin/.vigil.backup`) (`src/commands/update.rs`).
+- **update:** `cleanup_backups()` helper -- removes `.backup` files after a fully successful update (`src/commands/update.rs`).
 
 ### Changed
 - **update:** `validate_vigil_repo()` now returns structured error messages: "Cargo.toml not found", "Cargo.toml parse error: {details}", or "package name is '{name}', expected 'vigil-baseline', 'vigilbaseline', or 'vigil'". Previously returned a generic "not a Vigil Baseline repository" message for all failure modes (`src/commands/update.rs`).
 - **update:** `normalize_version()` now handles empty and whitespace-only input by returning `"unknown"` instead of panicking on `.unwrap()` (`src/commands/update.rs`).
 
 ### Tests
-- **update:** `test_discover_vigil_repo_uses_sudo_user` — validates backup path generation and repo validation with SUDO_USER-style directory layout (`src/commands/update.rs`).
-- **update:** `validate_vigil_repo_error_messages` — verifies structured error messages for missing Cargo.toml, parse errors, and wrong package names (`src/commands/update.rs`).
-- **update:** `normalize_version_edge_cases` — covers empty string, whitespace-only, tab/newline, and multi-word version output (`src/commands/update.rs`).
-- **update:** `test_rollback_sequence` — validates backup path computation and verifies all new function signatures compile correctly (`src/commands/update.rs`).
+- **update:** `test_discover_vigil_repo_uses_sudo_user` -- validates backup path generation and repo validation with SUDO_USER-style directory layout (`src/commands/update.rs`).
+- **update:** `validate_vigil_repo_error_messages` -- verifies structured error messages for missing Cargo.toml, parse errors, and wrong package names (`src/commands/update.rs`).
+- **update:** `normalize_version_edge_cases` -- covers empty string, whitespace-only, tab/newline, and multi-word version output (`src/commands/update.rs`).
+- **update:** `test_rollback_sequence` -- validates backup path computation and verifies all new function signatures compile correctly (`src/commands/update.rs`).
 
 ## [0.32.2] - 2026-04-15
 
 ### Changed
 - **package:** renamed crate from `vigilbaseline` to `vigil-baseline` for crates.io publishing. Binary names (`vigil`, `vigild`) and library name (`vigil`) are unchanged (`Cargo.toml`).
-- **package:** added crates.io metadata — `repository`, `homepage`, `readme`, `keywords`, `categories` (`Cargo.toml`).
+- **package:** added crates.io metadata -- `repository`, `homepage`, `readme`, `keywords`, `categories` (`Cargo.toml`).
 - **fuzz:** renamed fuzz crate from `vigilbaseline-fuzz` to `vigil-baseline-fuzz` and updated dependency to `package = "vigil-baseline"` (`fuzz/Cargo.toml`).
 - **update:** `validate_vigil_repo()` now accepts `vigil-baseline` as a valid Cargo.toml package name alongside legacy names `vigilbaseline` and `vigil` (`src/commands/update.rs`).
-- **docs:** updated all repository URLs from `github.com/loujr/vigil` to `github.com/lousclues-labs/vigil` across 6 files — `CONTRIBUTING.md`, `TRADEMARKS.md`, `docs/DEVELOPMENT.md`, `docs/INSTALL.md`, `licenses/CONTRIBUTOR-LICENSE.md`, `licenses/DEPENDENCY-AUDIT.md`.
+- **docs:** updated all repository URLs from `github.com/loujr/vigil` to `github.com/lousclues-labs/vigil` across 6 files -- `CONTRIBUTING.md`, `TRADEMARKS.md`, `docs/DEVELOPMENT.md`, `docs/INSTALL.md`, `licenses/CONTRIBUTOR-LICENSE.md`, `licenses/DEPENDENCY-AUDIT.md`.
 
 ### Added
-- **aur:** `aur/PKGBUILD` — Arch Linux AUR package build script for `vigil-baseline`. Installs binaries, systemd units, documentation, and example config (`aur/PKGBUILD`).
-- **aur:** `aur/vigil-baseline.install` — pacman install hook with quickstart instructions, upgrade guidance, and clean service stop/disable on removal (`aur/vigil-baseline.install`).
-- **ci:** `.github/workflows/release.yml` — automated release workflow triggered by version tags. Validates Cargo.toml version matches tag, runs tests, builds release binaries, strips them, creates GitHub Release with tarball + checksum, and publishes to crates.io (`.github/workflows/release.yml`).
+- **aur:** `aur/PKGBUILD` -- Arch Linux AUR package build script for `vigil-baseline`. Installs binaries, systemd units, documentation, and example config (`aur/PKGBUILD`).
+- **aur:** `aur/vigil-baseline.install` -- pacman install hook with quickstart instructions, upgrade guidance, and clean service stop/disable on removal (`aur/vigil-baseline.install`).
+- **ci:** `.github/workflows/release.yml` -- automated release workflow triggered by version tags. Validates Cargo.toml version matches tag, runs tests, builds release binaries, strips them, creates GitHub Release with tarball + checksum, and publishes to crates.io (`.github/workflows/release.yml`).
 
 ## [Unreleased]
 
 ## [0.32.1] - 2026-04-15
 
 ### Fixed
-- **audit:** fixed "BaselineBaseline" typo in audit chain verification header — was "Vigil BaselineBaseline", now "Vigil Baseline" (`src/commands/audit.rs`).
+- **audit:** fixed "BaselineBaseline" typo in audit chain verification header -- was "Vigil BaselineBaseline", now "Vigil Baseline" (`src/commands/audit.rs`).
 - **lib:** config HMAC storage failure in `Daemon::from_config()` now logs at error level with "tamper detection weakened" message instead of silently discarding via `let _ =`. The coordinator path was fixed in v0.32.0, but the startup path was missed (`src/lib.rs`).
 - **scan_scheduler:** on-demand scan response delivery failure now logs at warn level ("requester disconnected") instead of silently discarding via `let _ =` (`src/scan_scheduler.rs`).
 - **worker:** `drain_debounced()` WAL append failure log now includes the path of the affected file for diagnostic context, matching the behavior of `dispatch_detection()` (`src/worker.rs`).
 
 ### Changed
-- **lib:** `config_search_paths_for_hash()` — replaced 28-line reimplementation of config path resolution with 3-line delegation to `config::config_search_paths(None)`, eliminating duplicated `VIGIL_CONFIG` env handling and production ownership validation logic (`src/lib.rs`).
-- **coordinator:** `config_file_content()` — replaced 23-line reimplementation with 3-line delegation to `config::config_search_paths(None)`, eliminating the same duplication (`src/coordinator.rs`).
-- **coordinator:** `check_mount_evasion()` — `expand_user_paths()` now called once before the mount iteration loop instead of once per mount × per watch group. On systems with many mounts and watch groups, this eliminates redundant path expansion (`src/coordinator.rs`).
-- **scanner:** `CaptureOpts` in `build_initial_baseline()` hoisted above the file walk loop — the struct has identical values for every file (force_hash=true, no baseline mtime/hash), so it's constructed once instead of per-file (`src/scanner.rs`).
-- **lib:** `Daemon` struct fields tightened from `pub` to `pub(crate)` — only `shutdown` remains `pub` (used by integration tests). Internal fields (`config`, `baseline_conn`, `metrics`, `state`, `reload_flag`, `watch_index`, `*_identity`, `startup_hmac_key`, `maintenance_*`) are no longer part of the public API surface (`src/lib.rs`).
-- **lib:** removed dead `config_hash: Option<String>` field from `Daemon` struct — was set at construction but never read. The coordinator independently computes its own config hash for reload detection (`src/lib.rs`).
+- **lib:** `config_search_paths_for_hash()` -- replaced 28-line reimplementation of config path resolution with 3-line delegation to `config::config_search_paths(None)`, eliminating duplicated `VIGIL_CONFIG` env handling and production ownership validation logic (`src/lib.rs`).
+- **coordinator:** `config_file_content()` -- replaced 23-line reimplementation with 3-line delegation to `config::config_search_paths(None)`, eliminating the same duplication (`src/coordinator.rs`).
+- **coordinator:** `check_mount_evasion()` -- `expand_user_paths()` now called once before the mount iteration loop instead of once per mount × per watch group. On systems with many mounts and watch groups, this eliminates redundant path expansion (`src/coordinator.rs`).
+- **scanner:** `CaptureOpts` in `build_initial_baseline()` hoisted above the file walk loop -- the struct has identical values for every file (force_hash=true, no baseline mtime/hash), so it's constructed once instead of per-file (`src/scanner.rs`).
+- **lib:** `Daemon` struct fields tightened from `pub` to `pub(crate)` -- only `shutdown` remains `pub` (used by integration tests). Internal fields (`config`, `baseline_conn`, `metrics`, `state`, `reload_flag`, `watch_index`, `*_identity`, `startup_hmac_key`, `maintenance_*`) are no longer part of the public API surface (`src/lib.rs`).
+- **lib:** removed dead `config_hash: Option<String>` field from `Daemon` struct -- was set at construction but never read. The coordinator independently computes its own config hash for reload detection (`src/lib.rs`).
 
 ### Removed
-- **scanner:** `refresh_baseline()` one-line alias removed — callers (`commands/baseline.rs`, `control.rs`) now call `build_initial_baseline()` directly (`src/scanner.rs`).
+- **scanner:** `refresh_baseline()` one-line alias removed -- callers (`commands/baseline.rs`, `control.rs`) now call `build_initial_baseline()` directly (`src/scanner.rs`).
 
 ## [0.32.0] - 2026-04-15
 
 ### Release Summary
-- Comprehensive code quality audit — the single biggest maintainability change since the project began. The 2,810-line `main.rs` monolith — which contained every CLI command handler — has been decomposed into a `src/commands/` module with 15 focused submodules (one per command). A new `src/detection.rs` module extracts the WAL-or-alert dispatch pattern that was copy-pasted 5 times across `worker.rs` and `scan_scheduler.rs`. Silent error swallowing on security-critical paths (WAL append for panic records, config HMAC storage) now logs at error level. The hardcoded `/etc/vigil/vigil.toml` in worker self-protection is replaced with dynamic config path lookup. Duplicate buffered-reader code in `hash.rs` is extracted into a shared helper. Hot-path allocations are reduced: `Cow<str>` replaces `to_string_lossy().to_string()` in the worker event loop, `as_encoded_bytes()` replaces `to_string_lossy().as_bytes()` in the Bloom filter. Dead code removed, API surface tightened, comments cleaned. README rewritten with sharper voice and structural clarity. Zero warnings from `cargo clippy --all-targets -- -D warnings`. All 250+ tests pass.
+- Comprehensive code quality audit -- the single biggest maintainability change since the project began. The 2,810-line `main.rs` monolith -- which contained every CLI command handler -- has been decomposed into a `src/commands/` module with 15 focused submodules (one per command). A new `src/detection.rs` module extracts the WAL-or-alert dispatch pattern that was copy-pasted 5 times across `worker.rs` and `scan_scheduler.rs`. Silent error swallowing on security-critical paths (WAL append for panic records, config HMAC storage) now logs at error level. The hardcoded `/etc/vigil/vigil.toml` in worker self-protection is replaced with dynamic config path lookup. Duplicate buffered-reader code in `hash.rs` is extracted into a shared helper. Hot-path allocations are reduced: `Cow<str>` replaces `to_string_lossy().to_string()` in the worker event loop, `as_encoded_bytes()` replaces `to_string_lossy().as_bytes()` in the Bloom filter. Dead code removed, API surface tightened, comments cleaned. README rewritten with sharper voice and structural clarity. Zero warnings from `cargo clippy --all-targets -- -D warnings`. All 250+ tests pass.
 
 ### Added
-- **detection:** new `src/detection.rs` module with `dispatch_detection()` helper — shared WAL-or-alert dispatch logic extracted from 5 duplicate sites across `worker.rs` and `scan_scheduler.rs`. Tries WAL append first, falls back to alert channel on failure, logs at error level if the alert channel is disconnected (detection would be lost). Returns `bool` indicating channel disconnect for caller shutdown logic (`src/detection.rs`).
-- **commands:** new `src/commands/` module directory with 15 submodules — `mod.rs` (re-exports), `common.rs` (shared helpers: `print_header`, `format_count`, `truncate_hash`, `print_change_detail`, `pipe_to_pager`, `parse_time_filter`, `parse_time_filter_strict`, `resolve_config_path`, `update_config_toml`, `format_audit_timestamp`, `query_control_socket`), `init.rs` (`cmd_init`), `check.rs` (`cmd_check`, `cmd_check_live`, `CheckOpts`), `watch.rs` (`cmd_watch`), `diff.rs` (`cmd_diff`, `render_diff_history_panel`, `summarize_audit_changes`), `status.rs` (`cmd_status`), `doctor.rs` (`cmd_doctor`, `print_check`), `audit.rs` (`cmd_audit`, `entries_to_json`), `config.rs` (`cmd_config`), `setup.rs` (`cmd_setup`, `cmd_setup_hmac`, `cmd_setup_socket`), `log.rs` (`cmd_log`), `maintenance.rs` (`cmd_maintenance`), `baseline.rs` (`cmd_baseline`, `cmd_baseline_refresh`), `update.rs` (`cmd_update`, `validate_vigil_repo`, `discover_vigil_repo`, `atomic_install`, and related helpers) (`src/commands/`).
-- **metrics:** `Metrics::record_scan(changes_found, duration_ms, total_checked)` method — consolidates the 6-line scan metric update pattern that was duplicated between on-demand and scheduled scan paths in `scan_scheduler.rs` (`src/metrics.rs`).
-- **config:** `config_search_paths()` made `pub` — exposes the config file resolution logic for use in worker self-protection checks, replacing the hardcoded `/etc/vigil/vigil.toml` path (`src/config/mod.rs`).
-- **hash:** `hash_buffered(file, hasher)` helper — extracted from the identical mmap-fallback and non-mmap buffered reader paths in `blake3_hash_fd()`, eliminating verbatim code duplication (`src/hash.rs`).
+- **detection:** new `src/detection.rs` module with `dispatch_detection()` helper -- shared WAL-or-alert dispatch logic extracted from 5 duplicate sites across `worker.rs` and `scan_scheduler.rs`. Tries WAL append first, falls back to alert channel on failure, logs at error level if the alert channel is disconnected (detection would be lost). Returns `bool` indicating channel disconnect for caller shutdown logic (`src/detection.rs`).
+- **commands:** new `src/commands/` module directory with 15 submodules -- `mod.rs` (re-exports), `common.rs` (shared helpers: `print_header`, `format_count`, `truncate_hash`, `print_change_detail`, `pipe_to_pager`, `parse_time_filter`, `parse_time_filter_strict`, `resolve_config_path`, `update_config_toml`, `format_audit_timestamp`, `query_control_socket`), `init.rs` (`cmd_init`), `check.rs` (`cmd_check`, `cmd_check_live`, `CheckOpts`), `watch.rs` (`cmd_watch`), `diff.rs` (`cmd_diff`, `render_diff_history_panel`, `summarize_audit_changes`), `status.rs` (`cmd_status`), `doctor.rs` (`cmd_doctor`, `print_check`), `audit.rs` (`cmd_audit`, `entries_to_json`), `config.rs` (`cmd_config`), `setup.rs` (`cmd_setup`, `cmd_setup_hmac`, `cmd_setup_socket`), `log.rs` (`cmd_log`), `maintenance.rs` (`cmd_maintenance`), `baseline.rs` (`cmd_baseline`, `cmd_baseline_refresh`), `update.rs` (`cmd_update`, `validate_vigil_repo`, `discover_vigil_repo`, `atomic_install`, and related helpers) (`src/commands/`).
+- **metrics:** `Metrics::record_scan(changes_found, duration_ms, total_checked)` method -- consolidates the 6-line scan metric update pattern that was duplicated between on-demand and scheduled scan paths in `scan_scheduler.rs` (`src/metrics.rs`).
+- **config:** `config_search_paths()` made `pub` -- exposes the config file resolution logic for use in worker self-protection checks, replacing the hardcoded `/etc/vigil/vigil.toml` path (`src/config/mod.rs`).
+- **hash:** `hash_buffered(file, hasher)` helper -- extracted from the identical mmap-fallback and non-mmap buffered reader paths in `blake3_hash_fd()`, eliminating verbatim code duplication (`src/hash.rs`).
 
 ### Changed
-- **main:** reduced from 2,810 lines to ~120 lines — now contains only `main()`, `init_tracing()`, and the `run()` match dispatch calling into `commands::*`. All command implementations, helper functions, formatting utilities, and control socket logic moved to `src/commands/` (`src/main.rs`).
+- **main:** reduced from 2,810 lines to ~120 lines -- now contains only `main()`, `init_tracing()`, and the `run()` match dispatch calling into `commands::*`. All command implementations, helper functions, formatting utilities, and control socket logic moved to `src/commands/` (`src/main.rs`).
 - **worker:** `evaluate()` now uses `Cow<str>` for LRU cache lookups instead of `to_string_lossy().to_string()`, avoiding a heap allocation on every filesystem event. Cache insertion uses `into_owned()` only when a new entry must be stored. `drain_debounced()` similarly uses `Cow<str>` for cache eviction (`src/worker.rs`).
-- **worker:** `process_event_inner()` — removed unused `_conn: &Connection` parameter. The function never used the database connection; callers updated (`src/worker.rs`).
+- **worker:** `process_event_inner()` -- removed unused `_conn: &Connection` parameter. The function never used the database connection; callers updated (`src/worker.rs`).
 - **worker:** self-protection config path check now uses `crate::config::config_search_paths(None)` to check all standard config locations (`/etc/vigil/vigil.toml`, `~/.config/vigil/vigil.toml`, `$VIGIL_CONFIG`) instead of the hardcoded `/etc/vigil/vigil.toml` (`src/worker.rs`).
 - **worker:** WAL append failure for panic detection records now logs at error level with path context instead of silently discarding via `let _ =` (`src/worker.rs`).
 - **worker:** realtime event dispatch in `spawn_workers()` now uses `detection::dispatch_detection()` instead of inline WAL-or-alert logic (~40 lines replaced by single function call) (`src/worker.rs`).
 - **scan_scheduler:** both on-demand and scheduled scan dispatch loops now use `detection::dispatch_detection()` instead of inline WAL-or-alert logic. Scan metric recording now uses `Metrics::record_scan()` instead of 3 separate atomic operations (`src/scan_scheduler.rs`).
 - **coordinator:** config HMAC storage failure now logs at error level with "tamper detection weakened" message instead of silently discarding via `let _ =` (`src/coordinator.rs`).
-- **coordinator:** `atomic_write()` visibility tightened from `pub` to `pub(crate)` — only used within the crate (`src/coordinator.rs`).
-- **coordinator:** `is_notify_socket_safe()` visibility tightened from `pub` to `pub(crate)` — only used within the crate (`src/coordinator.rs`).
-- **coordinator:** `atomic_write()` doc comment condensed — removed first line that restated the function name, kept the useful note about `rename()` atomicity on Linux (`src/coordinator.rs`).
+- **coordinator:** `atomic_write()` visibility tightened from `pub` to `pub(crate)` -- only used within the crate (`src/coordinator.rs`).
+- **coordinator:** `is_notify_socket_safe()` visibility tightened from `pub` to `pub(crate)` -- only used within the crate (`src/coordinator.rs`).
+- **coordinator:** `atomic_write()` doc comment condensed -- removed first line that restated the function name, kept the useful note about `rename()` atomicity on Linux (`src/coordinator.rs`).
 - **bloom:** `might_contain_prefix_of()` and `from_watch_paths()` now use `as_os_str().as_encoded_bytes()` (stable since Rust 1.74) instead of `to_string_lossy().as_bytes()`, avoiding UTF-8 conversion overhead and handling non-UTF-8 paths correctly (`src/bloom.rs`).
 - **scanner:** `run_scan_with_progress()` now hoists `force_hash`, `max_file_size`, and `mmap_threshold` before the scan loop instead of re-reading from config on every file. `build_initial_baseline()` similarly hoists the common fields (`src/scanner.rs`).
-- **metrics:** removed redundant "Operational metrics for the Vigil daemon" doc comment — the struct name `Metrics` already communicates this. Kept the useful second line about relaxed atomic ordering (`src/metrics.rs`).
-- **bloom:** removed opaque "(Item 21)" reference from doc comment — replaced with no reference since the original design document is not linked (`src/bloom.rs`).
-- **README:** rewritten with sharper voice and structural clarity — "The Baseline" section replaces "The Philosophy", "What You Get" reorganized into outcome-oriented sections (Establish/Watch/Detect/Prove/Stay informed), Quick Start commands updated with descriptive comments, "How It Gets Built" condensed, added baseline self-protection principle (`README.md`).
+- **metrics:** removed redundant "Operational metrics for the Vigil daemon" doc comment -- the struct name `Metrics` already communicates this. Kept the useful second line about relaxed atomic ordering (`src/metrics.rs`).
+- **bloom:** removed opaque "(Item 21)" reference from doc comment -- replaced with no reference since the original design document is not linked (`src/bloom.rs`).
+- **README:** rewritten with sharper voice and structural clarity -- "The Baseline" section replaces "The Philosophy", "What You Get" reorganized into outcome-oriented sections (Establish/Watch/Detect/Prove/Stay informed), Quick Start commands updated with descriptive comments, "How It Gets Built" condensed, added baseline self-protection principle (`README.md`).
 
 ### Removed
-- **watch_index:** `WatchGroupIndex::update_from_config()` — dead code. The coordinator creates a new index via `WatchGroupIndex::from_config()` and swaps the `ArcSwap`; in-place mutation is impossible through the `ArcSwap` indirection (`src/watch_index.rs`).
-- **scanner:** `collect_all_paths()` — dead code behind `#[cfg(feature = "parallel")]` with no callers (`src/scanner.rs`).
-- **worker:** `UpdateReason::AutoRebaseline` variant — never constructed. `PackageUpdate` is the only variant used (`src/worker.rs`).
-- **worker:** doc comment on `dup_to_file()` — restated the function name and return type. The `// SAFETY:` comments inside the function body are retained (`src/worker.rs`).
+- **watch_index:** `WatchGroupIndex::update_from_config()` -- dead code. The coordinator creates a new index via `WatchGroupIndex::from_config()` and swaps the `ArcSwap`; in-place mutation is impossible through the `ArcSwap` indirection (`src/watch_index.rs`).
+- **scanner:** `collect_all_paths()` -- dead code behind `#[cfg(feature = "parallel")]` with no callers (`src/scanner.rs`).
+- **worker:** `UpdateReason::AutoRebaseline` variant -- never constructed. `PackageUpdate` is the only variant used (`src/worker.rs`).
+- **worker:** doc comment on `dup_to_file()` -- restated the function name and return type. The `// SAFETY:` comments inside the function body are retained (`src/worker.rs`).
 
 ### Tests
 - All 250+ tests pass (`cargo test --all-targets`), `cargo clippy --all-targets -- -D warnings` clean, `cd fuzz && cargo check` clean.
@@ -427,48 +427,48 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 ## [0.31.0] - 2026-04-12
 
 ### Release Summary
-- Reimagined display system — a new `src/display/` module (~1,960 lines across 6 files) that replaces the ad-hoc inline formatting in `main.rs` with a consolidated rendering layer. `vigil check` now produces layered, severity-triaged output with a visual histogram, progressive disclosure (≤5 changes: full detail; ≤20: expanded investigate/attention; >20: grouped benign), structural "why" explanations (e.g. "setuid bit added — investigate", "SSH authorized keys changed"), package-aware grouping for LOW-severity changes, and self-documenting exit codes. `vigil init` gains a baseline profile panel (executables, setuid, config files, package-owned percentages) and guided next-step commands. `vigil check --since` is now functional — it filters current scan results against audit DB timestamps to show only changes with evidence in the specified time window, while keeping paths with no audit history visible (fail loud, Principle X). `vigil diff` now includes a recent per-path audit history panel showing the last 8 audit entries for the inspected file. Terminal rendering respects `NO_COLOR`, detects TTY/width/height via ioctl with environment fallback, and auto-pages through `$PAGER` when output exceeds terminal height. Accept flow gains `--dry-run`, `--accept-severity`, and `--accept-group` filters with preview and fingerprint receipts. JSON output maintains backward compatibility with the original `ScanResult` shape.
+- Reimagined display system -- a new `src/display/` module (~1,960 lines across 6 files) that replaces the ad-hoc inline formatting in `main.rs` with a consolidated rendering layer. `vigil check` now produces layered, severity-triaged output with a visual histogram, progressive disclosure (≤5 changes: full detail; ≤20: expanded investigate/attention; >20: grouped benign), structural "why" explanations (e.g. "setuid bit added -- investigate", "SSH authorized keys changed"), package-aware grouping for LOW-severity changes, and self-documenting exit codes. `vigil init` gains a baseline profile panel (executables, setuid, config files, package-owned percentages) and guided next-step commands. `vigil check --since` is now functional -- it filters current scan results against audit DB timestamps to show only changes with evidence in the specified time window, while keeping paths with no audit history visible (fail loud, Principle X). `vigil diff` now includes a recent per-path audit history panel showing the last 8 audit entries for the inspected file. Terminal rendering respects `NO_COLOR`, detects TTY/width/height via ioctl with environment fallback, and auto-pages through `$PAGER` when output exceeds terminal height. Accept flow gains `--dry-run`, `--accept-severity`, and `--accept-group` filters with preview and fingerprint receipts. JSON output maintains backward compatibility with the original `ScanResult` shape.
 
 ### Added
-- **display:** new `src/display/` module with 6 files — `mod.rs` (public API surface, `CheckReport`/`InitReport`/`BaselineProfile` structs, `render_check`/`render_init` dispatch), `check.rs` (report construction, human/brief/JSON renderers, init renderers, severity triage, package grouping), `format.rs` (ANSI color system with `Style`/`Styled`, `format_count`/`format_size`/`format_age`/`format_fingerprint`/`truncate_hash`/`truncate_path`, exit code descriptions), `explain.rs` (structural change explanations mapping changes to human-readable "why" lines), `term.rs` (`TermInfo` terminal capability detection), `widgets.rs` (severity histogram, change comparison tables) (`src/display/`).
-- **display:** `CheckReport` struct — enriched report built from `ScanResult` + baseline metadata via `CheckReport::from_scan(scan, CheckReportMeta)`. Contains: baseline fingerprint, HMAC status, scan mode, delta composition (modified/created/deleted/unchanged counts), severity histogram (`BTreeMap<Severity, u64>`), triage grouping (investigate/attention/benign), package grouping, temporal context (previous check age/outcome), and DB path (`src/display/mod.rs`).
-- **display:** `CheckReportMeta` struct — builder metadata passed to `CheckReport::from_scan()` containing mode, fingerprint, established timestamp, HMAC status, baseline count, previous check state, and DB path (`src/display/mod.rs`).
-- **display:** `InitReport` struct — enriched report for `vigil init` with baseline fingerprint, HMAC status, DB path, and optional `BaselineProfile` (`src/display/mod.rs`).
-- **display:** `BaselineProfile` struct — classification of baselined files by property: total, executables, setuid, setgid, config files, keys/certs, package-owned, unpackaged. Computed via SQL aggregation in `baseline_ops::compute_baseline_profile()` (`src/display/mod.rs`, `src/db/baseline_ops.rs`).
-- **display:** `explain::explain(change, path)` — pure function mapping structural changes to human-readable explanations. Covers: setuid/setgid bit changes, world-writable permissions, capability changes, root ownership changes on system binaries, content changes to high-value files (`/etc/shadow`, `/etc/passwd`, `/etc/sudoers`, SSH keys, cron, systemd units), file deletion/creation in system paths, and SELinux/AppArmor security context changes. No heuristics — every explanation maps to a binary structural fact (Principle III) (`src/display/explain.rs`).
-- **display:** `TermInfo::detect()` — terminal capability detection: TTY via `IsTerminal`, `NO_COLOR` environment variable, width/height from `$COLUMNS`/`$LINES` with `ioctl(TIOCGWINSZ)` fallback, defaults to 80×24 on failure (Principle X: fail open) (`src/display/term.rs`).
-- **display:** severity histogram widget — horizontal bar chart in Unicode box-drawing frame, adapts bar width to terminal width, colored by severity (`src/display/widgets.rs`).
-- **display:** `render_check()` dispatch — single function routing to human/brief/JSON renderers based on `OutputFormat`. No trait indirection (`src/display/mod.rs`).
-- **display:** `render_init()` dispatch — routes to human/brief/JSON init renderers (`src/display/mod.rs`).
-- **display:** human check renderer — layered output with baseline identity line, scan summary, HMAC status, coverage stats, temporal context (previous check age with stale warning >24h), severity histogram, progressive disclosure by change count, "why" explanation lines, scan issues section with guidance, next-step commands, and self-documenting exit code line (`src/display/check.rs`).
-- **display:** brief check renderer — single-line output: `● ok (N files, Xs)` when clean, `✗ N critical · M high (N files, Xs)` when changes detected (`src/display/check.rs`).
-- **display:** JSON check renderer — backward-compatible with original `ScanResult` shape: `total_checked`, `changes_found`, `errors`, `warnings`, `changes`, `duration_ms` (`src/display/check.rs`).
-- **display:** human init renderer — baseline fingerprint, HMAC status, per-group file counts, total with throughput, DB size, baseline profile panel (when available), next-step commands including systemd enable hint and HMAC setup suggestion (`src/display/check.rs`).
-- **display:** package grouping for LOW-severity changes — groups by package name when `package_update` flag is set or when ≥3 files share the same package. Grouped changes show collapsed path prefix summary. Ungrouped LOW changes render individually (`src/display/check.rs`).
-- **check:** `--since <TIME>` flag is now functional — parses time expressions (`24h`, `7d`, `today`, `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS`, unix timestamp), opens audit DB, queries per-path audit window state via `get_path_window_state()`, keeps changes with audit evidence in the time window, keeps changes with no audit history (fail loud — Principle X), drops changes whose last audit evidence predates the window. Emits informational scan warnings documenting what was filtered and why. Rejects `--since` with `--now` (requires local audit DB access) (`src/main.rs`, `src/cli.rs`).
-- **check:** `--dry-run` flag (requires `--accept`) — previews what would be accepted without mutating the baseline. Shows accept preview with filter summary and condensed change list, then exits with "Baseline was not modified" (`src/cli.rs`, `src/main.rs`).
-- **check:** `--accept-severity <LEVEL>` flag (requires `--accept`) — filters accept candidates by severity level (`src/cli.rs`, `src/main.rs`).
-- **check:** `--accept-group <NAME>` flag (requires `--accept`) — filters accept candidates by watch group name (`src/cli.rs`, `src/main.rs`).
-- **check:** accept flow preview — before mutating baseline, shows condensed preview of selected changes (up to 10 lines with "... and N more"), active filter summary, and baseline fingerprint receipt (old → new) after acceptance (`src/main.rs`).
-- **check:** pager support — pipes output through `$PAGER` (defaulting to `less -R`) when output exceeds terminal height. Disabled for brief mode, JSON output, and accept flow (operator must see receipts directly). Falls back to direct print on empty/invalid pager or spawn failure (`src/main.rs`).
-- **check:** exit code semantics — 0 = no changes, 1 = low/medium severity, 2 = high severity, 3 = critical. Self-documenting exit code line in TTY output when code ≠ 0 (`src/display/check.rs`, `src/display/format.rs`).
-- **check:** temporal context — displays previous check age and outcome (clean / N changes) in check header. Shows "⚠ stale" warning when previous check is >24h old (`src/display/check.rs`).
-- **check:** scan issues section — renders scan errors/warnings with severity markers, per-path detail, and actionable guidance (permission denied → run as root, file too large → raise max_file_size, transient disappearance → normal on active systems). Coverage reduction warning when errors present (`src/display/check.rs`).
-- **diff:** audit history panel — `vigil diff` now opens `audit.db` and renders a "Recent audit history" section showing the last 8 audit entries for the inspected path. Each entry shows timestamp, severity, change type summary, and maintenance/suppression flags. Falls back gracefully if audit DB cannot be opened (`src/main.rs`).
-- **db:** `audit_ops::get_recent_for_path(conn, path, limit)` — exact-match path query returning most recent audit entries for a single file. Uses `WHERE path = ?1` (not LIKE) for precision (`src/db/audit_ops.rs`).
-- **db:** `audit_ops::AuditPathWindowState` struct and `get_path_window_state(conn, path, since, until)` — returns the latest audit timestamp for a path overall and within a specified time window. Used by `--since` filtering to determine whether a change has audit evidence in the requested window (`src/db/audit_ops.rs`).
-- **db:** `baseline_ops::get_baseline_fingerprint(conn)` — reads `baseline_hmac` from `config_state` and formats as `xxxx·xxxx·xxxx·xxxx` via `display::format_fingerprint()` (`src/db/baseline_ops.rs`).
-- **db:** `baseline_ops::get_baseline_established(conn)` — reads the `updated_at` timestamp for the `baseline_hmac` config_state key (`src/db/baseline_ops.rs`).
-- **db:** `baseline_ops::compute_baseline_profile(conn)` — SQL aggregation query computing file classification counts: executables (mode & 0o111), setuid (mode & 0o4000), setgid (mode & 0o2000), config files (/etc/%), keys/certs (.ssh/% or .gnupg/%), package-owned vs unpackaged (`src/db/baseline_ops.rs`).
+- **display:** new `src/display/` module with 6 files -- `mod.rs` (public API surface, `CheckReport`/`InitReport`/`BaselineProfile` structs, `render_check`/`render_init` dispatch), `check.rs` (report construction, human/brief/JSON renderers, init renderers, severity triage, package grouping), `format.rs` (ANSI color system with `Style`/`Styled`, `format_count`/`format_size`/`format_age`/`format_fingerprint`/`truncate_hash`/`truncate_path`, exit code descriptions), `explain.rs` (structural change explanations mapping changes to human-readable "why" lines), `term.rs` (`TermInfo` terminal capability detection), `widgets.rs` (severity histogram, change comparison tables) (`src/display/`).
+- **display:** `CheckReport` struct -- enriched report built from `ScanResult` + baseline metadata via `CheckReport::from_scan(scan, CheckReportMeta)`. Contains: baseline fingerprint, HMAC status, scan mode, delta composition (modified/created/deleted/unchanged counts), severity histogram (`BTreeMap<Severity, u64>`), triage grouping (investigate/attention/benign), package grouping, temporal context (previous check age/outcome), and DB path (`src/display/mod.rs`).
+- **display:** `CheckReportMeta` struct -- builder metadata passed to `CheckReport::from_scan()` containing mode, fingerprint, established timestamp, HMAC status, baseline count, previous check state, and DB path (`src/display/mod.rs`).
+- **display:** `InitReport` struct -- enriched report for `vigil init` with baseline fingerprint, HMAC status, DB path, and optional `BaselineProfile` (`src/display/mod.rs`).
+- **display:** `BaselineProfile` struct -- classification of baselined files by property: total, executables, setuid, setgid, config files, keys/certs, package-owned, unpackaged. Computed via SQL aggregation in `baseline_ops::compute_baseline_profile()` (`src/display/mod.rs`, `src/db/baseline_ops.rs`).
+- **display:** `explain::explain(change, path)` -- pure function mapping structural changes to human-readable explanations. Covers: setuid/setgid bit changes, world-writable permissions, capability changes, root ownership changes on system binaries, content changes to high-value files (`/etc/shadow`, `/etc/passwd`, `/etc/sudoers`, SSH keys, cron, systemd units), file deletion/creation in system paths, and SELinux/AppArmor security context changes. No heuristics -- every explanation maps to a binary structural fact (Principle III) (`src/display/explain.rs`).
+- **display:** `TermInfo::detect()` -- terminal capability detection: TTY via `IsTerminal`, `NO_COLOR` environment variable, width/height from `$COLUMNS`/`$LINES` with `ioctl(TIOCGWINSZ)` fallback, defaults to 80×24 on failure (Principle X: fail open) (`src/display/term.rs`).
+- **display:** severity histogram widget -- horizontal bar chart in Unicode box-drawing frame, adapts bar width to terminal width, colored by severity (`src/display/widgets.rs`).
+- **display:** `render_check()` dispatch -- single function routing to human/brief/JSON renderers based on `OutputFormat`. No trait indirection (`src/display/mod.rs`).
+- **display:** `render_init()` dispatch -- routes to human/brief/JSON init renderers (`src/display/mod.rs`).
+- **display:** human check renderer -- layered output with baseline identity line, scan summary, HMAC status, coverage stats, temporal context (previous check age with stale warning >24h), severity histogram, progressive disclosure by change count, "why" explanation lines, scan issues section with guidance, next-step commands, and self-documenting exit code line (`src/display/check.rs`).
+- **display:** brief check renderer -- single-line output: `● ok (N files, Xs)` when clean, `✗ N critical · M high (N files, Xs)` when changes detected (`src/display/check.rs`).
+- **display:** JSON check renderer -- backward-compatible with original `ScanResult` shape: `total_checked`, `changes_found`, `errors`, `warnings`, `changes`, `duration_ms` (`src/display/check.rs`).
+- **display:** human init renderer -- baseline fingerprint, HMAC status, per-group file counts, total with throughput, DB size, baseline profile panel (when available), next-step commands including systemd enable hint and HMAC setup suggestion (`src/display/check.rs`).
+- **display:** package grouping for LOW-severity changes -- groups by package name when `package_update` flag is set or when ≥3 files share the same package. Grouped changes show collapsed path prefix summary. Ungrouped LOW changes render individually (`src/display/check.rs`).
+- **check:** `--since <TIME>` flag is now functional -- parses time expressions (`24h`, `7d`, `today`, `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS`, unix timestamp), opens audit DB, queries per-path audit window state via `get_path_window_state()`, keeps changes with audit evidence in the time window, keeps changes with no audit history (fail loud -- Principle X), drops changes whose last audit evidence predates the window. Emits informational scan warnings documenting what was filtered and why. Rejects `--since` with `--now` (requires local audit DB access) (`src/main.rs`, `src/cli.rs`).
+- **check:** `--dry-run` flag (requires `--accept`) -- previews what would be accepted without mutating the baseline. Shows accept preview with filter summary and condensed change list, then exits with "Baseline was not modified" (`src/cli.rs`, `src/main.rs`).
+- **check:** `--accept-severity <LEVEL>` flag (requires `--accept`) -- filters accept candidates by severity level (`src/cli.rs`, `src/main.rs`).
+- **check:** `--accept-group <NAME>` flag (requires `--accept`) -- filters accept candidates by watch group name (`src/cli.rs`, `src/main.rs`).
+- **check:** accept flow preview -- before mutating baseline, shows condensed preview of selected changes (up to 10 lines with "... and N more"), active filter summary, and baseline fingerprint receipt (old → new) after acceptance (`src/main.rs`).
+- **check:** pager support -- pipes output through `$PAGER` (defaulting to `less -R`) when output exceeds terminal height. Disabled for brief mode, JSON output, and accept flow (operator must see receipts directly). Falls back to direct print on empty/invalid pager or spawn failure (`src/main.rs`).
+- **check:** exit code semantics -- 0 = no changes, 1 = low/medium severity, 2 = high severity, 3 = critical. Self-documenting exit code line in TTY output when code ≠ 0 (`src/display/check.rs`, `src/display/format.rs`).
+- **check:** temporal context -- displays previous check age and outcome (clean / N changes) in check header. Shows "⚠ stale" warning when previous check is >24h old (`src/display/check.rs`).
+- **check:** scan issues section -- renders scan errors/warnings with severity markers, per-path detail, and actionable guidance (permission denied → run as root, file too large → raise max_file_size, transient disappearance → normal on active systems). Coverage reduction warning when errors present (`src/display/check.rs`).
+- **diff:** audit history panel -- `vigil diff` now opens `audit.db` and renders a "Recent audit history" section showing the last 8 audit entries for the inspected path. Each entry shows timestamp, severity, change type summary, and maintenance/suppression flags. Falls back gracefully if audit DB cannot be opened (`src/main.rs`).
+- **db:** `audit_ops::get_recent_for_path(conn, path, limit)` -- exact-match path query returning most recent audit entries for a single file. Uses `WHERE path = ?1` (not LIKE) for precision (`src/db/audit_ops.rs`).
+- **db:** `audit_ops::AuditPathWindowState` struct and `get_path_window_state(conn, path, since, until)` -- returns the latest audit timestamp for a path overall and within a specified time window. Used by `--since` filtering to determine whether a change has audit evidence in the requested window (`src/db/audit_ops.rs`).
+- **db:** `baseline_ops::get_baseline_fingerprint(conn)` -- reads `baseline_hmac` from `config_state` and formats as `xxxx·xxxx·xxxx·xxxx` via `display::format_fingerprint()` (`src/db/baseline_ops.rs`).
+- **db:** `baseline_ops::get_baseline_established(conn)` -- reads the `updated_at` timestamp for the `baseline_hmac` config_state key (`src/db/baseline_ops.rs`).
+- **db:** `baseline_ops::compute_baseline_profile(conn)` -- SQL aggregation query computing file classification counts: executables (mode & 0o111), setuid (mode & 0o4000), setgid (mode & 0o2000), config files (/etc/%), keys/certs (.ssh/% or .gnupg/%), package-owned vs unpackaged (`src/db/baseline_ops.rs`).
 - **types:** `OutputFormat::Brief` variant added for single-line summary output (`src/types/config_types.rs`).
 
 ### Changed
-- **main:** `cmd_check()` rewritten — now builds `CheckReport::from_scan()` with `CheckReportMeta`, uses `display::render_check()` for output, supports pager, handles `--since` filtering against audit DB, handles `--dry-run`/`--accept-severity`/`--accept-group` in accept flow, persists `last_check_at`/`last_check_changes` in config_state for temporal context, returns exit code based on highest severity (`src/main.rs`).
-- **main:** `cmd_init()` rewritten — now accepts `format: OutputFormat`, builds `display::InitReport` with baseline fingerprint, HMAC status, and baseline profile, uses `display::render_init()` for output (`src/main.rs`).
-- **main:** `cmd_diff()` extended — opens audit DB alongside baseline DB, renders per-path audit history panel after baseline comparison (`src/main.rs`).
-- **main:** `parse_time_filter()` hardened — now trims whitespace, normalizes case, accepts `all` case-insensitively. New `parse_time_filter_strict()` wrapper provides error messages with flag name context for CLI validation (`src/main.rs`).
-- **main:** formatting helpers deduplicated — `format_count()`, `format_size()`, `truncate_hash()` in `main.rs` now delegate to `display::fmt_count()`, `display::fmt_size()`, `display::truncate_hash()` (`src/main.rs`).
-- **doctor:** `format_count()` and `format_size()` deduplicated — now delegate to `crate::display::fmt_count()` and `crate::display::fmt_size()` (`src/doctor.rs`).
+- **main:** `cmd_check()` rewritten -- now builds `CheckReport::from_scan()` with `CheckReportMeta`, uses `display::render_check()` for output, supports pager, handles `--since` filtering against audit DB, handles `--dry-run`/`--accept-severity`/`--accept-group` in accept flow, persists `last_check_at`/`last_check_changes` in config_state for temporal context, returns exit code based on highest severity (`src/main.rs`).
+- **main:** `cmd_init()` rewritten -- now accepts `format: OutputFormat`, builds `display::InitReport` with baseline fingerprint, HMAC status, and baseline profile, uses `display::render_init()` for output (`src/main.rs`).
+- **main:** `cmd_diff()` extended -- opens audit DB alongside baseline DB, renders per-path audit history panel after baseline comparison (`src/main.rs`).
+- **main:** `parse_time_filter()` hardened -- now trims whitespace, normalizes case, accepts `all` case-insensitively. New `parse_time_filter_strict()` wrapper provides error messages with flag name context for CLI validation (`src/main.rs`).
+- **main:** formatting helpers deduplicated -- `format_count()`, `format_size()`, `truncate_hash()` in `main.rs` now delegate to `display::fmt_count()`, `display::fmt_size()`, `display::truncate_hash()` (`src/main.rs`).
+- **doctor:** `format_count()` and `format_size()` deduplicated -- now delegate to `crate::display::fmt_count()` and `crate::display::fmt_size()` (`src/doctor.rs`).
 - **cli:** `check` subcommand gains `--verbose`, `--brief`, `--no-pager`, `--dry-run`, `--accept-severity`, `--accept-group`, and functional `--since` flags (`src/cli.rs`).
 - **cli:** `--since` help text updated from "reserved for future use" to describe actual behavior (`src/cli.rs`).
 
@@ -496,15 +496,15 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 - Reconnects the `vigil maintenance` and `vigil baseline` CLI subcommands that were removed during a documentation cleanup (v0.18.1) but are still invoked by every package manager hook (`hooks/pacman/vigil-pre.hook`, `hooks/pacman/vigil-post.hook`, `hooks/apt/99vigil`). Previously, every `pacman -Syu` or `apt upgrade` on a system with Vigil hooks installed produced `error: unrecognized subcommand 'maintenance'` / `error: unrecognized subcommand 'baseline'`. The internal maintenance window suppression logic and baseline refresh infrastructure already existed but were completely disconnected from the CLI. This release wires them together: a shared `maintenance_active` atomic flag flows from the daemon through workers, scan scheduler, and coordinator; control socket methods (`maintenance_enter`, `maintenance_exit`, `baseline_refresh`) expose the flag to the CLI; and the CLI handlers implement graceful degradation (`--quiet` mode exits 0 on any failure) so hooks never block package operations. A 30-minute safety timeout auto-exits stuck maintenance windows.
 
 ### Added
-- **cli:** `vigil maintenance enter [--quiet]` — enters maintenance window on the running daemon via control socket. During maintenance, the existing `AlertDispatcher::is_suppressed()` logic suppresses Low/Medium package-owned changes while passing Critical/High through with `maintenance_window=true`. With `--quiet`, exits 0 silently on any failure (daemon not running, no control socket, etc.) so package manager hooks never block upgrades (`src/cli.rs`, `src/main.rs`).
-- **cli:** `vigil maintenance exit [--quiet]` — exits maintenance window on the running daemon. Same `--quiet` graceful degradation semantics (`src/cli.rs`, `src/main.rs`).
-- **cli:** `vigil maintenance status` — queries daemon status via control socket and reports whether a maintenance window is currently active. Uses the existing `status` control method's new `maintenance_window` field (`src/cli.rs`, `src/main.rs`).
-- **cli:** `vigil baseline refresh [--quiet]` — refreshes the baseline from configured watch paths. Tries the running daemon's control socket first (`baseline_refresh` method); if the daemon is not running, falls back to direct database access via `scanner::refresh_baseline()`. With `--quiet`, exits 0 silently on any failure. This dual-path design means hooks work both when the daemon is running and when it isn't (`src/cli.rs`, `src/main.rs`).
-- **control:** `maintenance_enter` method — sets the shared `maintenance_active` atomic flag to `true` and records the entry timestamp in `maintenance_entered_at`. Security-logged via `log_control_action()` (`src/control.rs`).
-- **control:** `maintenance_exit` method — clears `maintenance_active` and resets `maintenance_entered_at` to 0. Security-logged via `log_control_action()` (`src/control.rs`).
-- **control:** `baseline_refresh` method — loads config and calls `scanner::refresh_baseline()` using the control handler's startup database connection. Returns entry count and duration. Security-logged via `log_control_action()` (`src/control.rs`).
+- **cli:** `vigil maintenance enter [--quiet]` -- enters maintenance window on the running daemon via control socket. During maintenance, the existing `AlertDispatcher::is_suppressed()` logic suppresses Low/Medium package-owned changes while passing Critical/High through with `maintenance_window=true`. With `--quiet`, exits 0 silently on any failure (daemon not running, no control socket, etc.) so package manager hooks never block upgrades (`src/cli.rs`, `src/main.rs`).
+- **cli:** `vigil maintenance exit [--quiet]` -- exits maintenance window on the running daemon. Same `--quiet` graceful degradation semantics (`src/cli.rs`, `src/main.rs`).
+- **cli:** `vigil maintenance status` -- queries daemon status via control socket and reports whether a maintenance window is currently active. Uses the existing `status` control method's new `maintenance_window` field (`src/cli.rs`, `src/main.rs`).
+- **cli:** `vigil baseline refresh [--quiet]` -- refreshes the baseline from configured watch paths. Tries the running daemon's control socket first (`baseline_refresh` method); if the daemon is not running, falls back to direct database access via `scanner::refresh_baseline()`. With `--quiet`, exits 0 silently on any failure. This dual-path design means hooks work both when the daemon is running and when it isn't (`src/cli.rs`, `src/main.rs`).
+- **control:** `maintenance_enter` method -- sets the shared `maintenance_active` atomic flag to `true` and records the entry timestamp in `maintenance_entered_at`. Security-logged via `log_control_action()` (`src/control.rs`).
+- **control:** `maintenance_exit` method -- clears `maintenance_active` and resets `maintenance_entered_at` to 0. Security-logged via `log_control_action()` (`src/control.rs`).
+- **control:** `baseline_refresh` method -- loads config and calls `scanner::refresh_baseline()` using the control handler's startup database connection. Returns entry count and duration. Security-logged via `log_control_action()` (`src/control.rs`).
 - **daemon:** `maintenance_active: Arc<AtomicBool>` and `maintenance_entered_at: Arc<AtomicI64>` fields added to `Daemon` struct. Initialized to `false`/`0` in `Daemon::from_config()`. Threaded through `DaemonRuntime::start()` to `ControlHandler`, `WorkerSpawnArgs`, `scan_scheduler::spawn()`, and `CoordinatorConfig` (`src/lib.rs`).
-- **coordinator:** maintenance timeout safety mechanism — `check_maintenance_timeout()` runs on every coordinator tick (every 60 seconds). If `maintenance_active` has been `true` for longer than 30 minutes, auto-exits maintenance and logs a warning. Prevents stuck maintenance windows when a post-hook fails or the package manager crashes (`src/coordinator.rs`).
+- **coordinator:** maintenance timeout safety mechanism -- `check_maintenance_timeout()` runs on every coordinator tick (every 60 seconds). If `maintenance_active` has been `true` for longer than 30 minutes, auto-exits maintenance and logs a warning. Prevents stuck maintenance windows when a post-hook fails or the package manager crashes (`src/coordinator.rs`).
 
 ### Changed
 - **worker:** `WorkerSpawnArgs` and `WorkerContext` gain `maintenance_active: Arc<AtomicBool>` field. All 5 hardcoded `maintenance_window: false` values in the worker event processing paths (panic handler, debounce WAL append, debounce alert fallback, realtime WAL append, realtime alert fallback) replaced with `self.maintenance_active.load(Ordering::Acquire)` / `ctx.maintenance_active.load(Ordering::Acquire)`. When the daemon enters a maintenance window, all detection records and alert payloads produced by workers now correctly carry `maintenance_window: true` (`src/worker.rs`).
@@ -514,13 +514,13 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 - **coordinator:** `CoordinatorConfig` and `Coordinator` structs gain `maintenance_active` and `maintenance_entered_at` fields. `tick()` now calls `check_maintenance_timeout()` after existing checks (`src/coordinator.rs`).
 
 ### Fixed
-- **hooks:** `vigil maintenance enter --quiet`, `vigil baseline refresh --quiet`, and `vigil maintenance exit --quiet` now work. Previously, every `pacman -Syu` and `apt upgrade` on systems with Vigil hooks installed failed with `error: unrecognized subcommand`. The hooks themselves (`hooks/pacman/vigil-pre.hook`, `hooks/pacman/vigil-post.hook`, `hooks/apt/99vigil`) were correct and required no changes — only the CLI subcommands were missing.
+- **hooks:** `vigil maintenance enter --quiet`, `vigil baseline refresh --quiet`, and `vigil maintenance exit --quiet` now work. Previously, every `pacman -Syu` and `apt upgrade` on systems with Vigil hooks installed failed with `error: unrecognized subcommand`. The hooks themselves (`hooks/pacman/vigil-pre.hook`, `hooks/pacman/vigil-post.hook`, `hooks/apt/99vigil`) were correct and required no changes -- only the CLI subcommands were missing.
 - **worker:** detection records during maintenance windows now correctly set `maintenance_window: true`. Previously, all worker-produced records hardcoded `maintenance_window: false` regardless of daemon state, meaning the existing suppression logic in `AlertDispatcher::is_suppressed()` and `SinkRunner::is_suppressed()` could never activate during real maintenance windows.
-- **scan_scheduler:** same fix as workers — scan-produced detection records now carry the correct maintenance window state instead of hardcoded `false`.
+- **scan_scheduler:** same fix as workers -- scan-produced detection records now carry the correct maintenance window state instead of hardcoded `false`.
 
 ### Tests
-- **cli (5 new tests):** `maintenance_enter_quiet_parses`, `maintenance_exit_parses`, `maintenance_status_parses`, `baseline_refresh_quiet_parses`, `baseline_refresh_parses` — verify `Cli::try_parse_from` for all new subcommand forms (`src/cli.rs`).
-- **chaos (5 files updated):** `coordinator_adversarial_tick`, `clock_warfare`, `config_reload_storm`, `coordinated_attack`, `worker_pool_chaos` — updated `CoordinatorConfig` and `WorkerSpawnArgs` constructors with new `maintenance_active` / `maintenance_entered_at` fields (`tests/chaos/scenarios/`).
+- **cli (5 new tests):** `maintenance_enter_quiet_parses`, `maintenance_exit_parses`, `maintenance_status_parses`, `baseline_refresh_quiet_parses`, `baseline_refresh_parses` -- verify `Cli::try_parse_from` for all new subcommand forms (`src/cli.rs`).
+- **chaos (5 files updated):** `coordinator_adversarial_tick`, `clock_warfare`, `config_reload_storm`, `coordinated_attack`, `worker_pool_chaos` -- updated `CoordinatorConfig` and `WorkerSpawnArgs` constructors with new `maintenance_active` / `maintenance_entered_at` fields (`tests/chaos/scenarios/`).
 - All 215 tests pass (up from 209), `cargo clippy --all-targets -- -D warnings` clean, `cd fuzz && cargo check` clean.
 
 ### Validation
@@ -530,7 +530,7 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 - `cd fuzz && cargo check` compiles cleanly.
 - Package manager hooks verified: `hooks/pacman/vigil-pre.hook` calls `vigil maintenance enter --quiet`, `hooks/pacman/vigil-post.hook` calls `vigil baseline refresh --quiet && vigil maintenance exit --quiet`, `hooks/apt/99vigil` calls both sequences. All commands now parse and dispatch correctly.
 - Existing maintenance window suppression infrastructure (`AlertDispatcher::is_suppressed`, `SinkRunner::is_suppressed`, desktop notification `[during maintenance window]` suffix, audit DB `maintenance`/`suppressed` columns) is now reachable via the CLI.
-- VIGIL-VULN-014 safety invariant preserved: Critical/High alerts are never fully suppressed during maintenance — they pass through with `maintenance_window=true`.
+- VIGIL-VULN-014 safety invariant preserved: Critical/High alerts are never fully suppressed during maintenance -- they pass through with `maintenance_window=true`.
 
 ## [0.29.3] - 2026-04-11
 
@@ -564,32 +564,32 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 ## [0.29.0] - 2026-04-10
 
 ### Release Summary
-- Chaos engineering test suite — a deterministic, seed-reproducible test harness that validates Vigil's resilience under compound environmental faults: concurrent WAL operations, crash recovery, filesystem races, coordinator adversarial tampering, config reload storms, sink suppression determinism, clock anomalies, and full-system coordinated stress. 8 scenario files, 13 machine-checked invariants, 3 CI tiers, ~2,800 lines of test infrastructure. Also fixes two pre-existing lint failures: rustdoc private intra-doc links in WAL module, and 8 clippy warnings in test code.
+- Chaos engineering test suite -- a deterministic, seed-reproducible test harness that validates Vigil's resilience under compound environmental faults: concurrent WAL operations, crash recovery, filesystem races, coordinator adversarial tampering, config reload storms, sink suppression determinism, clock anomalies, and full-system coordinated stress. 8 scenario files, 13 machine-checked invariants, 3 CI tiers, ~2,800 lines of test infrastructure. Also fixes two pre-existing lint failures: rustdoc private intra-doc links in WAL module, and 8 clippy warnings in test code.
 
 ### Added
-- **chaos:** new test suite under `tests/chaos/` — entry point at `tests/chaos.rs` with `#[path]` attributes routing to the structured test tree. Run with `cargo test --test chaos`, control via `CHAOS_SEED=N` (deterministic replay) and `CHAOS_TIER=A|B|C` (scale selection) (`tests/chaos.rs`).
-- **chaos/harness:** `ChaosRng` — xoshiro256** PRNG with SplitMix64 seeding, `fork()` for thread-safe child RNGs, bounded sampling, weighted coin flips, Fisher-Yates shuffle. Every chaos scenario is fully deterministic given a seed (`tests/chaos/harness.rs`).
-- **chaos/harness:** `InjectedClock` — atomic clock abstraction supporting forward jump (+Ns), backward jump (-Ns), freeze (VM-pause simulation), and jitter (+/-ms) via `AtomicI64` offset. Thread-safe, cloneable, resettable (`tests/chaos/harness.rs`).
-- **chaos/harness:** `FsMutator` — filesystem fault injector supporting create, modify, delete, rename, chmod, symlink replacement, inode reuse (delete-and-create), and partial write. `seed_files()` generates randomized test content (`tests/chaos/harness.rs`).
-- **chaos/harness:** `DbPermissionToggler` — toggles a database file between mode 0600 (writable) and 0400 (read-only) to simulate permission flapping (`tests/chaos/harness.rs`).
-- **chaos/harness:** `CrashFailpoint` enum — models AuditWriter crash injection points (`after_read_before_commit`, `after_commit_before_mark_audit_done`, `after_mark_audit_done_before_truncate`) for replayable crash scenarios (`tests/chaos/harness.rs`).
-- **chaos/harness:** `InvariantEngine` — accumulates structured invariant check results with step tracking, failure context maps, summary reports, and `assert_ok()` panic-on-failure. Checks 13 global invariants (I1–I13) corresponding to the specification (`tests/chaos/harness.rs`).
-- **chaos/harness:** `ArtifactWriter` — collects forensic replay artifacts: seed, scenario config, timeline of injected faults with elapsed timestamps, WAL summary (file size, pending count, total appended), audit DB summary (entry count, chain validity, chain breaks), and invariant failure details. Writes artifact file on failure for post-mortem analysis (`tests/chaos/harness.rs`).
-- **chaos/harness:** `ChaosTier` enum and `ScaleParams` — three CI integration tiers: Tier A (default CI, 1 seed, 4 threads, 100 iterations, ~6s), Tier B (nightly, 10 seeds, 8 threads, 1000 iterations, ~5min), Tier C (manual, 100 seeds, 16 threads, 10000 iterations). Tier selected via `CHAOS_TIER` env var (`tests/chaos/harness.rs`).
-- **chaos/harness:** `ChaosSchedule`, `ScheduledAction`, `FaultAction`, `FsMutation`, `ClockFault` types — structured fault injection vocabulary for deterministic schedule generation (`tests/chaos/harness.rs`).
-- **chaos/common:** `chaos_common` module — factory functions for `DetectionRecord` creation (`make_record`, `make_record_at`, `make_sentinel`, `make_panic_record`), WAL helpers (`open_wal`, `open_wal_sized`, `open_wal_hmac`), database helpers (`open_audit_db`, `open_baseline_db`, `audit_count`), config helper (`chaos_config` with cleared exclusions for tempdir compatibility), and WAL permission checker (`wal_file_mode`) (`tests/chaos/chaos_common.rs`).
-- **chaos/scenario 1:** `wal_concurrency_and_recovery` — spawns N threads (4–16 depending on tier) performing randomized WAL operations (`append`, `mark_audit_done`, `mark_sink_done`, `iter_unconsumed`, `truncate_consumed`) from a deterministic schedule. Validates I1 (unique monotonic sequences), I2 (iter_unconsumed excludes fully consumed), I4 (truncate never increases file size), I5 (mark idempotent), I10 (WAL permissions 0600), I11 (pending_count consistency). Includes recovery cycle: drops WAL handle, reopens, reverifies all invariants (`tests/chaos/scenarios/wal_concurrency.rs`).
-- **chaos/scenario 2:** `pipeline_crash_recovery` — generates N records (50–5000) with ~10% sentinels, runs repeated AuditWriter crash-restart cycles (each cycle: open fresh DB connections, run `recover()`, spawn writer, process for random duration, signal shutdown). Final pass runs writer to quiescence. Validates I3 (no permanent loss: every non-sentinel path present in audit DB), I6 (sentinels excluded from audit DB), I7 (HMAC chain contiguous with zero breaks), I10 (WAL permissions), plus checks that duplicates are bounded by crash cycle count (`tests/chaos/scenarios/pipeline_recovery.rs`).
-- **chaos/scenario 3:** `coordinator_adversarial_tick` — tests `DbFileIdentity` inode-swap detection directly for baseline DB, audit DB, and WAL file (copy-remove-copy pattern). Then spawns a coordinator with a pre-swapped baseline inode and verifies it transitions to Degraded on first tick (coordinator initializes `last_tick` to `now - 60s` so first tick fires immediately). Also verifies coordinator survives 20 rapid state transitions (Healthy ↔ Degraded) with concurrent reload signals without panicking. Validates I12 (`tests/chaos/scenarios/coordinator_adversarial_tick.rs`).
-- **chaos/scenario 4:** `worker_pool_filesystem_chaos` — spawns a real worker pool via `WorkerSpawnArgs` with WAL, injects high-rate `FsEvent`s across randomized event types while concurrently mutating the filesystem (create/modify/delete/inode-reuse). Verifies workers don't crash (thread joins succeed), and that any caught panics produce records with `DetectionSource::Panic`, `Severity::Critical`, and empty changes vec. Validates I8 (`tests/chaos/scenarios/worker_pool_chaos.rs`).
-- **chaos/scenario 5:** `config_reload_storm` — spawns coordinator, then rapidly alternates between valid config writes (randomized `worker_threads`) and invalid config writes (broken TOML, negative values, empty strings, malformed sections) with concurrent reload signals. Verifies effective runtime config remains valid (worker_threads > 0) and coordinator doesn't panic. Validates I13 (`tests/chaos/scenarios/config_reload_storm.rs`).
-- **chaos/scenario 6:** `sink_suppression_determinism` — creates two `DetectionWal` instances with identical ordered record streams (same seed-derived severity/source distribution), creates two `SinkRunner` instances with identical configs, runs both to completion. Verifies dispatch count, suppress count, and WAL sink dispatch metrics are identical between the two instances. Validates suppression determinism regardless of thread scheduling (`tests/chaos/scenarios/sink_determinism.rs`).
-- **chaos/scenario 7:** `clock_warfare` — applies four clock fault types (forward jump +1h, backward jump -30s, freeze, jitter +500ms) via `InjectedClock` while appending WAL records with injected timestamps. Verifies all entries survive clock manipulation and sequence numbers remain unique/monotonic despite timestamp chaos. Spawns a coordinator and verifies it doesn't panic under normal operation. Tests `EventFilter` debounce drain under clock jitter. Validates I1, I12 (`tests/chaos/scenarios/clock_warfare.rs`).
-- **chaos/scenario 8:** `coordinated_attack` — full-system compound stress test running coordinator, worker pool, AuditWriter, SinkRunner, and AlertDispatcher simultaneously for a configurable duration (5–120s by tier). During the run: filesystem warfare (randomized create/modify/delete on monitored files), audit DB permission flapping every 2s, config reload signals every 5s, on-demand WAL appends every 3s. At shutdown: verifies clean thread joins (no deadlocks), metric consistency (`wal_appends + wal_replayed >= committed + pending`), WAL permissions intact. Validates I3, I9, I10 (`tests/chaos/scenarios/coordinated_attack.rs`).
+- **chaos:** new test suite under `tests/chaos/` -- entry point at `tests/chaos.rs` with `#[path]` attributes routing to the structured test tree. Run with `cargo test --test chaos`, control via `CHAOS_SEED=N` (deterministic replay) and `CHAOS_TIER=A|B|C` (scale selection) (`tests/chaos.rs`).
+- **chaos/harness:** `ChaosRng` -- xoshiro256** PRNG with SplitMix64 seeding, `fork()` for thread-safe child RNGs, bounded sampling, weighted coin flips, Fisher-Yates shuffle. Every chaos scenario is fully deterministic given a seed (`tests/chaos/harness.rs`).
+- **chaos/harness:** `InjectedClock` -- atomic clock abstraction supporting forward jump (+Ns), backward jump (-Ns), freeze (VM-pause simulation), and jitter (+/-ms) via `AtomicI64` offset. Thread-safe, cloneable, resettable (`tests/chaos/harness.rs`).
+- **chaos/harness:** `FsMutator` -- filesystem fault injector supporting create, modify, delete, rename, chmod, symlink replacement, inode reuse (delete-and-create), and partial write. `seed_files()` generates randomized test content (`tests/chaos/harness.rs`).
+- **chaos/harness:** `DbPermissionToggler` -- toggles a database file between mode 0600 (writable) and 0400 (read-only) to simulate permission flapping (`tests/chaos/harness.rs`).
+- **chaos/harness:** `CrashFailpoint` enum -- models AuditWriter crash injection points (`after_read_before_commit`, `after_commit_before_mark_audit_done`, `after_mark_audit_done_before_truncate`) for replayable crash scenarios (`tests/chaos/harness.rs`).
+- **chaos/harness:** `InvariantEngine` -- accumulates structured invariant check results with step tracking, failure context maps, summary reports, and `assert_ok()` panic-on-failure. Checks 13 global invariants (I1–I13) corresponding to the specification (`tests/chaos/harness.rs`).
+- **chaos/harness:** `ArtifactWriter` -- collects forensic replay artifacts: seed, scenario config, timeline of injected faults with elapsed timestamps, WAL summary (file size, pending count, total appended), audit DB summary (entry count, chain validity, chain breaks), and invariant failure details. Writes artifact file on failure for post-mortem analysis (`tests/chaos/harness.rs`).
+- **chaos/harness:** `ChaosTier` enum and `ScaleParams` -- three CI integration tiers: Tier A (default CI, 1 seed, 4 threads, 100 iterations, ~6s), Tier B (nightly, 10 seeds, 8 threads, 1000 iterations, ~5min), Tier C (manual, 100 seeds, 16 threads, 10000 iterations). Tier selected via `CHAOS_TIER` env var (`tests/chaos/harness.rs`).
+- **chaos/harness:** `ChaosSchedule`, `ScheduledAction`, `FaultAction`, `FsMutation`, `ClockFault` types -- structured fault injection vocabulary for deterministic schedule generation (`tests/chaos/harness.rs`).
+- **chaos/common:** `chaos_common` module -- factory functions for `DetectionRecord` creation (`make_record`, `make_record_at`, `make_sentinel`, `make_panic_record`), WAL helpers (`open_wal`, `open_wal_sized`, `open_wal_hmac`), database helpers (`open_audit_db`, `open_baseline_db`, `audit_count`), config helper (`chaos_config` with cleared exclusions for tempdir compatibility), and WAL permission checker (`wal_file_mode`) (`tests/chaos/chaos_common.rs`).
+- **chaos/scenario 1:** `wal_concurrency_and_recovery` -- spawns N threads (4–16 depending on tier) performing randomized WAL operations (`append`, `mark_audit_done`, `mark_sink_done`, `iter_unconsumed`, `truncate_consumed`) from a deterministic schedule. Validates I1 (unique monotonic sequences), I2 (iter_unconsumed excludes fully consumed), I4 (truncate never increases file size), I5 (mark idempotent), I10 (WAL permissions 0600), I11 (pending_count consistency). Includes recovery cycle: drops WAL handle, reopens, reverifies all invariants (`tests/chaos/scenarios/wal_concurrency.rs`).
+- **chaos/scenario 2:** `pipeline_crash_recovery` -- generates N records (50–5000) with ~10% sentinels, runs repeated AuditWriter crash-restart cycles (each cycle: open fresh DB connections, run `recover()`, spawn writer, process for random duration, signal shutdown). Final pass runs writer to quiescence. Validates I3 (no permanent loss: every non-sentinel path present in audit DB), I6 (sentinels excluded from audit DB), I7 (HMAC chain contiguous with zero breaks), I10 (WAL permissions), plus checks that duplicates are bounded by crash cycle count (`tests/chaos/scenarios/pipeline_recovery.rs`).
+- **chaos/scenario 3:** `coordinator_adversarial_tick` -- tests `DbFileIdentity` inode-swap detection directly for baseline DB, audit DB, and WAL file (copy-remove-copy pattern). Then spawns a coordinator with a pre-swapped baseline inode and verifies it transitions to Degraded on first tick (coordinator initializes `last_tick` to `now - 60s` so first tick fires immediately). Also verifies coordinator survives 20 rapid state transitions (Healthy ↔ Degraded) with concurrent reload signals without panicking. Validates I12 (`tests/chaos/scenarios/coordinator_adversarial_tick.rs`).
+- **chaos/scenario 4:** `worker_pool_filesystem_chaos` -- spawns a real worker pool via `WorkerSpawnArgs` with WAL, injects high-rate `FsEvent`s across randomized event types while concurrently mutating the filesystem (create/modify/delete/inode-reuse). Verifies workers don't crash (thread joins succeed), and that any caught panics produce records with `DetectionSource::Panic`, `Severity::Critical`, and empty changes vec. Validates I8 (`tests/chaos/scenarios/worker_pool_chaos.rs`).
+- **chaos/scenario 5:** `config_reload_storm` -- spawns coordinator, then rapidly alternates between valid config writes (randomized `worker_threads`) and invalid config writes (broken TOML, negative values, empty strings, malformed sections) with concurrent reload signals. Verifies effective runtime config remains valid (worker_threads > 0) and coordinator doesn't panic. Validates I13 (`tests/chaos/scenarios/config_reload_storm.rs`).
+- **chaos/scenario 6:** `sink_suppression_determinism` -- creates two `DetectionWal` instances with identical ordered record streams (same seed-derived severity/source distribution), creates two `SinkRunner` instances with identical configs, runs both to completion. Verifies dispatch count, suppress count, and WAL sink dispatch metrics are identical between the two instances. Validates suppression determinism regardless of thread scheduling (`tests/chaos/scenarios/sink_determinism.rs`).
+- **chaos/scenario 7:** `clock_warfare` -- applies four clock fault types (forward jump +1h, backward jump -30s, freeze, jitter +500ms) via `InjectedClock` while appending WAL records with injected timestamps. Verifies all entries survive clock manipulation and sequence numbers remain unique/monotonic despite timestamp chaos. Spawns a coordinator and verifies it doesn't panic under normal operation. Tests `EventFilter` debounce drain under clock jitter. Validates I1, I12 (`tests/chaos/scenarios/clock_warfare.rs`).
+- **chaos/scenario 8:** `coordinated_attack` -- full-system compound stress test running coordinator, worker pool, AuditWriter, SinkRunner, and AlertDispatcher simultaneously for a configurable duration (5–120s by tier). During the run: filesystem warfare (randomized create/modify/delete on monitored files), audit DB permission flapping every 2s, config reload signals every 5s, on-demand WAL appends every 3s. At shutdown: verifies clean thread joins (no deadlocks), metric consistency (`wal_appends + wal_replayed >= committed + pending`), WAL permissions intact. Validates I3, I9, I10 (`tests/chaos/scenarios/coordinated_attack.rs`).
 
 ### Fixed
 - **wal:** `mark_audit_done()` and `mark_sink_done()` doc comments linked to private `Self::mark_flag` using intra-doc link syntax `[`mark_flag`](Self::mark_flag)`, causing `rustdoc::private-intra-doc-links` error under `-D warnings`. Changed to plain backtick references `` `mark_flag` `` (`src/wal/mod.rs`).
-- **chaos:** 8 clippy violations in test code — 5 useless `format!` calls changed to string literals in `ArtifactWriter::to_report()`, 1 `push_str("\n")` changed to `push('\n')`, 1 `match` on single pattern changed to `if let` in WAL concurrency scenario, 1 `#[allow(clippy::enum_variant_names)]` added to `CrashFailpoint` enum (variant names intentionally match spec failpoint names) (`tests/chaos/harness.rs`, `tests/chaos/scenarios/wal_concurrency.rs`).
+- **chaos:** 8 clippy violations in test code -- 5 useless `format!` calls changed to string literals in `ArtifactWriter::to_report()`, 1 `push_str("\n")` changed to `push('\n')`, 1 `match` on single pattern changed to `if let` in WAL concurrency scenario, 1 `#[allow(clippy::enum_variant_names)]` added to `CrashFailpoint` enum (variant names intentionally match spec failpoint names) (`tests/chaos/harness.rs`, `tests/chaos/scenarios/wal_concurrency.rs`).
 
 ### Tests
 - **chaos suite (8 scenarios):** `wal_concurrency_and_recovery`, `pipeline_crash_recovery`, `coordinator_adversarial_tick`, `worker_pool_filesystem_chaos`, `config_reload_storm`, `sink_suppression_determinism`, `clock_warfare`, `coordinated_attack`.
@@ -616,11 +616,11 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 - **wal:** `scan_entries()` gap scanning now tracks gap position and byte count. When a corrupted gap exceeds `MAX_GAP_BYTES` (64KB), the scanner stops, logs the gap at error level, and returns whatever entries it has already recovered. This prevents an adversarial DoS where an attacker with write access zeros out a large WAL region, forcing the scanner to iterate through millions of byte positions. Recovered gaps and trailing corruption are logged at warn level with start offset and bytes skipped (`src/wal/mod.rs`).
 - **wal:** `mark_flag()` now has a comprehensive doc comment explaining the non-atomic read-modify-write on the 2-byte flags field: reads entire entry, ORs the flag bit, recomputes CRC-32, writes back. Documents that `write_lock` is required not just for appends but also for flag updates to prevent concurrent flag overwrites, and warns that per-entry locking must still serialize same-entry flag updates (`src/wal/mod.rs`).
 - **wal:** `mark_audit_done()` and `mark_sink_done()` now have doc comments cross-referencing `mark_flag` for concurrency constraints (`src/wal/mod.rs`).
-- **wal:** `iter_unconsumed()` now has a documented `OPTIMIZE` comment describing the planned in-memory index of `(sequence, offset, flags)` triples — update on append/flag/truncation, consumers seek directly to pending offsets. Turns the hot path from O(total_entries) to O(pending_entries). Notes that at current volumes (hundreds of detections/minute) the full scan is acceptable but will become a bottleneck on busy servers with thousands of monitored paths (`src/wal/mod.rs`).
+- **wal:** `iter_unconsumed()` now has a documented `OPTIMIZE` comment describing the planned in-memory index of `(sequence, offset, flags)` triples -- update on append/flag/truncation, consumers seek directly to pending offsets. Turns the hot path from O(total_entries) to O(pending_entries). Notes that at current volumes (hundreds of detections/minute) the full scan is acceptable but will become a bottleneck on busy servers with thousands of monitored paths (`src/wal/mod.rs`).
 
 ### Added
 - **wal:** `MAX_GAP_BYTES` constant (64KB) with detailed doc comment explaining the adversarial DoS threat, the byte-by-byte scanning rationale (entries are not 4-byte aligned), and the alignment optimization trade-off (`src/wal/mod.rs`).
-- **wal:** `gap_limit_stops_scanning_large_corruption` test — verifies the scanner stops after `MAX_GAP_BYTES` of continuous corruption and only returns entries found before the gap (`src/wal/mod.rs`).
+- **wal:** `gap_limit_stops_scanning_large_corruption` test -- verifies the scanner stops after `MAX_GAP_BYTES` of continuous corruption and only returns entries found before the gap (`src/wal/mod.rs`).
 
 ### Tests
 - **wal core:** test count increased from 13 to 14 (new: `gap_limit_stops_scanning_large_corruption`).
@@ -635,27 +635,27 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 ## [0.28.0] - 2026-04-10
 
 ### Release Summary
-- Detection WAL (Write-Ahead Log) — a crash-safe, HMAC-authenticated binary log that decouples detection output from audit persistence and alert dispatch. Real-time detections, scheduled scan results, on-demand scan results, debounced re-checks, and worker panic events are now written to a local WAL file before being consumed by two independent background threads: the AuditWriter (audit DB persistence with priority ordering and crash recovery) and the SinkRunner (alert sink dispatch with bounded cooldowns). This eliminates the single-threaded bottleneck where a blocked audit DB write could delay alert delivery, and ensures zero detection loss across daemon crashes, audit DB failures, and I/O stalls. Includes 8 pre-existing bug fixes, 11 new metrics, 4 new config fields, and a new fuzz target. Fully backwards-compatible: the WAL is enabled by default but the daemon falls back to the pre-WAL alert channel path when `detection_wal = false` or when a WAL append fails.
+- Detection WAL (Write-Ahead Log) -- a crash-safe, HMAC-authenticated binary log that decouples detection output from audit persistence and alert dispatch. Real-time detections, scheduled scan results, on-demand scan results, debounced re-checks, and worker panic events are now written to a local WAL file before being consumed by two independent background threads: the AuditWriter (audit DB persistence with priority ordering and crash recovery) and the SinkRunner (alert sink dispatch with bounded cooldowns). This eliminates the single-threaded bottleneck where a blocked audit DB write could delay alert delivery, and ensures zero detection loss across daemon crashes, audit DB failures, and I/O stalls. Includes 8 pre-existing bug fixes, 11 new metrics, 4 new config fields, and a new fuzz target. Fully backwards-compatible: the WAL is enabled by default but the daemon falls back to the pre-WAL alert channel path when `detection_wal = false` or when a WAL append fails.
 
 ### Added
-- **wal:** new `src/wal/` module — `mod.rs` (WAL core), `audit_writer.rs` (audit DB consumer), `sink_runner.rs` (alert sink consumer). The WAL file format is a 64-byte header followed by variable-length entries. Each entry contains a 4-byte size, 8-byte sequence number, 2-byte flags (audit_done / sink_done), 32-byte per-entry HMAC-SHA256 (or zeros when HMAC signing is disabled), MessagePack-serialized payload, and a 4-byte CRC32 checksum. The header contains magic bytes `VWAL`, version 1, creation timestamp, HMAC key fingerprint (BLAKE3 of key truncated to 16 bytes), and a 32-byte random instance nonce from `/dev/urandom` (`src/wal/mod.rs`).
-- **wal:** `DetectionRecord` struct — the WAL payload type with 10 fields: `timestamp`, `path` (String, not PathBuf), `changes`, `severity`, `monitored_group`, `process`, `package`, `package_update`, `maintenance_window`, `source`. Includes `from_change_result()` and `to_change_result()` conversion methods. Derives `serde::Serialize` and `serde::Deserialize` for MessagePack serialization (`src/wal/mod.rs`).
-- **wal:** `DetectionSource` enum — `Realtime`, `ScheduledScan`, `OnDemandScan`, `Debounce`, `Panic`, `Sentinel`. Derives `Serialize`, `Deserialize`, `Clone`, `Copy`, `PartialEq`, `Eq` (`src/wal/mod.rs`).
-- **wal:** `DetectionWal` struct — the core WAL handle. Fields: `file` (Mutex-wrapped for atomic handle replacement during compaction), `path`, `sequence` (AtomicU64), `file_len` (AtomicU64), `write_lock` (parking_lot::Mutex), `hmac_key` (Option<Zeroizing<Vec<u8>>>), `hmac_key_fingerprint`, `instance_nonce`, `max_size_bytes`, `sync_mode`. Key methods: `open()` / `open_with_sync()` (creates with mode 0o600, validates permissions, recovers sequence from last valid entry), `append()` (serialize + HMAC + CRC + pwrite + fdatasync, with double-checked capacity before/after lock), `iter_unconsumed()` (gap-scanning recovery with byte-by-byte retry on CRC failure), `mark_audit_done()` / `mark_sink_done()` (flag updates with CRC recomputation), `truncate_consumed()` (atomic temp-file compaction or truncate-to-header) (`src/wal/mod.rs`).
-- **wal:** `AuditWriter` — background thread (`vigil-wal-audit`) that consumes WAL entries, writes them to the audit DB with HMAC chain integrity, and handles crash recovery. Features: priority ordering (Critical first, then by sequence), sequence gap detection with metrics, deduplication during recovery (SELECT COUNT before INSERT), consecutive failure counting with DB connection reopen after 3 failures, periodic `truncate_consumed()` every 60 seconds, and complete drain on shutdown. The `build_entry_hmac()` function replicates the full 7-argument `build_audit_hmac_data` call including extraction of `old_hash`/`new_hash` from `ContentModified` changes (`src/wal/audit_writer.rs`).
-- **wal:** `SinkRunner` — background thread (`vigil-wal-sinks`) that consumes WAL entries independently of AuditWriter and dispatches alerts to configured sinks. Uses `lru::LruCache<String, Instant>` bounded to 10,000 entries for path cooldowns (same suppression logic as AlertDispatcher). Suppressed entries are marked `sink_done` immediately (no retry). Sleeps 50ms when idle, 10ms when processing (`src/wal/sink_runner.rs`).
-- **wal:** WAL self-test at startup — appends a Sentinel record, reads it back, verifies it was found, marks it consumed. Failure returns `Err(VigilError::Wal(...))` and prevents daemon startup (`src/lib.rs`).
+- **wal:** new `src/wal/` module -- `mod.rs` (WAL core), `audit_writer.rs` (audit DB consumer), `sink_runner.rs` (alert sink consumer). The WAL file format is a 64-byte header followed by variable-length entries. Each entry contains a 4-byte size, 8-byte sequence number, 2-byte flags (audit_done / sink_done), 32-byte per-entry HMAC-SHA256 (or zeros when HMAC signing is disabled), MessagePack-serialized payload, and a 4-byte CRC32 checksum. The header contains magic bytes `VWAL`, version 1, creation timestamp, HMAC key fingerprint (BLAKE3 of key truncated to 16 bytes), and a 32-byte random instance nonce from `/dev/urandom` (`src/wal/mod.rs`).
+- **wal:** `DetectionRecord` struct -- the WAL payload type with 10 fields: `timestamp`, `path` (String, not PathBuf), `changes`, `severity`, `monitored_group`, `process`, `package`, `package_update`, `maintenance_window`, `source`. Includes `from_change_result()` and `to_change_result()` conversion methods. Derives `serde::Serialize` and `serde::Deserialize` for MessagePack serialization (`src/wal/mod.rs`).
+- **wal:** `DetectionSource` enum -- `Realtime`, `ScheduledScan`, `OnDemandScan`, `Debounce`, `Panic`, `Sentinel`. Derives `Serialize`, `Deserialize`, `Clone`, `Copy`, `PartialEq`, `Eq` (`src/wal/mod.rs`).
+- **wal:** `DetectionWal` struct -- the core WAL handle. Fields: `file` (Mutex-wrapped for atomic handle replacement during compaction), `path`, `sequence` (AtomicU64), `file_len` (AtomicU64), `write_lock` (parking_lot::Mutex), `hmac_key` (Option<Zeroizing<Vec<u8>>>), `hmac_key_fingerprint`, `instance_nonce`, `max_size_bytes`, `sync_mode`. Key methods: `open()` / `open_with_sync()` (creates with mode 0o600, validates permissions, recovers sequence from last valid entry), `append()` (serialize + HMAC + CRC + pwrite + fdatasync, with double-checked capacity before/after lock), `iter_unconsumed()` (gap-scanning recovery with byte-by-byte retry on CRC failure), `mark_audit_done()` / `mark_sink_done()` (flag updates with CRC recomputation), `truncate_consumed()` (atomic temp-file compaction or truncate-to-header) (`src/wal/mod.rs`).
+- **wal:** `AuditWriter` -- background thread (`vigil-wal-audit`) that consumes WAL entries, writes them to the audit DB with HMAC chain integrity, and handles crash recovery. Features: priority ordering (Critical first, then by sequence), sequence gap detection with metrics, deduplication during recovery (SELECT COUNT before INSERT), consecutive failure counting with DB connection reopen after 3 failures, periodic `truncate_consumed()` every 60 seconds, and complete drain on shutdown. The `build_entry_hmac()` function replicates the full 7-argument `build_audit_hmac_data` call including extraction of `old_hash`/`new_hash` from `ContentModified` changes (`src/wal/audit_writer.rs`).
+- **wal:** `SinkRunner` -- background thread (`vigil-wal-sinks`) that consumes WAL entries independently of AuditWriter and dispatches alerts to configured sinks. Uses `lru::LruCache<String, Instant>` bounded to 10,000 entries for path cooldowns (same suppression logic as AlertDispatcher). Suppressed entries are marked `sink_done` immediately (no retry). Sleeps 50ms when idle, 10ms when processing (`src/wal/sink_runner.rs`).
+- **wal:** WAL self-test at startup -- appends a Sentinel record, reads it back, verifies it was found, marks it consumed. Failure returns `Err(VigilError::Wal(...))` and prevents daemon startup (`src/lib.rs`).
 - **wal:** WAL instance nonce stored in baseline DB via `set_config_state("wal_instance_nonce", ...)`. AuditWriter `recover()` verifies the nonce matches before replaying entries, preventing cross-instance replay (`src/lib.rs`, `src/wal/audit_writer.rs`).
-- **wal:** WAL file identity tracking — `DbFileIdentity` recorded for WAL file at creation, passed to coordinator for periodic TOCTOU verification. Coordinator's `check_wal_identity()` detects file replacement and transitions to Degraded state (`src/coordinator.rs`).
-- **config:** `detection_wal` (bool, default `true`) — enables/disables the Detection WAL. When disabled, detections flow through the existing alert channel path unchanged (`src/config/mod.rs`).
-- **config:** `detection_wal_max_bytes` (u64, default 64 MiB) — maximum WAL file size. Validated: must be between 1 MiB and 1 GiB. When exceeded, `append()` returns `Err(VigilError::Wal("WAL full"))` and the worker falls back to the alert channel (`src/config/mod.rs`).
-- **config:** `detection_wal_persistent` (bool, default `false`) — when true, WAL is stored alongside the baseline DB (survives reboots); when false, WAL is in `runtime_dir` (tmpfs). `validate_config_deep()` warns when WAL is on tmpfs (`src/config/mod.rs`).
-- **config:** `detection_wal_sync` (enum: `every`/`batched`/`none`, default `every`) — controls fdatasync behavior after WAL appends (`src/config/mod.rs`).
-- **metrics:** 11 new fields in `Metrics` struct — 7 counters (`detections_wal_appends`, `detections_wal_audit_committed`, `detections_wal_sink_dispatched`, `detections_wal_replayed`, `detections_wal_full`, `detections_wal_tampered`, `detections_wal_gaps`) and 4 gauges (`detections_wal_bytes`, `detections_wal_pending`, `detections_wal_audit_lag`, `detections_wal_sink_lag`). All included in `MetricsSnapshot`, all exposed in Prometheus text format with correct counter/gauge types (`src/metrics.rs`).
+- **wal:** WAL file identity tracking -- `DbFileIdentity` recorded for WAL file at creation, passed to coordinator for periodic TOCTOU verification. Coordinator's `check_wal_identity()` detects file replacement and transitions to Degraded state (`src/coordinator.rs`).
+- **config:** `detection_wal` (bool, default `true`) -- enables/disables the Detection WAL. When disabled, detections flow through the existing alert channel path unchanged (`src/config/mod.rs`).
+- **config:** `detection_wal_max_bytes` (u64, default 64 MiB) -- maximum WAL file size. Validated: must be between 1 MiB and 1 GiB. When exceeded, `append()` returns `Err(VigilError::Wal("WAL full"))` and the worker falls back to the alert channel (`src/config/mod.rs`).
+- **config:** `detection_wal_persistent` (bool, default `false`) -- when true, WAL is stored alongside the baseline DB (survives reboots); when false, WAL is in `runtime_dir` (tmpfs). `validate_config_deep()` warns when WAL is on tmpfs (`src/config/mod.rs`).
+- **config:** `detection_wal_sync` (enum: `every`/`batched`/`none`, default `every`) -- controls fdatasync behavior after WAL appends (`src/config/mod.rs`).
+- **metrics:** 11 new fields in `Metrics` struct -- 7 counters (`detections_wal_appends`, `detections_wal_audit_committed`, `detections_wal_sink_dispatched`, `detections_wal_replayed`, `detections_wal_full`, `detections_wal_tampered`, `detections_wal_gaps`) and 4 gauges (`detections_wal_bytes`, `detections_wal_pending`, `detections_wal_audit_lag`, `detections_wal_sink_lag`). All included in `MetricsSnapshot`, all exposed in Prometheus text format with correct counter/gauge types (`src/metrics.rs`).
 - **error:** `VigilError::Wal(String)` variant with `#[error("WAL error: {0}")]` and PartialEq support (`src/error.rs`).
 - **worker:** panic handler in `process_safe()` now creates a `DetectionRecord` with `DetectionSource::Panic`, `Severity::Critical`, empty changes vec, and the event's path/process, then appends it to the WAL (best-effort, errors ignored). The `panics_caught` metric is still incremented (`src/worker.rs`).
 - **worker:** `drain_debounced()` appends debounced detections to WAL with `DetectionSource::Debounce` when WAL is available, falls back to alert channel vec when not (`src/worker.rs`).
-- **fuzz:** `fuzz_wal_recovery` target — feeds arbitrary bytes as a WAL file and calls `iter_unconsumed()` to exercise gap-scanning recovery (`fuzz/fuzz_targets/fuzz_wal_recovery.rs`).
+- **fuzz:** `fuzz_wal_recovery` target -- feeds arbitrary bytes as a WAL file and calls `iter_unconsumed()` to exercise gap-scanning recovery (`fuzz/fuzz_targets/fuzz_wal_recovery.rs`).
 
 ### Changed
 - **worker:** `WorkerSpawnArgs` gains `wal: Option<Arc<DetectionWal>>` field. `WorkerContext` gains matching `wal` field. Worker loop now appends `DetectionRecord` with `DetectionSource::Realtime` to WAL on detection; on WAL append failure, falls back to `alert_tx.send()`. `try_auto_rebaseline` is still called before WAL/alert send (`src/worker.rs`).
@@ -666,14 +666,14 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 - **deps:** added `rmp-serde = "1"` (MessagePack serialization) and `crc32fast = "1"` (CRC32 checksums) to `[dependencies]` (`Cargo.toml`).
 
 ### Fixed (pre-existing bugs resolved in this release)
-- **control:** `ControlHandler.hmac_key` changed from `Option<Vec<u8>>` to `Option<Zeroizing<Vec<u8>>>` — HMAC key material is now zeroized on drop. `lib.rs` clones the `Zeroizing` wrapper correctly (`src/control.rs`, `src/lib.rs`).
-- **control:** `handle_baseline_count` TOCTOU — `ControlHandler` now holds a startup `Connection` field and uses it directly instead of calling `open_baseline_db_readonly(&path)` on each request (`src/control.rs`).
-- **scanner:** `run_scan_parallel` severity hardcoding — now accepts `watch_index: &WatchGroupIndex` parameter and uses `watch_index.lookup()` for severity and group name instead of hardcoding `Severity::High` / `Severity::Medium` / `"scheduled_scan"` (`src/scanner.rs`).
-- **coordinator:** `detect_clock_anomaly` stale timestamp — after detecting a clock anomaly (forward or backward), `last_rotation_timestamp` is now updated to the current time. Previously, a large forward jump left the timestamp stale, causing repeated false anomaly detections on every subsequent tick (`src/coordinator.rs`).
-- **lib.rs:** baseline writer batch cap — the `while let Ok(extra) = rx.try_recv()` collection loop now breaks at 500 entries to prevent unbounded growth (`src/lib.rs`).
-- **lib.rs:** baseline writer connection reopen — adds `consecutive_failures` counter; attempts DB connection reopen after 3 consecutive write failures (`src/lib.rs`).
-- **coordinator:** bloom filter reload gap — `Coordinator` now has `reconfigure_tx` field; `handle_reload()` sends new watch paths through the reconfigure channel so the monitor rebuilds its Bloom filter (`src/coordinator.rs`).
-- **alert:** cooldown map unbounded growth — `AlertDispatcher.cooldowns` changed from `HashMap<String, Instant>` to `lru::LruCache<String, Instant>` bounded to 10,000 entries. Prevents memory growth proportional to unique paths over daemon lifetime (`src/alert/mod.rs`).
+- **control:** `ControlHandler.hmac_key` changed from `Option<Vec<u8>>` to `Option<Zeroizing<Vec<u8>>>` -- HMAC key material is now zeroized on drop. `lib.rs` clones the `Zeroizing` wrapper correctly (`src/control.rs`, `src/lib.rs`).
+- **control:** `handle_baseline_count` TOCTOU -- `ControlHandler` now holds a startup `Connection` field and uses it directly instead of calling `open_baseline_db_readonly(&path)` on each request (`src/control.rs`).
+- **scanner:** `run_scan_parallel` severity hardcoding -- now accepts `watch_index: &WatchGroupIndex` parameter and uses `watch_index.lookup()` for severity and group name instead of hardcoding `Severity::High` / `Severity::Medium` / `"scheduled_scan"` (`src/scanner.rs`).
+- **coordinator:** `detect_clock_anomaly` stale timestamp -- after detecting a clock anomaly (forward or backward), `last_rotation_timestamp` is now updated to the current time. Previously, a large forward jump left the timestamp stale, causing repeated false anomaly detections on every subsequent tick (`src/coordinator.rs`).
+- **lib.rs:** baseline writer batch cap -- the `while let Ok(extra) = rx.try_recv()` collection loop now breaks at 500 entries to prevent unbounded growth (`src/lib.rs`).
+- **lib.rs:** baseline writer connection reopen -- adds `consecutive_failures` counter; attempts DB connection reopen after 3 consecutive write failures (`src/lib.rs`).
+- **coordinator:** bloom filter reload gap -- `Coordinator` now has `reconfigure_tx` field; `handle_reload()` sends new watch paths through the reconfigure channel so the monitor rebuilds its Bloom filter (`src/coordinator.rs`).
+- **alert:** cooldown map unbounded growth -- `AlertDispatcher.cooldowns` changed from `HashMap<String, Instant>` to `lru::LruCache<String, Instant>` bounded to 10,000 entries. Prevents memory growth proportional to unique paths over daemon lifetime (`src/alert/mod.rs`).
 
 ### Tests
 - **wal core (13 tests):** `append_and_read_back`, `concurrent_appends` (8 threads × 1,000 entries), `crc_corruption_detected`, `partial_write_at_eof`, `consumed_flags_independent`, `sequence_resumes_after_reopen`, `wal_full_returns_error`, `truncate_removes_consumed`, `gap_scanning_recovers_after_corruption`, `header_validation`, `entry_hmac_verification`, `instance_nonce_uniqueness`, `sentinel_roundtrip` (`src/wal/mod.rs`).
@@ -698,12 +698,12 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 - Fix systemd watchdog timeouts that killed the daemon during startup (initial baseline scan) and during coordinator tick blocking under I/O pressure. Adds watchdog heartbeats throughout the pre-flight sequence, baseline initialization, and coordinator tick sub-methods. Increases `WatchdogSec` from 30s to 120s and adds `TimeoutStartSec=300` to both systemd unit files.
 
 ### Fixed
-- **daemon:** watchdog starvation during startup pre-flight — the pre-flight sequence (`record_binary_hash()`, `ensure_baseline_health()`, `DaemonRuntime::start()`) runs synchronously on the main thread before the coordinator thread exists. No watchdog heartbeats were sent until the coordinator's loop began iterating. On systems with large monitored file sets, `ensure_baseline_health()` triggers `build_initial_baseline()`, which walks all watched paths, hashes every file, queries package ownership, and writes to SQLite — easily taking 15–60+ seconds. With `WatchdogSec=30`, systemd sent SIGABRT before the coordinator could start. Added `send_watchdog_heartbeat()` helper in `src/lib.rs` (guarded by `is_notify_socket_safe()`) and inserted heartbeat calls at 3 points in `Daemon::run()`, before/after all 4 `build_initial_baseline()` call sites in `ensure_baseline_health()`, and at 4 points in `DaemonRuntime::start()` (`src/lib.rs`).
-- **daemon:** watchdog starvation during long baseline scans — `build_initial_baseline()` walks potentially tens of thousands of files without any watchdog heartbeat. Added heartbeat sends at the existing 5,000-file progress interval, after the `COMMIT` of the baseline transaction, and after HMAC computation over the full baseline (`src/scanner.rs`).
-- **daemon:** watchdog starvation during coordinator tick — the coordinator's `tick()` method calls 8 sub-methods sequentially (`check_baseline_db_identity`, `check_audit_db_identity`, `check_mount_evasion`, `detect_clock_anomaly`, `rotate_audit_log`, `write_snapshots`, `check_backpressure`, `check_event_drops`, `maybe_checkpoint_wal`) without any intermediate heartbeat. If `rotate_audit_log()` (SQL queries) or `write_snapshots()` (opens DBs, runs `COUNT(*)`, filesystem metadata) are slow under I/O pressure, the combined tick time exceeds the watchdog interval. Added 3 interleaved `notify_watchdog()` calls within `tick()`: after security checks, after audit rotation, and after snapshot writes (`src/coordinator.rs`).
-- **systemd:** `WatchdogSec=30` far too aggressive for a daemon that performs filesystem-wide integrity scanning — changed to `WatchdogSec=120` in `systemd/vigild.service`. The `contrib/vigild.service` already had `WatchdogSec=120`; both units are now aligned (`systemd/vigild.service`).
-- **systemd:** no `TimeoutStartSec` configured — systemd's default start timeout could kill the daemon during first-ever baseline initialization on large systems. Added `TimeoutStartSec=300` (5 minutes) to both `systemd/vigild.service` and `contrib/vigild.service`.
-- **systemd:** `contrib/vigild.service` missing security-critical directives — added `NotifyAccess=main` (prevents sd_notify spoofing, addresses VIGIL-VULN-034), `ExecReload=/bin/kill -HUP $MAINPID`, and `AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH` to match the production unit's security posture (`contrib/vigild.service`).
+- **daemon:** watchdog starvation during startup pre-flight -- the pre-flight sequence (`record_binary_hash()`, `ensure_baseline_health()`, `DaemonRuntime::start()`) runs synchronously on the main thread before the coordinator thread exists. No watchdog heartbeats were sent until the coordinator's loop began iterating. On systems with large monitored file sets, `ensure_baseline_health()` triggers `build_initial_baseline()`, which walks all watched paths, hashes every file, queries package ownership, and writes to SQLite -- easily taking 15–60+ seconds. With `WatchdogSec=30`, systemd sent SIGABRT before the coordinator could start. Added `send_watchdog_heartbeat()` helper in `src/lib.rs` (guarded by `is_notify_socket_safe()`) and inserted heartbeat calls at 3 points in `Daemon::run()`, before/after all 4 `build_initial_baseline()` call sites in `ensure_baseline_health()`, and at 4 points in `DaemonRuntime::start()` (`src/lib.rs`).
+- **daemon:** watchdog starvation during long baseline scans -- `build_initial_baseline()` walks potentially tens of thousands of files without any watchdog heartbeat. Added heartbeat sends at the existing 5,000-file progress interval, after the `COMMIT` of the baseline transaction, and after HMAC computation over the full baseline (`src/scanner.rs`).
+- **daemon:** watchdog starvation during coordinator tick -- the coordinator's `tick()` method calls 8 sub-methods sequentially (`check_baseline_db_identity`, `check_audit_db_identity`, `check_mount_evasion`, `detect_clock_anomaly`, `rotate_audit_log`, `write_snapshots`, `check_backpressure`, `check_event_drops`, `maybe_checkpoint_wal`) without any intermediate heartbeat. If `rotate_audit_log()` (SQL queries) or `write_snapshots()` (opens DBs, runs `COUNT(*)`, filesystem metadata) are slow under I/O pressure, the combined tick time exceeds the watchdog interval. Added 3 interleaved `notify_watchdog()` calls within `tick()`: after security checks, after audit rotation, and after snapshot writes (`src/coordinator.rs`).
+- **systemd:** `WatchdogSec=30` far too aggressive for a daemon that performs filesystem-wide integrity scanning -- changed to `WatchdogSec=120` in `systemd/vigild.service`. The `contrib/vigild.service` already had `WatchdogSec=120`; both units are now aligned (`systemd/vigild.service`).
+- **systemd:** no `TimeoutStartSec` configured -- systemd's default start timeout could kill the daemon during first-ever baseline initialization on large systems. Added `TimeoutStartSec=300` (5 minutes) to both `systemd/vigild.service` and `contrib/vigild.service`.
+- **systemd:** `contrib/vigild.service` missing security-critical directives -- added `NotifyAccess=main` (prevents sd_notify spoofing, addresses VIGIL-VULN-034), `ExecReload=/bin/kill -HUP $MAINPID`, and `AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH` to match the production unit's security posture (`contrib/vigild.service`).
 
 ### Validation
 - `cargo build` succeeds with 0 warnings.
@@ -716,50 +716,50 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 ## [0.27.0] - 2026-04-09
 
 ### Release Summary
-- Pure structural refactoring of the runtime layer — the five files that wire up threads, channels, and the daemon lifecycle (`src/lib.rs`, `src/worker.rs`, `src/coordinator.rs`, `src/control.rs`, `src/alert/mod.rs`). Zero behavior changes. Functions that did too many things have been decomposed into context structs with focused methods, shared state is passed as struct fields instead of loose variables, and duplicated error handling has been consolidated. All `#[allow(clippy::too_many_arguments)]` annotations have been removed from these files.
+- Pure structural refactoring of the runtime layer -- the five files that wire up threads, channels, and the daemon lifecycle (`src/lib.rs`, `src/worker.rs`, `src/coordinator.rs`, `src/control.rs`, `src/alert/mod.rs`). Zero behavior changes. Functions that did too many things have been decomposed into context structs with focused methods, shared state is passed as struct fields instead of loose variables, and duplicated error handling has been consolidated. All `#[allow(clippy::too_many_arguments)]` annotations have been removed from these files.
 
 ### Changed
 - **worker.rs:** introduced `WorkerSpawnArgs` struct to replace the 11 positional arguments to `spawn_workers()` (`src/worker.rs`). Introduced private `WorkerContext` struct that holds per-worker state (connection, config, watch index, metrics, filter, LRU cache, generation tracker, drain timing). Moved event processing into `WorkerContext` methods:
-  - `evaluate(&mut self, event)` — cache lookup + baseline resolution + snapshot capture + diff + severity classification (consolidates the former `process_event_cached` and `process_event_inner` call chain)
-  - `process_safe(&mut self, event)` — wraps `evaluate` in `catch_unwind` with panic metric increment (eliminates duplicated 30-line match arms)
-  - `drain_debounced(&mut self)` — drains debounced events through `process_safe` and returns alert payloads
-  - `refresh_cache_if_stale(&mut self)` — invalidates LRU cache when baseline generation changes
-  - `try_auto_rebaseline(&self, change_result, update_tx)` — package update detection and re-snapshot logic
+  - `evaluate(&mut self, event)` -- cache lookup + baseline resolution + snapshot capture + diff + severity classification (consolidates the former `process_event_cached` and `process_event_inner` call chain)
+  - `process_safe(&mut self, event)` -- wraps `evaluate` in `catch_unwind` with panic metric increment (eliminates duplicated 30-line match arms)
+  - `drain_debounced(&mut self)` -- drains debounced events through `process_safe` and returns alert payloads
+  - `refresh_cache_if_stale(&mut self)` -- invalidates LRU cache when baseline generation changes
+  - `try_auto_rebaseline(&self, change_result, update_tx)` -- package update detection and re-snapshot logic
   - The worker loop is now ~22 lines (down from ~163 lines). `process_event_cached` has been removed; its logic is absorbed into `WorkerContext::evaluate`. The public `process_event` function is preserved for CLI/test callers (`src/worker.rs`).
 - **coordinator.rs:** introduced `CoordinatorConfig` struct to replace the 12 positional arguments to `coordinator::spawn()` (`src/coordinator.rs`). Introduced private `Coordinator` struct that owns all coordinator state (config, metrics, daemon state, watch index, shutdown/reload flags, DB connections, timing state, initial mount set). Decomposed the 283-line loop body into named methods on `Coordinator`:
-  - `tick(&mut self)` — calls each housekeeping method in sequence
-  - `handle_reload(&mut self)` — config file integrity check, HMAC verification, load + validate + diff + store new config, update watch index
-  - `check_baseline_db_identity(&mut self)` — TOCTOU check on baseline DB inode/device
-  - `check_audit_db_identity(&mut self)` — TOCTOU check on audit DB inode/device
-  - `check_mount_evasion(&self)` — compare current mounts against initial set, log new mounts over watched paths
-  - `detect_clock_anomaly(&mut self)` — forward/backward clock jump detection
-  - `rotate_audit_log(&mut self)` — safety-guarded audit rotation (>50% deletion guard)
-  - `write_snapshots(&self)` — metrics + state + health snapshots via atomic writes
-  - `check_backpressure(&self)` — backpressure flag → `DaemonState::Degraded`
-  - `check_event_drops(&mut self)` — sustained event drop detection (evasion warning)
-  - `maybe_checkpoint_wal(&mut self)` — periodic WAL checkpoint every 5 ticks
-  - `notify_watchdog(&self)` — systemd watchdog notification
+  - `tick(&mut self)` -- calls each housekeeping method in sequence
+  - `handle_reload(&mut self)` -- config file integrity check, HMAC verification, load + validate + diff + store new config, update watch index
+  - `check_baseline_db_identity(&mut self)` -- TOCTOU check on baseline DB inode/device
+  - `check_audit_db_identity(&mut self)` -- TOCTOU check on audit DB inode/device
+  - `check_mount_evasion(&self)` -- compare current mounts against initial set, log new mounts over watched paths
+  - `detect_clock_anomaly(&mut self)` -- forward/backward clock jump detection
+  - `rotate_audit_log(&mut self)` -- safety-guarded audit rotation (>50% deletion guard)
+  - `write_snapshots(&self)` -- metrics + state + health snapshots via atomic writes
+  - `check_backpressure(&self)` -- backpressure flag → `DaemonState::Degraded`
+  - `check_event_drops(&mut self)` -- sustained event drop detection (evasion warning)
+  - `maybe_checkpoint_wal(&mut self)` -- periodic WAL checkpoint every 5 ticks
+  - `notify_watchdog(&self)` -- systemd watchdog notification
   - The coordinator main loop is now 8 lines: check reload, call `tick()` on interval, notify watchdog, sleep (`src/coordinator.rs`).
 - **control.rs:** introduced `ControlHandler` struct to replace the 8 positional arguments to both `spawn()` and `handle_connection()` (`src/control.rs`). The handler struct holds metrics, daemon state, reload flag, scan trigger channel, baseline DB path, HMAC key, and auth-enabled flag. Decomposed `handle_connection` into focused methods:
-  - `authenticate_and_read(&self, stream)` — challenge-response handshake + authenticated request reading
-  - `read_request(&self, stream)` — unauthenticated JSON read
-  - `write_response(&self, stream, response)` — serialize + write + flush (was duplicated in two code paths)
-  - `dispatch(&self, method, request)` — method routing (now a method on `ControlHandler`)
-  - `handle_status`, `handle_baseline_count`, `handle_reload`, `handle_scan`, `handle_metrics_prometheus` — all converted from free functions to `ControlHandler` methods
+  - `authenticate_and_read(&self, stream)` -- challenge-response handshake + authenticated request reading
+  - `read_request(&self, stream)` -- unauthenticated JSON read
+  - `write_response(&self, stream, response)` -- serialize + write + flush (was duplicated in two code paths)
+  - `dispatch(&self, method, request)` -- method routing (now a method on `ControlHandler`)
+  - `handle_status`, `handle_baseline_count`, `handle_reload`, `handle_scan`, `handle_metrics_prometheus` -- all converted from free functions to `ControlHandler` methods
   - `handle_connection` is now ~18 lines: log peer credentials, authenticate or read, dispatch, write response (`src/control.rs`).
-- **alert/mod.rs:** extracted `record_audit(&mut self, payload, suppressed)` method from `AlertDispatcher::run()` — encapsulates audit DB write, error recovery (retry buffer, consecutive failure counting, DB reopen after 3 failures, buffered entry retry). Extracted `dispatch_to_sinks(&self, alert)` method — the sink iteration loop. `AlertDispatcher::run()` is now ~17 lines. Added `use std::sync::atomic::{AtomicBool, AtomicU32, Ordering}` import; replaced all 8+ inline `std::sync::atomic::Ordering::Relaxed` occurrences with `Ordering::Relaxed` (`src/alert/mod.rs`).
+- **alert/mod.rs:** extracted `record_audit(&mut self, payload, suppressed)` method from `AlertDispatcher::run()` -- encapsulates audit DB write, error recovery (retry buffer, consecutive failure counting, DB reopen after 3 failures, buffered entry retry). Extracted `dispatch_to_sinks(&self, alert)` method -- the sink iteration loop. `AlertDispatcher::run()` is now ~17 lines. Added `use std::sync::atomic::{AtomicBool, AtomicU32, Ordering}` import; replaced all 8+ inline `std::sync::atomic::Ordering::Relaxed` occurrences with `Ordering::Relaxed` (`src/alert/mod.rs`).
 - **lib.rs:** introduced `DaemonRuntime` struct that owns all `JoinHandle`s, channel senders, shutdown state, and the PID file path. Decomposed `Daemon::run()` into:
-  - `DaemonRuntime::start(daemon)` — all channel creation, thread spawning, `Arc::clone()` wiring, and `sd_notify(Ready)` signaling
-  - `DaemonRuntime::wait_for_shutdown(&self)` — the shutdown sleep loop
-  - `DaemonRuntime::drain(self)` — send shutdown signal, drop senders, join all threads in dependency order, cleanup PID file
-  - Extracted `Daemon::record_binary_hash(&self)` — BLAKE3 hash of `/proc/self/exe`
-  - Extracted `Daemon::log_startup_diagnostics(&self, cfg)` — baseline DB state logging
+  - `DaemonRuntime::start(daemon)` -- all channel creation, thread spawning, `Arc::clone()` wiring, and `sd_notify(Ready)` signaling
+  - `DaemonRuntime::wait_for_shutdown(&self)` -- the shutdown sleep loop
+  - `DaemonRuntime::drain(self)` -- send shutdown signal, drop senders, join all threads in dependency order, cleanup PID file
+  - Extracted `Daemon::record_binary_hash(&self)` -- BLAKE3 hash of `/proc/self/exe`
+  - Extracted `Daemon::log_startup_diagnostics(&self, cfg)` -- baseline DB state logging
   - `Daemon::run()` is now 11 lines: harden process, raise nofile limit, record binary hash, log diagnostics, ensure baseline health, start runtime, wait for shutdown, drain (`src/lib.rs`).
 
 ### Removed
 - All `#[allow(clippy::too_many_arguments)]` annotations from `src/worker.rs`, `src/coordinator.rs`, `src/control.rs`. These are no longer needed because the argument lists have been replaced by context structs (`src/worker.rs`, `src/coordinator.rs`, `src/control.rs`).
-- `process_event_cached()` free function in `src/worker.rs` — its logic has been absorbed into `WorkerContext::evaluate()`.
-- All inline `std::sync::atomic::Ordering::Relaxed` full-path usage in `src/alert/mod.rs` — replaced by imported `Ordering::Relaxed`.
+- `process_event_cached()` free function in `src/worker.rs` -- its logic has been absorbed into `WorkerContext::evaluate()`.
+- All inline `std::sync::atomic::Ordering::Relaxed` full-path usage in `src/alert/mod.rs` -- replaced by imported `Ordering::Relaxed`.
 
 ### Validation
 - `cargo build` succeeds with 0 warnings.
@@ -776,14 +776,14 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 - Major `vigil update` overhaul: automatic repository discovery, step-by-step progress output, atomic binary replacement, post-update daemon health verification, and improved doctor output positioning. The update command now matches the UX standard set by `cmd_check`, `cmd_init`, and `cmd_doctor`.
 
 ### Added
-- **cli:** automatic repository discovery for `vigil update` — when `--repo` is not provided, the command now searches multiple candidate paths instead of requiring the user to `cd` into the repo. Discovery checks, in order: current working directory, binary-relative parent walk (walks up from `std::env::current_exe()` looking for `Cargo.toml` with `name = "vigil"`), well-known home paths (`~/vigil`, `~/src/vigil`, `~/projects/vigil`), and `/opt/vigil`. On success, prints `"Using repository: /path"`. On failure, prints all checked paths with actionable guidance. Extracted into `discover_vigil_repo()` helper (`src/main.rs`).
-- **cli:** step-by-step progress output during `vigil update` — every significant operation (daemon stop, binary install, symlink update, systemd unit check, hook check, daemon start) now prints a status message before execution. Success markers (`✓`) and warning markers (`⚠`) provide immediate feedback. No `sudo` or `systemctl` operation runs silently. Consistent 2-space indented formatting matching existing `cmd_doctor` and `cmd_init` style (`src/main.rs`).
-- **cli:** atomic binary replacement via `atomic_install()` helper — replaces the previous `sudo install -Dm755` which destructively overwrote binaries in-place. New pattern: `sudo cp <src> /usr/local/bin/.<name>.new` → `sudo chmod 755` → `sudo mv` (atomic rename). A crash mid-update can never leave a half-written binary. `mv` on the same filesystem is an atomic `rename(2)` at the kernel level (`src/main.rs`).
-- **cli:** post-update daemon health verification — after `systemctl start vigild.service` succeeds, the update command now sleeps 2 seconds then queries the daemon's control socket via `query_control_socket()` with `{"method":"status"}` to verify the daemon is actually running and responding. The final summary now distinguishes three states: `"restarted"` (start succeeded + health check passed), `"started but not responding (check: sudo journalctl -u vigild.service -n 20)"` (start succeeded + health check failed), and `"restart failed"` (start command failed) (`src/main.rs`).
+- **cli:** automatic repository discovery for `vigil update` -- when `--repo` is not provided, the command now searches multiple candidate paths instead of requiring the user to `cd` into the repo. Discovery checks, in order: current working directory, binary-relative parent walk (walks up from `std::env::current_exe()` looking for `Cargo.toml` with `name = "vigil"`), well-known home paths (`~/vigil`, `~/src/vigil`, `~/projects/vigil`), and `/opt/vigil`. On success, prints `"Using repository: /path"`. On failure, prints all checked paths with actionable guidance. Extracted into `discover_vigil_repo()` helper (`src/main.rs`).
+- **cli:** step-by-step progress output during `vigil update` -- every significant operation (daemon stop, binary install, symlink update, systemd unit check, hook check, daemon start) now prints a status message before execution. Success markers (`✓`) and warning markers (`⚠`) provide immediate feedback. No `sudo` or `systemctl` operation runs silently. Consistent 2-space indented formatting matching existing `cmd_doctor` and `cmd_init` style (`src/main.rs`).
+- **cli:** atomic binary replacement via `atomic_install()` helper -- replaces the previous `sudo install -Dm755` which destructively overwrote binaries in-place. New pattern: `sudo cp <src> /usr/local/bin/.<name>.new` → `sudo chmod 755` → `sudo mv` (atomic rename). A crash mid-update can never leave a half-written binary. `mv` on the same filesystem is an atomic `rename(2)` at the kernel level (`src/main.rs`).
+- **cli:** post-update daemon health verification -- after `systemctl start vigild.service` succeeds, the update command now sleeps 2 seconds then queries the daemon's control socket via `query_control_socket()` with `{"method":"status"}` to verify the daemon is actually running and responding. The final summary now distinguishes three states: `"restarted"` (start succeeded + health check passed), `"started but not responding (check: sudo journalctl -u vigild.service -n 20)"` (start succeeded + health check failed), and `"restart failed"` (start command failed) (`src/main.rs`).
 
 ### Changed
-- **cli:** `vigil doctor` output during update moved after the summary block — previously interleaved between daemon start and the final summary, breaking visual flow. Now prints as a separate `"Running health check..."` section after the update summary completes cleanly (`src/main.rs`).
-- **cli:** both symlink operations (vigil + vigild) consolidated under a single `"Updating symlinks..."` message instead of being announced individually — they are a logical unit (`src/main.rs`).
+- **cli:** `vigil doctor` output during update moved after the summary block -- previously interleaved between daemon start and the final summary, breaking visual flow. Now prints as a separate `"Running health check..."` section after the update summary completes cleanly (`src/main.rs`).
+- **cli:** both symlink operations (vigil + vigild) consolidated under a single `"Updating symlinks..."` message instead of being announced individually -- they are a logical unit (`src/main.rs`).
 
 ### Validation
 - `cargo check` passes with 0 warnings.
@@ -793,7 +793,7 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 ## [0.25.1] - 2026-04-08
 
 ### Fixed
-- **daemon:** startup crash loop after upgrade due to systemd `StateDirectory=` resetting `/var/lib/vigil` permissions to `0755` on every start. The v0.25.0 security hardening check (`verify_directory_safety`) requires `0700` or `0750`, creating a boot loop — systemd resets permissions, daemon rejects them, crashes, systemd restarts. Added `StateDirectoryMode=0750`, `RuntimeDirectoryMode=0750`, and `LogsDirectoryMode=0750` to `vigild.service`. Also fixed `setup.sh` to create directories with `0750` instead of `0755` for new installs, and added `chmod 750 /var/lib/vigil` to the `vigil update` path for existing installations (`systemd/vigild.service`, `setup.sh`, `src/main.rs`).
+- **daemon:** startup crash loop after upgrade due to systemd `StateDirectory=` resetting `/var/lib/vigil` permissions to `0755` on every start. The v0.25.0 security hardening check (`verify_directory_safety`) requires `0700` or `0750`, creating a boot loop -- systemd resets permissions, daemon rejects them, crashes, systemd restarts. Added `StateDirectoryMode=0750`, `RuntimeDirectoryMode=0750`, and `LogsDirectoryMode=0750` to `vigild.service`. Also fixed `setup.sh` to create directories with `0750` instead of `0755` for new installs, and added `chmod 750 /var/lib/vigil` to the `vigil update` path for existing installations (`systemd/vigild.service`, `setup.sh`, `src/main.rs`).
 - **doctor:** control socket check reported `"status returned ok=false"` even though the daemon was healthy. `query_control_socket_quick()` was sending an unauthenticated `{"method":"status"}` request directly, but when HMAC signing is enabled, the control socket server sends a challenge nonce first and expects an HMAC-authenticated response. The doctor was reading the challenge as the status response and failing. Now checks `security.hmac_signing` and `security.control_socket_auth` from config and performs the full challenge-response handshake when authentication is enabled (`src/doctor.rs`).
 
 ## [0.25.0] - 2026-04-08
@@ -802,13 +802,13 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 - Daemon startup resilience overhaul targeting upgrade-path failures. The daemon now survives version-upgrade scenarios that previously caused crash loops (`vigild.service: Failed with result 'exit-code'`). Adds `#![deny(unsafe_code)]` crate-level policy, improved CLI error UX, temp file hygiene, and headless-safe desktop notifications.
 
 ### Fixed
-- **daemon:** startup crash loop after version upgrade — when baseline DB was previously initialized but is now empty due to a schema migration (DB file > 4096 bytes), the daemon now detects this as a benign upgrade scenario and re-initializes the baseline instead of refusing to start with a tampering error. This resolves the `vigild.service` crash loop observed when upgrading from v0.20 → v0.24 (`src/lib.rs`).
-- **daemon:** HMAC mismatch no longer fatal on upgrade — when the set of fields covered by the baseline HMAC changes between versions, the daemon now logs a warning and recomputes the HMAC instead of exiting with `"baseline HMAC verification failed — possible tampering"`. Genuine tampering is still detectable because the recomputed HMAC is stored and verified on subsequent startups (`src/lib.rs`).
-- **daemon:** fatal error messages now reach journald — `vigild` previously called `process::exit(1)` immediately after `tracing::error!`, which could race the tracing subscriber's flush. The error is now also printed to stderr via `eprintln!` and a brief flush delay ensures the message reaches journald/systemd before exit (`src/daemon.rs`).
-- **daemon:** startup diagnostics logged before baseline health check — the baseline DB path, existence, file size, readability, and HMAC signing status are now logged at `info` level before `ensure_baseline_health()` runs. This makes it possible to diagnose startup failures from journal output alone (`src/lib.rs`).
-- **cli:** `vigil update` error message improved — when run from a non-Vigil directory without `--repo`, the error now reads `"current directory is not a Vigil repository: /path"` with a hint line: `"hint: run from the Vigil source directory, or use: vigil update --repo /path/to/vigil"` (`src/main.rs`).
-- **daemon:** `notify-send` availability checked once at startup — `notify_desktop()` now uses `OnceLock<bool>` to probe `PATH` for `notify-send` on first call. If absent (headless/server environments), all future calls are skipped and a single `debug`-level message is logged: `"notify-send not found; desktop notifications disabled"`. Previously every notification silently failed (`src/lib.rs`).
-- **readability:** baseline count check changed from `count <= 0` to `count == 0` — `baseline_ops::count()` returns `i64` from SQLite `COUNT(*)`, which cannot be negative. The previous `<= 0` was functionally correct but misleading (`src/lib.rs`).
+- **daemon:** startup crash loop after version upgrade -- when baseline DB was previously initialized but is now empty due to a schema migration (DB file > 4096 bytes), the daemon now detects this as a benign upgrade scenario and re-initializes the baseline instead of refusing to start with a tampering error. This resolves the `vigild.service` crash loop observed when upgrading from v0.20 → v0.24 (`src/lib.rs`).
+- **daemon:** HMAC mismatch no longer fatal on upgrade -- when the set of fields covered by the baseline HMAC changes between versions, the daemon now logs a warning and recomputes the HMAC instead of exiting with `"baseline HMAC verification failed -- possible tampering"`. Genuine tampering is still detectable because the recomputed HMAC is stored and verified on subsequent startups (`src/lib.rs`).
+- **daemon:** fatal error messages now reach journald -- `vigild` previously called `process::exit(1)` immediately after `tracing::error!`, which could race the tracing subscriber's flush. The error is now also printed to stderr via `eprintln!` and a brief flush delay ensures the message reaches journald/systemd before exit (`src/daemon.rs`).
+- **daemon:** startup diagnostics logged before baseline health check -- the baseline DB path, existence, file size, readability, and HMAC signing status are now logged at `info` level before `ensure_baseline_health()` runs. This makes it possible to diagnose startup failures from journal output alone (`src/lib.rs`).
+- **cli:** `vigil update` error message improved -- when run from a non-Vigil directory without `--repo`, the error now reads `"current directory is not a Vigil repository: /path"` with a hint line: `"hint: run from the Vigil source directory, or use: vigil update --repo /path/to/vigil"` (`src/main.rs`).
+- **daemon:** `notify-send` availability checked once at startup -- `notify_desktop()` now uses `OnceLock<bool>` to probe `PATH` for `notify-send` on first call. If absent (headless/server environments), all future calls are skipped and a single `debug`-level message is logged: `"notify-send not found; desktop notifications disabled"`. Previously every notification silently failed (`src/lib.rs`).
+- **readability:** baseline count check changed from `count <= 0` to `count == 0` -- `baseline_ops::count()` returns `i64` from SQLite `COUNT(*)`, which cannot be negative. The previous `<= 0` was functionally correct but misleading (`src/lib.rs`).
 - **readme:** version badge updated from `0.18.1` to match `Cargo.toml` version (`README.md`).
 
 ### Changed
@@ -825,9 +825,9 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 
 ### Tests
 - Added `tests/version_upgrade_tests.rs` with 3 integration tests:
-  - `empty_baseline_after_schema_migration_is_recoverable` — verifies an empty-but-initialized baseline returns count 0 and the initialized flag persists.
-  - `populated_baseline_reports_correct_count` — verifies baseline count accuracy after upsert.
-  - `hmac_recomputation_after_upgrade_succeeds` — verifies that a stale HMAC from a prior version can be replaced by recomputing with the current algorithm.
+  - `empty_baseline_after_schema_migration_is_recoverable` -- verifies an empty-but-initialized baseline returns count 0 and the initialized flag persists.
+  - `populated_baseline_reports_correct_count` -- verifies baseline count accuracy after upsert.
+  - `hmac_recomputation_after_upgrade_succeeds` -- verifies that a stale HMAC from a prior version can be replaced by recomputing with the current algorithm.
 
 ### Validation
 - `cargo fmt --all --check` passes.
@@ -838,22 +838,22 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 ## [0.24.0] - 2026-04-08
 
 ### Release Summary
-- Fourth-round security hardening addressing 13 vulnerabilities (VIGIL-VULN-038 through VIGIL-VULN-050) found by a sophisticated local adversary with root access who assumed all Round 1–3 fixes were deployed. Theme: eliminate temporal coherence gaps — every "open by path" and "load from disk" in a security-critical code path was a TOCTOU or trust-refresh the attacker could poison. Carry trust from startup; don't re-derive it.
+- Fourth-round security hardening addressing 13 vulnerabilities (VIGIL-VULN-038 through VIGIL-VULN-050) found by a sophisticated local adversary with root access who assumed all Round 1–3 fixes were deployed. Theme: eliminate temporal coherence gaps -- every "open by path" and "load from disk" in a security-critical code path was a TOCTOU or trust-refresh the attacker could poison. Carry trust from startup; don't re-derive it.
 
 ### Fixed
-- **security:** audit.db identity (inode/device) now tracked and verified alongside baseline.db — prevents atomic file replacement of audit evidence (VIGIL-VULN-038, Critical).
-- **security:** scan scheduler now uses the startup baseline connection instead of re-opening by path — closes TOCTOU window for on-demand and scheduled scans (VIGIL-VULN-039, Critical).
-- **security:** coordinator WAL checkpoint uses startup connections — prevents checkpoint of attacker-replaced database (VIGIL-VULN-040, High).
-- **security:** HMAC key loaded exactly once at startup and stored in Daemon struct — key file replacement no longer poisons subsequent HMAC operations. Baseline writer, alert dispatcher, coordinator, and control socket all use the startup key (VIGIL-VULN-041, Critical).
-- **security:** runtime directory files (metrics.json, state.json, health.json) written via atomic temp+rename — prevents partial-read spoofing and race-condition file replacement (VIGIL-VULN-042, High).
-- **security:** Bloom filter fast-reject now checks path prefixes instead of full path — eliminates non-deterministic monitoring gaps for files under watched directories (VIGIL-VULN-043, High).
-- **security:** `package_update` detection implemented in worker — auto-rebaseline code path is no longer dead; reduces alert fatigue that enabled evasion (VIGIL-VULN-044, High).
-- **security:** control socket nonce generation fails closed when /dev/urandom is unavailable — prevents predictable nonce from zeroed buffer (VIGIL-VULN-045, Medium).
-- **security:** failed audit writes buffered in memory (bounded to 1000) and retried after DB reopen — closes silent evidence gap during audit DB failures. `audit_entries_lost` metric added (VIGIL-VULN-046, Medium).
-- **security:** exclusion filter self-path check uses path-component-aware comparison — prevents `/run/vigil`-prefixed attacker directories from being silently excluded (VIGIL-VULN-047, Medium).
-- **security:** config reload HMAC verification uses startup baseline connection — prevents TOCTOU when both config and baseline DB are replaced (VIGIL-VULN-048, Medium).
-- **security:** `NOTIFY_SOCKET` validated before sd_notify calls — only accepts `/run/systemd/` paths and abstract sockets; prevents lifecycle state leak to attacker-controlled socket (VIGIL-VULN-049, Low).
-- **security:** scheduled scan severity resolved from watch group config instead of hardcoded Medium — prevents Critical/High severity downgrade for scheduled findings (VIGIL-VULN-050, Medium).
+- **security:** audit.db identity (inode/device) now tracked and verified alongside baseline.db -- prevents atomic file replacement of audit evidence (VIGIL-VULN-038, Critical).
+- **security:** scan scheduler now uses the startup baseline connection instead of re-opening by path -- closes TOCTOU window for on-demand and scheduled scans (VIGIL-VULN-039, Critical).
+- **security:** coordinator WAL checkpoint uses startup connections -- prevents checkpoint of attacker-replaced database (VIGIL-VULN-040, High).
+- **security:** HMAC key loaded exactly once at startup and stored in Daemon struct -- key file replacement no longer poisons subsequent HMAC operations. Baseline writer, alert dispatcher, coordinator, and control socket all use the startup key (VIGIL-VULN-041, Critical).
+- **security:** runtime directory files (metrics.json, state.json, health.json) written via atomic temp+rename -- prevents partial-read spoofing and race-condition file replacement (VIGIL-VULN-042, High).
+- **security:** Bloom filter fast-reject now checks path prefixes instead of full path -- eliminates non-deterministic monitoring gaps for files under watched directories (VIGIL-VULN-043, High).
+- **security:** `package_update` detection implemented in worker -- auto-rebaseline code path is no longer dead; reduces alert fatigue that enabled evasion (VIGIL-VULN-044, High).
+- **security:** control socket nonce generation fails closed when /dev/urandom is unavailable -- prevents predictable nonce from zeroed buffer (VIGIL-VULN-045, Medium).
+- **security:** failed audit writes buffered in memory (bounded to 1000) and retried after DB reopen -- closes silent evidence gap during audit DB failures. `audit_entries_lost` metric added (VIGIL-VULN-046, Medium).
+- **security:** exclusion filter self-path check uses path-component-aware comparison -- prevents `/run/vigil`-prefixed attacker directories from being silently excluded (VIGIL-VULN-047, Medium).
+- **security:** config reload HMAC verification uses startup baseline connection -- prevents TOCTOU when both config and baseline DB are replaced (VIGIL-VULN-048, Medium).
+- **security:** `NOTIFY_SOCKET` validated before sd_notify calls -- only accepts `/run/systemd/` paths and abstract sockets; prevents lifecycle state leak to attacker-controlled socket (VIGIL-VULN-049, Low).
+- **security:** scheduled scan severity resolved from watch group config instead of hardcoded Medium -- prevents Critical/High severity downgrade for scheduled findings (VIGIL-VULN-050, Medium).
 
 ## [0.23.0] - 2026-04-08
 
@@ -861,19 +861,19 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 - Third-round security hardening release addressing 13 vulnerabilities identified in an adversarial audit by a sophisticated local adversary with root access. Key changes: baseline DB TOCTOU detection via inode/device identity tracking, WAL/SHM sidecar permission restriction, database directory ownership verification, VIGIL_CONFIG environment variable gated for production builds, mount-change detection for bind-mount evasion, fanotify queue overflow handling, baseline HMAC expanded to all 13 security-relevant fields, self-binary monitoring, systemd unit hardening, PID recycling race mitigation, negative clock jump detection, and symlink target canonical resolution.
 
 ### Fixed
-- **security**: baseline DB TOCTOU window closed — after HMAC verification at startup, inode+device identity of the baseline database is recorded. Before every housekeeping tick, the coordinator stats the DB path and compares identity; if the file has been atomically replaced, all operations are refused and a critical log is emitted (VIGIL-VULN-025, Critical).
-- **security**: SQLite WAL/SHM sidecar files now permission-restricted — after opening a database in WAL mode, permissions on `{db}-wal` and `{db}-shm` are explicitly set to 0600 if they exist. Process umask set to 0077 at daemon startup before any file creation (VIGIL-VULN-026, High).
-- **security**: database directory ownership and permissions verified — `open_db_internal` now verifies the database directory is owned by uid 0 with mode no wider than 0750. Rejects unsafe directories with a descriptive error (VIGIL-VULN-027, High).
-- **security**: `VIGIL_CONFIG` environment variable gated in production — environment variable config path override is only unrestricted in test/debug builds. In production (release) builds, the target file must be owned by root with mode <= 0644. Applied consistently across config loading, coordinator content reads, and lib hash computation (VIGIL-VULN-028, Critical).
-- **security**: `VIGIL_SKIP_PACKAGE_OWNER` environment variable gated behind `#[cfg(any(test, debug_assertions))]` — in production builds, package owner lookup is always performed. Prevents attackers from disabling package attribution (VIGIL-VULN-029, Medium).
-- **security**: bind-mount evasion detection — coordinator housekeeping loop now re-reads `/proc/self/mountinfo` every 60 seconds and compares against the mount set established at startup. New mounts over watched paths trigger error-level logging (VIGIL-VULN-030, High).
-- **security**: fanotify kernel queue overflow (`FAN_Q_OVERFLOW`) now detected and logged — overflow events increment the new `kernel_queue_overflows` metric counter and log at error level, alerting operators that file changes may have been missed (VIGIL-VULN-031, High).
-- **security**: baseline HMAC now covers all 13 security-relevant fields — expanded canonical data to include path, hash, size, mode, owner_uid, owner_gid, inode, device, file_type, symlink_target, capabilities, xattrs_json, and security_context. Previously only 5 fields were covered. Stored HMACs are automatically recomputed on upgrade (VIGIL-VULN-032, High).
-- **security**: Vigil's own binaries added to self-monitoring — `/usr/bin/vigil` and `/usr/bin/vigild` added to the default `vigil_self` watch group. On startup, the BLAKE3 hash of `/proc/self/exe` is computed, logged, and stored in `config_state` key `binary_hash` (VIGIL-VULN-033, Medium).
-- **security**: systemd unit file hardened — added `NotifyAccess=main` to prevent sd_notify socket spoofing, changed `ProtectHome=read-only` to `ProtectHome=true`, removed `/var/log/vigil` from `ReadWritePaths` (VIGIL-VULN-034, Medium).
-- **security**: process attribution PID recycling race minimized — `/proc/{pid}/exe` readlink moved to immediately after reading fanotify event metadata, before any channel send or bloom filter check. Added comment documenting that `FAN_REPORT_PIDFD` (Linux 6.2+) would eliminate this race entirely (VIGIL-VULN-035, Low).
-- **security**: negative clock jump detection added — coordinator now detects backward clock jumps exceeding 60 seconds and skips audit rotation. `last_rotation_timestamp` is not updated when any clock anomaly (forward or backward) is detected, preventing replay attacks that manipulate the system clock (VIGIL-VULN-036, Medium).
-- **security**: symlink target tracking uses canonical resolution — `FileSnapshot::from_fd` now resolves symlink targets via `canonicalize()` (falling back to `read_link()`) to capture the full resolution chain. Changes in the resolved canonical target between scans emit `SymlinkTargetChanged` alerts (VIGIL-VULN-037, Medium).
+- **security**: baseline DB TOCTOU window closed -- after HMAC verification at startup, inode+device identity of the baseline database is recorded. Before every housekeeping tick, the coordinator stats the DB path and compares identity; if the file has been atomically replaced, all operations are refused and a critical log is emitted (VIGIL-VULN-025, Critical).
+- **security**: SQLite WAL/SHM sidecar files now permission-restricted -- after opening a database in WAL mode, permissions on `{db}-wal` and `{db}-shm` are explicitly set to 0600 if they exist. Process umask set to 0077 at daemon startup before any file creation (VIGIL-VULN-026, High).
+- **security**: database directory ownership and permissions verified -- `open_db_internal` now verifies the database directory is owned by uid 0 with mode no wider than 0750. Rejects unsafe directories with a descriptive error (VIGIL-VULN-027, High).
+- **security**: `VIGIL_CONFIG` environment variable gated in production -- environment variable config path override is only unrestricted in test/debug builds. In production (release) builds, the target file must be owned by root with mode <= 0644. Applied consistently across config loading, coordinator content reads, and lib hash computation (VIGIL-VULN-028, Critical).
+- **security**: `VIGIL_SKIP_PACKAGE_OWNER` environment variable gated behind `#[cfg(any(test, debug_assertions))]` -- in production builds, package owner lookup is always performed. Prevents attackers from disabling package attribution (VIGIL-VULN-029, Medium).
+- **security**: bind-mount evasion detection -- coordinator housekeeping loop now re-reads `/proc/self/mountinfo` every 60 seconds and compares against the mount set established at startup. New mounts over watched paths trigger error-level logging (VIGIL-VULN-030, High).
+- **security**: fanotify kernel queue overflow (`FAN_Q_OVERFLOW`) now detected and logged -- overflow events increment the new `kernel_queue_overflows` metric counter and log at error level, alerting operators that file changes may have been missed (VIGIL-VULN-031, High).
+- **security**: baseline HMAC now covers all 13 security-relevant fields -- expanded canonical data to include path, hash, size, mode, owner_uid, owner_gid, inode, device, file_type, symlink_target, capabilities, xattrs_json, and security_context. Previously only 5 fields were covered. Stored HMACs are automatically recomputed on upgrade (VIGIL-VULN-032, High).
+- **security**: Vigil's own binaries added to self-monitoring -- `/usr/bin/vigil` and `/usr/bin/vigild` added to the default `vigil_self` watch group. On startup, the BLAKE3 hash of `/proc/self/exe` is computed, logged, and stored in `config_state` key `binary_hash` (VIGIL-VULN-033, Medium).
+- **security**: systemd unit file hardened -- added `NotifyAccess=main` to prevent sd_notify socket spoofing, changed `ProtectHome=read-only` to `ProtectHome=true`, removed `/var/log/vigil` from `ReadWritePaths` (VIGIL-VULN-034, Medium).
+- **security**: process attribution PID recycling race minimized -- `/proc/{pid}/exe` readlink moved to immediately after reading fanotify event metadata, before any channel send or bloom filter check. Added comment documenting that `FAN_REPORT_PIDFD` (Linux 6.2+) would eliminate this race entirely (VIGIL-VULN-035, Low).
+- **security**: negative clock jump detection added -- coordinator now detects backward clock jumps exceeding 60 seconds and skips audit rotation. `last_rotation_timestamp` is not updated when any clock anomaly (forward or backward) is detected, preventing replay attacks that manipulate the system clock (VIGIL-VULN-036, Medium).
+- **security**: symlink target tracking uses canonical resolution -- `FileSnapshot::from_fd` now resolves symlink targets via `canonicalize()` (falling back to `read_link()`) to capture the full resolution chain. Changes in the resolved canonical target between scans emit `SymlinkTargetChanged` alerts (VIGIL-VULN-037, Medium).
 
 ### Tests
 - Added 8 new tests covering TOCTOU inode detection, full HMAC field coverage, mount parsing, kernel overflow metrics, self-binary watch group inclusion, and symlink canonical resolution.
@@ -891,18 +891,18 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 - This release focuses on correctness under adversarial conditions while preserving existing daemon and CLI behavior.
 
 ### Fixed
-- **security**: capability escalation detection now works — `FileSnapshot::has_dangerous_capabilities()` previously searched ASCII strings (`cap_setuid`, `cap_sys_admin`, `cap_dac_override`) inside hex-encoded binary xattr data, always returning false. Capability detection now decodes `security.capability` bytes and checks dangerous bits directly in the permitted mask (`CAP_DAC_OVERRIDE` bit 1, `CAP_SETUID` bit 7, `CAP_SYS_ADMIN` bit 21). Severity escalation to `Critical` for dangerous capability-bearing modified files now triggers as designed (VIGIL-VULN-013, Critical).
-- **security**: maintenance window suppression no longer drops high-impact alerts — during maintenance windows, package-owned changes were fully suppressed regardless of severity. `Critical` and `High` are now never fully suppressed during maintenance; alerts are dispatched with `maintenance_window=true` context. `Low` and `Medium` package-owned changes remain suppressible (VIGIL-VULN-014, High).
-- **security**: symlink detection from fd capture corrected — `from_fd()` used `file.metadata()` (`fstat`), which follows symlinks and cannot identify the path as a symlink. `from_fd()` now performs one path-level `symlink_metadata()` (`lstat`) check for symlink classification and reads `symlink_target` only when the path is a symlink (VIGIL-VULN-015, High).
-- **security**: hash mmap path re-open removed (TOCTOU hardening) — hashing used `blake3::Hasher::update_mmap()` with `/proc/self/fd/N`, which re-opened by path and introduced a micro-TOCTOU window. Hashing now performs direct `libc::mmap` on the original fd with an RAII `munmap` guard and falls back to buffered I/O when mmap fails. Metadata and hash are now derived from the same file description (VIGIL-VULN-016, High).
-- **security**: package manager subprocesses now use absolute binary paths (`/usr/bin/pacman`, `/usr/bin/dpkg`, `/usr/bin/rpm`) — backend detection and invocation previously trusted `PATH` resolution, allowing command hijacking from hostile `PATH` ordering. Added root-ownership guard for `/var/lib/dpkg/info` before parsing `*.list` files (VIGIL-VULN-017, High).
-- **security**: audit rotation hardened against wall-clock manipulation — coordinator audit rotation previously operated directly from `Utc::now()` without anomaly checks. New safeguards skip rotation when the clock jumps forward by more than 1 hour between ticks and when one pass would delete more than 50% of all audit rows, reducing evidence-destruction risk via clock-forward attacks (VIGIL-VULN-018, High).
-- **security**: file size changes are now visible in diff engine — `diff()` compared hashes but not sizes, and no explicit size-change signal existed. Added `Change::SizeChanged { old, new }`, wired through display/primary change mapping, audit type mapping, and alert naming (VIGIL-VULN-019, Medium).
-- **security**: device changes are now visible in diff engine — `diff()` checked inode changes but omitted device (`st_dev`) changes. Added `Change::DeviceChanged { old, new }`, wired through display/primary change mapping, audit type mapping, and alert naming, improving detection of cross-filesystem substitution/bind-mount style swaps (VIGIL-VULN-020, Medium).
-- **security**: duplicate `security.*` xattrs removed from generic xattr map — `read_xattrs_fd()` filtered `system.*` only, leaving `security.*` duplicated in both dedicated fields and generic xattr map. Generic xattr collection now skips both `system.*` and `security.*` keys, avoiding duplicate/noisy change entries (VIGIL-VULN-021, Low).
-- **security**: fanotify mask now includes `FAN_CLOSE_WRITE` — monitoring relied on `FAN_MODIFY` only, which can fire on partial writes. Added `FAN_CLOSE_WRITE` to mask and mapped it to `FsEventType::Modify` alongside `FAN_MODIFY`, improving stability for post-write integrity checks and reducing partial-write false positives (VIGIL-VULN-022, Medium).
-- **security**: baseline LRU cache coherency fixed after auto-rebaseline writes — worker LRU baseline cache could remain stale after baseline writer commits. Added shared `Arc<AtomicU64>` generation counter; baseline writer increments after successful commit, workers compare local generation each loop tick and clear cache on mismatch. Cache invalidation now propagates quickly and deterministically (VIGIL-VULN-023, High).
-- **security**: HMAC key handling now zeroizes intermediate material — added `zeroize` dependency and applied explicit zeroization to intermediate decoded key text in `load_hmac_key()`. `AlertDispatcher` now stores HMAC keys as `Option<Zeroizing<Vec<u8>>>`, reducing residual key material lifetime in process heap memory (VIGIL-VULN-024, Medium).
+- **security**: capability escalation detection now works -- `FileSnapshot::has_dangerous_capabilities()` previously searched ASCII strings (`cap_setuid`, `cap_sys_admin`, `cap_dac_override`) inside hex-encoded binary xattr data, always returning false. Capability detection now decodes `security.capability` bytes and checks dangerous bits directly in the permitted mask (`CAP_DAC_OVERRIDE` bit 1, `CAP_SETUID` bit 7, `CAP_SYS_ADMIN` bit 21). Severity escalation to `Critical` for dangerous capability-bearing modified files now triggers as designed (VIGIL-VULN-013, Critical).
+- **security**: maintenance window suppression no longer drops high-impact alerts -- during maintenance windows, package-owned changes were fully suppressed regardless of severity. `Critical` and `High` are now never fully suppressed during maintenance; alerts are dispatched with `maintenance_window=true` context. `Low` and `Medium` package-owned changes remain suppressible (VIGIL-VULN-014, High).
+- **security**: symlink detection from fd capture corrected -- `from_fd()` used `file.metadata()` (`fstat`), which follows symlinks and cannot identify the path as a symlink. `from_fd()` now performs one path-level `symlink_metadata()` (`lstat`) check for symlink classification and reads `symlink_target` only when the path is a symlink (VIGIL-VULN-015, High).
+- **security**: hash mmap path re-open removed (TOCTOU hardening) -- hashing used `blake3::Hasher::update_mmap()` with `/proc/self/fd/N`, which re-opened by path and introduced a micro-TOCTOU window. Hashing now performs direct `libc::mmap` on the original fd with an RAII `munmap` guard and falls back to buffered I/O when mmap fails. Metadata and hash are now derived from the same file description (VIGIL-VULN-016, High).
+- **security**: package manager subprocesses now use absolute binary paths (`/usr/bin/pacman`, `/usr/bin/dpkg`, `/usr/bin/rpm`) -- backend detection and invocation previously trusted `PATH` resolution, allowing command hijacking from hostile `PATH` ordering. Added root-ownership guard for `/var/lib/dpkg/info` before parsing `*.list` files (VIGIL-VULN-017, High).
+- **security**: audit rotation hardened against wall-clock manipulation -- coordinator audit rotation previously operated directly from `Utc::now()` without anomaly checks. New safeguards skip rotation when the clock jumps forward by more than 1 hour between ticks and when one pass would delete more than 50% of all audit rows, reducing evidence-destruction risk via clock-forward attacks (VIGIL-VULN-018, High).
+- **security**: file size changes are now visible in diff engine -- `diff()` compared hashes but not sizes, and no explicit size-change signal existed. Added `Change::SizeChanged { old, new }`, wired through display/primary change mapping, audit type mapping, and alert naming (VIGIL-VULN-019, Medium).
+- **security**: device changes are now visible in diff engine -- `diff()` checked inode changes but omitted device (`st_dev`) changes. Added `Change::DeviceChanged { old, new }`, wired through display/primary change mapping, audit type mapping, and alert naming, improving detection of cross-filesystem substitution/bind-mount style swaps (VIGIL-VULN-020, Medium).
+- **security**: duplicate `security.*` xattrs removed from generic xattr map -- `read_xattrs_fd()` filtered `system.*` only, leaving `security.*` duplicated in both dedicated fields and generic xattr map. Generic xattr collection now skips both `system.*` and `security.*` keys, avoiding duplicate/noisy change entries (VIGIL-VULN-021, Low).
+- **security**: fanotify mask now includes `FAN_CLOSE_WRITE` -- monitoring relied on `FAN_MODIFY` only, which can fire on partial writes. Added `FAN_CLOSE_WRITE` to mask and mapped it to `FsEventType::Modify` alongside `FAN_MODIFY`, improving stability for post-write integrity checks and reducing partial-write false positives (VIGIL-VULN-022, Medium).
+- **security**: baseline LRU cache coherency fixed after auto-rebaseline writes -- worker LRU baseline cache could remain stale after baseline writer commits. Added shared `Arc<AtomicU64>` generation counter; baseline writer increments after successful commit, workers compare local generation each loop tick and clear cache on mismatch. Cache invalidation now propagates quickly and deterministically (VIGIL-VULN-023, High).
+- **security**: HMAC key handling now zeroizes intermediate material -- added `zeroize` dependency and applied explicit zeroization to intermediate decoded key text in `load_hmac_key()`. `AlertDispatcher` now stores HMAC keys as `Option<Zeroizing<Vec<u8>>>`, reducing residual key material lifetime in process heap memory (VIGIL-VULN-024, Medium).
 
 ### Tests
 - Added and updated unit/integration coverage for the security fixes, including:
@@ -925,36 +925,36 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 Comprehensive security hardening addressing 11 categories of evasion and tampering vulnerabilities identified in an adversarial review. Key changes: Vigil now watches its own config and HMAC key files, verifies baseline integrity via HMAC on startup, refuses to auto-reinitialize a previously-initialized but empty baseline, includes previous chain hashes in audit HMAC computation, authenticates control socket connections via challenge-response, logs all control socket operations with peer credentials, detects and alerts on sustained event drops, narrows default system exclusions to close monitoring blind spots, and defaults scheduled scans to full mode to defeat mtime-reset attacks.
 
 ### Changed
-- **security**: default scheduled scan mode changed to `Full` — `scanner.scheduled_mode` now defaults to `Full` instead of `Incremental`. Full mode rehashes every file regardless of mtime, providing protection against mtime-reset evasion attacks. Users with very large baselines can set `scheduled_mode = "incremental"` in their config (VIGIL-VULN-005, High).
-- **security**: narrowed `/run/*` system exclusion — the blanket `/run/*` exclusion is replaced with targeted exclusions (`/run/user/*`, `/run/lock/*`, `/run/utmp`). Attackers could persist via transient systemd units in `/run/systemd/transient/`; blanket exclusion created a monitoring blind spot. `ExclusionsConfig::default()` now populates default exclusion patterns and system exclusions instead of producing empty vectors (VIGIL-VULN-010, High).
-- **security**: HMAC chain now includes previous chain hash — `build_audit_hmac_data()` takes a `previous_chain_hash` parameter, chaining individual audit entry HMACs. Deleting entries from the middle of the audit chain is now detectable via HMAC verification, not just via the BLAKE3 chain hash (which has no secret key). Added `verify_chain_with_hmac()` and helper functions `changes_json_to_primary_type()` and `changes_json_extract_hashes()` for HMAC data reconstruction during verification (VIGIL-VULN-004, High).
-- **security**: debounce drain now re-checks paths — when debounced pending paths are drained, they are now re-checked by processing them as synthetic `FsEvent` objects. Previously, drained paths only had their LRU cache entries invalidated; if no further event arrived, the change was silently missed until the next scheduled scan (VIGIL-VULN-003, Medium).
-- **security**: hardened `ensure_baseline_health` to refuse silent auto-reinitialize — after the first successful baseline initialization, a `baseline_initialized` flag is set in `config_state`. If the baseline is later found empty but was previously initialized, Vigil refuses to auto-reinitialize and returns an error with a desktop notification. Previously an attacker could truncate the baseline and the daemon would silently rebuild it (VIGIL-VULN-011, Critical).
-- **security**: event channel capacity now configurable — new config field `daemon.event_channel_capacity` (default: 4096, up from hardcoded 2048). Higher values reduce event drops under sustained I/O load or flood conditions (VIGIL-VULN-009, Low).
+- **security**: default scheduled scan mode changed to `Full` -- `scanner.scheduled_mode` now defaults to `Full` instead of `Incremental`. Full mode rehashes every file regardless of mtime, providing protection against mtime-reset evasion attacks. Users with very large baselines can set `scheduled_mode = "incremental"` in their config (VIGIL-VULN-005, High).
+- **security**: narrowed `/run/*` system exclusion -- the blanket `/run/*` exclusion is replaced with targeted exclusions (`/run/user/*`, `/run/lock/*`, `/run/utmp`). Attackers could persist via transient systemd units in `/run/systemd/transient/`; blanket exclusion created a monitoring blind spot. `ExclusionsConfig::default()` now populates default exclusion patterns and system exclusions instead of producing empty vectors (VIGIL-VULN-010, High).
+- **security**: HMAC chain now includes previous chain hash -- `build_audit_hmac_data()` takes a `previous_chain_hash` parameter, chaining individual audit entry HMACs. Deleting entries from the middle of the audit chain is now detectable via HMAC verification, not just via the BLAKE3 chain hash (which has no secret key). Added `verify_chain_with_hmac()` and helper functions `changes_json_to_primary_type()` and `changes_json_extract_hashes()` for HMAC data reconstruction during verification (VIGIL-VULN-004, High).
+- **security**: debounce drain now re-checks paths -- when debounced pending paths are drained, they are now re-checked by processing them as synthetic `FsEvent` objects. Previously, drained paths only had their LRU cache entries invalidated; if no further event arrived, the change was silently missed until the next scheduled scan (VIGIL-VULN-003, Medium).
+- **security**: hardened `ensure_baseline_health` to refuse silent auto-reinitialize -- after the first successful baseline initialization, a `baseline_initialized` flag is set in `config_state`. If the baseline is later found empty but was previously initialized, Vigil refuses to auto-reinitialize and returns an error with a desktop notification. Previously an attacker could truncate the baseline and the daemon would silently rebuild it (VIGIL-VULN-011, Critical).
+- **security**: event channel capacity now configurable -- new config field `daemon.event_channel_capacity` (default: 4096, up from hardcoded 2048). Higher values reduce event drops under sustained I/O load or flood conditions (VIGIL-VULN-009, Low).
 
 ### Added
-- **security**: self-monitoring watch group — default config now includes a `vigil_self` watch group at `Critical` severity, watching `/etc/vigil/vigil.toml` and `/etc/vigil/hmac.key`. An attacker who modifies Vigil's config or HMAC key now triggers a Critical alert. `validate_config_deep()` emits a warning if no watch group covers the config file path. `process_event_inner()` logs at `tracing::error!` when these files are changed (VIGIL-VULN-001, Critical).
-- **security**: baseline tamper detection on startup — after every baseline initialization, a baseline HMAC is computed over all entries and stored in `config_state`. On daemon startup with `security.hmac_signing = true`, the stored baseline HMAC is compared to a freshly computed one; mismatch refuses to start with a Critical desktop notification. The baseline writer thread periodically recomputes the HMAC to keep it current. Previously the baseline could be silently replaced without detection (VIGIL-VULN-002, Critical).
-- **security**: config file integrity verification on startup and reload — on daemon startup, the BLAKE3 hash of the config file is computed and stored. On SIGHUP reload, if `security.hmac_signing = true` and the stored config file HMAC doesn't match, the reload is rejected. Previously config file modifications between restarts were undetected (VIGIL-VULN-012, High).
-- **security**: control socket now uses challenge-response authentication — new `security.control_socket_auth` config field (default: `true`). When enabled with `hmac_signing = true`, the server sends a 32-byte random hex nonce and the client must respond with `HMAC-SHA256(nonce, hmac_key)`. Previously the control socket accepted unauthenticated commands from any local process with socket access. Falls back to unauthenticated mode with `tracing::warn!` when HMAC signing is disabled (VIGIL-VULN-006, Critical).
-- **security**: audit trail for control socket operations — `reload` and `scan` control socket commands now log at `tracing::warn!` with the method name. Peer credentials (PID, UID, GID) are logged via `SO_PEERCRED` on every connection. New `control_commands` counter tracks total control socket commands executed. Previously control socket commands were unlogged with no peer credential capture (VIGIL-VULN-007, Medium).
-- **security**: event flood detection — the coordinator thread now tracks `events_dropped` across housekeeping ticks and logs at `tracing::error!` with both the delta and total when the count increases, alerting on possible evasion attacks or I/O overload. Previously sustained event drops were silent (VIGIL-VULN-008, Medium).
+- **security**: self-monitoring watch group -- default config now includes a `vigil_self` watch group at `Critical` severity, watching `/etc/vigil/vigil.toml` and `/etc/vigil/hmac.key`. An attacker who modifies Vigil's config or HMAC key now triggers a Critical alert. `validate_config_deep()` emits a warning if no watch group covers the config file path. `process_event_inner()` logs at `tracing::error!` when these files are changed (VIGIL-VULN-001, Critical).
+- **security**: baseline tamper detection on startup -- after every baseline initialization, a baseline HMAC is computed over all entries and stored in `config_state`. On daemon startup with `security.hmac_signing = true`, the stored baseline HMAC is compared to a freshly computed one; mismatch refuses to start with a Critical desktop notification. The baseline writer thread periodically recomputes the HMAC to keep it current. Previously the baseline could be silently replaced without detection (VIGIL-VULN-002, Critical).
+- **security**: config file integrity verification on startup and reload -- on daemon startup, the BLAKE3 hash of the config file is computed and stored. On SIGHUP reload, if `security.hmac_signing = true` and the stored config file HMAC doesn't match, the reload is rejected. Previously config file modifications between restarts were undetected (VIGIL-VULN-012, High).
+- **security**: control socket now uses challenge-response authentication -- new `security.control_socket_auth` config field (default: `true`). When enabled with `hmac_signing = true`, the server sends a 32-byte random hex nonce and the client must respond with `HMAC-SHA256(nonce, hmac_key)`. Previously the control socket accepted unauthenticated commands from any local process with socket access. Falls back to unauthenticated mode with `tracing::warn!` when HMAC signing is disabled (VIGIL-VULN-006, Critical).
+- **security**: audit trail for control socket operations -- `reload` and `scan` control socket commands now log at `tracing::warn!` with the method name. Peer credentials (PID, UID, GID) are logged via `SO_PEERCRED` on every connection. New `control_commands` counter tracks total control socket commands executed. Previously control socket commands were unlogged with no peer credential capture (VIGIL-VULN-007, Medium).
+- **security**: event flood detection -- the coordinator thread now tracks `events_dropped` across housekeeping ticks and logs at `tracing::error!` with both the delta and total when the count increases, alerting on possible evasion attacks or I/O overload. Previously sustained event drops were silent (VIGIL-VULN-008, Medium).
 - New `ReloadSource` enum in `src/coordinator.rs` (`Signal`, `ControlSocket`, `Unknown`) for differentiating reload triggers in future use.
 
 ### Tests
-- `tests/baseline_tamper_tests.rs` — 5 tests covering baseline HMAC roundtrip, tamper detection, content-dependent HMAC output, `baseline_initialized` flag behavior, and empty-baseline-after-init refusal.
-- `tests/self_monitoring_tests.rs` — 4 tests verifying config/HMAC key files are not excluded, `vigil_self` watch group exists, mutable state files are excluded.
+- `tests/baseline_tamper_tests.rs` -- 5 tests covering baseline HMAC roundtrip, tamper detection, content-dependent HMAC output, `baseline_initialized` flag behavior, and empty-baseline-after-init refusal.
+- `tests/self_monitoring_tests.rs` -- 4 tests verifying config/HMAC key files are not excluded, `vigil_self` watch group exists, mutable state files are excluded.
 - `src/config/mod.rs`: `default_scheduled_mode_is_full`, `default_config_includes_vigil_self_watch_group`, `validate_deep_warns_when_config_not_watched`.
 - `src/filter/exclusion.rs`: `run_systemd_transient_not_excluded_by_default`, `run_vigil_excluded_via_self_paths`, `run_user_excluded_by_default`, `tmp_excluded_by_default`, `proc_excluded_by_default`, `vigil_config_not_excluded`.
 - `src/hmac.rs`: updated `build_audit_data_format` and `build_audit_data_none_hashes` for 7-arg signature; added `build_audit_data_includes_previous_chain_hash`.
 - `src/control.rs`: `control_commands_metric_increments_on_reload`.
 
 ### Documentation
-- `CHANGELOG.md` — this entry.
-- `docs/CONFIGURATION.md` — updated `system_exclusions` default, `scheduled_mode` default, added `event_channel_capacity` and `control_socket_auth` fields.
-- `docs/ARCHITECTURE.md` — updated control socket description to note authentication and audit logging.
-- `docs/THREAT_MODEL.md` — updated evasion considerations and mitigations to reflect new hardening.
-- `docs/SECURITY.md` — updated security boundary and HMAC key lifecycle notes.
+- `CHANGELOG.md` -- this entry.
+- `docs/CONFIGURATION.md` -- updated `system_exclusions` default, `scheduled_mode` default, added `event_channel_capacity` and `control_socket_auth` fields.
+- `docs/ARCHITECTURE.md` -- updated control socket description to note authentication and audit logging.
+- `docs/THREAT_MODEL.md` -- updated evasion considerations and mitigations to reflect new hardening.
+- `docs/SECURITY.md` -- updated security boundary and HMAC key lifecycle notes.
 
 ## [0.20.0] - 2026-04-07
 
@@ -1226,7 +1226,7 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 
 ### New Features
 
-#### `vigil audit show` — full filtering and rich display
+#### `vigil audit show` -- full filtering and rich display
 - Added `--path <glob>` filter: matches paths using SQL LIKE with glob-to-LIKE conversion (e.g. `--path '/etc/*'` or `--path '/usr/bin/sudo'`).
 - Added `--severity <level>` filter: restricts output to entries matching `low`, `medium`, `high`, or `critical`.
 - Added `--group <name>` filter: restricts output to entries from a specific watch group (e.g. `--group system_boot`).
@@ -1236,13 +1236,13 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 - Added `--suppressed` flag: shows only entries where alerts were suppressed.
 - Added `-v`/`--verbose` flag: expands each entry to show parsed change details (field-by-field diffs), package name, watch group, maintenance/suppression status.
 - Changed default entry count from 20 to 50 (`-n`/`--last`, default 50).
-- Header now shows active filters and match count (e.g. "Vigil — Audit Log (23 matches)") with filter summary line.
-- Unfiltered header shows entry count vs total (e.g. "Vigil — Audit Log (50 of 9,422 entries)").
+- Header now shows active filters and match count (e.g. "Vigil -- Audit Log (23 matches)") with filter summary line.
+- Unfiltered header shows entry count vs total (e.g. "Vigil -- Audit Log (50 of 9,422 entries)").
 - Footer shows total entry count and hints to add `-v` when change details are available.
 - All filters combine with AND logic for precise incident investigation.
 - Files changed: `src/cli.rs` (`AuditAction::Show` variant), `src/main.rs` (`cmd_audit()` Show handler).
 
-#### `vigil audit stats` — audit log statistics
+#### `vigil audit stats` -- audit log statistics
 - New subcommand providing aggregate statistics over configurable time periods.
 - `--period` flag accepts: `today`, `24h`, `7d` (default), `30d`, `all`.
 - Human output includes:
@@ -1308,7 +1308,7 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 - File changed: `src/main.rs` (`entries_to_json()`).
 
 ### Backward Compatibility
-- Existing `get_recent()` and `search()` functions in `src/db/audit_ops.rs` are preserved — other modules (`src/alert/mod.rs`, `tests/alert_dispatcher_tests.rs`) call them directly.
+- Existing `get_recent()` and `search()` functions in `src/db/audit_ops.rs` are preserved -- other modules (`src/alert/mod.rs`, `tests/alert_dispatcher_tests.rs`) call them directly.
 - `AuditAction::Verify` handler unchanged.
 - The `Cargo.lock` version bump is the only dependency-adjacent change.
 
@@ -1347,23 +1347,23 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 - In `src/worker.rs`, when a package update was detected and `auto_rebaseline` was enabled, the worker sent a `BaselineUpdate` with `Default::default()` for all fields (zeroed inode, empty hash, size 0, mode 0, uid 0, gid 0, epoch mtime).
 - The baseline writer in `src/lib.rs` upserted this entry directly, overwriting the real file metadata with all-zero values.
 - On the next scan or event, every field differed from the zeroed baseline, producing false-positive change detections for files that were already correctly handled by the package manager.
-- Fixed by re-snapshotting the file with `FileSnapshot::from_path()` at accept time, capturing the actual post-update state. If the snapshot fails (file deleted between event and rebaseline), the update is silently skipped — the next scan will catch the deletion.
+- Fixed by re-snapshotting the file with `FileSnapshot::from_path()` at accept time, capturing the actual post-update state. If the snapshot fails (file deleted between event and rebaseline), the update is silently skipped -- the next scan will catch the deletion.
 - File changed: `src/worker.rs` (auto-rebaseline block in `spawn_workers`).
 
 ### New Features
 
 #### Real-time detection of new files under watched paths
-- Previously, when a `Create` or `MovedTo` filesystem event arrived for a path with no baseline entry, both `process_event()` and `process_event_cached()` logged at info level and returned `Ok(None)` — silently discarding the event.
+- Previously, when a `Create` or `MovedTo` filesystem event arrived for a path with no baseline entry, both `process_event()` and `process_event_cached()` logged at info level and returned `Ok(None)` -- silently discarding the event.
 - This meant a new binary dropped into `/usr/bin/`, a new `.desktop` file in `~/.config/autostart/`, or a new cron entry in `/etc/cron.d/` was invisible to real-time monitoring. Only the scheduled scan would eventually catch it.
 - Now, when a `Create`/`MovedTo` event arrives for a path under a watched group (resolved via `WatchGroupIndex::lookup()`), a `ChangeResult` with `Change::Created` is generated and dispatched through the alert pipeline.
 - Files not under any watched path (e.g. `/tmp`) are still silently ignored.
 - Severity is inherited from the watch group configuration.
 - The `package` field is `None` for newly created files; the scheduled scan picks up package ownership if applicable.
-- The existing test `process_event_returns_none_for_non_baselined_create` continues to pass — it uses `/tmp/nonexistent-baseline` which is not under any watch group.
+- The existing test `process_event_returns_none_for_non_baselined_create` continues to pass -- it uses `/tmp/nonexistent-baseline` which is not under any watch group.
 - Aligns with Principle IV (Structure Over Behavior) and Principle X (Fail Open, Fail Loud).
 - File changed: `src/worker.rs` (`process_event()` and `process_event_cached()` None branches).
 
-#### `vigil diff <path>` — single-file baseline comparison
+#### `vigil diff <path>` -- single-file baseline comparison
 - Added `Diff { path }` variant to `Command` enum in `src/cli.rs`.
 - Added `cmd_diff()` function in `src/main.rs` that:
   - Canonicalizes the input path.
@@ -1374,7 +1374,7 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
   - If no changes: prints confirmation with hash, size, permissions, owner, package, and source.
 - Files changed: `src/cli.rs`, `src/main.rs`.
 
-#### `vigil check --accept --path <glob>` — selective acceptance
+#### `vigil check --accept --path <glob>` -- selective acceptance
 - Added `path: Option<String>` to the `Check` command in `src/cli.rs` with `requires = "accept"`.
 - When `--path` is specified with `--accept`, only changes whose paths match the glob pattern are accepted into the baseline. Unmatched changes are preserved as-is.
 - Uses `globset::GlobMatcher` for pattern matching (globset is an existing dependency).
@@ -1387,7 +1387,7 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 
 #### Periodic WAL checkpoint in coordinator
 - The coordinator's housekeeping loop (every 60 seconds) now includes a WAL checkpoint that runs every 5 ticks (every 5 minutes).
-- Uses `PRAGMA wal_checkpoint(PASSIVE)` — transfers WAL pages to the database file without blocking concurrent readers.
+- Uses `PRAGMA wal_checkpoint(PASSIVE)` -- transfers WAL pages to the database file without blocking concurrent readers.
 - Checkpoints both `baseline.db` and `audit.db` using fresh connections to avoid lock contention with worker threads.
 - Failed checkpoints are logged at debug level and retried on the next cycle.
 - Prevents unbounded WAL file growth on systems with heavy real-time events (thousands of baseline writes from package updates).
@@ -1586,11 +1586,11 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 
 #### Alert socket check no longer produces false warning when no listener is attached
 - `check_signal_socket()` previously returned `CheckStatus::Warning` with detail "configured at <path> but not present" and a fix suggestion "Create or activate socket at <path>" when the alert socket path was configured but no listener process was bound to it.
-- This was a false positive: the alert socket (`hooks.signal_socket`) is a client-connect sink — Vigil connects to it when dispatching alerts. The socket file only exists on disk when an external listener (e.g. `socat UNIX-LISTEN:/run/vigil/alert.sock -`) is actively bound. When no listener is running, the socket file is absent, and this is normal, expected behavior.
-- `SocketSink::dispatch()` in `src/alert/socket.rs` already handles this gracefully — it logs at debug level and returns `Ok(())` when the connect fails. Alerts still reach all other configured sinks (journal, JSON log, D-Bus).
+- This was a false positive: the alert socket (`hooks.signal_socket`) is a client-connect sink -- Vigil connects to it when dispatching alerts. The socket file only exists on disk when an external listener (e.g. `socat UNIX-LISTEN:/run/vigil/alert.sock -`) is actively bound. When no listener is running, the socket file is absent, and this is normal, expected behavior.
+- `SocketSink::dispatch()` in `src/alert/socket.rs` already handles this gracefully -- it logs at debug level and returns `Ok(())` when the connect fails. Alerts still reach all other configured sinks (journal, JSON log, D-Bus).
 - Changed the "configured but absent" branch to return `CheckStatus::Unknown` with detail "configured (no listener attached)" and no fix suggestion (`fix: None`).
 - Doctor output now shows `○ configured (no listener attached)` instead of `⚠ configured at /path but not present`, correctly signaling "informational / not applicable" rather than "something is broken."
-- Aligns with **Principle II** (Silence Is the Default): a warning for normal operation is advisory noise. Aligns with **Principle X** (Fail Open, Fail Loud): this is not a failure — there is no blind spot.
+- Aligns with **Principle II** (Silence Is the Default): a warning for normal operation is advisory noise. Aligns with **Principle X** (Fail Open, Fail Loud): this is not a failure -- there is no blind spot.
 - File changed: `src/doctor.rs` (`check_signal_socket()`).
 
 ### Tests
@@ -1861,11 +1861,11 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 
 #### Incremental scan now skips hashing for unchanged files
 - `FileSnapshot::from_fd()` previously always computed a full BLAKE3 hash regardless of the `force_hash` flag.
-- `CaptureOpts` now carries optional `baseline_mtime` and `baseline_hash` fields. When `force_hash` is false and the file's current mtime matches the baseline, the stored hash is reused — eliminating redundant I/O and computation for unchanged files.
+- `CaptureOpts` now carries optional `baseline_mtime` and `baseline_hash` fields. When `force_hash` is false and the file's current mtime matches the baseline, the stored hash is reused -- eliminating redundant I/O and computation for unchanged files.
 - Files changed: `src/types/snapshot.rs`, `src/scanner.rs`, `src/worker.rs`.
 
 #### Bulk package ownership cache
-- `build_initial_baseline()` previously spawned a subprocess (`pacman -Qo` / `dpkg -S` / `rpm -qf`) for every single file — up to 59,000+ fork+exec calls.
+- `build_initial_baseline()` previously spawned a subprocess (`pacman -Qo` / `dpkg -S` / `rpm -qf`) for every single file -- up to 59,000+ fork+exec calls.
 - A new `build_package_cache()` function runs a single bulk command per package manager:
   - **Pacman**: `pacman -Ql` (one process, full file→package map)
   - **Dpkg**: Parses `/var/lib/dpkg/info/*.list` files directly (zero subprocesses)
@@ -1908,7 +1908,7 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 - Files changed: `src/alert/mod.rs`, `src/config/mod.rs`.
 
 #### Removed unnecessary `unsafe impl Send/Sync` on BloomFilter
-- `BloomFilter` contains only `Vec<u8>`, `usize`, and `u32` — all inherently `Send + Sync`. The manual unsafe impls were unnecessary and would mask safety issues if the struct ever gained a non-Sync field.
+- `BloomFilter` contains only `Vec<u8>`, `usize`, and `u32` -- all inherently `Send + Sync`. The manual unsafe impls were unnecessary and would mask safety issues if the struct ever gained a non-Sync field.
 - File changed: `src/bloom.rs`.
 
 #### Socket message framing (NDJSON)
@@ -2806,7 +2806,7 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 
 #### P0-2: PID file stale detection TOCTOU window (`src/lib.rs`)
 - Eliminated the TOCTOU race between `kill(pid, 0)` returning `ESRCH` and `remove_file` + `create_new` by replacing the two-step pattern with a single atomic operation
-- Stale recovery now opens the *existing* file with `O_WRONLY | O_TRUNC` (preserving the inode), acquires `flock`, verifies the PID is still stale, then overwrites — keeping the inode locked throughout
+- Stale recovery now opens the *existing* file with `O_WRONLY | O_TRUNC` (preserving the inode), acquires `flock`, verifies the PID is still stale, then overwrites -- keeping the inode locked throughout
 - Added inline comment documenting the race condition mitigation strategy
 
 #### P0-3: HMAC key management documentation and hardening (`src/hmac.rs`, `src/main.rs`, `docs/SECURITY.md`, `docs/CONFIGURATION.md`)
@@ -2852,17 +2852,17 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 - Added `criterion` to `[dev-dependencies]` with `html_reports` feature
 - Added `[[bench]] name = "benchmarks"` section to `Cargo.toml`
 - Six benchmark groups:
-  - `blake3_hash_file` — files of 1KB, 1MB, and 100MB
-  - `blake3_hash_bytes` — 1MB in-memory baseline
-  - `compare_entry` — unchanged file, modified file, and deleted file
-  - `event_filter_10k_debounce` — `EventFilter::should_process` with 10K pre-populated debounce entries
-  - `full_scan_100_entries` — end-to-end scan throughput with 100 baseline entries
-  - `watch_group_lookup` — `WatchGroupIndex::lookup` with 100 and 1000 watch paths
+  - `blake3_hash_file` -- files of 1KB, 1MB, and 100MB
+  - `blake3_hash_bytes` -- 1MB in-memory baseline
+  - `compare_entry` -- unchanged file, modified file, and deleted file
+  - `event_filter_10k_debounce` -- `EventFilter::should_process` with 10K pre-populated debounce entries
+  - `full_scan_100_entries` -- end-to-end scan throughput with 100 baseline entries
+  - `watch_group_lookup` -- `WatchGroupIndex::lookup` with 100 and 1000 watch paths
 
 #### P3-8: WatchGroupIndex for efficient path lookup (`src/watch_index.rs`, `src/lib.rs`, `src/scanner.rs`)
 - New `WatchGroupIndex` struct that sorts expanded watch group entries longest-prefix-first so the first match is always the most-specific
 - `from_config()` builds the index from a `Config`; `from_expanded()` builds from pre-expanded entries
-- `lookup()` returns `Option<(&str, Severity)>` — the group name and severity of the best-matching prefix
+- `lookup()` returns `Option<(&str, Severity)>` -- the group name and severity of the best-matching prefix
 - Replaced the linear `find_watch_group()` scan in `daemon_run()` with `watch_index.lookup()`
 - Replaced the linear `watch_lookup.iter().find()` in `scanner::run_scan()` (both sequential and parallel paths) with `watch_index.lookup()`
 - Registered as `pub mod watch_index` in `src/lib.rs`
@@ -2972,7 +2972,7 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 
 ### Fixed
 
-#### P0 — Critical Security & Correctness
+#### P0 -- Critical Security & Correctness
 
 ##### Fix TOCTOU double-open in comparison engine (`src/compare.rs`)
 - Introduced `CompareOutcome` three-state enum (`NoChange`, `Deleted`, `Changed`) so `compare_file_against_baseline` can distinguish all three cases without the caller re-opening the file by path
@@ -2987,7 +2987,7 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 - `compare_file_against_baseline` now accepts an optional `max_file_size` parameter and skips files exceeding the limit after fstat, preventing the daemon from blocking on large files
 - `compare_event` passes `config.scanner.max_file_size` through to the comparison function
 
-#### P1 — Stability & Reliability
+#### P1 -- Stability & Reliability
 
 ##### Use proper atomic ordering for shutdown flag
 - Changed all `shutdown.store(true, Ordering::Relaxed)` to `Ordering::Release`
@@ -3001,7 +3001,7 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 
 ##### Implement audit log rotation (`src/db/ops.rs`, `src/lib.rs`)
 - Added `rotate_audit_log(conn, retention_days)` function that deletes entries older than the configured retention period
-- Added JSON log file rotation in `src/alert/json_log.rs` via `rotate_if_needed(max_size)` — renames with timestamp suffix and opens fresh file
+- Added JSON log file rotation in `src/alert/json_log.rs` via `rotate_if_needed(max_size)` -- renames with timestamp suffix and opens fresh file
 - Both rotations run periodically in the daemon's 60-second housekeeping cycle
 
 ##### Fix fanotify FD leak on error paths (`src/monitor/fanotify.rs`)
@@ -3011,7 +3011,7 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 ##### Check epoll_ctl return value (`src/monitor/fanotify.rs`)
 - `epoll_ctl` return value is now checked; logs error and returns from thread if it fails
 
-#### P2 — Performance
+#### P2 -- Performance
 
 ##### Use blake3::Hasher::update_reader() (`src/baseline/hash.rs`)
 - Replaced manual 64KB read loop with `hasher.update_reader(&mut reader)` for optimized internal buffering
@@ -3026,11 +3026,11 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 - `compare_entry` now accepts `severity: Severity` and `group_name: &str` parameters instead of hardcoding `Severity::Medium`
 - Both `diff_baseline` and `run_scan` build a watch-group lookup table and pass the correct severity/group for each entry
 
-#### P3 — Robustness
+#### P3 -- Robustness
 
 ##### Standardize on parking_lot::Mutex everywhere
 - Replaced `std::sync::Mutex` with `parking_lot::Mutex` in `src/alert/json_log.rs` and `src/alert/socket.rs`
-- Removed `if let Ok(...)` patterns — `parking_lot::Mutex::lock()` returns the guard directly
+- Removed `if let Ok(...)` patterns -- `parking_lot::Mutex::lock()` returns the guard directly
 
 ##### Add timeout to package manager subprocess calls (`src/package.rs`)
 - Added `run_with_timeout` helper that spawns the child process and polls with `try_wait` in a loop
@@ -3044,7 +3044,7 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 ##### Add SIGHUP handler for config reload (`src/lib.rs`)
 - Added `SIGHUP` to the blocked signal set
 - Signal handler thread now loops: SIGHUP sets a reload flag, SIGINT/SIGTERM triggers shutdown
-- Housekeeping section checks reload flag — reloads config and rebuilds EventFilter
+- Housekeeping section checks reload flag -- reloads config and rebuilds EventFilter
 - Logs warning that fanotify/inotify marks require a daemon restart to update
 
 ##### Validate log_level config value (`src/config.rs`)
@@ -3059,14 +3059,14 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 ### Added
 
 #### New Tests
-- `validate_rejects_invalid_log_level` — invalid log level rejected
-- `validate_accepts_valid_log_levels` — all valid levels accepted (case-insensitive)
-- `validate_rejects_unsupported_hash_algorithm` — non-blake3 algorithm rejected
-- `validate_accepts_blake3_hash_algorithm` — blake3 accepted
-- `validate_rejects_invalid_cron_schedule` — malformed cron rejected
-- `validate_accepts_valid_cron_schedule` — standard cron accepted
-- `audit_log_rotation_deletes_old_entries` — rotation removes entries older than retention
-- `audit_log_rotation_preserves_recent_entries` — rotation preserves recent entries
+- `validate_rejects_invalid_log_level` -- invalid log level rejected
+- `validate_accepts_valid_log_levels` -- all valid levels accepted (case-insensitive)
+- `validate_rejects_unsupported_hash_algorithm` -- non-blake3 algorithm rejected
+- `validate_accepts_blake3_hash_algorithm` -- blake3 accepted
+- `validate_rejects_invalid_cron_schedule` -- malformed cron rejected
+- `validate_accepts_valid_cron_schedule` -- standard cron accepted
+- `audit_log_rotation_deletes_old_entries` -- rotation removes entries older than retention
+- `audit_log_rotation_preserves_recent_entries` -- rotation preserves recent entries
 
 ### Notes
 - All 103 tests pass (up from 95 in v0.3.1)
@@ -3100,7 +3100,7 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 - Created `NOTICE` file with identity mapping, project info, license summary, and trademark notice
 - Created `TRADEMARKS.md` with trademark ownership, permitted/prohibited uses, fork requirements, and reporting
 - Created `licenses/LICENSE-COMMERCIAL.md` as commercial licensing inquiry pathway (Vigil is GPL-3.0-only; no commercial license currently exists)
-- Replaced `licenses/LICENSING.md` with comprehensive file-type coverage map, SPDX header formats, and verification scripts — all references updated from dual-license to GPL-3.0-only
+- Replaced `licenses/LICENSING.md` with comprehensive file-type coverage map, SPDX header formats, and verification scripts -- all references updated from dual-license to GPL-3.0-only
 - Replaced `licenses/CONTRIBUTOR-LICENSE.md` with full CLA including patent grant, future licensing clause, and governing law
 - Replaced `licenses/DEPENDENCY-AUDIT.md` with compatibility tables covering 20+ license types, Vigil's actual 20 dependencies, and audit process
 - Replaced `licenses/LICENSE-DOCS.md` with detailed CC BY 4.0 scope and exclusions matching Vigil's file structure
@@ -3111,20 +3111,20 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 
 ### Fixed
 
-#### P0 — Critical Bugs
+#### P0 -- Critical Bugs
 
-##### Signal handler doesn't work — graceful shutdown broken (`src/lib.rs`)
-- The `ctrlc_handler` function previously spawned a thread that called `sigset.thread_block()` internally — this only blocked signals on the spawned thread while the main thread still received SIGINT/SIGTERM and was hard-killed by the OS before `sigset.wait()` could fire
+##### Signal handler doesn't work -- graceful shutdown broken (`src/lib.rs`)
+- The `ctrlc_handler` function previously spawned a thread that called `sigset.thread_block()` internally -- this only blocked signals on the spawned thread while the main thread still received SIGINT/SIGTERM and was hard-killed by the OS before `sigset.wait()` could fire
 - PID file was never cleaned up and WAL checkpoint never ran on shutdown
 - Fixed by blocking SIGINT and SIGTERM on the main thread **before** spawning any child threads (so all threads inherit the signal mask), then passing the pre-blocked `SigSet` to the dedicated signal thread which calls `sigset.wait()`
 - `ctrlc_handler` now accepts `SigSet` as a parameter instead of constructing its own
 
 ##### `try_send` silently drops security events (`src/monitor/fanotify.rs`, `src/monitor/inotify.rs`)
-- Both fanotify and inotify monitors used `let _ = event_tx.try_send(...)`, silently discarding filesystem events when the channel buffer (1024) was full — unacceptable for a security monitor
+- Both fanotify and inotify monitors used `let _ = event_tx.try_send(...)`, silently discarding filesystem events when the channel buffer (1024) was full -- unacceptable for a security monitor
 - Replaced with explicit `match` on `TrySendError`: logs `warn!` on `Full` (with the affected path) and logs `error!` + breaks the event loop on `Disconnected`
 
 ##### TOCTOU race in `path.exists()` before `File::open()` (`src/compare.rs`)
-- Both `compare_entry` and `compare_event` checked `if !path.exists()` to detect deletions, then later called `File::open()` — an attacker could exploit the gap between these two calls
+- Both `compare_entry` and `compare_event` checked `if !path.exists()` to detect deletions, then later called `File::open()` -- an attacker could exploit the gap between these two calls
 - Removed the `path.exists()` pre-check entirely; now attempts `File::open()` directly and matches on `ErrorKind::NotFound` to detect deletions
 
 ##### Hash file doesn't seek to position 0 (`src/baseline/hash.rs`)
@@ -3132,10 +3132,10 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 - Added `reader.seek(std::io::SeekFrom::Start(0))` immediately after `try_clone()` and before the read loop
 - Added `std::io::Seek` to imports
 
-#### P1 — Important Fixes
+#### P1 -- Important Fixes
 
 ##### `compare_event` skips xattr checking (`src/compare.rs`)
-- `compare_entry` checked xattrs but `compare_event` did not — real-time monitoring missed xattr/SELinux context changes
+- `compare_entry` checked xattrs but `compare_event` did not -- real-time monitoring missed xattr/SELinux context changes
 - Extracted shared comparison logic into a private `compare_file_against_baseline()` helper that handles: open file → fstat → hash → compare all fields including xattrs → return change types
 - Both `compare_entry` and `compare_event` are now thin wrappers over this shared helper (see Code Quality section)
 
@@ -3155,12 +3155,12 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 - Added `poll` feature to the `nix` dependency in `Cargo.toml`
 
 ##### Mutex poisoning silently disables rate limiting (`src/alert/mod.rs`)
-- All `Mutex::lock()` calls used `if let Ok(...)`, silently ignoring poisoned mutexes — if any code panicked while holding a lock, rate limiting and cooldowns would permanently stop working
+- All `Mutex::lock()` calls used `if let Ok(...)`, silently ignoring poisoned mutexes -- if any code panicked while holding a lock, rate limiting and cooldowns would permanently stop working
 - Switched from `std::sync::Mutex` to `parking_lot::Mutex`, which does not poison and returns the guard directly
 - All `if let Ok(mut x) = self.mutex.lock()` patterns replaced with direct `self.mutex.lock()` calls
 - Added `parking_lot = "0.12"` to `Cargo.toml`
 
-#### P2 — Performance
+#### P2 -- Performance
 
 ##### `find_watch_group` re-expands paths every event (`src/lib.rs`)
 - Every filesystem event triggered `expand_user_paths()` for every watch group, re-reading `/etc/passwd` and doing filesystem I/O on each event
@@ -3189,7 +3189,7 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 - Combined into a single `if meta.uid() != baseline.owner_uid || meta.gid() != baseline.owner_gid` check
 
 ##### `integrity_check` returns misleading error (`src/db/mod.rs`)
-- Returned `VigilError::Database(rusqlite::Error::QueryReturnedNoRows)` — a misleading error type that hid the actual integrity failure reason
+- Returned `VigilError::Database(rusqlite::Error::QueryReturnedNoRows)` -- a misleading error type that hid the actual integrity failure reason
 - Now returns `VigilError::Config(format!("database integrity check failed: {}", result))` with the actual SQLite integrity check output
 
 ### Changed
@@ -3208,7 +3208,7 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 - Added comment noting that the long-term fix is to use `zbus` for native D-Bus integration
 
 ##### `which` command may not exist (`src/package.rs`)
-- `command_exists` shelled out to `which` — not available on all systems (e.g., minimal containers, some Debian installations)
+- `command_exists` shelled out to `which` -- not available on all systems (e.g., minimal containers, some Debian installations)
 - Replaced with direct `PATH` directory scan: splits `$PATH`, checks each directory for the target binary via `is_file()`
 
 ### Dependencies
@@ -3303,9 +3303,9 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 
 #### Fuzz Targets (`fuzz/`)
 - Fuzz package scaffolding (`fuzz/Cargo.toml`) with `libfuzzer-sys`, `arbitrary`, and vigil library dependency
-- **`fuzz_config_parse`**: fuzzes `toml::from_str::<Config>()` — proves TOML config parsing never panics on arbitrary input
-- **`fuzz_baseline_compare`**: fuzzes JSON deserialization of `BaselineEntry`, `ChangeType`, and `Severity::from_str` — proves baseline comparison types handle malformed input safely
-- **`fuzz_scanner`**: fuzzes JSON deserialization of `ScanMode`, `MonitorBackend`, `PackageBackend`, `BaselineSource`, and `Severity::from_str` — proves scanner-related type parsing is robust
+- **`fuzz_config_parse`**: fuzzes `toml::from_str::<Config>()` -- proves TOML config parsing never panics on arbitrary input
+- **`fuzz_baseline_compare`**: fuzzes JSON deserialization of `BaselineEntry`, `ChangeType`, and `Severity::from_str` -- proves baseline comparison types handle malformed input safely
+- **`fuzz_scanner`**: fuzzes JSON deserialization of `ScanMode`, `MonitorBackend`, `PackageBackend`, `BaselineSource`, and `Severity::from_str` -- proves scanner-related type parsing is robust
 
 #### Scheduled Security & Coverage (`.github/workflows/scheduled.yml`)
 - Weekly Monday 03:00 UTC security audit using both `cargo audit` and `cargo deny check`
@@ -3382,12 +3382,12 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 #### Baseline Engine (`src/baseline/`)
 - BLAKE3 hashing via open file descriptors (TOCTOU-hardened)
 - File metadata collection: permissions, ownership, mtime, inode, device, xattrs, SELinux/AppArmor context
-- `vigil init` — full baseline generation across all watch groups
-- `vigil baseline refresh` — re-scan with optional path filtering
-- `vigil baseline add/remove` — single-file baseline management
-- `vigil baseline diff` — compare current state vs. baseline without updating
-- `vigil baseline stats` — entry counts by source, last refresh time
-- `vigil baseline export` — JSON export of all baseline entries
+- `vigil init` -- full baseline generation across all watch groups
+- `vigil baseline refresh` -- re-scan with optional path filtering
+- `vigil baseline add/remove` -- single-file baseline management
+- `vigil baseline diff` -- compare current state vs. baseline without updating
+- `vigil baseline stats` -- entry counts by source, last refresh time
+- `vigil baseline export` -- JSON export of all baseline entries
 - Recursive directory walking with configurable depth limit (max 20)
 - Exclusion pattern matching (glob + system prefix)
 - Automatic package manager ownership query during baseline generation
@@ -3430,7 +3430,7 @@ Comprehensive security hardening addressing 11 categories of evasion and tamperi
 - Full command tree: `init`, `baseline {init,refresh,diff,add,remove,stats,export}`, `watch`, `check`, `maintenance {enter,exit,status}`, `log {show,search,stats,verify}`, `status`, `config {show,validate}`, `doctor`, `version`
 - `--config` flag for explicit config path
 - `--format` flag (`human`, `json`, `table`)
-- `vigil doctor` — self-diagnostics (fanotify, root, config, DB, HMAC, D-Bus, package manager, signal socket)
+- `vigil doctor` -- self-diagnostics (fanotify, root, config, DB, HMAC, D-Bus, package manager, signal socket)
 
 #### Daemon (`src/daemon.rs`, `src/lib.rs`)
 - Event loop: receive → filter → lookup baseline → compare → classify → dispatch

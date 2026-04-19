@@ -45,7 +45,7 @@ Use this as a reference when assessing Vigil Baseline's security posture or audi
 | VIGIL-VULN-022 | Medium | 0.22.0 | fanotify relied on `FAN_MODIFY` only, missing completed writes |
 | VIGIL-VULN-023 | High | 0.22.0 | Worker baseline cache could remain stale after baseline commits |
 | VIGIL-VULN-024 | Medium | 0.22.0 | Intermediate HMAC key material persisted in heap memory |
-| VIGIL-VULN-025 | Critical | 0.23.0 | Baseline DB opened by path after HMAC verification — TOCTOU window |
+| VIGIL-VULN-025 | Critical | 0.23.0 | Baseline DB opened by path after HMAC verification -- TOCTOU window |
 | VIGIL-VULN-026 | High | 0.23.0 | SQLite WAL/SHM sidecar files not permission-restricted |
 | VIGIL-VULN-027 | High | 0.23.0 | Database directory ownership and permissions not verified |
 | VIGIL-VULN-028 | Critical | 0.23.0 | VIGIL_CONFIG env var allows config path override in production |
@@ -54,39 +54,39 @@ Use this as a reference when assessing Vigil Baseline's security posture or audi
 | VIGIL-VULN-031 | High | 0.23.0 | fanotify kernel queue overflow (FAN_Q_OVERFLOW) silently ignored |
 | VIGIL-VULN-032 | High | 0.23.0 | Baseline HMAC only covers 5 of 13 security-relevant fields |
 | VIGIL-VULN-033 | Medium | 0.23.0 | Vigil Baseline's own binary not in self-monitoring watch group |
-| VIGIL-VULN-034 | Medium | 0.23.0 | sd_notify socket spoofable — systemd kept happy while Vigil Baseline frozen |
+| VIGIL-VULN-034 | Medium | 0.23.0 | sd_notify socket spoofable -- systemd kept happy while Vigil Baseline frozen |
 | VIGIL-VULN-035 | Low | 0.23.0 | Process attribution via /proc/[pid]/exe raceable (PID recycling) |
-| VIGIL-VULN-036 | Medium | 0.23.0 | Negative clock jump not detected — enables clock manipulation replay |
+| VIGIL-VULN-036 | Medium | 0.23.0 | Negative clock jump not detected -- enables clock manipulation replay |
 | VIGIL-VULN-037 | Medium | 0.23.0 | Scanner follows symlinks without recording resolution chain |
-| VIGIL-VULN-038 | Critical | 0.24.0 | Audit DB has no TOCTOU protection — only baseline DB is identity-checked |
-| VIGIL-VULN-039 | Critical | 0.24.0 | Scan scheduler opens baseline DB by path — bypasses TOCTOU check |
-| VIGIL-VULN-040 | High | 0.24.0 | Coordinator WAL checkpoint opens baseline DB by path — same TOCTOU bypass |
-| VIGIL-VULN-041 | Critical | 0.24.0 | HMAC key loaded from disk on every use — key file replacement undetected between loads |
-| VIGIL-VULN-042 | High | 0.24.0 | Runtime dir files written without atomic rename — partial writes observable |
+| VIGIL-VULN-038 | Critical | 0.24.0 | Audit DB has no TOCTOU protection -- only baseline DB is identity-checked |
+| VIGIL-VULN-039 | Critical | 0.24.0 | Scan scheduler opens baseline DB by path -- bypasses TOCTOU check |
+| VIGIL-VULN-040 | High | 0.24.0 | Coordinator WAL checkpoint opens baseline DB by path -- same TOCTOU bypass |
+| VIGIL-VULN-041 | Critical | 0.24.0 | HMAC key loaded from disk on every use -- key file replacement undetected between loads |
+| VIGIL-VULN-042 | High | 0.24.0 | Runtime dir files written without atomic rename -- partial writes observable |
 | VIGIL-VULN-043 | High | 0.24.0 | Bloom filter prefix insertion allows targeted false-negative evasion |
-| VIGIL-VULN-044 | High | 0.24.0 | package_update field hardcoded false — auto-rebaseline is dead code |
+| VIGIL-VULN-044 | High | 0.24.0 | package_update field hardcoded false -- auto-rebaseline is dead code |
 | VIGIL-VULN-045 | Medium | 0.24.0 | Control socket nonce uses /dev/urandom with no fallback verification |
 | VIGIL-VULN-046 | Medium | 0.24.0 | Alert dispatcher audit failures cause silent evidence loss |
-| VIGIL-VULN-047 | Medium | 0.24.0 | Exclusion filter self-path check uses starts_with on strings — prefix collision |
-| VIGIL-VULN-048 | Medium | 0.24.0 | Config reload HMAC verification opens fresh DB connection — TOCTOU |
-| VIGIL-VULN-049 | Low | 0.24.0 | sd_notify called unconditionally — no NOTIFY_SOCKET safety verification |
-| VIGIL-VULN-050 | Medium | 0.24.0 | Scheduled scan severity hardcoded Medium — critical changes downgraded |
-| VIGIL-VULN-051 | Critical | 0.33.0 | Baseline HMAC mismatch silently auto-recomputed — tamper evidence nullified |
+| VIGIL-VULN-047 | Medium | 0.24.0 | Exclusion filter self-path check uses starts_with on strings -- prefix collision |
+| VIGIL-VULN-048 | Medium | 0.24.0 | Config reload HMAC verification opens fresh DB connection -- TOCTOU |
+| VIGIL-VULN-049 | Low | 0.24.0 | sd_notify called unconditionally -- no NOTIFY_SOCKET safety verification |
+| VIGIL-VULN-050 | Medium | 0.24.0 | Scheduled scan severity hardcoded Medium -- critical changes downgraded |
+| VIGIL-VULN-051 | Critical | 0.33.0 | Baseline HMAC mismatch silently auto-recomputed -- tamper evidence nullified |
 | VIGIL-VULN-052 | Critical | 0.33.0 | `baseline_refresh` re-read config from disk bypassing HMAC verification |
-| VIGIL-VULN-053 | Critical | 0.33.0 | Control socket `read_line` unbounded — local OOM denial of service |
-| VIGIL-VULN-054 | High | 0.33.0 | HMAC key permission check warn-only — world-readable key accepted |
-| VIGIL-VULN-055 | High | 0.33.0 | `vigil update` under sudo builds from user-owned directory — privilege escalation |
-| VIGIL-VULN-056 | Medium | 0.33.0 | PID attribution did not detect exited processes — stale attribution undetectable |
+| VIGIL-VULN-053 | Critical | 0.33.0 | Control socket `read_line` unbounded -- local OOM denial of service |
+| VIGIL-VULN-054 | High | 0.33.0 | HMAC key permission check warn-only -- world-readable key accepted |
+| VIGIL-VULN-055 | High | 0.33.0 | `vigil update` under sudo builds from user-owned directory -- privilege escalation |
+| VIGIL-VULN-056 | Medium | 0.33.0 | PID attribution did not detect exited processes -- stale attribution undetectable |
 | VIGIL-VULN-057 | Critical | 0.34.0 | Control socket HMAC auth used non-constant-time string compare and was bypassable on empty response |
-| VIGIL-VULN-058 | Critical | 0.34.0 | fanotify event loop did not validate `event_len` — malformed event caused infinite loop |
-| VIGIL-VULN-059 | High | 0.34.0 | Control socket accepted connections from any local UID — peer credentials not enforced |
-| VIGIL-VULN-060 | High | 0.34.0 | Control socket spawned unbounded threads per connection — local thread-exhaustion DoS |
-| VIGIL-VULN-061 | High | 0.34.0 | `vigil update` did not roll back when daemon failed to start — only when started-but-unhealthy |
-| VIGIL-VULN-062 | High | 0.34.0 | Package manager queries lacked `--` separator — paths starting with `-` interpreted as flags |
-| VIGIL-VULN-063 | High | 0.34.0 | Helper binaries invoked by bare name — vulnerable to PATH hijacking |
-| VIGIL-VULN-064 | Medium | 0.34.0 | fanotify queue overflow silently logged — no Degraded state, no recovery scan |
-| VIGIL-VULN-065 | Medium | 0.34.0 | fanotify mountinfo octal escapes not decoded — mount points with whitespace not marked |
-| VIGIL-VULN-066 | Medium | 0.34.0 | fanotify mark/read failures silently ignored — daemon ran without real-time monitoring |
+| VIGIL-VULN-058 | Critical | 0.34.0 | fanotify event loop did not validate `event_len` -- malformed event caused infinite loop |
+| VIGIL-VULN-059 | High | 0.34.0 | Control socket accepted connections from any local UID -- peer credentials not enforced |
+| VIGIL-VULN-060 | High | 0.34.0 | Control socket spawned unbounded threads per connection -- local thread-exhaustion DoS |
+| VIGIL-VULN-061 | High | 0.34.0 | `vigil update` did not roll back when daemon failed to start -- only when started-but-unhealthy |
+| VIGIL-VULN-062 | High | 0.34.0 | Package manager queries lacked `--` separator -- paths starting with `-` interpreted as flags |
+| VIGIL-VULN-063 | High | 0.34.0 | Helper binaries invoked by bare name -- vulnerable to PATH hijacking |
+| VIGIL-VULN-064 | Medium | 0.34.0 | fanotify queue overflow silently logged -- no Degraded state, no recovery scan |
+| VIGIL-VULN-065 | Medium | 0.34.0 | fanotify mountinfo octal escapes not decoded -- mount points with whitespace not marked |
+| VIGIL-VULN-066 | Medium | 0.34.0 | fanotify mark/read failures silently ignored -- daemon ran without real-time monitoring |
 | VIGIL-VULN-067 | Critical | 0.35.0 | WAL HMAC verification bypass via zero-HMAC injection |
 | VIGIL-VULN-068 | High | 0.35.0 | fanotify silently drops events for deleted files |
 | VIGIL-VULN-069 | High | 0.35.0 | New-mount evasion: fanotify marks not applied to overlapping mounts |
@@ -100,7 +100,7 @@ Use this as a reference when assessing Vigil Baseline's security posture or audi
 
 ## Detailed Descriptions
 
-### VIGIL-VULN-001 — Config/HMAC key file changes unmonitored (Critical)
+### VIGIL-VULN-001 -- Config/HMAC key file changes unmonitored (Critical)
 
 **Fixed in:** 0.21.0
 
@@ -110,7 +110,7 @@ Vigil Baseline did not monitor its own config file (`/etc/vigil/vigil.toml`) or 
 
 ---
 
-### VIGIL-VULN-002 — Baseline silently replaceable without detection (Critical)
+### VIGIL-VULN-002 -- Baseline silently replaceable without detection (Critical)
 
 **Fixed in:** 0.21.0
 
@@ -120,7 +120,7 @@ The baseline database could be replaced or tampered with between daemon restarts
 
 ---
 
-### VIGIL-VULN-003 — Debounced paths silently dropped (Medium)
+### VIGIL-VULN-003 -- Debounced paths silently dropped (Medium)
 
 **Fixed in:** 0.21.0
 
@@ -130,7 +130,7 @@ When debounced pending paths were drained, they only had their LRU cache entries
 
 ---
 
-### VIGIL-VULN-004 — Audit chain HMAC did not include previous hash (High)
+### VIGIL-VULN-004 -- Audit chain HMAC did not include previous hash (High)
 
 **Fixed in:** 0.21.0
 
@@ -140,7 +140,7 @@ Individual audit entry HMACs did not include the previous chain hash. An attacke
 
 ---
 
-### VIGIL-VULN-005 — Incremental scan default allowed mtime-reset evasion (High)
+### VIGIL-VULN-005 -- Incremental scan default allowed mtime-reset evasion (High)
 
 **Fixed in:** 0.21.0
 
@@ -150,7 +150,7 @@ The default scheduled scan mode was `Incremental`, which skips hashing for files
 
 ---
 
-### VIGIL-VULN-006 — Control socket accepted unauthenticated commands (Critical)
+### VIGIL-VULN-006 -- Control socket accepted unauthenticated commands (Critical)
 
 **Fixed in:** 0.21.0
 
@@ -160,7 +160,7 @@ The daemon control socket accepted commands from any local process with socket f
 
 ---
 
-### VIGIL-VULN-007 — Control socket commands unlogged (Medium)
+### VIGIL-VULN-007 -- Control socket commands unlogged (Medium)
 
 **Fixed in:** 0.21.0
 
@@ -170,7 +170,7 @@ Control socket commands were not logged and peer credentials were not captured. 
 
 ---
 
-### VIGIL-VULN-008 — Sustained event drops were silent (Medium)
+### VIGIL-VULN-008 -- Sustained event drops were silent (Medium)
 
 **Fixed in:** 0.21.0
 
@@ -180,7 +180,7 @@ When the event channel was full and filesystem events were being dropped, there 
 
 ---
 
-### VIGIL-VULN-009 — Hardcoded event channel capacity (Low)
+### VIGIL-VULN-009 -- Hardcoded event channel capacity (Low)
 
 **Fixed in:** 0.21.0
 
@@ -190,7 +190,7 @@ The event channel capacity was hardcoded to 2048, which was not tunable for high
 
 ---
 
-### VIGIL-VULN-010 — Blanket `/run/*` exclusion created blind spot (High)
+### VIGIL-VULN-010 -- Blanket `/run/*` exclusion created blind spot (High)
 
 **Fixed in:** 0.21.0
 
@@ -200,7 +200,7 @@ The `/run/*` system exclusion was a blanket pattern that excluded all of `/run/`
 
 ---
 
-### VIGIL-VULN-011 — Empty baseline silently auto-reinitialized (Critical)
+### VIGIL-VULN-011 -- Empty baseline silently auto-reinitialized (Critical)
 
 **Fixed in:** 0.21.0
 
@@ -210,7 +210,7 @@ If the baseline was previously initialized but later found empty (e.g., truncate
 
 ---
 
-### VIGIL-VULN-012 — Config file modifications undetected between restarts (High)
+### VIGIL-VULN-012 -- Config file modifications undetected between restarts (High)
 
 **Fixed in:** 0.21.0
 
@@ -220,7 +220,7 @@ Config file modifications between daemon restarts were not detected. An attacker
 
 ---
 
-### VIGIL-VULN-013 — Capability escalation detection always returned false (Critical)
+### VIGIL-VULN-013 -- Capability escalation detection always returned false (Critical)
 
 **Fixed in:** 0.22.0
 
@@ -230,7 +230,7 @@ Config file modifications between daemon restarts were not detected. An attacker
 
 ---
 
-### VIGIL-VULN-014 — Critical/High alerts suppressed during maintenance (High)
+### VIGIL-VULN-014 -- Critical/High alerts suppressed during maintenance (High)
 
 **Fixed in:** 0.22.0
 
@@ -240,7 +240,7 @@ During maintenance windows, package-owned changes were fully suppressed regardle
 
 ---
 
-### VIGIL-VULN-015 — Symlink detection followed symlinks via fstat (High)
+### VIGIL-VULN-015 -- Symlink detection followed symlinks via fstat (High)
 
 **Fixed in:** 0.22.0
 
@@ -250,7 +250,7 @@ During maintenance windows, package-owned changes were fully suppressed regardle
 
 ---
 
-### VIGIL-VULN-016 — Hash computation re-opened file by path (TOCTOU) (High)
+### VIGIL-VULN-016 -- Hash computation re-opened file by path (TOCTOU) (High)
 
 **Fixed in:** 0.22.0
 
@@ -260,7 +260,7 @@ Hashing used `blake3::Hasher::update_mmap()` with `/proc/self/fd/N`, which re-op
 
 ---
 
-### VIGIL-VULN-017 — Package manager invocation trusted PATH (High)
+### VIGIL-VULN-017 -- Package manager invocation trusted PATH (High)
 
 **Fixed in:** 0.22.0
 
@@ -270,7 +270,7 @@ Package backend detection and invocation trusted `PATH` resolution (`pacman`, `d
 
 ---
 
-### VIGIL-VULN-018 — Clock-forward attack on audit rotation (High)
+### VIGIL-VULN-018 -- Clock-forward attack on audit rotation (High)
 
 **Fixed in:** 0.22.0
 
@@ -280,7 +280,7 @@ Coordinator audit rotation operated directly from `Utc::now()` without anomaly c
 
 ---
 
-### VIGIL-VULN-019 — File size changes invisible to diff engine (Medium)
+### VIGIL-VULN-019 -- File size changes invisible to diff engine (Medium)
 
 **Fixed in:** 0.22.0
 
@@ -290,7 +290,7 @@ The `diff()` function compared hashes but not sizes. No explicit size-change sig
 
 ---
 
-### VIGIL-VULN-020 — Device changes invisible to diff engine (Medium)
+### VIGIL-VULN-020 -- Device changes invisible to diff engine (Medium)
 
 **Fixed in:** 0.22.0
 
@@ -300,7 +300,7 @@ The `diff()` function checked inode changes but omitted device (`st_dev`) change
 
 ---
 
-### VIGIL-VULN-021 — Duplicate security.* xattrs in generic map (Low)
+### VIGIL-VULN-021 -- Duplicate security.* xattrs in generic map (Low)
 
 **Fixed in:** 0.22.0
 
@@ -310,7 +310,7 @@ The `diff()` function checked inode changes but omitted device (`st_dev`) change
 
 ---
 
-### VIGIL-VULN-022 — fanotify missed completed writes (Medium)
+### VIGIL-VULN-022 -- fanotify missed completed writes (Medium)
 
 **Fixed in:** 0.22.0
 
@@ -320,7 +320,7 @@ Monitoring relied on `FAN_MODIFY` only, which can fire on partial writes. Post-w
 
 ---
 
-### VIGIL-VULN-023 — Stale baseline cache after commits (High)
+### VIGIL-VULN-023 -- Stale baseline cache after commits (High)
 
 **Fixed in:** 0.22.0
 
@@ -330,7 +330,7 @@ The worker LRU baseline cache could remain stale after the baseline writer commi
 
 ---
 
-### VIGIL-VULN-024 — HMAC key material persisted in heap (Medium)
+### VIGIL-VULN-024 -- HMAC key material persisted in heap (Medium)
 
 **Fixed in:** 0.22.0
 
@@ -340,17 +340,17 @@ Intermediate decoded key text in `load_hmac_key()` was not explicitly cleared fr
 
 ---
 
-### VIGIL-VULN-025 — Baseline DB TOCTOU after HMAC verification (Critical)
+### VIGIL-VULN-025 -- Baseline DB TOCTOU after HMAC verification (Critical)
 
 **Fixed in:** 0.23.0
 
 After HMAC verification succeeded at startup, the baseline database was subsequently re-opened by path for scans and periodic HMAC recomputation. An attacker with root access could atomically replace the database file between HMAC verification and the next open, bypassing integrity checks entirely.
 
-**Remediation:** On startup, after HMAC verification succeeds, the inode and device of the baseline DB file are recorded via `DbFileIdentity`. Before every coordinator housekeeping tick, the DB path is stat'd and compared against the recorded identity. If the inode or device differs, all operations are refused and a critical log is emitted: "baseline database file replaced — possible tampering."
+**Remediation:** On startup, after HMAC verification succeeds, the inode and device of the baseline DB file are recorded via `DbFileIdentity`. Before every coordinator housekeeping tick, the DB path is stat'd and compared against the recorded identity. If the inode or device differs, all operations are refused and a critical log is emitted: "baseline database file replaced -- possible tampering."
 
 ---
 
-### VIGIL-VULN-026 — WAL/SHM sidecar files not permission-restricted (High)
+### VIGIL-VULN-026 -- WAL/SHM sidecar files not permission-restricted (High)
 
 **Fixed in:** 0.23.0
 
@@ -360,7 +360,7 @@ SQLite WAL-mode databases create `-wal` and `-shm` sidecar files that inherited 
 
 ---
 
-### VIGIL-VULN-027 — Database directory ownership not verified (High)
+### VIGIL-VULN-027 -- Database directory ownership not verified (High)
 
 **Fixed in:** 0.23.0
 
@@ -370,7 +370,7 @@ The database directory was created via `create_dir_all` without verifying owners
 
 ---
 
-### VIGIL-VULN-028 — VIGIL_CONFIG env var allows config override in production (Critical)
+### VIGIL-VULN-028 -- VIGIL_CONFIG env var allows config override in production (Critical)
 
 **Fixed in:** 0.23.0
 
@@ -380,7 +380,7 @@ The `VIGIL_CONFIG` environment variable was unconditionally trusted for config p
 
 ---
 
-### VIGIL-VULN-029 — VIGIL_SKIP_PACKAGE_OWNER accessible in production (Medium)
+### VIGIL-VULN-029 -- VIGIL_SKIP_PACKAGE_OWNER accessible in production (Medium)
 
 **Fixed in:** 0.23.0
 
@@ -390,17 +390,17 @@ The `VIGIL_SKIP_PACKAGE_OWNER` environment variable disabled package ownership l
 
 ---
 
-### VIGIL-VULN-030 — Bind mount evades fanotify monitoring (High)
+### VIGIL-VULN-030 -- Bind mount evades fanotify monitoring (High)
 
 **Fixed in:** 0.23.0
 
 fanotify with `FAN_MARK_MOUNT` monitors a specific mount. An attacker who bind-mounted a new filesystem over a watched directory would cause fanotify to continue monitoring the old (now hidden) mount point, while the visible directory contents are unmonitored.
 
-**Remediation:** The coordinator records the mount set from `/proc/self/mountinfo` at startup. Every 60-second housekeeping tick, mountinfo is re-read and compared. New mounts that overlap with configured watch paths trigger error-level logging: "new mount detected over watched path — real-time monitoring may be compromised."
+**Remediation:** The coordinator records the mount set from `/proc/self/mountinfo` at startup. Every 60-second housekeeping tick, mountinfo is re-read and compared. New mounts that overlap with configured watch paths trigger error-level logging: "new mount detected over watched path -- real-time monitoring may be compromised."
 
 ---
 
-### VIGIL-VULN-031 — FAN_Q_OVERFLOW silently ignored (High)
+### VIGIL-VULN-031 -- FAN_Q_OVERFLOW silently ignored (High)
 
 **Fixed in:** 0.23.0
 
@@ -410,17 +410,17 @@ When the kernel's fanotify event queue overflowed, the `FAN_Q_OVERFLOW` flag was
 
 ---
 
-### VIGIL-VULN-032 — Baseline HMAC only covers 5 of 13 fields (High)
+### VIGIL-VULN-032 -- Baseline HMAC only covers 5 of 13 fields (High)
 
 **Fixed in:** 0.23.0
 
 `compute_baseline_hmac()` only included path, hash, mode, owner_uid, and owner_gid in the canonical HMAC data. An attacker who modified the remaining 8 fields (size, inode, device, file_type, symlink_target, capabilities, xattrs, security_context) would not trigger an HMAC mismatch.
 
-**Remediation:** Canonical HMAC data now includes all 13 security-relevant fields: path, hash, size, mode, owner_uid, owner_gid, inode, device, file_type, symlink_target (or empty), capabilities (or empty), xattrs_json, and security_context. This is a breaking change for stored HMACs — on upgrade, the HMAC is automatically recomputed.
+**Remediation:** Canonical HMAC data now includes all 13 security-relevant fields: path, hash, size, mode, owner_uid, owner_gid, inode, device, file_type, symlink_target (or empty), capabilities (or empty), xattrs_json, and security_context. This is a breaking change for stored HMACs -- on upgrade, the HMAC is automatically recomputed.
 
 ---
 
-### VIGIL-VULN-033 — Vigil Baseline binary not in self-monitoring watch group (Medium)
+### VIGIL-VULN-033 -- Vigil Baseline binary not in self-monitoring watch group (Medium)
 
 **Fixed in:** 0.23.0
 
@@ -430,7 +430,7 @@ The `vigil_self` watch group only covered config and HMAC key files. The Vigil B
 
 ---
 
-### VIGIL-VULN-034 — sd_notify socket spoofable (Medium)
+### VIGIL-VULN-034 -- sd_notify socket spoofable (Medium)
 
 **Fixed in:** 0.23.0
 
@@ -440,7 +440,7 @@ The systemd unit file did not set `NotifyAccess=main`. By default, systemd may a
 
 ---
 
-### VIGIL-VULN-035 — PID recycling race in process attribution (Low)
+### VIGIL-VULN-035 -- PID recycling race in process attribution (Low)
 
 **Fixed in:** 0.23.0
 
@@ -450,17 +450,17 @@ Process attribution via `/proc/{pid}/exe` was performed inside the `if is_watche
 
 ---
 
-### VIGIL-VULN-036 — Negative clock jump not detected (Medium)
+### VIGIL-VULN-036 -- Negative clock jump not detected (Medium)
 
 **Fixed in:** 0.23.0
 
-Clock anomaly detection only checked for forward jumps exceeding 1 hour. A negative clock jump (setting the clock backward) was not detected. An attacker could set the clock back to make recent audit entries appear to be in the future, then forward again to trigger rotation of those entries — a clock manipulation replay attack.
+Clock anomaly detection only checked for forward jumps exceeding 1 hour. A negative clock jump (setting the clock backward) was not detected. An attacker could set the clock back to make recent audit entries appear to be in the future, then forward again to trigger rotation of those entries -- a clock manipulation replay attack.
 
 **Remediation:** The coordinator now detects backward clock jumps exceeding 60 seconds and skips audit rotation. `last_rotation_timestamp` is not updated when any clock anomaly (forward or backward) is detected, preventing the attacker from resetting the reference point.
 
 ---
 
-### VIGIL-VULN-037 — Symlink target not canonically resolved (Medium)
+### VIGIL-VULN-037 -- Symlink target not canonically resolved (Medium)
 
 **Fixed in:** 0.23.0
 
@@ -470,7 +470,7 @@ When the scanner encountered a symlink pointing to a regular file, it followed t
 
 ---
 
-### VIGIL-VULN-038 — Audit DB identity not tracked (Critical)
+### VIGIL-VULN-038 -- Audit DB identity not tracked (Critical)
 
 **Fixed in:** 0.24.0
 
@@ -480,7 +480,7 @@ Only the baseline DB had inode/device identity checks. The coordinator opened `a
 
 ---
 
-### VIGIL-VULN-039 — Scan scheduler TOCTOU via path-open (Critical)
+### VIGIL-VULN-039 -- Scan scheduler TOCTOU via path-open (Critical)
 
 **Fixed in:** 0.24.0
 
@@ -490,7 +490,7 @@ Scheduled and on-demand scans opened baseline DB by path each run. This bypassed
 
 ---
 
-### VIGIL-VULN-040 — WAL checkpoint TOCTOU via path-open (High)
+### VIGIL-VULN-040 -- WAL checkpoint TOCTOU via path-open (High)
 
 **Fixed in:** 0.24.0
 
@@ -500,7 +500,7 @@ Periodic WAL checkpoints opened baseline/audit DB by path inside coordinator hou
 
 ---
 
-### VIGIL-VULN-041 — HMAC key trust-refresh from disk (Critical)
+### VIGIL-VULN-041 -- HMAC key trust-refresh from disk (Critical)
 
 **Fixed in:** 0.24.0
 
@@ -510,7 +510,7 @@ Multiple components loaded `/etc/vigil/hmac.key` at different times. A root atta
 
 ---
 
-### VIGIL-VULN-042 — Runtime JSON snapshots not atomically written (High)
+### VIGIL-VULN-042 -- Runtime JSON snapshots not atomically written (High)
 
 **Fixed in:** 0.24.0
 
@@ -520,7 +520,7 @@ Runtime files in `/run/vigil` were written with direct overwrite semantics, allo
 
 ---
 
-### VIGIL-VULN-043 — Bloom fast-reject semantic mismatch (High)
+### VIGIL-VULN-043 -- Bloom fast-reject semantic mismatch (High)
 
 **Fixed in:** 0.24.0
 
@@ -530,7 +530,7 @@ The Bloom filter inserted watched path prefixes but checked full event paths dir
 
 ---
 
-### VIGIL-VULN-044 — package_update hardcoded false (High)
+### VIGIL-VULN-044 -- package_update hardcoded false (High)
 
 **Fixed in:** 0.24.0
 
@@ -540,7 +540,7 @@ Worker change results always set `package_update = false`, so auto-rebaseline lo
 
 ---
 
-### VIGIL-VULN-045 — Nonce generation did not fail closed (Medium)
+### VIGIL-VULN-045 -- Nonce generation did not fail closed (Medium)
 
 **Fixed in:** 0.24.0
 
@@ -550,7 +550,7 @@ Control socket nonce generation ignored `/dev/urandom` read failures and could p
 
 ---
 
-### VIGIL-VULN-046 — Audit write failures dropped evidence (Medium)
+### VIGIL-VULN-046 -- Audit write failures dropped evidence (Medium)
 
 **Fixed in:** 0.24.0
 
@@ -560,7 +560,7 @@ On audit DB write failures, entries were logged as errors but not retried, causi
 
 ---
 
-### VIGIL-VULN-047 — Self-path exclusion prefix collision (Medium)
+### VIGIL-VULN-047 -- Self-path exclusion prefix collision (Medium)
 
 **Fixed in:** 0.24.0
 
@@ -570,7 +570,7 @@ Self-path exclusion used plain string `starts_with`, so `/run/vigil` also matche
 
 ---
 
-### VIGIL-VULN-048 — Config reload HMAC check used fresh DB path-open (Medium)
+### VIGIL-VULN-048 -- Config reload HMAC check used fresh DB path-open (Medium)
 
 **Fixed in:** 0.24.0
 
@@ -580,7 +580,7 @@ Config reload verification opened baseline DB by path for `config_file_hmac` loo
 
 ---
 
-### VIGIL-VULN-049 — sd_notify sent to unvalidated NOTIFY_SOCKET (Low)
+### VIGIL-VULN-049 -- sd_notify sent to unvalidated NOTIFY_SOCKET (Low)
 
 **Fixed in:** 0.24.0
 
@@ -590,7 +590,7 @@ Vigil Baseline sent lifecycle/watchdog notifications without validating `NOTIFY_
 
 ---
 
-### VIGIL-VULN-050 — Scheduled scan severity downgrade (Medium)
+### VIGIL-VULN-050 -- Scheduled scan severity downgrade (Medium)
 
 **Fixed in:** 0.24.0
 
@@ -600,27 +600,27 @@ Scheduled scanner emitted `Severity::Medium` for all change results, ignoring co
 
 ---
 
-### VIGIL-VULN-051 — Baseline HMAC mismatch silently auto-recomputed (Critical)
+### VIGIL-VULN-051 -- Baseline HMAC mismatch silently auto-recomputed (Critical)
 
 **Fixed in:** 0.33.0
 
 In `ensure_baseline_health()`, when the baseline HMAC did not match the stored value, the daemon logged a warning ("likely caused by a version upgrade") and silently recomputed and stored the new HMAC. An attacker who modified the baseline database directly would have their tampered baseline accepted as truth on the next daemon restart, completely nullifying the HMAC tamper-evidence guarantee.
 
-**Remediation:** On HMAC mismatch, the daemon now transitions to `Degraded` state with reason `baseline_hmac_mismatch`, logs at `error` level, and sends a `Critical` urgency desktop notification. The daemon continues running (Fail Open) but the operator must investigate. A new config option `security.trust_baseline_on_hmac_mismatch` (default `false`) provides an explicit escape hatch for genuine version upgrade scenarios — when set to `true`, the old recompute behavior is restored with a warning to disable the setting after upgrade.
+**Remediation:** On HMAC mismatch, the daemon now transitions to `Degraded` state with reason `baseline_hmac_mismatch`, logs at `error` level, and sends a `Critical` urgency desktop notification. The daemon continues running (Fail Open) but the operator must investigate. A new config option `security.trust_baseline_on_hmac_mismatch` (default `false`) provides an explicit escape hatch for genuine version upgrade scenarios -- when set to `true`, the old recompute behavior is restored with a warning to disable the setting after upgrade.
 
 ---
 
-### VIGIL-VULN-052 — `baseline_refresh` config bypass and degraded-state gate (Critical)
+### VIGIL-VULN-052 -- `baseline_refresh` config bypass and degraded-state gate (Critical)
 
 **Fixed in:** 0.33.0
 
-`handle_baseline_refresh()` called `crate::config::load_config(None)` which re-read the config file from disk. The coordinator's `handle_reload()` verified config HMAC before accepting changes, but `baseline_refresh` bypassed that verification entirely. An attacker who modified the config file (e.g., removing watch paths for directories they had compromised) and sent `baseline_refresh` via the control socket would get the baseline rebuilt using tampered config without any HMAC check. Additionally, there was no guard against `baseline_refresh` execution while the daemon was in `Degraded` state — after a security event (e.g., baseline DB replacement), an attacker could immediately rebuild the baseline from compromised filesystem state.
+`handle_baseline_refresh()` called `crate::config::load_config(None)` which re-read the config file from disk. The coordinator's `handle_reload()` verified config HMAC before accepting changes, but `baseline_refresh` bypassed that verification entirely. An attacker who modified the config file (e.g., removing watch paths for directories they had compromised) and sent `baseline_refresh` via the control socket would get the baseline rebuilt using tampered config without any HMAC check. Additionally, there was no guard against `baseline_refresh` execution while the daemon was in `Degraded` state -- after a security event (e.g., baseline DB replacement), an attacker could immediately rebuild the baseline from compromised filesystem state.
 
 **Remediation:** `handle_baseline_refresh()` now uses the daemon's live config via a new `config: Arc<ArcSwap<Config>>` field on `ControlHandler`, threaded from `DaemonRuntime::start()`. This config is already HMAC-verified through the coordinator's reload path. Additionally, `baseline_refresh` now checks daemon state and refuses execution with a clear error when `Degraded`, preventing an attacker from cementing compromised state as the new baseline.
 
 ---
 
-### VIGIL-VULN-053 — Control socket unbounded read_line (Critical)
+### VIGIL-VULN-053 -- Control socket unbounded read_line (Critical)
 
 **Fixed in:** 0.33.0
 
@@ -630,7 +630,7 @@ Both `read_request()` and `authenticate_and_read()` used `BufReader::read_line()
 
 ---
 
-### VIGIL-VULN-054 — HMAC key permission check warn-only (High)
+### VIGIL-VULN-054 -- HMAC key permission check warn-only (High)
 
 **Fixed in:** 0.33.0
 
@@ -640,7 +640,7 @@ Both `read_request()` and `authenticate_and_read()` used `BufReader::read_line()
 
 ---
 
-### VIGIL-VULN-055 — `vigil update` privilege escalation via user-owned directory (High)
+### VIGIL-VULN-055 -- `vigil update` privilege escalation via user-owned directory (High)
 
 **Fixed in:** 0.33.0
 
@@ -650,17 +650,17 @@ When `vigil update` was run with `sudo`, `$HOME` may point to the unprivileged u
 
 ---
 
-### VIGIL-VULN-056 — PID attribution did not detect exited processes (Medium)
+### VIGIL-VULN-056 -- PID attribution did not detect exited processes (Medium)
 
 **Fixed in:** 0.33.0
 
-While VIGIL-VULN-035 moved the `/proc/{pid}/exe` readlink earlier to minimize the PID recycling window, a successful readlink was not distinguished from a failed one — the process field was always populated with the PID regardless. When the readlink failed (process already exited), the attribution was silently set to `exe: None` without any log entry, making stale or recycled PID attribution indistinguishable from valid attribution in audit records.
+While VIGIL-VULN-035 moved the `/proc/{pid}/exe` readlink earlier to minimize the PID recycling window, a successful readlink was not distinguished from a failed one -- the process field was always populated with the PID regardless. When the readlink failed (process already exited), the attribution was silently set to `exe: None` without any log entry, making stale or recycled PID attribution indistinguishable from valid attribution in audit records.
 
-**Remediation:** Process attribution now explicitly detects when the `/proc/{pid}/exe` readlink fails and logs at `debug` level: "process exited before attribution — PID may be stale". The `ProcessAttribution` is still recorded (with `exe: None`) to preserve the PID for forensic context, but the log entry provides operational visibility into potential attribution staleness.
+**Remediation:** Process attribution now explicitly detects when the `/proc/{pid}/exe` readlink fails and logs at `debug` level: "process exited before attribution -- PID may be stale". The `ProcessAttribution` is still recorded (with `exe: None`) to preserve the PID for forensic context, but the log entry provides operational visibility into potential attribution staleness.
 
 ---
 
-### VIGIL-VULN-057 — Control socket HMAC auth bypass via empty response and timing leak (Critical)
+### VIGIL-VULN-057 -- Control socket HMAC auth bypass via empty response and timing leak (Critical)
 
 **Fixed in:** 0.34.0
 
@@ -670,57 +670,57 @@ The control socket's challenge-response authentication compared the client-suppl
 
 ---
 
-### VIGIL-VULN-058 — fanotify event loop infinite loop on malformed `event_len` (Critical)
+### VIGIL-VULN-058 -- fanotify event loop infinite loop on malformed `event_len` (Critical)
 
 **Fixed in:** 0.34.0
 
-The fanotify reader advanced its parsing offset by `event.event_len as usize` on every iteration. The kernel guarantees `event_len >= sizeof(struct fanotify_event_metadata)` for well-formed events, but the daemon performed no validation. A buggy or malicious kernel module — or a kernel bug producing `event_len == 0` — would cause the parser to loop forever on the same offset, pinning a CPU core and starving the rest of the daemon. Even worse, `event_len` larger than the remaining buffer could read past the buffer boundary on the next iteration's metadata cast.
+The fanotify reader advanced its parsing offset by `event.event_len as usize` on every iteration. The kernel guarantees `event_len >= sizeof(struct fanotify_event_metadata)` for well-formed events, but the daemon performed no validation. A buggy or malicious kernel module -- or a kernel bug producing `event_len == 0` -- would cause the parser to loop forever on the same offset, pinning a CPU core and starving the rest of the daemon. Even worse, `event_len` larger than the remaining buffer could read past the buffer boundary on the next iteration's metadata cast.
 
 **Remediation:** The parser now validates `event.event_len >= FAN_EVENT_METADATA_LEN && offset + event.event_len as usize <= n_usize` before advancing. On violation, it increments the new `fanotify_read_errors` counter, logs at `error` with the observed lengths, and breaks the resync loop to drop the malformed batch cleanly.
 
 ---
 
-### VIGIL-VULN-059 — Control socket accepted connections from any local UID (High)
+### VIGIL-VULN-059 -- Control socket accepted connections from any local UID (High)
 
 **Fixed in:** 0.34.0
 
-The control socket called `getsockopt(SO_PEERCRED)` to log the peer's credentials but did not enforce them. Any local process (any UID) that could open `/run/vigil/control.sock` could send authenticated commands as long as it possessed the HMAC key — and on systems where the socket file's mode was misconfigured (e.g., `0666` or `0660` with a permissive group), arbitrary local users could probe authentication.
+The control socket called `getsockopt(SO_PEERCRED)` to log the peer's credentials but did not enforce them. Any local process (any UID) that could open `/run/vigil/control.sock` could send authenticated commands as long as it possessed the HMAC key -- and on systems where the socket file's mode was misconfigured (e.g., `0666` or `0660` with a permissive group), arbitrary local users could probe authentication.
 
 **Remediation:** `peer_credentials()` (renamed from `log_peer_credentials()`) now returns `Option<ucred>` and `handle_connection()` rejects the connection unconditionally when (a) SO_PEERCRED is unavailable, (b) the peer UID is non-zero, or (c) the peer UID is non-zero and does not match the daemon's effective UID. Daemon EUID is resolved through a new `current_euid()` helper that wraps `libc::geteuid()` with `#[allow(unsafe_code)]` for the FFI call.
 
 ---
 
-### VIGIL-VULN-060 — Control socket thread-exhaustion DoS (High)
+### VIGIL-VULN-060 -- Control socket thread-exhaustion DoS (High)
 
 **Fixed in:** 0.34.0
 
-The control socket accept loop spawned a fresh thread per incoming connection with no upper bound. A local attacker who could connect to the socket — or who could trigger many legitimate clients — could exhaust the process's thread budget and FD table.
+The control socket accept loop spawned a fresh thread per incoming connection with no upper bound. A local attacker who could connect to the socket -- or who could trigger many legitimate clients -- could exhaust the process's thread budget and FD table.
 
 **Remediation:** Introduced `MAX_CONCURRENT_CONNECTIONS = 8` and an `AtomicUsize` semaphore. Connections beyond the cap receive a JSON rejection (`{"ok":false,"error":"too many concurrent connections"}`) and are closed immediately. The semaphore is decremented in the worker thread's drop path so it is released even if the handler panics. To support sharing a single `rusqlite::Connection` across worker threads, `ControlHandler.baseline_conn` was rewrapped as `Arc<Mutex<Connection>>` (parking_lot Mutex).
 
 ---
 
-### VIGIL-VULN-061 — `vigil update` did not roll back when daemon failed to start (High)
+### VIGIL-VULN-061 -- `vigil update` did not roll back when daemon failed to start (High)
 
 **Fixed in:** 0.34.0
 
-The post-install rollback in `vigil update` triggered only when the daemon started successfully but failed its health check. If `systemctl start vigild` itself failed (e.g., the new binary aborted during startup, the unit file became invalid, or systemd refused to start the unit), the new binaries remained installed even though the daemon was not running — the operator now had to manually restore from `.vigil.backup` and `.vigild.backup`.
+The post-install rollback in `vigil update` triggered only when the daemon started successfully but failed its health check. If `systemctl start vigild` itself failed (e.g., the new binary aborted during startup, the unit file became invalid, or systemd refused to start the unit), the new binaries remained installed even though the daemon was not running -- the operator now had to manually restore from `.vigil.backup` and `.vigild.backup`.
 
-**Remediation:** Rollback condition changed from `started && !healthy` to `backups_exist && (!daemon_started || !healthy)`. Any failure to bring the daemon into a healthy state — whether the start command failed or the health probe failed — triggers automatic restoration of the backed-up binaries.
+**Remediation:** Rollback condition changed from `started && !healthy` to `backups_exist && (!daemon_started || !healthy)`. Any failure to bring the daemon into a healthy state -- whether the start command failed or the health probe failed -- triggers automatic restoration of the backed-up binaries.
 
 ---
 
-### VIGIL-VULN-062 — Package manager queries vulnerable to path-as-flag injection (High)
+### VIGIL-VULN-062 -- Package manager queries vulnerable to path-as-flag injection (High)
 
 **Fixed in:** 0.34.0
 
 Package manager queries (`pacman -Qo <path>`, `dpkg -S <path>`, `rpm -qf <path>`) passed the file path positionally without a `--` argument-terminator. A path beginning with `-` (e.g., a deliberately-named file `/-rf` or any path under a maliciously-created directory `/--option`) could be interpreted by the package manager as a flag. While the practical exploitability was limited (Vigil only invokes these queries on paths it observes, and the exec is via `Command::arg()` not a shell), it represented an injection class that should be closed at the source.
 
-**Remediation:** All four call sites — `query_pacman()`, `query_dpkg()`, `query_rpm()`, and `batch_query_dpkg()` — now insert `.arg("--")` immediately before the path argument(s).
+**Remediation:** All four call sites -- `query_pacman()`, `query_dpkg()`, `query_rpm()`, and `batch_query_dpkg()` -- now insert `.arg("--")` immediately before the path argument(s).
 
 ---
 
-### VIGIL-VULN-063 — Helper binaries vulnerable to PATH hijacking (High)
+### VIGIL-VULN-063 -- Helper binaries vulnerable to PATH hijacking (High)
 
 **Fixed in:** 0.34.0
 
@@ -730,7 +730,7 @@ The daemon invoked `systemctl`, `journalctl`, `notify-send`, and (in the update 
 
 ---
 
-### VIGIL-VULN-064 — fanotify queue overflow silently logged with no recovery scan (Medium)
+### VIGIL-VULN-064 -- fanotify queue overflow silently logged with no recovery scan (Medium)
 
 **Fixed in:** 0.34.0
 
@@ -740,39 +740,39 @@ When the kernel's fanotify event queue overflowed (`FAN_Q_OVERFLOW` event), the 
 
 ---
 
-### VIGIL-VULN-065 — fanotify mountinfo octal escapes not decoded (Medium)
+### VIGIL-VULN-065 -- fanotify mountinfo octal escapes not decoded (Medium)
 
 **Fixed in:** 0.34.0
 
-`/proc/self/mountinfo` uses octal escapes (`\040` for space, `\011` for tab, `\134` for backslash, etc.) for special characters in mount point fields. The daemon's mountinfo parser took the raw field verbatim, so any mount point containing whitespace or backslashes was misparsed and would not receive a fanotify mark — producing a silent monitoring gap on those mounts.
+`/proc/self/mountinfo` uses octal escapes (`\040` for space, `\011` for tab, `\134` for backslash, etc.) for special characters in mount point fields. The daemon's mountinfo parser took the raw field verbatim, so any mount point containing whitespace or backslashes was misparsed and would not receive a fanotify mark -- producing a silent monitoring gap on those mounts.
 
 **Remediation:** New `unescape_mountinfo(s: &str) -> String` decodes the standard octal escape set used by the kernel. Applied to both the mount-point field used for fanotify marks and any subsequent path matching. Covered by 5 unit tests (passthrough, single space, single tab, backslash, and a realistic mixed-escape mount path).
 
 ---
 
-### VIGIL-VULN-066 — fanotify mark/read failures silently ignored (Medium)
+### VIGIL-VULN-066 -- fanotify mark/read failures silently ignored (Medium)
 
 **Fixed in:** 0.34.0
 
-When `fanotify_mark()` failed during initial setup or mount reload, the failure was logged but the daemon continued running with no real-time monitoring on those mounts. Similarly, `read()` failures on the fanotify FD were classified only by the success/failure of the read syscall — fatal errno values (EBADF, EFAULT, EINVAL) were not distinguished from transient ones (EAGAIN, EWOULDBLOCK, EINTR), so a fatal error would either spin in a tight error loop or terminate the monitor without surfacing the cause.
+When `fanotify_mark()` failed during initial setup or mount reload, the failure was logged but the daemon continued running with no real-time monitoring on those mounts. Similarly, `read()` failures on the fanotify FD were classified only by the success/failure of the read syscall -- fatal errno values (EBADF, EFAULT, EINVAL) were not distinguished from transient ones (EAGAIN, EWOULDBLOCK, EINTR), so a fatal error would either spin in a tight error loop or terminate the monitor without surfacing the cause.
 
 **Remediation:** Mark failures now increment the new `fanotify_mark_failures` counter and, when state is available (reload path), transition the daemon to `Degraded { reason: "fanotify_mark_failure" }`. Read failures are now classified: EAGAIN/EWOULDBLOCK/EINTR continue the loop benignly; any other errno increments `fanotify_read_errors`, degrades state, logs at `error`, and stops the monitor cleanly so the rest of the daemon can shut down or be restarted by systemd.
 
 ---
 
-### VIGIL-VULN-067 — WAL HMAC verification bypass via zero-HMAC injection (Critical)
+### VIGIL-VULN-067 -- WAL HMAC verification bypass via zero-HMAC injection (Critical)
 
 **Fixed in:** 0.35.0
 
 `compute_entry_hmac()` returns `[0u8; 32]` when HMAC is disabled. The WAL scanner only verified HMAC when `any_hmac` (any non-zero byte in the 32-byte field). An attacker with write access to the WAL file could append a forged entry with all-zero HMAC and a valid CRC32; the reader holding a valid HMAC key would accept it without cryptographic verification. Additionally, reopening an HMAC-protected WAL with `hmac_key = None` was silently allowed, downgrading security.
 
-**Reproduction:** Create WAL with HMAC, manually craft a binary entry with `[0; 32]` HMAC field, valid CRC32, append to file, call `iter_unconsumed` — entry accepted.
+**Reproduction:** Create WAL with HMAC, manually craft a binary entry with `[0; 32]` HMAC field, valid CRC32, append to file, call `iter_unconsumed` -- entry accepted.
 
 **Remediation:** (1) `scan_entries` reads the 16-byte key fingerprint from the WAL header; when non-zero (`hmac_required`), entries with all-zero HMAC are rejected with `error` log. (2) `open_with_sync` returns error when header fingerprint is non-zero but caller passes `hmac_key = None`. (3) Magic number `50` replaced with documented `MIN_ENTRY_SIZE` constant. New metric `wal_entries_rejected_hmac`. Code path: `src/wal/mod.rs`.
 
 ---
 
-### VIGIL-VULN-068 — fanotify silently drops events for deleted files (High)
+### VIGIL-VULN-068 -- fanotify silently drops events for deleted files (High)
 
 **Fixed in:** 0.35.0
 
@@ -784,7 +784,7 @@ When a file is unlinked between fanotify event production and `read_link("/proc/
 
 ---
 
-### VIGIL-VULN-069 — new-mount evasion: fanotify marks not applied to overlapping mounts (High)
+### VIGIL-VULN-069 -- new-mount evasion: fanotify marks not applied to overlapping mounts (High)
 
 **Fixed in:** 0.35.0
 
@@ -794,7 +794,7 @@ When a file is unlinked between fanotify event production and `read_link("/proc/
 
 ---
 
-### VIGIL-VULN-070 — clock manipulation evades audit retention via slow drift (Medium)
+### VIGIL-VULN-070 -- clock manipulation evades audit retention via slow drift (Medium)
 
 **Fixed in:** 0.35.0
 
@@ -804,7 +804,7 @@ When a file is unlinked between fanotify event production and `read_link("/proc/
 
 ---
 
-### VIGIL-VULN-071 — coordinator uses stale DB connections after Degraded transition (Medium)
+### VIGIL-VULN-071 -- coordinator uses stale DB connections after Degraded transition (Medium)
 
 **Fixed in:** 0.35.0
 
@@ -814,7 +814,7 @@ When `is_replaced` returned true for baseline/audit DB, the coordinator entered 
 
 ---
 
-### VIGIL-VULN-072 — user-space event loss not surfaced as Degraded state (Medium)
+### VIGIL-VULN-072 -- user-space event loss not surfaced as Degraded state (Medium)
 
 **Fixed in:** 0.35.0
 
@@ -824,7 +824,7 @@ The `send_timeout(.., 1s)` drop path in fanotify.rs surfaced event loss only via
 
 ---
 
-### VIGIL-VULN-073 — v0.34.0 follow-up bugs (Medium, composite)
+### VIGIL-VULN-073 -- v0.34.0 follow-up bugs (Medium, composite)
 
 **Fixed in:** 0.35.0
 
@@ -834,10 +834,10 @@ Six bugs introduced or left open by the v0.34.0 sweep: (1) thread-spawn failure 
 
 ---
 
-### VIGIL-VULN-074 — key material in non-zeroizing buffers; fd leak across exec (Medium, composite)
+### VIGIL-VULN-074 -- key material in non-zeroizing buffers; fd leak across exec (Medium, composite)
 
 **Fixed in:** 0.35.0
 
-(1) `load_hmac_key` returned `Vec<u8>` — key material lived in non-zeroizing buffers between read and consumer. (2) `dup_to_file` used `libc::dup` which does not set `FD_CLOEXEC`; if any future code path spawns children, the fd would leak across exec.
+(1) `load_hmac_key` returned `Vec<u8>` -- key material lived in non-zeroizing buffers between read and consumer. (2) `dup_to_file` used `libc::dup` which does not set `FD_CLOEXEC`; if any future code path spawns children, the fd would leak across exec.
 
 **Remediation:** (1) `load_hmac_key` returns `Zeroizing<Vec<u8>>`; intermediate content buffer explicitly zeroized. (2) `dup_to_file` uses `libc::fcntl(F_DUPFD_CLOEXEC)`. (3) WAL `random_nonce()` uses `libc::getrandom` syscall instead of per-call `/dev/urandom` open. Code paths: `src/hmac.rs`, `src/worker.rs`, `src/wal/mod.rs`.
