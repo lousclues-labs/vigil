@@ -57,6 +57,10 @@ pub struct Metrics {
     pub inode_changes_rejected: AtomicU64,
     /// Fanotify thread supervised restarts after recoverable errors.
     pub fanotify_thread_restarts: AtomicU64,
+    /// Worker DB reopen attempts after consecutive errors.
+    pub worker_db_reopen_attempts: AtomicU64,
+    /// Worker DB reopen failures (reopen itself failed).
+    pub worker_db_reopen_failures: AtomicU64,
     /// Unix timestamp set once at daemon startup.
     pub uptime_start: i64,
 }
@@ -104,6 +108,8 @@ impl Metrics {
             inode_changes_recovered: AtomicU64::new(0),
             inode_changes_rejected: AtomicU64::new(0),
             fanotify_thread_restarts: AtomicU64::new(0),
+            worker_db_reopen_attempts: AtomicU64::new(0),
+            worker_db_reopen_failures: AtomicU64::new(0),
             uptime_start: chrono::Utc::now().timestamp(),
         }
     }
@@ -165,6 +171,8 @@ impl Metrics {
             inode_changes_recovered: self.inode_changes_recovered.load(Ordering::Relaxed),
             inode_changes_rejected: self.inode_changes_rejected.load(Ordering::Relaxed),
             fanotify_thread_restarts: self.fanotify_thread_restarts.load(Ordering::Relaxed),
+            worker_db_reopen_attempts: self.worker_db_reopen_attempts.load(Ordering::Relaxed),
+            worker_db_reopen_failures: self.worker_db_reopen_failures.load(Ordering::Relaxed),
             uptime_start: self.uptime_start,
         }
     }
@@ -219,6 +227,8 @@ pub struct MetricsSnapshot {
     pub inode_changes_recovered: u64,
     pub inode_changes_rejected: u64,
     pub fanotify_thread_restarts: u64,
+    pub worker_db_reopen_attempts: u64,
+    pub worker_db_reopen_failures: u64,
     pub uptime_start: i64,
 }
 
@@ -455,6 +465,18 @@ impl MetricsSnapshot {
             "vigil_fanotify_thread_restarts_total",
             "Fanotify thread supervised restarts after recoverable errors",
             self.fanotify_thread_restarts,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_worker_db_reopen_attempts_total",
+            "Worker DB reopen attempts after consecutive errors",
+            self.worker_db_reopen_attempts,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_worker_db_reopen_failures_total",
+            "Worker DB reopen failures",
+            self.worker_db_reopen_failures,
         );
 
         let _ = writeln!(out);

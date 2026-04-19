@@ -132,6 +132,7 @@ fn run_coordinated_attack(seed: u64) {
         baseline_generation: baseline_generation.clone(),
         wal: Some(wal.clone()),
         maintenance_active: Arc::new(AtomicBool::new(false)),
+        state: None,
     };
     let worker_handles = worker::spawn_workers(worker_args);
 

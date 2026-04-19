@@ -593,6 +593,7 @@ impl DaemonRuntime {
             baseline_generation: baseline_generation.clone(),
             wal: wal.clone(),
             maintenance_active: daemon.maintenance_active.clone(),
+            state: Some(daemon.state.clone()),
         });
         send_watchdog_heartbeat();
 

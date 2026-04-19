@@ -36,6 +36,12 @@ use crate::watch_index::WatchGroupIndex;
 /// baseline connection. Prevents permanent degradation from transient SQLite errors.
 const WORKER_DB_REOPEN_THRESHOLD: u32 = 5;
 
+/// Maximum consecutive reopen failures before the worker gives up.
+const WORKER_DB_MAX_REOPEN_FAILURES: u32 = 5;
+
+/// Maximum backoff delay between reopen attempts (seconds).
+const WORKER_DB_MAX_BACKOFF_SECS: u64 = 60;
+
 /// Baseline update sent from workers to the baseline writer thread.
 pub struct BaselineUpdate {
     pub entry: BaselineEntry,
@@ -77,6 +83,7 @@ pub struct WorkerSpawnArgs {
     pub baseline_generation: Arc<AtomicU64>,
     pub wal: Option<Arc<DetectionWal>>,
     pub maintenance_active: Arc<AtomicBool>,
+    pub state: Option<Arc<parking_lot::RwLock<crate::types::DaemonState>>>,
 }
 
 /// Per-worker processing context holding connection, cache, and filter state.
@@ -95,6 +102,9 @@ struct WorkerContext {
     wal: Option<Arc<DetectionWal>>,
     maintenance_active: Arc<AtomicBool>,
     consecutive_db_errors: u32,
+    consecutive_reopen_failures: u32,
+    last_reopen_attempt: Option<std::time::Instant>,
+    state: Option<Arc<parking_lot::RwLock<crate::types::DaemonState>>>,
 }
 
 impl WorkerContext {
@@ -143,23 +153,66 @@ impl WorkerContext {
                 Err(e) => {
                     self.consecutive_db_errors += 1;
                     if self.consecutive_db_errors >= WORKER_DB_REOPEN_THRESHOLD {
-                        match db::open_baseline_db_readonly(&self.db_path) {
-                            Ok(new_conn) => {
-                                let n = self.consecutive_db_errors;
-                                self.conn = new_conn;
-                                self.cache.clear();
-                                self.consecutive_db_errors = 0;
-                                tracing::warn!(
-                                    failures = n,
-                                    "worker reopened baseline connection after {} consecutive failures",
-                                    n
-                                );
-                            }
-                            Err(reopen_err) => {
-                                tracing::error!(
-                                    error = %reopen_err,
-                                    "worker failed to reopen baseline connection"
-                                );
+                        // Check if we should attempt reopen based on backoff.
+                        let backoff_secs = std::cmp::min(
+                            1u64 << self.consecutive_reopen_failures.min(6),
+                            WORKER_DB_MAX_BACKOFF_SECS,
+                        );
+                        let should_attempt = self
+                            .last_reopen_attempt
+                            .map(|t| t.elapsed().as_secs() >= backoff_secs)
+                            .unwrap_or(true);
+
+                        if should_attempt {
+                            self.last_reopen_attempt = Some(std::time::Instant::now());
+                            self.metrics
+                                .worker_db_reopen_attempts
+                                .fetch_add(1, Ordering::Relaxed);
+
+                            match db::open_baseline_db_readonly(&self.db_path) {
+                                Ok(new_conn) => {
+                                    let n = self.consecutive_db_errors;
+                                    self.conn = new_conn;
+                                    self.cache.clear();
+                                    self.consecutive_db_errors = 0;
+                                    self.consecutive_reopen_failures = 0;
+                                    tracing::warn!(
+                                        failures = n,
+                                        "worker reopened baseline connection after {} consecutive failures",
+                                        n
+                                    );
+                                }
+                                Err(reopen_err) => {
+                                    self.consecutive_reopen_failures += 1;
+                                    self.metrics
+                                        .worker_db_reopen_failures
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    tracing::error!(
+                                        error = %reopen_err,
+                                        attempt = self.consecutive_reopen_failures,
+                                        backoff_secs,
+                                        "worker failed to reopen baseline connection"
+                                    );
+                                    if self.consecutive_reopen_failures
+                                        >= WORKER_DB_MAX_REOPEN_FAILURES
+                                    {
+                                        tracing::error!(
+                                            "worker DB unrecoverable after {} reopen failures. \
+                                             entering Degraded.",
+                                            WORKER_DB_MAX_REOPEN_FAILURES
+                                        );
+                                        if let Some(ref s) = self.state {
+                                            let mut guard = s.write();
+                                            if matches!(*guard, crate::types::DaemonState::Healthy)
+                                            {
+                                                *guard = crate::types::DaemonState::Degraded {
+                                                    reason: "worker_db_unrecoverable".into(),
+                                                    since: chrono::Utc::now(),
+                                                };
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -343,6 +396,7 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
         let generation = args.baseline_generation.clone();
         let wal = args.wal.clone();
         let maintenance_active = args.maintenance_active.clone();
+        let state = args.state.clone();
 
         let handle_result = std::thread::Builder::new()
             .name(format!("vigil-worker-{}", i))
@@ -372,6 +426,9 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
                     wal,
                     maintenance_active,
                     consecutive_db_errors: 0,
+                    consecutive_reopen_failures: 0,
+                    last_reopen_attempt: None,
+                    state,
                 };
 
                 while !shutdown.load(Ordering::Acquire) {
@@ -696,6 +753,9 @@ mod tests {
             wal: None,
             maintenance_active: Arc::new(AtomicBool::new(false)),
             consecutive_db_errors: 0,
+            consecutive_reopen_failures: 0,
+            last_reopen_attempt: None,
+            state: None,
         };
 
         let event = FsEvent {
