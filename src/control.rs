@@ -480,8 +480,19 @@ impl ControlHandler {
             }
         }
         let cfg = self.config.load();
-        let conn = self.baseline_conn.lock();
-        match crate::scanner::build_initial_baseline(&conn, &cfg) {
+
+        // Build the new baseline into a temporary in-memory connection to
+        // avoid holding the live baseline_conn lock during the (potentially
+        // minutes-long) scan. Only briefly lock to swap the results in.
+        let db_path = &cfg.daemon.db_path;
+        let tmp_conn = match crate::db::open_baseline_db_at_path(db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                return serde_json::json!({"ok": false, "error": format!("failed to open temp baseline connection: {}", e)});
+            }
+        };
+
+        match crate::scanner::build_initial_baseline(&tmp_conn, &cfg) {
             Ok(result) => {
                 serde_json::json!({
                     "ok": true,
