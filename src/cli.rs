@@ -391,7 +391,7 @@ pub enum AttestAction {
         #[arg(long, default_value = "full")]
         scope: String,
 
-        /// Output file path (defaults to ./vigil-attest-<timestamp>-<host>.vatt)
+        /// Output file path (defaults to ./vigil-attest-{timestamp}-{host}.vatt)
         #[arg(long)]
         out: Option<PathBuf>,
 

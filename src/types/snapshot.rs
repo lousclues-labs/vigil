@@ -297,7 +297,7 @@ fn has_dangerous_caps_from_hex(hex_str: &str) -> bool {
     (permitted_low & dangerous_mask) != 0
 }
 
-/// Read SELinux or AppArmor security context via /proc/self/fd/<fd>.
+/// Read SELinux or AppArmor security context via /proc/self/fd/{fd}.
 fn read_security_context_fd(fd_path: &Path) -> String {
     if let Ok(Some(val)) = xattr::get(fd_path, "security.selinux") {
         return String::from_utf8_lossy(&val)
@@ -314,7 +314,7 @@ fn read_security_context_fd(fd_path: &Path) -> String {
     String::new()
 }
 
-/// Read capabilities xattr via /proc/self/fd/<fd>.
+/// Read capabilities xattr via /proc/self/fd/{fd}.
 fn read_capabilities_fd(fd_path: &Path) -> Option<String> {
     xattr::get(fd_path, "security.capability")
         .ok()
@@ -322,7 +322,7 @@ fn read_capabilities_fd(fd_path: &Path) -> Option<String> {
         .map(|v| hex::encode(&v))
 }
 
-/// Read all non-system xattrs via /proc/self/fd/<fd> into a BTreeMap.
+/// Read all non-system xattrs via /proc/self/fd/{fd} into a BTreeMap.
 fn read_xattrs_fd(fd_path: &Path) -> BTreeMap<String, String> {
     let mut result = BTreeMap::new();
     if let Ok(attrs) = xattr::list(fd_path) {
