@@ -7,14 +7,121 @@ use chrono::{DateTime, Utc};
 
 // ── Daemon State ───────────────────────────────────────────
 
+/// Why the daemon is in a degraded state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum DegradedReason {
+    BaselineDbReplaced,
+    AuditDbReplaced,
+    WalFileReplaced,
+    EventBackpressure,
+    EventLossDetected { drop_delta: u64, threshold: u64 },
+    ClockSkewDetected { skew_secs: i64 },
+    FanotifyMarkFailed { mount: std::path::PathBuf },
+    FanotifyReadFailed,
+    WorkerDbUnrecoverable,
+    BaselineHmacMismatch,
+    FanotifyQueueOverflow,
+}
+
+impl std::fmt::Display for DegradedReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DegradedReason::BaselineDbReplaced => write!(f, "baseline_db_replaced"),
+            DegradedReason::AuditDbReplaced => write!(f, "audit_db_replaced"),
+            DegradedReason::WalFileReplaced => write!(f, "wal_file_replaced"),
+            DegradedReason::EventBackpressure => write!(f, "event_backpressure"),
+            DegradedReason::EventLossDetected {
+                drop_delta,
+                threshold,
+            } => write!(
+                f,
+                "event_loss_detected (drop_delta={}, threshold={})",
+                drop_delta, threshold
+            ),
+            DegradedReason::ClockSkewDetected { skew_secs } => {
+                write!(f, "clock_skew_detected (skew={}s)", skew_secs)
+            }
+            DegradedReason::FanotifyMarkFailed { mount } => {
+                write!(f, "fanotify_mark_failed ({})", mount.display())
+            }
+            DegradedReason::FanotifyReadFailed => write!(f, "fanotify_read_failed"),
+            DegradedReason::WorkerDbUnrecoverable => write!(f, "worker_db_unrecoverable"),
+            DegradedReason::BaselineHmacMismatch => write!(f, "baseline_hmac_mismatch"),
+            DegradedReason::FanotifyQueueOverflow => write!(f, "fanotify_queue_overflow"),
+        }
+    }
+}
+
 /// Tracks whether the daemon is operating normally or in a degraded state.
 #[derive(Debug, Clone)]
 pub enum DaemonState {
     Healthy,
     Degraded {
-        reason: String,
+        reason: DegradedReason,
         since: DateTime<Utc>,
     },
+}
+
+/// Thread-safe handle for reading and transitioning daemon state.
+/// Wraps the shared RwLock and provides typed transition methods.
+#[derive(Clone)]
+pub struct DaemonStateHandle(pub std::sync::Arc<parking_lot::RwLock<DaemonState>>);
+
+impl Default for DaemonStateHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DaemonStateHandle {
+    pub fn new() -> Self {
+        Self(std::sync::Arc::new(parking_lot::RwLock::new(
+            DaemonState::Healthy,
+        )))
+    }
+
+    /// Transition to Degraded if currently Healthy. Returns true if the
+    /// transition happened.
+    pub fn degrade_if_healthy(&self, reason: DegradedReason) -> bool {
+        let mut guard = self.0.write();
+        if matches!(*guard, DaemonState::Healthy) {
+            *guard = DaemonState::Degraded {
+                reason,
+                since: Utc::now(),
+            };
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Recover to Healthy if currently Degraded for the given reason.
+    /// Returns true if recovery happened.
+    pub fn recover_if_degraded_for(&self, match_fn: impl Fn(&DegradedReason) -> bool) -> bool {
+        let mut guard = self.0.write();
+        if let DaemonState::Degraded { reason, .. } = &*guard {
+            if match_fn(reason) {
+                *guard = DaemonState::Healthy;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Take a snapshot of the current state.
+    pub fn snapshot(&self) -> DaemonState {
+        self.0.read().clone()
+    }
+
+    /// Read-lock access to the underlying RwLock.
+    pub fn read(&self) -> parking_lot::RwLockReadGuard<'_, DaemonState> {
+        self.0.read()
+    }
+
+    /// Write-lock access to the underlying RwLock.
+    pub fn write(&self) -> parking_lot::RwLockWriteGuard<'_, DaemonState> {
+        self.0.write()
+    }
 }
 
 // ── Severity ────────────────────────────────────────────────

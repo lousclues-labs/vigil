@@ -27,7 +27,9 @@ use crate::bloom::BloomFilter;
 use crate::config::Config;
 use crate::error::{Result, VigilError};
 use crate::metrics::Metrics;
-use crate::types::{DaemonState, FsEvent, FsEventType, ProcessAttribution, ScanMode};
+use crate::types::{
+    DaemonState, DegradedReason, FsEvent, FsEventType, ProcessAttribution, ScanMode,
+};
 use crate::watch_index::WatchGroupIndex;
 
 /// Operation to perform on a mount point's fanotify mark.
@@ -230,7 +232,7 @@ pub fn start(
                     let mut guard = s.write();
                     if matches!(*guard, DaemonState::Healthy) {
                         *guard = DaemonState::Degraded {
-                            reason: "fanotify read failed after max restarts".to_string(),
+                            reason: DegradedReason::FanotifyReadFailed,
                             since: Utc::now(),
                         };
                     }
@@ -288,11 +290,9 @@ fn run_event_loop(
                         let mut guard = s.write();
                         if matches!(*guard, DaemonState::Healthy) {
                             *guard = DaemonState::Degraded {
-                                reason: format!(
-                                    "fanotify_mark add failed for {}: {}",
-                                    mount.display(),
-                                    e
-                                ),
+                                reason: DegradedReason::FanotifyMarkFailed {
+                                    mount: mount.to_path_buf(),
+                                },
                                 since: Utc::now(),
                             };
                         }
@@ -415,7 +415,7 @@ fn run_event_loop(
                     let mut guard = s.write();
                     if matches!(*guard, DaemonState::Healthy) {
                         *guard = DaemonState::Degraded {
-                            reason: "fanotify queue overflow; events dropped by kernel".to_string(),
+                            reason: DegradedReason::FanotifyQueueOverflow,
                             since: Utc::now(),
                         };
                     }

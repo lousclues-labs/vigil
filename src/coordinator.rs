@@ -15,7 +15,7 @@ use parking_lot::RwLock;
 
 use crate::config::Config;
 use crate::metrics::Metrics;
-use crate::types::DaemonState;
+use crate::types::{DaemonState, DegradedReason};
 use crate::watch_index::WatchGroupIndex;
 
 use chrono::Utc;
@@ -401,7 +401,7 @@ impl Coordinator {
                         .fetch_add(1, Ordering::Relaxed);
                     let mut s = self.state.write();
                     *s = DaemonState::Degraded {
-                        reason: "baseline_db_replaced".into(),
+                        reason: DegradedReason::BaselineDbReplaced,
                         since: Utc::now(),
                     };
                     self.last_tick = std::time::Instant::now();
@@ -517,7 +517,7 @@ impl Coordinator {
                         .fetch_add(1, Ordering::Relaxed);
                     let mut s = self.state.write();
                     *s = DaemonState::Degraded {
-                        reason: "audit_db_replaced".into(),
+                        reason: DegradedReason::AuditDbReplaced,
                         since: Utc::now(),
                     };
                     self.last_tick = std::time::Instant::now();
@@ -626,7 +626,7 @@ impl Coordinator {
                     .fetch_add(1, Ordering::Relaxed);
                 let mut s = self.state.write();
                 *s = DaemonState::Degraded {
-                    reason: "wal_file_replaced".into(),
+                    reason: DegradedReason::WalFileReplaced,
                     since: Utc::now(),
                 };
                 self.last_tick = std::time::Instant::now();
@@ -777,7 +777,9 @@ impl Coordinator {
             let mut s = self.state.write();
             if matches!(*s, DaemonState::Healthy) {
                 *s = DaemonState::Degraded {
-                    reason: "clock_skew_detected".into(),
+                    reason: DegradedReason::ClockSkewDetected {
+                        skew_secs: clock_skew,
+                    },
                     since: Utc::now(),
                 };
             }
@@ -897,14 +899,14 @@ impl Coordinator {
             let mut s = self.state.write();
             if matches!(*s, DaemonState::Healthy) {
                 *s = DaemonState::Degraded {
-                    reason: "event_backpressure".into(),
+                    reason: DegradedReason::EventBackpressure,
                     since: Utc::now(),
                 };
             }
         } else {
             let mut s = self.state.write();
             if let DaemonState::Degraded { reason, .. } = &*s {
-                if reason == "event_backpressure" {
+                if matches!(reason, DegradedReason::EventBackpressure) {
                     tracing::info!("backpressure resolved; returning to healthy state");
                     *s = DaemonState::Healthy;
                 }
@@ -936,7 +938,10 @@ impl Coordinator {
             let mut s = self.state.write();
             if matches!(*s, DaemonState::Healthy) {
                 *s = DaemonState::Degraded {
-                    reason: "event_loss_detected".into(),
+                    reason: DegradedReason::EventLossDetected {
+                        drop_delta,
+                        threshold,
+                    },
                     since: Utc::now(),
                 };
                 tracing::error!(
@@ -953,13 +958,13 @@ impl Coordinator {
             if drop_delta <= recovery_threshold && overflow_delta <= recovery_threshold {
                 let s = self.state.read();
                 if let DaemonState::Degraded { reason, .. } = &*s {
-                    if reason == "event_loss_detected" {
+                    if matches!(reason, DegradedReason::EventLossDetected { .. }) {
                         drop(s);
                         self.clean_ticks_since_event_loss += 1;
                         if self.clean_ticks_since_event_loss >= 5 {
                             let mut s = self.state.write();
                             if let DaemonState::Degraded { reason, .. } = &*s {
-                                if reason == "event_loss_detected" {
+                                if matches!(reason, DegradedReason::EventLossDetected { .. }) {
                                     tracing::info!(
                                         "event loss recovered for 5 consecutive ticks; returning to Healthy"
                                     );
@@ -1083,7 +1088,7 @@ fn write_state_snapshot(
         }),
         DaemonState::Degraded { reason, since } => serde_json::json!({
             "status": "degraded",
-            "reason": reason,
+            "reason": reason.to_string(),
             "since": since,
         }),
     };

@@ -50,7 +50,7 @@ use crate::alert::{AlertDispatcher, AlertPayload};
 use crate::config::Config;
 use crate::db::baseline_ops;
 use crate::metrics::Metrics;
-use crate::types::{DaemonState, FsEvent};
+use crate::types::{DaemonState, DegradedReason, FsEvent};
 use crate::wal::audit_writer::AuditWriter;
 use crate::wal::sink_runner::SinkRunner;
 use crate::wal::{DetectionRecord, DetectionSource, DetectionWal};
@@ -405,7 +405,7 @@ impl Daemon {
                             );
                             let mut s = self.state.write();
                             *s = DaemonState::Degraded {
-                                reason: "baseline_hmac_mismatch".into(),
+                                reason: DegradedReason::BaselineHmacMismatch,
                                 since: chrono::Utc::now(),
                             };
                         }

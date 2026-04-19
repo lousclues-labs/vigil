@@ -292,7 +292,7 @@ fn run_coordinator_adversarial(seed: u64) {
     // Rapidly toggle state and trigger reloads.
     for _ in 0..20 {
         *state3.write() = DaemonState::Degraded {
-            reason: "chaos-test".to_string(),
+            reason: vigil::types::DegradedReason::BaselineDbReplaced,
             since: chrono::Utc::now(),
         };
         reload3.store(true, Ordering::Release);

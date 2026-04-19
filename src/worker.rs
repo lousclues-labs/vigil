@@ -230,7 +230,7 @@ impl WorkerContext {
                                             if matches!(*guard, crate::types::DaemonState::Healthy)
                                             {
                                                 *guard = crate::types::DaemonState::Degraded {
-                                                    reason: "worker_db_unrecoverable".into(),
+                                                    reason: crate::types::DegradedReason::WorkerDbUnrecoverable,
                                                     since: chrono::Utc::now(),
                                                 };
                                             }

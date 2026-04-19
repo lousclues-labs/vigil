@@ -16,7 +16,8 @@ pub use alert::{Alert, AlertContext, AlertFileInfo};
 pub use baseline::BaselineEntry;
 pub use change::{Change, ChangeResult, ProcessAttribution};
 pub use config_types::{
-    BaselineSource, DaemonState, MonitorBackend, OutputFormat, PackageBackend, ScanMode, Severity,
+    BaselineSource, DaemonState, DaemonStateHandle, DegradedReason, MonitorBackend, OutputFormat,
+    PackageBackend, ScanMode, Severity,
 };
 pub use content::ContentFingerprint;
 pub use event::{FsEvent, FsEventType};

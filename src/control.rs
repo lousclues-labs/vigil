@@ -835,7 +835,7 @@ mod tests {
     fn baseline_refresh_refused_when_degraded() {
         let metrics = Arc::new(Metrics::new());
         let state = Arc::new(RwLock::new(DaemonState::Degraded {
-            reason: "baseline_db_replaced".into(),
+            reason: crate::types::DegradedReason::BaselineDbReplaced,
             since: chrono::Utc::now(),
         }));
         let (scan_tx, _scan_rx) = crossbeam_channel::bounded::<ScanRequest>(1);
