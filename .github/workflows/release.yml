@@ -83,11 +83,6 @@ jobs:
           tar czf "${STAGING}.tar.gz" "$STAGING"
           sha256sum "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
 
-      - name: Generate SBOM
-        run: |
-          cargo install cargo-cyclonedx --locked
-          cargo cyclonedx --format json --override-filename release-sbom
-
       - name: Extract changelog section
         id: changelog
         run: |
@@ -112,6 +107,11 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --locked
+
+      - name: Generate SBOM
+        run: |
+          cargo install cargo-cyclonedx --locked
+          cargo cyclonedx --format json --override-filename release-sbom
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
