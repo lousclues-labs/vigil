@@ -876,9 +876,11 @@ impl Coordinator {
         }
 
         let drift_velocity = if self.drift_sample_idx >= 5 {
-            Some(self.drift_samples.iter().sum::<u64>() / 5)
+            Some(serde_json::json!(
+                self.drift_samples.iter().sum::<u64>() / 5
+            ))
         } else {
-            None
+            Some(serde_json::Value::Null)
         };
         if let Err(e) = write_state_snapshot(&cfg.daemon.runtime_dir, &self.state, drift_velocity) {
             tracing::warn!(error = %e, "failed to write state snapshot");
@@ -1068,7 +1070,7 @@ fn write_metrics_snapshot(runtime_dir: &std::path::Path, metrics: &Metrics) -> c
 fn write_state_snapshot(
     runtime_dir: &std::path::Path,
     state: &RwLock<DaemonState>,
-    drift_velocity: Option<u64>,
+    drift_velocity: Option<serde_json::Value>,
 ) -> crate::Result<()> {
     std::fs::create_dir_all(runtime_dir)?;
     let path = runtime_dir.join("state.json");
@@ -1084,8 +1086,9 @@ fn write_state_snapshot(
         }),
     };
 
+    // Always include drift_velocity (null when warming up, number once ready).
     if let Some(dv) = drift_velocity {
-        value["drift_velocity"] = serde_json::json!(dv);
+        value["drift_velocity"] = dv;
     }
 
     atomic_write(&path, &serde_json::to_vec_pretty(&value)?)?;
