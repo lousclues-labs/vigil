@@ -407,19 +407,28 @@ fn wait_for_package_lock(backend: PackageBackend, max_wait: Duration) {
 /// `Some(empty)` if the command succeeded but produced no entries.
 fn build_cache_pacman_once() -> Option<HashMap<PathBuf, String>> {
     let mut cache = HashMap::new();
-    let timeout = Duration::from_secs(30);
-    let output = run_with_timeout(Command::new(PACMAN_PATH).arg("-Ql"), timeout, false)?;
 
-    if !output.status.success() {
-        tracing::warn!(
-            status = %output.status,
-            "pacman -Ql exited with non-zero status"
-        );
-        return None;
-    }
+    // Do NOT use `run_with_timeout` here. `pacman -Ql` on a typical Arch
+    // system produces 400k+ lines (~15 MB). The pipe buffer is ~64 KB;
+    // if we poll with `try_wait()` without draining stdout, the child
+    // blocks on write and the timeout fires every time. Instead, spawn
+    // and read stdout to completion, with a thread-based timeout guard.
+    let mut child = Command::new(PACMAN_PATH)
+        .arg("-Ql")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
+    let stdout = child.stdout.take()?;
+    let reader = std::io::BufReader::new(stdout);
+
+    use std::io::BufRead;
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
         if let Some((pkg, path)) = line.split_once(' ') {
             let path = path.trim();
             if !path.ends_with('/') && !path.is_empty() {
@@ -428,10 +437,16 @@ fn build_cache_pacman_once() -> Option<HashMap<PathBuf, String>> {
         }
     }
 
+    let status = child.wait().ok()?;
+    if !status.success() {
+        tracing::warn!(
+            status = %status,
+            "pacman -Ql exited with non-zero status"
+        );
+        return None;
+    }
+
     if cache.is_empty() {
-        // Command succeeded but no output; likely lock contention caused
-        // pacman to produce no output before timeout killed it, or genuinely
-        // no packages are installed.
         return Some(cache);
     }
 
@@ -493,23 +508,26 @@ fn build_cache_dpkg_once() -> Option<HashMap<PathBuf, String>> {
 
 fn build_cache_rpm_once() -> Option<HashMap<PathBuf, String>> {
     let mut cache = HashMap::new();
-    let timeout = Duration::from_secs(60);
-    let output = run_with_timeout(
-        Command::new(RPM_PATH).args(["-qa", "--filesbypkg"]),
-        timeout,
-        false,
-    )?;
 
-    if !output.status.success() {
-        tracing::warn!(
-            status = %output.status,
-            "rpm -qa --filesbypkg exited with non-zero status"
-        );
-        return None;
-    }
+    // Same pipe-deadlock concern as pacman: `rpm -qa --filesbypkg` can
+    // produce very large output. Stream stdout line-by-line instead of
+    // buffering the entire output behind a try_wait poll loop.
+    let mut child = Command::new(RPM_PATH)
+        .args(["-qa", "--filesbypkg"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
+    let stdout = child.stdout.take()?;
+    let reader = std::io::BufReader::new(stdout);
+
+    use std::io::BufRead;
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -522,6 +540,15 @@ fn build_cache_rpm_once() -> Option<HashMap<PathBuf, String>> {
                 cache.insert(PathBuf::from(path), pkg.to_string());
             }
         }
+    }
+
+    let status = child.wait().ok()?;
+    if !status.success() {
+        tracing::warn!(
+            status = %status,
+            "rpm -qa --filesbypkg exited with non-zero status"
+        );
+        return None;
     }
 
     if cache.is_empty() {
