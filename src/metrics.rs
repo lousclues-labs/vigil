@@ -239,6 +239,12 @@ pub struct MetricsSnapshot {
 
 impl MetricsSnapshot {
     /// Format metrics in Prometheus text exposition format.
+    /// Serialize all counters as a serde_json::Value for the status endpoint.
+    /// New metrics are automatically included without updating handle_status.
+    pub fn status_view(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+
     pub fn to_prometheus(&self) -> String {
         use std::fmt::Write;
         let mut out = String::with_capacity(2048);

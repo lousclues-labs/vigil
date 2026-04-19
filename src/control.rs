@@ -382,22 +382,7 @@ impl ControlHandler {
                 "version": env!("CARGO_PKG_VERSION"),
                 "maintenance_window": self.maintenance_active.load(Ordering::Acquire),
             },
-            "metrics": {
-                "events_received": snap.events_received,
-                "events_processed": snap.events_processed,
-                "events_dropped": snap.events_dropped,
-                "events_debounced": snap.events_debounced,
-                "events_filtered": snap.events_filtered,
-                "hashes_computed": snap.hashes_computed,
-                "changes_detected": snap.changes_detected,
-                "alerts_dispatched": snap.alerts_dispatched,
-                "alerts_suppressed": snap.alerts_suppressed,
-                "db_writes": snap.db_writes,
-                "db_errors": snap.db_errors,
-                "panics_caught": snap.panics_caught,
-                "scan_duration_ms": snap.scan_duration_ms,
-                "last_scan_total": snap.last_scan_total,
-            },
+            "metrics": snap.status_view(),
         })
     }
 
