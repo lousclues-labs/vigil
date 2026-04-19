@@ -1,3 +1,5 @@
+//! Check receipt: records scan statistics and baseline fingerprint after accept.
+
 use crate::db::audit_ops;
 use crate::error::Result;
 use crate::scanner::ScanResult;

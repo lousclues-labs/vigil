@@ -1,3 +1,5 @@
+//! Event filtering: exclusions and per-path debouncing.
+
 pub mod exclusion;
 
 use std::collections::{HashMap, HashSet};

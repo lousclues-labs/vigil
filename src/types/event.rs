@@ -1,3 +1,5 @@
+//! Filesystem event from fanotify/inotify with optional fd and process attribution.
+
 use chrono::{DateTime, Utc};
 use std::os::unix::io::OwnedFd;
 use std::path::PathBuf;

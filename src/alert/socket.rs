@@ -1,3 +1,5 @@
+//! Unix domain socket alert sink for external consumers.
+
 use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;

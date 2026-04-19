@@ -1,3 +1,5 @@
+//! RFC 5424/3164 remote syslog sink over TCP or UDP.
+
 use std::io::Write;
 use std::net::{TcpStream, UdpSocket};
 

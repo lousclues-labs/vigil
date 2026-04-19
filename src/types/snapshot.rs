@@ -1,3 +1,9 @@
+//! File snapshot capture: identity, content, permissions, security state.
+//!
+//! `FileSnapshot::capture()` reads all integrity-relevant metadata from an
+//! open fd (or by path). Supports incremental mode (skip re-hash when
+//! mtime unchanged) and Linux capabilities/xattr parsing.
+
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::os::unix::fs::MetadataExt;
@@ -48,7 +54,7 @@ impl FileSnapshot {
     /// Capture the complete current state of a file from an open fd.
     /// Symlink detection requires one path-based lstat call (symlink_metadata)
     /// because fstat on a followed fd always reports a regular file.
-    /// The fd is NOT closed — the caller owns it.
+    /// The fd is NOT closed. The caller owns it.
     pub fn from_fd(file: &File, path: &Path, opts: &CaptureOpts) -> Result<Self> {
         let meta = file.metadata()?;
 
@@ -145,7 +151,7 @@ impl FileSnapshot {
         Ok(SnapshotOrDeleted::Snapshot(snapshot))
     }
 
-    /// Diff this snapshot against a baseline entry. Pure function — no I/O.
+    /// Diff this snapshot against a baseline entry. Pure function, no I/O.
     pub fn diff(&self, baseline: &BaselineEntry) -> Vec<Change> {
         let mut changes = Vec::new();
 
@@ -272,9 +278,9 @@ const CAP_SYS_ADMIN: u32 = 21;
 /// Linux `security.capability` xattr layout (`vfs_cap_data`):
 ///   - bytes 0..3:  magic/version (LE u32). Version 1 = 0x01000001, Version 2 = 0x01000002,
 ///     Version 2 + effective = 0x02000002, Version 3 = 0x01000003, Version 3 + eff = 0x02000003.
-///   - bytes 4..7:  permitted[0] (LE u32) — capabilities 0..31
+///   - bytes 4..7:  permitted[0] (LE u32) -- capabilities 0..31
 ///   - bytes 8..11: inheritable[0] (LE u32)
-///   - (v2/v3) bytes 12..15: permitted[1] (LE u32) — capabilities 32..63
+///   - (v2/v3) bytes 12..15: permitted[1] (LE u32) -- capabilities 32..63
 ///   - (v2/v3) bytes 16..19: inheritable[1] (LE u32)
 ///   - (v3 only) bytes 20..23: rootid (LE u32)
 fn has_dangerous_caps_from_hex(hex_str: &str) -> bool {
@@ -510,7 +516,7 @@ mod tests {
     #[test]
     fn has_dangerous_capabilities_safe_cap_not_flagged() {
         let mut snapshot = make_snapshot(&make_baseline());
-        // CAP_NET_BIND_SERVICE = bit 10 — not dangerous
+        // CAP_NET_BIND_SERVICE = bit 10; not dangerous
         let cap_bytes: Vec<u8> = vec![
             0x02, 0x00, 0x00, 0x02, 0x00, 0x04, 0x00, 0x00, // permitted[0]: bit 10
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -546,7 +552,7 @@ mod tests {
         let real_hash = snap.content.hash.clone();
         let real_mtime = snap.mtime;
 
-        // Incremental capture with matching mtime — should reuse baseline_hash
+        // Incremental capture with matching mtime; should reuse baseline_hash
         let fake_hash = "fake_baseline_hash_for_test";
         let opts_inc = CaptureOpts {
             force_hash: false,
@@ -562,7 +568,7 @@ mod tests {
         // Should reuse the baseline hash, not recompute
         assert_eq!(snap_inc.content.hash, fake_hash);
 
-        // Incremental capture with force_hash — should recompute
+        // Incremental capture with force_hash; should recompute
         let opts_force = CaptureOpts {
             force_hash: true,
             max_file_size: 1_000_000,
@@ -576,7 +582,7 @@ mod tests {
         };
         assert_eq!(snap_force.content.hash, real_hash);
 
-        // Incremental with different mtime — should recompute
+        // Incremental with different mtime; should recompute
         let opts_diff_mtime = CaptureOpts {
             force_hash: false,
             max_file_size: 1_000_000,

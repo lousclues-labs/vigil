@@ -2,7 +2,7 @@
 //!
 //! All types here are CBOR-serializable via `serde` + `ciborium` with
 //! deterministic encoding (RFC 8949 §4.2). Field order is fixed by the
-//! struct definition order. The types are versioned — `format_version`
+//! struct definition order. The types are versioned; `format_version`
 //! in the header gates parsing.
 
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,7 @@ pub struct Attestation {
     pub footer: Footer,
 }
 
-/// Attestation header — always present, contains summary metadata.
+/// Attestation header. Always present, contains summary metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Header {
     /// Fixed 12-byte magic: "VIGIL-ATTEST"
@@ -44,7 +44,7 @@ pub struct Header {
     pub baseline_entry_count: u64,
     /// Number of audit entries
     pub audit_entry_count: u64,
-    /// BLAKE3 of last audit entry chain hash; zero if no entries
+    /// BLAKE3 of last audit entry chain hash. Zero if no entries.
     pub audit_chain_head: [u8; 32],
     /// Vigil version that created this attestation
     pub vigil_version: String,
@@ -52,7 +52,7 @@ pub struct Header {
     pub scope: Scope,
 }
 
-/// Attestation body — contents depend on scope.
+/// Attestation body. Contents depend on scope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Body {
     pub baseline_entries: Option<Vec<AttestBaselineEntry>>,
@@ -61,7 +61,7 @@ pub struct Body {
     pub watch_groups: Option<Vec<AttestWatchGroup>>,
 }
 
-/// Attestation footer — integrity and signature.
+/// Attestation footer. Integrity and signature.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Footer {
     /// BLAKE3 over deterministic CBOR of header || body
@@ -108,7 +108,7 @@ impl std::str::FromStr for Scope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SignatureScheme {
     HmacBlake3,
-    // Ed25519 — future. Stub kept for forward-compat.
+    // Ed25519 -- future. Stub kept for forward-compat.
     // Ed25519,
 }
 
@@ -207,7 +207,7 @@ impl AttestAuditEntry {
             package: entry.package.clone(),
             maintenance: entry.maintenance,
             suppressed: entry.suppressed,
-            // Deliberately exclude HMAC — the chain HMAC key must never leave the host
+            // Deliberately exclude HMAC; the chain HMAC key must never leave the host
             chain_hash: entry.chain_hash.clone(),
         }
     }

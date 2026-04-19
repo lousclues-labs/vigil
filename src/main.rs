@@ -1,3 +1,5 @@
+//! CLI entry point for the `vigil` binary.
+
 use std::process;
 
 use clap::Parser;

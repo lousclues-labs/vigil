@@ -1,3 +1,5 @@
+//! `vigil baseline` subcommand: refresh via control socket or direct scan.
+
 use std::path::Path;
 
 use vigil::cli::BaselineAction;
@@ -39,7 +41,7 @@ fn cmd_baseline_refresh(config_path: Option<&Path>, quiet: bool) -> vigil::Resul
                 return Ok(());
             }
             Err(_) => {
-                // Daemon not running — fall through to direct DB access
+                // Daemon not running; fall through to direct DB access
             }
         }
     }

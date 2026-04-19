@@ -1,4 +1,4 @@
-//! `vigil attest show` — display attestation contents.
+//! `vigil attest show` -- display attestation contents.
 
 use std::path::Path;
 

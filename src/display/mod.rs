@@ -1,12 +1,12 @@
-//! Display layer — all terminal rendering for Vigil CLI commands.
+//! Display layer -- terminal rendering for Vigil CLI commands.
 //!
-//! Consolidated into 6 focused files per Principle XI (complexity is a vulnerability):
-//! - `mod.rs`    — Public API, shared report types, render dispatch
-//! - `check.rs`  — Check/init report construction + command renderers
-//! - `term.rs`   — Terminal detection (TermInfo)
-//! - `format.rs` — Shared formatting: colors, numbers, paths, hashes
-//! - `explain.rs`— Structural change explanations ("why" lines)
-//! - `widgets.rs`— Histogram, comparison tables
+//! Six focused files (Principle XI: complexity is a vulnerability):
+//! - `mod.rs`    -- public API, shared report types, render dispatch
+//! - `check.rs`  -- check/init report construction + command renderers
+//! - `term.rs`   -- terminal detection (TermInfo)
+//! - `format.rs` -- shared formatting: colors, numbers, paths, hashes
+//! - `explain.rs`-- structural change explanations ("why" lines)
+//! - `widgets.rs`-- histogram, comparison tables
 
 mod check;
 pub mod explain;
@@ -30,7 +30,7 @@ pub use format::{
 
 // ── Report Structs ─────────────────────────────────────────
 
-/// Enriched report for `vigil check` — built from ScanResult + baseline metadata.
+/// Enriched report for `vigil check`. Built from ScanResult + baseline metadata.
 pub struct CheckReport {
     // From ScanResult
     pub scan: ScanResult,
@@ -126,7 +126,7 @@ impl CheckReport {
 
 // ── Render Dispatch ────────────────────────────────────────
 
-/// Render `vigil check` output. Single dispatch — no trait indirection.
+/// Render `vigil check` output. Single dispatch, no trait indirection.
 pub fn render_check(
     report: &CheckReport,
     format: OutputFormat,

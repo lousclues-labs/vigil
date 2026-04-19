@@ -1,3 +1,5 @@
+//! Runtime enums: DaemonState, Severity, ScanMode, MonitorBackend.
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

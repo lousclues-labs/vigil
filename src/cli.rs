@@ -1,3 +1,5 @@
+//! Clap-based CLI parser for the `vigil` binary.
+
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 

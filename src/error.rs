@@ -1,3 +1,5 @@
+//! Central error type: `VigilError` covers I/O, database, config, and domain errors.
+
 use std::path::PathBuf;
 use thiserror::Error;
 

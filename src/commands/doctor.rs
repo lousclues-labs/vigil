@@ -1,3 +1,5 @@
+//! `vigil doctor` subcommand: system health diagnostics.
+
 use std::path::Path;
 
 use vigil::doctor;
@@ -14,7 +16,7 @@ pub(crate) fn cmd_doctor(config_path: Option<&Path>, format: OutputFormat) -> vi
 
     println!();
     println!(
-        "Vigil Baseline v{} — System Health Check",
+        "Vigil Baseline v{}; System Health Check",
         env!("CARGO_PKG_VERSION")
     );
     println!("════════════════════════════════════");

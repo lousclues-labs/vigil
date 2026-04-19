@@ -1,3 +1,9 @@
+//! Vigil daemon orchestration and lifecycle.
+//!
+//! `Daemon` loads config, opens databases, starts the monitor/workers/WAL
+//! threads, and owns `DaemonRuntime` for coordinated shutdown. The crate
+//! root also enforces `#![deny(unsafe_code)]` with targeted allows.
+
 #![deny(unsafe_code)]
 
 pub mod alert;
@@ -87,7 +93,7 @@ impl Daemon {
             .map_err(|e| e.with_context("opening audit database during startup"))?;
         let audit_db_identity = db::DbFileIdentity::from_path(&audit_db_path).ok();
 
-        // Load HMAC key exactly once at startup — never re-read from disk
+        // Load HMAC key exactly once at startup; never re-read from disk
         let startup_hmac_key = if config.security.hmac_signing {
             match crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
                 Ok(key) => Some(key),
@@ -118,7 +124,7 @@ impl Daemon {
                     ) {
                         tracing::error!(
                             error = %e,
-                            "failed to store config file HMAC at startup — tamper detection weakened"
+                            "failed to store config file HMAC at startup; tamper detection weakened"
                         );
                     }
                 }
@@ -199,7 +205,7 @@ impl Daemon {
             baseline_ops::set_config_state(&self.baseline_conn, "baseline_initialized", "true")?;
             let group_names: Vec<&str> = result.groups.iter().map(|g| g.name.as_str()).collect();
             let message = format!(
-                "First run complete — now monitoring {} {} across {} ({}).\n\
+                "First run complete; now monitoring {} {} across {} ({}).\n\
                  Run 'vigil status' for details.",
                 result.total_count,
                 if result.total_count == 1 {
@@ -266,7 +272,7 @@ impl Daemon {
 
             notify_desktop(
                 &format!(
-                    "⚠ Database was corrupt — rebuilt with {} {}.\n\
+                    "⚠ Database was corrupt; rebuilt with {} {}.\n\
                      Previous DB backed up. Run 'vigil audit show' to review.",
                     result.total_count,
                     if result.total_count == 1 {
@@ -316,7 +322,7 @@ impl Daemon {
                     )?;
                     notify_desktop(
                         &format!(
-                            "Baseline rebuilt after upgrade — now monitoring {} {}.",
+                            "Baseline rebuilt after upgrade; now monitoring {} {}.",
                             result.total_count,
                             if result.total_count == 1 {
                                 "file"
@@ -335,12 +341,12 @@ impl Daemon {
                      Run 'vigil init --force' to manually reinitialize."
                 );
                 notify_desktop(
-                    "⚠ BASELINE EMPTY — previously initialized. Possible tampering. \
+                    "⚠ BASELINE EMPTY; previously initialized. Possible tampering. \
                      Run 'vigil init --force' to reinitialize.",
                     NotifyUrgency::Critical,
                 );
                 return Err(VigilError::Baseline(
-                    "baseline was previously initialized but is now empty — possible tampering"
+                    "baseline was previously initialized but is now empty; possible tampering"
                         .into(),
                 ));
             }
@@ -352,7 +358,7 @@ impl Daemon {
             baseline_ops::set_config_state(&self.baseline_conn, "baseline_initialized", "true")?;
             notify_desktop(
                 &format!(
-                    "Baseline was empty — repopulated with {} monitored {}.",
+                    "Baseline was empty; repopulated with {} monitored {}.",
                     result.total_count,
                     if result.total_count == 1 {
                         "file"
@@ -376,7 +382,7 @@ impl Daemon {
                             tracing::info!("baseline HMAC verification passed");
                         } else if config.security.trust_baseline_on_hmac_mismatch {
                             tracing::warn!(
-                                "baseline HMAC mismatch accepted — \
+                                "baseline HMAC mismatch accepted; \
                                  trust_baseline_on_hmac_mismatch is enabled. \
                                  Recomputing HMAC. Disable this setting after upgrade."
                             );
@@ -387,11 +393,11 @@ impl Daemon {
                             )?;
                         } else {
                             tracing::error!(
-                                "baseline HMAC verification failed — baseline may have been \
+                                "baseline HMAC verification failed; baseline may have been \
                                  tampered with. Stored HMAC does not match computed HMAC."
                             );
                             notify_desktop(
-                                "⚠ BASELINE HMAC VERIFICATION FAILED — possible tampering. \
+                                "⚠ BASELINE HMAC VERIFICATION FAILED; possible tampering. \
                                  Investigate immediately.",
                                 NotifyUrgency::Critical,
                             );
@@ -421,7 +427,7 @@ impl Daemon {
     }
 }
 
-/// Daemon runtime state — owns all threads, channels, and subsystem handles.
+/// Daemon runtime state; owns all threads, channels, and subsystem handles.
 struct DaemonRuntime {
     workers: Vec<JoinHandle<()>>,
     baseline_writer: JoinHandle<()>,
@@ -519,7 +525,7 @@ impl DaemonRuntime {
             let found = entries.iter().any(|e| e.sequence == sentinel_seq);
             if !found {
                 return Err(VigilError::Wal(
-                    "WAL self-test failed — appended entry not readable".into(),
+                    "WAL self-test failed; appended entry not readable".into(),
                 ));
             }
             if let Some(e) = entries.iter().find(|e| e.sequence == sentinel_seq) {
@@ -874,7 +880,7 @@ fn spawn_baseline_writer(
                             if batch_count % 100 == 0
                                 || last_hmac_update.elapsed() >= Duration::from_secs(60)
                             {
-                                // Use the HMAC key loaded at startup — never re-read from disk
+                                // Use the HMAC key loaded at startup; never re-read from disk
                                 if let Some(ref key) = startup_hmac_key {
                                     match baseline_ops::compute_baseline_hmac(&conn, key) {
                                         Ok(hmac) => {
@@ -975,19 +981,22 @@ fn send_watchdog_heartbeat() {
 #[allow(unsafe_code)]
 fn harden_process() {
     // Set restrictive umask before any file creation (0077 = owner-only)
-    // SAFETY: umask is a simple process attribute change with no safety implications.
+    // SAFETY: umask is an atomic process-wide attribute change.
+    // All arguments are immediate values. Cannot violate memory safety.
     unsafe {
         libc::umask(0o077);
     }
 
-    // SAFETY: PR_SET_DUMPABLE with 0 disables ptrace/core dumps for this process.
-    // This does not violate Rust memory safety invariants.
+    // SAFETY: PR_SET_DUMPABLE(0) disables ptrace/core dumps. All arguments
+    // are immediate integer values passed in registers. Cannot fail in a
+    // way that violates memory safety.
     unsafe {
         libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
     }
 
-    // SAFETY: PR_SET_NO_NEW_PRIVS with 1 disables privilege escalation on execve.
-    // This is a process attribute change and has no Rust memory safety implications.
+    // SAFETY: PR_SET_NO_NEW_PRIVS(1) prevents privilege escalation on exec.
+    // All arguments are immediate integer values. This is an irreversible
+    // per-thread flag with no memory safety implications.
     unsafe {
         libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
     }
@@ -1080,7 +1089,9 @@ fn raise_nofile_limit(target: u64) {
         rlim_max: 0,
     };
     // Read current limits first so we can respect the existing hard limit.
-    // SAFETY: getrlimit is called with a valid pointer to rlimit.
+    // SAFETY: getrlimit reads into a stack-allocated rlimit struct.
+    // The pointer is valid for the duration of the call. Return value
+    // is checked before using the struct contents.
     let rc = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut current as *mut libc::rlimit) };
     if rc != 0 {
         let err = std::io::Error::last_os_error();
@@ -1102,8 +1113,8 @@ fn raise_nofile_limit(target: u64) {
         rlim_cur: new_cur,
         rlim_max: new_max,
     };
-    // SAFETY: setrlimit is called with a valid pointer to rlimit.
-    // Failure is non-fatal and handled by logging.
+    // SAFETY: setrlimit writes new limits from a stack-allocated struct.
+    // The pointer is valid for the call. Failure is non-fatal (logged).
     let rc = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &mut lim as *mut libc::rlimit) };
     if rc != 0 {
         // If raising hard limit failed, fall back to only raising soft limit

@@ -1,3 +1,5 @@
+//! Attestation-specific errors for format, signature, and chain validation.
+
 use std::fmt;
 
 /// Attestation-specific error type.

@@ -1,3 +1,6 @@
+//! System health diagnostics: 12+ checks covering config, databases,
+//! permissions, daemon state, monitor backend, and audit chain integrity.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -66,7 +69,7 @@ pub struct RuntimeMetrics {
 }
 
 /// Lightweight health snapshot produced by the privileged daemon.
-/// This lets unprivileged CLI invocations report useful state without direct DB access.
+/// Lets unprivileged CLI invocations report useful state without direct DB access.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RuntimeHealthSnapshot {
     #[serde(default)]
@@ -778,7 +781,7 @@ fn check_scan_timer(config: &Config) -> DiagnosticCheck {
         name: "Scan timer".to_string(),
         status: CheckStatus::Ok,
         detail: format!(
-            "active (next: {}, last: {} — {} changes)",
+            "active (next: {}, last: {} -- {} changes)",
             next, last_scan, last_scan_total
         ),
         fix: None,
@@ -1538,7 +1541,9 @@ fn is_pid_alive(pid: i32) -> bool {
         return true;
     }
 
-    // SAFETY: kill with signal 0 does not send a signal; it only probes process existence.
+    // SAFETY: kill(pid, 0) probes whether the process exists; no signal
+    // is delivered. pid comes from a parsed PID file (i32). If the process
+    // does not exist, kill returns -1 with ESRCH.
     let rc = unsafe { libc::kill(pid, 0) };
     if rc == 0 {
         return true;

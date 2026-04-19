@@ -1,3 +1,5 @@
+//! Glob-based exclusion matching with compiled pattern sets.
+
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
 use crate::config::Config;

@@ -1,6 +1,8 @@
+//! Permission state: mode bits, ownership, and Linux capabilities.
+
 use serde::{Deserialize, Serialize};
 
-/// Permission state of a file — mode bits, ownership, and Linux capabilities.
+/// Permission state of a file: mode bits, ownership, and Linux capabilities.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct PermissionState {
     pub mode: u32,

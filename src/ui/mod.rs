@@ -1,4 +1,4 @@
-//! UI layer — progress rendering for multi-step CLI operations.
+//! UI layer; progress rendering for multi-step CLI operations.
 //!
 //! Provides a terminal-aware progress renderer with cargo-style status lines,
 //! elapsed timing, spinners (TTY), and plain-text fallback (non-TTY/CI).

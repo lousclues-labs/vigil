@@ -1,3 +1,5 @@
+//! `vigil diff` subcommand: compare a file against baseline + audit history.
+
 use std::path::Path;
 
 use vigil::types::Change;
@@ -44,7 +46,7 @@ pub(crate) fn cmd_diff(config_path: Option<&Path>, file_path: &Path) -> vigil::R
 
     match vigil::types::FileSnapshot::from_path(&canonical, &opts)? {
         vigil::types::SnapshotOrDeleted::Deleted => {
-            print_header(&format!("Vigil Baseline — Diff: {}", canonical.display()));
+            print_header(&format!("Vigil Baseline -- Diff: {}", canonical.display()));
             println!("  ✗ File has been deleted from the filesystem.");
             println!(
                 "    Last known hash: {}",
@@ -57,7 +59,7 @@ pub(crate) fn cmd_diff(config_path: Option<&Path>, file_path: &Path) -> vigil::R
         }
         vigil::types::SnapshotOrDeleted::Snapshot(snapshot) => {
             let changes = snapshot.diff(&baseline);
-            print_header(&format!("Vigil Baseline — Diff: {}", canonical.display()));
+            print_header(&format!("Vigil Baseline -- Diff: {}", canonical.display()));
 
             if changes.is_empty() {
                 println!("  ● No changes. File matches baseline.");

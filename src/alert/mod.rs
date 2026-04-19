@@ -1,3 +1,9 @@
+//! Alert dispatch: `AlertSink` trait and per-sink implementations.
+//!
+//! Each sink (journal, D-Bus, JSON file, Unix socket, remote syslog)
+//! receives alerts above its configured minimum severity. Rate limiting
+//! and cooldown are applied in the WAL sink runner, not here.
+
 pub mod dbus;
 pub mod journal;
 pub mod json_log;
@@ -201,7 +207,7 @@ impl AlertDispatcher {
                         suppressed,
                     });
                 } else {
-                    tracing::error!("audit retry buffer full — audit entry permanently lost");
+                    tracing::error!("audit retry buffer full; audit entry permanently lost");
                     self.metrics
                         .audit_entries_lost
                         .fetch_add(1, Ordering::Relaxed);

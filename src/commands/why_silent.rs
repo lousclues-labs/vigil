@@ -1,3 +1,5 @@
+//! `vigil why-silent` subcommand: diagnose missing alerts.
+
 use std::path::Path;
 
 use vigil::types::OutputFormat;
@@ -19,11 +21,11 @@ pub(crate) fn cmd_why_silent(
     }
 
     if summary.backend_degraded {
-        reasons.push(format!("backend {} — reduced coverage", summary.backend));
+        reasons.push(format!("backend {} -- reduced coverage", summary.backend));
     }
 
     if summary.audit_chain_status == "broken" {
-        reasons.push("audit chain has breaks — tamper evidence degraded".to_string());
+        reasons.push("audit chain has breaks -- tamper evidence degraded".to_string());
     }
 
     if summary.audit_chain_status == "unverified" {
@@ -73,7 +75,7 @@ pub(crate) fn cmd_why_silent(
     }
 
     let backend_detail = if summary.backend_degraded {
-        format!("{} (fallback — reduced coverage)", summary.backend)
+        format!("{} (fallback -- reduced coverage)", summary.backend)
     } else if summary.backend == "fanotify" {
         "fanotify (kernel-level, full coverage)".to_string()
     } else if summary.backend == "none" {

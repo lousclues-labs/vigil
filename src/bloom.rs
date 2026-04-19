@@ -1,3 +1,9 @@
+//! BLAKE3-derived Bloom filter for fast event path rejection.
+//!
+//! Inserted at startup from watch paths. The monitor checks each event path
+//! against the filter before forwarding to workers. False positives reach
+//! workers (harmless); false negatives cannot occur.
+
 /// Uses BLAKE3-derived hash functions for probabilistic membership testing.
 pub struct BloomFilter {
     bits: Vec<u8>,
@@ -85,7 +91,7 @@ impl BloomFilter {
     }
 
     /// Check if any prefix of the given path might be in the Bloom filter.
-    /// Walks path components and checks each prefix — if any prefix matches,
+    /// Walks path components and checks each prefix; if any prefix matches,
     /// the event should pass through (not be rejected).
     pub fn might_contain_prefix_of(&self, path: &std::path::Path) -> bool {
         let mut prefix = std::path::PathBuf::new();

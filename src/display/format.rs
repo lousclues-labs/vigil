@@ -167,7 +167,7 @@ pub fn format_fingerprint(hmac_hex: &str) -> String {
 
 // ── Path Truncation ────────────────────────────────────────
 
-/// Smart path truncation — preserves root indicator and filename,
+/// Path truncation: preserves root indicator and filename,
 /// collapses middle segments when path exceeds available width.
 ///
 /// - Collapses `$HOME` to `~`.

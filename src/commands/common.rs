@@ -1,3 +1,5 @@
+//! Shared CLI helpers: config resolution, control socket, timestamp parsing, pager.
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -127,7 +129,7 @@ pub(crate) fn pipe_to_pager(output: &str) {
             let _ = child.wait();
         }
         Err(_) => {
-            // Pager failed — fall back to direct print
+            // Pager failed; fall back to direct print
             print!("{}", output);
         }
     }
@@ -278,7 +280,7 @@ pub(crate) fn query_control_socket(
         return query_control_socket_authenticated(socket_path, request);
     }
 
-    // No challenge — use first_value as the response
+    // No challenge; use first_value as the response
     if first_value.get("ok").and_then(|v| v.as_bool()) == Some(true) {
         Ok(first_value)
     } else {

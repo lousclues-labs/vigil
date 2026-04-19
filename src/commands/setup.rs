@@ -1,3 +1,5 @@
+//! `vigil setup` subcommand: HMAC key, control socket, and attestation key setup.
+
 use std::path::Path;
 
 use super::common::{resolve_config_path, update_config_toml};
@@ -178,7 +180,7 @@ fn cmd_setup_attest(key_path: &Path, force: bool) -> vigil::Result<()> {
     println!();
     println!("  This key is separate from the audit chain HMAC key.");
     println!("  It signs portable attestation files created with `vigil attest create`.");
-    println!("  Back it up securely — it is needed to verify attestations.");
+    println!("  Back it up securely. It is needed to verify attestations.");
 
     Ok(())
 }

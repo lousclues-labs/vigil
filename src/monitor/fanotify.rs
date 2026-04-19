@@ -1,3 +1,11 @@
+//! Fanotify-based filesystem monitor.
+//!
+//! Marks mount points with FAN_MARK_MOUNT, reads events from the fanotify fd,
+//! resolves /proc/self/fd/N to a path, bloom-filter rejects unwatched paths,
+//! and forwards watched events to workers via a bounded channel. Handles
+//! dynamic mark add/remove for overlapping mounts (VIGIL-VULN-069) and
+//! kernel queue overflows (FAN_Q_OVERFLOW triggers a compensating full scan).
+
 #![allow(unsafe_code)]
 
 use std::collections::HashSet;
@@ -74,7 +82,8 @@ struct OwnedRawFd(RawFd);
 impl Drop for OwnedRawFd {
     fn drop(&mut self) {
         if self.0 >= 0 {
-            // SAFETY: fd is owned by this RAII wrapper and valid when >= 0.
+            // SAFETY: fd is owned by this RAII wrapper and is valid (>= 0).
+            // We check >= 0 because -1 is the sentinel for "no fd".
             unsafe {
                 libc::close(self.0);
             }
@@ -99,7 +108,8 @@ impl EventFdGuard {
 impl Drop for EventFdGuard {
     fn drop(&mut self) {
         if self.0 >= 0 {
-            // SAFETY: fd is owned by this guard and has not been transferred.
+            // SAFETY: fd is owned by this guard and has not been transferred via take().
+            // The >= 0 check prevents double-close after take() sets it to -1.
             unsafe {
                 libc::close(self.0);
             }
@@ -120,7 +130,9 @@ pub fn start(
     scan_trigger: Option<Sender<crate::control::ScanRequest>>,
     mount_mark_rx: Option<crossbeam_channel::Receiver<MountMarkRequest>>,
 ) -> Result<crossbeam_channel::Sender<Vec<PathBuf>>> {
-    // SAFETY: fanotify_init syscall with valid flags; return value checked.
+    // SAFETY: fanotify_init returns a new fd or -1. We check for < 0 below.
+    // FAN_CLOEXEC prevents fd leak across exec; FAN_NONBLOCK makes read()
+    // return EAGAIN instead of blocking the monitor thread.
     let fan_fd = unsafe {
         libc::syscall(
             libc::SYS_fanotify_init,
@@ -163,7 +175,7 @@ pub fn start(
             tracing::error!(
                 mount = %mount.display(),
                 error = %e,
-                "fanotify_mark FAN_MARK_ADD failed at startup — coverage degraded"
+                "fanotify_mark FAN_MARK_ADD failed at startup; coverage degraded"
             );
             metrics
                 .fanotify_mark_failures
@@ -196,7 +208,7 @@ pub fn start(
                             tracing::error!(
                                 mount = %mount.display(),
                                 error = %e,
-                                "fanotify_mark FAN_MARK_ADD failed during reload — coverage degraded for this mount"
+                                "fanotify_mark FAN_MARK_ADD failed during reload; coverage degraded for this mount"
                             );
                             metrics
                                 .fanotify_mark_failures
@@ -264,7 +276,8 @@ pub fn start(
                     }
                 }
 
-                // SAFETY: valid fd + valid buffer pointer.
+                // SAFETY: valid fd + valid buffer pointer + length. The kernel
+                // writes at most buf.len() bytes. Return checked for errors.
                 let n = unsafe { libc::read(fan_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
                 if n < 0 {
                     let err = std::io::Error::last_os_error();
@@ -279,7 +292,7 @@ pub fn start(
                     tracing::error!(
                         error = %err,
                         errno = ?raw,
-                        "fanotify read() failed with non-recoverable error — stopping monitor"
+                        "fanotify read() failed with non-recoverable error; stopping monitor"
                     );
                     metrics
                         .fanotify_read_errors
@@ -303,8 +316,9 @@ pub fn start(
                 let n_usize = n as usize;
                 let mut offset = 0usize;
                 while offset + FAN_EVENT_METADATA_LEN <= n_usize {
-                    // SAFETY: offset bounds checked and kernel produced this buffer.
-                    // Using read_unaligned because the buffer offset may not be aligned.
+                    // SAFETY: offset bounds-checked above and the kernel produced
+                    // this buffer. Using read_unaligned because the buffer offset
+                    // may not satisfy FanotifyEventMetadata alignment requirements.
                     let event: FanotifyEventMetadata =
                         unsafe { std::ptr::read_unaligned(buf.as_ptr().add(offset) as *const FanotifyEventMetadata) };
 
@@ -328,8 +342,8 @@ pub fn start(
                     // Handle kernel queue overflow: fanotify dropped events
                     if event.mask & FAN_Q_OVERFLOW != 0 {
                         tracing::error!(
-                            "fanotify kernel queue overflow (FAN_Q_OVERFLOW) — \
-                             events were dropped by the kernel. Triggering compensating full scan."
+                            "fanotify kernel queue overflow (FAN_Q_OVERFLOW). \
+                             Events were dropped by the kernel. Triggering compensating full scan."
                         );
                         metrics
                             .kernel_queue_overflows
@@ -339,7 +353,7 @@ pub fn start(
                             let mut guard = s.write();
                             if matches!(*guard, DaemonState::Healthy) {
                                 *guard = DaemonState::Degraded {
-                                    reason: "fanotify queue overflow — events dropped by kernel"
+                                    reason: "fanotify queue overflow; events dropped by kernel"
                                         .to_string(),
                                     since: Utc::now(),
                                 };
@@ -373,7 +387,7 @@ pub fn start(
                         // Resolve process attribution immediately to minimize the
                         // PID recycling window. The fd is still open and valid here.
                         // NOTE: FAN_REPORT_PIDFD (Linux 6.2+) would eliminate this
-                        // race entirely by providing a stable pidfd reference.
+                        // race by providing a stable pidfd reference.
                         let process = if event.pid > 0 {
                             let exe = std::fs::read_link(format!("/proc/{}/exe", event.pid))
                                 .ok()
@@ -384,10 +398,10 @@ pub fn start(
                                     exe,
                                 })
                             } else {
-                                // Process already exited — PID may have been recycled
+                                // Process already exited.  PID may have been recycled.
                                 tracing::debug!(
                                     pid = event.pid,
-                                    "process exited before attribution — PID may be stale"
+                                    "process exited before attribution; PID may be stale"
                                 );
                                 Some(ProcessAttribution {
                                     pid: event.pid as u32,
@@ -438,7 +452,8 @@ pub fn start(
 
                                     // Transfer fd ownership into OwnedFd; prevent guard from closing it
                                     let raw = fd_guard.take();
-                                    // SAFETY: raw fd is uniquely owned here and has not been closed.
+                                    // SAFETY: raw fd is uniquely owned (take() consumed
+                                    // the guard) and has not been closed.
                                     let owned_fd = unsafe { OwnedFd::from_raw_fd(raw) };
 
                                     let fs_event = FsEvent {
@@ -466,11 +481,11 @@ pub fn start(
                                         }
                                     }
                                 }
-                                // else: unrecognized mask — fd_guard drops and closes
+                                // else: unrecognized mask. fd_guard drops and closes.
                             }
-                            // else: not watched — fd_guard drops and closes
+                            // else: not watched. fd_guard drops and closes.
                         }
-                        // else: read_link failed — fd_guard drops and closes
+                        // else: read_link failed. fd_guard drops and closes.
                     }
 
                     offset += len;
@@ -505,7 +520,8 @@ fn apply_fanotify_mark(fan_fd: RawFd, mount: &std::path::Path, mask: u64, op: u3
     let c_path = CString::new(mount.as_os_str().as_bytes())
         .map_err(|_| VigilError::Fanotify(format!("invalid path: {}", mount.display())))?;
 
-    // SAFETY: fanotify_mark syscall with valid fd and C string; result checked.
+    // SAFETY: fanotify_mark syscall with a valid fd, a valid NUL-terminated
+    // C string, and FAN_MARK_MOUNT semantics. Return value checked below.
     let ret = unsafe {
         libc::syscall(
             libc::SYS_fanotify_mark,

@@ -1,3 +1,5 @@
+//! `vigil inspect` subcommand: query baseline entries by path.
+
 use std::path::{Path, PathBuf};
 
 use vigil::db::baseline_ops;

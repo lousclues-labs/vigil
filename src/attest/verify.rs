@@ -1,8 +1,8 @@
-//! `vigil attest verify` — verify an attestation file.
+//! `vigil attest verify` -- verify an attestation file.
 //!
 //! Security-critical path. This module is intentionally small and depends
 //! only on `format`, `key`, and BLAKE3. It must work with no daemon,
-//! no baseline DB, no config — only a Vigil binary, the attestation file,
+//! no baseline DB, no config; only a Vigil binary, the attestation file,
 //! and the signing key.
 
 use std::path::Path;

@@ -1,3 +1,5 @@
+//! Append-mode JSON file alert sink.
+
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};

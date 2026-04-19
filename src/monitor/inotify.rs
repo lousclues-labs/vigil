@@ -1,3 +1,10 @@
+//! Inotify-based filesystem monitor (fallback when fanotify is unavailable).
+//!
+//! Recursively watches directories with IN_MODIFY, IN_ATTRIB, IN_CREATE,
+//! IN_DELETE, and IN_MOVED_*. Does not provide event fds, so workers must
+//! re-open files by path (no TOCTOU hardening). Dynamically adds watches
+//! when new subdirectories appear.
+
 use std::collections::HashMap;
 use std::os::unix::io::AsFd;
 use std::path::PathBuf;

@@ -1,3 +1,12 @@
+//! Append-only detection log with HMAC entry signing and CRC32 framing.
+//!
+//! Writers append detection records. Two consumers (audit writer, alert sink)
+//! mark entries consumed independently. Truncation only runs after both
+//! consumers acknowledge. Torn writes at the tail are detected by CRC and
+//! skipped on reopen; entries past the last valid CRC are discarded.
+//!
+//! On-disk format: docs/ARCHITECTURE.md. Tamper evidence: docs/SECURITY.md.
+
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{FileExt, OpenOptionsExt, PermissionsExt};
@@ -32,7 +41,7 @@ const FLAG_SINK_DONE: u16 = 0x0002;
 /// gap scanning advances byte-by-byte for correctness.  If entries were ever
 /// padded to 4-byte boundaries, the scanner could skip to aligned offsets and
 /// reduce gap scanning from O(n) to ~O(n/4).  The current `MAX_GAP_BYTES`
-/// limit makes this optimization unnecessary — at 64KB the byte-by-byte scan
+/// limit makes this optimization unnecessary.  At 64KB the byte-by-byte scan
 /// completes in microseconds.
 const MAX_GAP_BYTES: u64 = 65_536;
 
@@ -474,12 +483,12 @@ impl DetectionWal {
     ///
     /// # Concurrency safety
     ///
-    /// This performs a **non-atomic read-modify-write**: it reads the entire entry,
+    /// Performs a **non-atomic read-modify-write**: reads the entire entry,
     /// ORs the flag bit into the 2-byte flags field, recomputes the CRC-32, and
     /// writes the entry back.  If two threads called `mark_audit_done` and
     /// `mark_sink_done` on the **same** entry concurrently without serialization,
     /// both would read the old flags, both would OR in their respective bit, and
-    /// the second write would overwrite the first — silently losing one flag.
+    /// the second write would overwrite the first, silently losing one flag.
     ///
     /// The global `write_lock` prevents this today: every caller acquires it before
     /// touching the file.  The lock is required not just for appends, but also for
@@ -545,10 +554,10 @@ fn fingerprint_for_key(key: &[u8]) -> [u8; 16] {
 #[allow(unsafe_code)]
 fn random_nonce() -> Result<[u8; 32]> {
     let mut nonce = [0u8; 32];
-    // SAFETY: getrandom fills the buffer with random bytes from the kernel's
-    // CSPRNG. The buffer pointer and length are valid. flags=0 means block
-    // until the entropy pool is initialized (equivalent to /dev/urandom after
-    // boot). Return value is checked for errors.
+    // SAFETY: getrandom fills `nonce` from the kernel CSPRNG; pointer and
+    // length are valid for the stack-allocated array. We pass flags=0, which
+    // blocks until the entropy pool is seeded. A short or negative return
+    // would leave the nonce partially random; the check below rejects that.
     let ret = unsafe { libc::getrandom(nonce.as_mut_ptr() as *mut libc::c_void, 32, 0) };
     if ret != 32 {
         return Err(VigilError::Wal(format!(
@@ -610,7 +619,7 @@ fn scan_entries(
     while offset < file_len {
         // Part B: if we have been scanning a gap for more than MAX_GAP_BYTES,
         // stop recovery.  An attacker who can write to the WAL can already
-        // delete entries — there is no point spending CPU trying to recover
+        // delete entries.  There is no point spending CPU trying to recover
         // data they have deliberately destroyed.
         if gap_bytes > MAX_GAP_BYTES {
             tracing::error!(
@@ -670,7 +679,7 @@ fn scan_entries(
             continue;
         }
 
-        // Valid entry found — log and reset gap tracking
+        // Valid entry found.  Log and reset gap tracking.
         if let Some(start) = gap_start.take() {
             tracing::warn!(
                 start,
@@ -698,11 +707,11 @@ fn scan_entries(
         // a non-zero key fingerprint.
         let any_hmac = entry_hmac.iter().any(|b| *b != 0);
         if hmac_required && !any_hmac {
-            // Zero-HMAC entry in an HMAC-mandatory WAL — forged injection.
+            // Zero-HMAC entry in an HMAC-mandatory WAL.  Forged injection.
             tracing::error!(
                 sequence = sequence,
                 offset = offset,
-                "WAL entry has zero HMAC but HMAC is required — rejecting forged entry"
+                "WAL entry has zero HMAC but HMAC is required; rejecting forged entry"
             );
             offset += entry_size as u64;
             continue;
@@ -1238,7 +1247,7 @@ mod tests {
         buf.extend_from_slice(&entry_size.to_le_bytes());
         buf.extend_from_slice(&forged_seq.to_le_bytes());
         buf.extend_from_slice(&0u16.to_le_bytes()); // flags
-        buf.extend_from_slice(&[0u8; 32]); // zero HMAC — the attack vector
+        buf.extend_from_slice(&[0u8; 32]); // zero HMAC (the attack vector)
         buf.extend_from_slice(&payload);
         let crc = crc32fast::hash(&buf);
         buf.extend_from_slice(&crc.to_le_bytes());
@@ -1272,7 +1281,7 @@ mod tests {
                 .unwrap();
         }
 
-        // Reopen without key — must fail
+        // Reopen without key.  Must fail.
         match DetectionWal::open(&wal_path, None, 64 * 1024 * 1024) {
             Err(VigilError::Wal(msg)) => {
                 assert!(

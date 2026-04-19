@@ -1,3 +1,5 @@
+//! Atomic counters for daemon-wide events, hashes, alerts, and performance.
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;

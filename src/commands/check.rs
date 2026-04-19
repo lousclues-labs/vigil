@@ -1,3 +1,5 @@
+//! `vigil check` subcommand: integrity verification with optional accept flow.
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -412,7 +414,7 @@ pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
             println!("  ● {} accepted, {} failed", accepted, failed);
             println!();
             println!("  Baseline updated. Next scan will treat accepted files as expected.");
-            println!("  Audit log preserved — the original detections are permanent.");
+            println!("  Audit log preserved. The original detections are permanent.");
 
             // Recompute baseline HMAC after accepting changes
             if cfg.security.hmac_signing {
@@ -557,7 +559,7 @@ pub(crate) fn cmd_check_live(config_path: Option<&Path>, full: bool) -> vigil::R
             .unwrap_or(0);
 
         print_header(&format!(
-            "Vigil Baseline — {} Integrity Check (live)",
+            "Vigil Baseline -- {} Integrity Check (live)",
             mode_label
         ));
 

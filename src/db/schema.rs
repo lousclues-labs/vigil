@@ -1,7 +1,12 @@
+//! Database schema definitions and table creation.
+//!
+//! Baseline (v2 flattened) and audit tables are created here.
+//! Called from `migrate::ensure_schema` on first open.
+
 use crate::error::Result;
 use rusqlite::Connection;
 
-/// Create baseline tables (baseline.db) — v2 flattened schema.
+/// Create baseline tables (baseline.db), v2 flattened schema.
 pub fn create_baseline_tables(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "

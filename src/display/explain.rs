@@ -1,9 +1,11 @@
+//! Structural change significance explanations (Principle III: no heuristics).
+
 use std::path::Path;
 
 use crate::types::Change;
 
 /// Produce a human-readable explanation of why a change matters.
-/// Structural inference only — no heuristics (Principle III).
+/// Structural inference only; no heuristics (Principle III).
 /// Returns `None` if no specific explanation applies beyond the raw change data.
 pub fn explain(change: &Change, path: &Path) -> Option<String> {
     let path_str = path.to_string_lossy();
@@ -74,7 +76,7 @@ fn explain_permission_change(old: u32, new: u32) -> Option<String> {
     let new_world_writable = new & 0o002 != 0;
 
     if !old_setuid && new_setuid {
-        return Some("setuid bit added — investigate".into());
+        return Some("setuid bit added -- investigate".into());
     }
     if old_setuid && !new_setuid {
         return Some("setuid bit removed".into());
@@ -148,7 +150,7 @@ mod tests {
             new: 0o104755,
         };
         let result = explain(&change, Path::new("/usr/bin/test"));
-        assert_eq!(result.unwrap(), "setuid bit added — investigate");
+        assert_eq!(result.unwrap(), "setuid bit added -- investigate");
     }
 
     #[test]

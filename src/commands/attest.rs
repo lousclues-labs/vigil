@@ -1,3 +1,5 @@
+//! `vigil attest` subcommand dispatch.
+
 use std::path::Path;
 
 use vigil::attest;

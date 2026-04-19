@@ -1,3 +1,5 @@
+//! `vigil init` subcommand: establish the baseline.
+
 use std::io::{self, Write};
 use std::path::Path;
 

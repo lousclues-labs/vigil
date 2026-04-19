@@ -1,3 +1,10 @@
+//! Baseline database operations.
+//!
+//! CRUD for baseline entries (the known-good filesystem snapshot), HMAC
+//! computation over 13 security-relevant fields, config_state key-value
+//! store, and baseline profile/fingerprint queries for `vigil check`
+//! and `vigil status`.
+
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -162,7 +169,7 @@ pub fn get_by_path(conn: &Connection, path: &str) -> Result<Option<BaselineEntry
 }
 
 /// Iterate over all baseline entries, calling the provided closure for each.
-/// This streams rows from SQLite without collecting them into a Vec.
+/// Streams rows from SQLite without collecting them into a Vec.
 pub fn for_each_entry<F>(conn: &Connection, mut f: F) -> Result<()>
 where
     F: FnMut(BaselineEntry) -> Result<()>,
@@ -235,7 +242,7 @@ pub fn get_config_state(conn: &Connection, key: &str) -> Result<Option<String>> 
 }
 
 /// Compute HMAC over the baseline table for at-rest tamper evidence.
-/// Covers all 13 security-relevant fields for comprehensive integrity.
+/// Covers all 13 security-relevant fields.
 pub fn compute_baseline_hmac(conn: &Connection, key: &[u8]) -> Result<String> {
     let entries = get_all(conn)?;
     let mut canonical = String::new();

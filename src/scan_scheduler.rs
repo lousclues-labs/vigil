@@ -1,3 +1,5 @@
+//! Cron-scheduled and on-demand scan orchestration.
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -78,7 +80,7 @@ pub fn spawn(
                         };
                     if request.response_tx.send(response).is_err() {
                         tracing::warn!(
-                            "on-demand scan response not delivered — requester disconnected"
+                            "on-demand scan response not delivered; requester disconnected"
                         );
                     }
                 }
@@ -114,7 +116,7 @@ pub fn spawn(
                         return;
                     }
 
-                    // Use startup baseline connection — never re-open by path
+                    // Use startup baseline connection; never re-open by path
                     match crate::scanner::run_scan(&baseline_conn, &cfg, cfg.scanner.scheduled_mode)
                     {
                         Ok(scan_result) => {

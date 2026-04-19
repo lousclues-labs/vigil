@@ -1,6 +1,6 @@
 //! In-tree progress renderer for multi-step CLI operations.
 //!
-//! No external dependencies — uses `std::io::Write` + ANSI escapes with
+//! No external dependencies; uses `std::io::Write` + ANSI escapes with
 //! automatic fallback for non-TTY, `NO_COLOR`, and `TERM=dumb` environments.
 
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
@@ -589,7 +589,7 @@ impl Progress {
                     if l.contains("Compiling ") {
                         saw_compiling = true;
                     }
-                    // Defer lone "Finished" lines — only emit if we saw Compiling
+                    // Defer lone "Finished" lines; only emit if we saw Compiling
                     // or are in verbose mode.
                     if l.trim_start().starts_with("Finished ") && !saw_compiling {
                         deferred_finished = Some(l);

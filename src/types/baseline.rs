@@ -1,3 +1,5 @@
+//! Baseline entry: the known-good state of a single file.
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};

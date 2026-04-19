@@ -1,8 +1,10 @@
+//! Inode identity: device, inode number, file type, symlink target.
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
 
-/// Immutable properties of an inode — identity that does not change
+/// Immutable properties of an inode -- identity that does not change
 /// unless the file is replaced (unlink + create).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileIdentity {

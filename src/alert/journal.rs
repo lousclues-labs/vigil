@@ -1,3 +1,5 @@
+//! Systemd journal alert sink via the `tracing` crate.
+
 use crate::alert::AlertSink;
 use crate::error::Result;
 use crate::types::Alert;

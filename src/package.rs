@@ -1,3 +1,9 @@
+//! Package manager queries with circuit-breaker timeout protection.
+//!
+//! Detects pacman and dpkg, resolves file-to-package ownership, and
+//! builds a full-system package cache for baseline init. Three consecutive
+//! timeouts open the circuit breaker for 60 seconds.
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -33,14 +39,14 @@ fn is_circuit_open() -> bool {
     if now < until {
         return true;
     }
-    // Circuit breaker expired — close it
-    tracing::info!("package manager circuit breaker closed — resuming queries");
+    // Circuit breaker expired; close it
+    tracing::info!("package manager circuit breaker closed; resuming queries");
     CIRCUIT_OPEN_UNTIL.store(0, Ordering::Release);
     CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed);
     false
 }
 
-/// Absolute paths for package managers — prevents PATH injection attacks.
+/// Absolute paths for package managers; prevents PATH injection attacks.
 const PACMAN_PATH: &str = "/usr/bin/pacman";
 const DPKG_PATH: &str = "/usr/bin/dpkg";
 const RPM_PATH: &str = "/usr/bin/rpm";
@@ -170,7 +176,7 @@ fn run_with_timeout(
                             let until = chrono::Utc::now().timestamp() + CIRCUIT_OPEN_DURATION_SECS;
                             CIRCUIT_OPEN_UNTIL.store(until, Ordering::Release);
                             tracing::warn!(
-                                "package manager circuit breaker opened — suspending queries for {}s after {} consecutive timeouts",
+                                "package manager circuit breaker opened; suspending queries for {}s after {} consecutive timeouts",
                                 CIRCUIT_OPEN_DURATION_SECS,
                                 count
                             );
@@ -270,8 +276,8 @@ fn batch_query_rpm(paths: &[String]) -> HashMap<String, String> {
     results
 }
 
-/// Build a complete file→package ownership cache using a single bulk command.
-/// This is dramatically faster than per-file subprocess calls during baseline init.
+/// Build a complete file-to-package ownership cache using a single bulk command.
+/// Dramatically faster than per-file subprocess calls during baseline init.
 ///
 /// Returns `Some(cache)` on success, `None` if the query failed despite retries.
 /// An empty `Some(HashMap)` means the package manager reported no installed files
@@ -339,7 +345,7 @@ where
                     tracing::error!(
                         backend = ?backend,
                         attempts = MAX_RETRIES + 1,
-                        "package cache build failed after all retries — \
+                        "package cache build failed after all retries; \
                          package attribution will be unavailable until the next refresh"
                     );
                     return result;
@@ -347,7 +353,7 @@ where
                 tracing::warn!(
                     attempt,
                     backend = ?backend,
-                    "package cache build returned 0 entries — will retry after backoff"
+                    "package cache build returned 0 entries; will retry after backoff"
                 );
             }
         }
@@ -386,7 +392,7 @@ fn wait_for_package_lock(backend: PackageBackend, max_wait: Duration) {
         tracing::warn!(
             lock = %lock_path.display(),
             elapsed_ms = start.elapsed().as_millis() as u64,
-            "package manager lock still held after timeout — proceeding anyway"
+            "package manager lock still held after timeout; proceeding anyway"
         );
     } else {
         tracing::info!(
@@ -423,7 +429,7 @@ fn build_cache_pacman_once() -> Option<HashMap<PathBuf, String>> {
     }
 
     if cache.is_empty() {
-        // Command succeeded but no output — likely lock contention caused
+        // Command succeeded but no output; likely lock contention caused
         // pacman to produce no output before timeout killed it, or genuinely
         // no packages are installed.
         return Some(cache);
@@ -443,7 +449,7 @@ fn build_cache_dpkg_once() -> Option<HashMap<PathBuf, String>> {
             Ok(meta) if meta.uid() != 0 => {
                 tracing::error!(
                     owner_uid = meta.uid(),
-                    "/var/lib/dpkg/info is not owned by root — refusing to read package lists"
+                    "/var/lib/dpkg/info is not owned by root; refusing to read package lists"
                 );
                 return None;
             }
@@ -794,7 +800,7 @@ mod tests {
 
     #[test]
     fn wait_for_nonexistent_lock_returns_immediately() {
-        // Pacman lock file doesn't exist in test environments — should return instantly.
+        // Pacman lock file doesn't exist in test environments; should return instantly.
         let start = std::time::Instant::now();
         wait_for_package_lock(PackageBackend::Pacman, Duration::from_secs(1));
         assert!(

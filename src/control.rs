@@ -1,3 +1,10 @@
+//! Unix domain control socket for CLI-to-daemon communication.
+//!
+//! Accepts connections on `/run/vigil/control.sock`, authenticates via
+//! HMAC challenge-response over SO_PEERCRED, and dispatches commands
+//! (status, scan, reload, maintenance). Reads are bounded to 64KB
+//! (SEC-003). The nonce is sourced from /dev/urandom.
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
@@ -137,7 +144,7 @@ pub fn spawn(
                             }) {
                             Ok(_) => {}
                             Err(e) => {
-                                // VIGIL-VULN-073: spawn failed — release
+                                // VIGIL-VULN-073: spawn failed. Release
                                 // the in-flight slot immediately to prevent
                                 // permanent slot leak that would wedge the socket.
                                 in_flight.fetch_sub(1, Ordering::AcqRel);
@@ -251,7 +258,7 @@ impl ControlHandler {
         let nonce = match generate_nonce() {
             Ok(n) => n,
             Err(e) => {
-                tracing::error!(error = %e, "nonce generation failed — rejecting connection");
+                tracing::error!(error = %e, "nonce generation failed; rejecting connection");
                 let fail_resp = r#"{"ok":false,"error":"internal security error"}"#;
                 let mut writer = stream;
                 let _ = writer.write_all(fail_resp.as_bytes());
@@ -531,7 +538,7 @@ fn generate_nonce() -> std::result::Result<String, std::io::Error> {
     // Verify buffer is not all-zero (catastrophic RNG failure)
     if buf.iter().all(|&b| b == 0) {
         return Err(std::io::Error::other(
-            "urandom returned all zeros — refusing to generate nonce",
+            "urandom returned all zeros; refusing to generate nonce",
         ));
     }
     Ok(hex::encode(buf))
@@ -545,10 +552,14 @@ fn peer_credentials(stream: &std::os::unix::net::UnixStream) -> Option<libc::ucr
     use std::os::unix::io::AsRawFd;
 
     let fd = stream.as_raw_fd();
+    // SAFETY: libc::ucred is a plain-old-data struct (pid, uid, gid).
+    // zeroed() is valid for POD types.
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
 
-    // SAFETY: getsockopt with SO_PEERCRED is safe on a valid Unix socket fd.
+    // SAFETY: getsockopt(SO_PEERCRED) reads the peer's credentials from
+    // a connected Unix socket. The fd is valid (from stream.as_raw_fd()),
+    // and cred/len are correctly sized. Returns 0 on success, -1 on error.
     let ret = unsafe {
         libc::getsockopt(
             fd,
@@ -572,7 +583,8 @@ fn peer_credentials(stream: &std::os::unix::net::UnixStream) -> Option<libc::ucr
 fn current_euid() -> u32 {
     static EUID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *EUID.get_or_init(|| {
-        // SAFETY: geteuid is always safe to call.
+        // SAFETY: geteuid returns the effective uid with no side effects.
+        // Cannot fail and has no memory safety implications.
         unsafe { libc::geteuid() }
     })
 }

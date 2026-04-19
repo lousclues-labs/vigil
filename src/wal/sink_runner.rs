@@ -1,3 +1,11 @@
+//! WAL-to-alert-sink dispatch thread.
+//!
+//! Reads unconsumed detection records from the WAL, applies per-path cooldown
+//! and per-minute rate limiting, dispatches unsuppressed alerts to all
+//! configured sinks (journal, JSON log, D-Bus, socket, remote syslog), and
+//! marks each entry sink-done. Suppressed entries are still marked consumed
+//! so they do not retry forever.
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;

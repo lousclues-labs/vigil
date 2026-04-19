@@ -1,3 +1,5 @@
+//! CLI command implementations.
+
 mod attest;
 mod audit;
 mod baseline;

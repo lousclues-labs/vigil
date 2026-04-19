@@ -1,3 +1,5 @@
+//! `vigil explain` subcommand: why a path is or is not watched.
+
 use std::path::Path;
 
 use vigil::db::{self, audit_ops, baseline_ops};

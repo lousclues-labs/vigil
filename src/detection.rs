@@ -1,3 +1,5 @@
+//! Detection dispatch: WAL-or-alert routing for change results.
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -38,7 +40,7 @@ pub fn dispatch_detection(
         }
     }
 
-    // No WAL or WAL append failed — send directly to alert channel.
+    // No WAL or WAL append failed; send directly to alert channel.
     // Log at error level if the channel is disconnected (detection would be lost).
     if let Err(e) = alert_tx.send(AlertPayload {
         change,
@@ -46,7 +48,7 @@ pub fn dispatch_detection(
     }) {
         tracing::error!(
             path = %e.0.change.path.display(),
-            "alert channel disconnected — detection lost"
+            "alert channel disconnected; detection lost"
         );
         return true;
     }

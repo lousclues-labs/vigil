@@ -1,4 +1,4 @@
-//! `vigil attest list` — list attestation files in a directory.
+//! `vigil attest list` -- list attestation files in a directory.
 
 use std::path::Path;
 
@@ -51,7 +51,7 @@ pub fn list_attestations(dir: &Path) -> AttestResult<()> {
             Ok(data) => match super::format::deserialize_attestation(&data) {
                 Ok(att) => {
                     eprintln!(
-                        "  {} ({}) — {} scope, {} baseline, {} audit, {}",
+                        "  {} ({}) -- {} scope, {} baseline, {} audit, {}",
                         name,
                         format_size(size),
                         att.header.scope,
@@ -61,11 +61,11 @@ pub fn list_attestations(dir: &Path) -> AttestResult<()> {
                     );
                 }
                 Err(_) => {
-                    eprintln!("  {} ({}) — parse error", name, format_size(size));
+                    eprintln!("  {} ({}) -- parse error", name, format_size(size));
                 }
             },
             Err(_) => {
-                eprintln!("  {} — unreadable", name);
+                eprintln!("  {} -- unreadable", name);
             }
         }
     }

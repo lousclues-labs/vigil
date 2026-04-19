@@ -1,3 +1,10 @@
+//! Real-time filesystem monitor.
+//!
+//! Tries fanotify first (kernel-level, mount-scoped, supports fd-based
+//! TOCTOU-safe hashing). Falls back to inotify when fanotify is unavailable
+//! (no CAP_SYS_ADMIN). Returns a `MonitorHandle` with optional reconfigure
+//! and mount-mark channels for dynamic watch updates.
+
 pub mod fanotify;
 pub mod inotify;
 
@@ -33,17 +40,17 @@ pub fn start_monitor(
     scan_trigger: Option<Sender<crate::control::ScanRequest>>,
 ) -> Result<MonitorHandle> {
     // VIGIL-VULN-073: warn loudly if daemon state / scan trigger channels
-    // are missing — this disables VIGIL-VULN-064/066 protections silently.
+    // are missing.  This disables VIGIL-VULN-064/066 protections silently.
     if state.is_none() {
         tracing::error!(
-            "start_monitor called without daemon state handle — \
-             fanotify Degraded transitions (VIGIL-VULN-064/066) will not fire"
+            "start_monitor called without daemon state handle. \
+             Fanotify Degraded transitions (VIGIL-VULN-064/066) will not fire."
         );
     }
     if scan_trigger.is_none() {
         tracing::error!(
-            "start_monitor called without scan trigger channel — \
-             FAN_Q_OVERFLOW compensating scans (VIGIL-VULN-064) disabled"
+            "start_monitor called without scan trigger channel. \
+             FAN_Q_OVERFLOW compensating scans (VIGIL-VULN-064) disabled."
         );
     }
 

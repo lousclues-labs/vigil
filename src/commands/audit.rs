@@ -1,3 +1,5 @@
+//! `vigil audit` subcommand: show, stats, verify.
+
 use std::path::Path;
 
 use vigil::types::{Change, OutputFormat};
@@ -77,13 +79,13 @@ pub(crate) fn cmd_audit(
 
             if filter_parts.is_empty() {
                 print_header(&format!(
-                    "Vigil Baseline — Audit Log ({} of {} entries)",
+                    "Vigil Baseline -- Audit Log ({} of {} entries)",
                     entries.len(),
                     total
                 ));
             } else {
                 print_header(&format!(
-                    "Vigil Baseline — Audit Log ({} match{})",
+                    "Vigil Baseline -- Audit Log ({} match{})",
                     entries.len(),
                     if entries.len() == 1 { "" } else { "es" }
                 ));
@@ -183,7 +185,7 @@ pub(crate) fn cmd_audit(
             };
 
             print_header(&format!(
-                "Vigil Baseline — Audit Statistics ({})",
+                "Vigil Baseline -- Audit Statistics ({})",
                 period_label
             ));
 
@@ -241,7 +243,7 @@ pub(crate) fn cmd_audit(
         vigil::cli::AuditAction::Verify => {
             let (total, valid, breaks, missing) = vigil::db::audit_ops::verify_chain(&conn)?;
 
-            print_header("Vigil Baseline — Audit Chain Verification");
+            print_header("Vigil Baseline -- Audit Chain Verification");
 
             println!("  Total entries    {}", format_count(total));
             println!("  Valid links      {}", format_count(valid));

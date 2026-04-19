@@ -1,3 +1,9 @@
+//! Configuration loading, validation, and runtime defaults.
+//!
+//! Reads `vigil.toml`, validates all fields, expands watch paths, and
+//! provides `default_config()` for tests. The live config is wrapped in
+//! `ArcSwap<Config>` for lock-free reads during reload.
+
 pub mod diff;
 
 use serde::{Deserialize, Serialize};

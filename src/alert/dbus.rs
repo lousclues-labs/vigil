@@ -1,4 +1,7 @@
+//! D-Bus desktop notification sink with per-severity rate limiting.
+
 use std::path::PathBuf;
+
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -79,7 +82,7 @@ impl AlertSink for DbusSink {
         };
 
         let title = format!(
-            "Vigil Baseline — {} {}",
+            "Vigil Baseline -- {} {}",
             alert.severity.to_string().to_uppercase(),
             alert.change_type,
         );

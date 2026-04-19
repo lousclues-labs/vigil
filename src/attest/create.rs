@@ -1,4 +1,4 @@
-//! `vigil attest create` — build and write an attestation file.
+//! `vigil attest create` -- build and write an attestation file.
 
 use std::path::{Path, PathBuf};
 

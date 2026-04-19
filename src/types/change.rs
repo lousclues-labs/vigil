@@ -1,3 +1,5 @@
+//! Change detection variants -- one per integrity dimension.
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -5,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{FileType, Severity};
 
-/// A single detected change — one variant per detection dimension.
+/// A single detected change -- one variant per detection dimension.
 /// Adding a new detection dimension = adding one variant. Zero impact on existing code.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -135,7 +137,7 @@ impl ChangeResult {
     }
 }
 
-/// Process attribution — which process caused the change.
+/// Process attribution -- which process caused the change.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessAttribution {
     pub pid: u32,

@@ -1,3 +1,11 @@
+//! Worker pool for filesystem event processing.
+//!
+//! Each worker thread owns a read-only baseline DB connection and a
+//! BLAKE3-keyed file cache. Events arrive from the monitor via a bounded
+//! channel, are compared against the baseline snapshot (fd-based TOCTOU
+//! hardened), and deviations dispatch to the WAL or alert channel.
+//! Panics are caught per-event; the worker stays alive.
+
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -41,13 +49,16 @@ pub enum UpdateReason {
 
 #[allow(unsafe_code)]
 fn dup_to_file(raw_fd: std::os::fd::RawFd) -> std::io::Result<std::fs::File> {
-    // SAFETY: fcntl(F_DUPFD_CLOEXEC) creates a new fd with close-on-exec set,
-    // preventing fd leaks across exec (VIGIL-VULN-074).
+    // SAFETY: fcntl(F_DUPFD_CLOEXEC) creates a new fd >= 0 with close-on-exec.
+    // The source fd is valid because it comes from an OwnedFd in FsEvent.
+    // A negative return means the dup failed; we check for that below.
     let dup_fd = unsafe { libc::fcntl(raw_fd, libc::F_DUPFD_CLOEXEC, 0) };
     if dup_fd < 0 {
         return Err(std::io::Error::last_os_error());
     }
-    // SAFETY: dup_fd is a fresh owned descriptor returned by fcntl above.
+    // SAFETY: dup_fd is a fresh descriptor just returned by fcntl.
+    // No other code holds it, so from_raw_fd takes unique ownership.
+    // If the dup had failed, we returned Err above.
     Ok(unsafe { std::fs::File::from_raw_fd(dup_fd) })
 }
 
@@ -179,7 +190,7 @@ impl WorkerContext {
                 tracing::error!(
                     path = %event.path.display(),
                     event_type = ?event.event_type,
-                    "panic caught in worker — event processing failed"
+                    "panic caught in worker; event processing failed"
                 );
                 // Clear the cache to avoid logically-inconsistent state after panic
                 self.cache.clear();
@@ -608,7 +619,7 @@ mod tests {
             added_at: 0,
             updated_at: 0,
         };
-        // This entry has zeroed content — a real update should never have an empty hash
+        // Zeroed content.  A real update should never have an empty hash.
         assert!(
             entry.content.hash.is_empty(),
             "default content hash should be empty"
@@ -657,7 +668,7 @@ mod tests {
             assert!(cr.changes.iter().any(|c| matches!(c, Change::Created)));
         }
         // If the default config doesn't have a watch group covering this exact path,
-        // that's also valid — the test documents the intended behavior.
+        // that's also valid.  The test documents the intended behavior.
     }
 
     #[test]
@@ -665,7 +676,7 @@ mod tests {
         // Simulate a WorkerContext with an in-memory DB that has no baseline tables,
         // causing get_by_path to fail. Verify the counter increments.
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        // Intentionally do NOT create baseline tables — queries will error.
+        // Intentionally do NOT create baseline tables.  Queries will error.
 
         let cfg = crate::config::default_config();
         let metrics = Arc::new(Metrics::new());

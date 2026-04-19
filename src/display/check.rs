@@ -1,3 +1,5 @@
+//! Check report construction and terminal rendering for `vigil check`.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{Local, Utc};
@@ -193,7 +195,7 @@ pub fn render_human(
     let styled = Styled::new(term);
     let mut out = String::new();
 
-    let title = "Vigil Baseline — Integrity Check";
+    let title = "Vigil Baseline -- Integrity Check";
     out.push('\n');
     out.push_str(&styled.paint(Style::Bold, title));
     out.push('\n');
@@ -578,7 +580,7 @@ pub fn render_init_human(report: &InitReport, term: &crate::display::term::TermI
     let styled = Styled::new(term);
     let mut out = String::new();
 
-    let title = "Vigil Baseline — Baseline Initialized";
+    let title = "Vigil Baseline -- Baseline Initialized";
     out.push('\n');
     out.push_str(&styled.paint(Style::Bold, title));
     out.push('\n');

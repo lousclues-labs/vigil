@@ -1,3 +1,5 @@
+//! `vigil update` subcommand: build, install, and restart with rollback.
+
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -87,7 +89,7 @@ pub(crate) fn cmd_update(
     prog.end_step_ok(None);
 
     // ── Step 2: Build release binaries ─────────────────────
-    // Silent in human mode — cargo owns the visual output.
+    // Silent in human mode; cargo owns the visual output.
     // JSON begin/ok events still emitted.
     prog.begin_step_silent(UpdateStep::BuildRelease);
 
@@ -509,13 +511,13 @@ fn discover_vigil_repo(prog: &mut Progress) -> vigil::Result<PathBuf> {
     // 3. Well-known home paths (from HOME)
     if let Ok(home) = std::env::var("HOME") {
         let home = PathBuf::from(&home);
-        // When running as root, only search /root — not a regular user's
+        // When running as root, only search /root; not a regular user's
         // home directory, which would be attacker-controlled under sudo.
         let skip_home = nix::unistd::geteuid().is_root() && home != Path::new("/root");
         if skip_home {
             tracing::debug!(
                 home = %home.display(),
-                "skipping $HOME-relative candidates while running as root — \
+                "skipping $HOME-relative candidates while running as root; \
                  use --repo to specify a root-owned source directory"
             );
         } else {
@@ -527,7 +529,7 @@ fn discover_vigil_repo(prog: &mut Progress) -> vigil::Result<PathBuf> {
         }
     }
 
-    // 4. SUDO_USER home paths — derive invoking user's home when running under sudo
+    // 4. SUDO_USER home paths; derive invoking user's home when running under sudo
     if let Ok(sudo_user) = std::env::var("SUDO_USER") {
         let sudo_home = PathBuf::from(format!("/home/{}", sudo_user));
         for sub in ["vigil", "src/vigil", "projects/vigil"] {
@@ -551,7 +553,7 @@ fn discover_vigil_repo(prog: &mut Progress) -> vigil::Result<PathBuf> {
                 return Ok(candidate.clone());
             }
             Err(e) => {
-                rejections.push(format!("    {} — {}", labels[i], e));
+                rejections.push(format!("    {}; {}", labels[i], e));
             }
         }
     }

@@ -1,3 +1,5 @@
+//! Terminal capability detection: size, color, TTY status.
+
 use std::io::IsTerminal;
 
 /// Terminal information for adaptive rendering.
@@ -55,6 +57,9 @@ impl TermInfo {
     #[cfg(unix)]
     fn ioctl_size() -> Option<(u16, u16)> {
         #[allow(unsafe_code)]
+        // SAFETY: TIOCGWINSZ writes a winsize struct into the zeroed buffer
+        // via a valid STDOUT_FILENO. We check ret == 0 and ws_col/ws_row > 0
+        // before using the values. If ioctl fails, we return None.
         unsafe {
             let mut ws: libc::winsize = std::mem::zeroed();
             let ret = libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws);

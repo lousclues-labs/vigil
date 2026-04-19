@@ -1,7 +1,9 @@
+//! Security state: extended attributes and SELinux/AppArmor context.
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Security state — extended attributes and MAC security context.
+/// Security state: extended attributes and MAC security context.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct SecurityState {
     /// Extended attributes as key-value pairs (NOT a JSON string).

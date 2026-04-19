@@ -1,3 +1,5 @@
+//! `vigil config` subcommand: display and validate configuration.
+
 use std::path::Path;
 
 pub(crate) fn cmd_config(

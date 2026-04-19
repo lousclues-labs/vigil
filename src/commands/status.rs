@@ -1,3 +1,5 @@
+//! `vigil status` subcommand: daemon health and baseline summary.
+
 use std::path::Path;
 
 use chrono::Utc;
@@ -114,7 +116,7 @@ pub(crate) fn build_status_summary(cfg: &vigil::config::Config) -> StatusSummary
     } else if backend_degraded {
         (
             "degraded".to_string(),
-            Some(format!("backend {} — reduced coverage", backend)),
+            Some(format!("backend {} -- reduced coverage", backend)),
         )
     } else if chain_status == "broken" {
         (

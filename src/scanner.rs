@@ -1,3 +1,6 @@
+//! Filesystem scanner: walks watched paths, captures snapshots, compares
+//! against the baseline, and returns a `ScanResult` with all deviations.
+
 use rusqlite::Connection;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -64,7 +67,7 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<Base
 
     // Build package ownership cache upfront (single command)
     // instead of per-file subprocess calls.
-    // Returns None on failure (lock contention, timeout) — falls back to
+    // Returns None on failure (lock contention, timeout); falls back to
     // per-file queries in that case.
     let package_cache = if !skip_package_owner {
         crate::package::build_package_cache(&config.package_manager)

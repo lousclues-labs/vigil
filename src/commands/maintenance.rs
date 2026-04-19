@@ -1,3 +1,5 @@
+//! `vigil maintenance` subcommand: enter/exit maintenance windows.
+
 use std::path::Path;
 
 use super::common::query_control_socket;

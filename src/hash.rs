@@ -1,3 +1,9 @@
+//! BLAKE3 file hashing with mmap fast path and buffered fallback.
+//!
+//! `blake3_hash_fd` hashes from an open fd (TOCTOU-safe). Falls back to
+//! buffered I/O for special files where mmap fails. `hash_buffered` provides
+//! a path-based entry point for CLI commands.
+
 use std::fs::File;
 use std::io::{BufReader, Seek, SeekFrom};
 use std::os::unix::io::AsRawFd;
@@ -16,8 +22,9 @@ impl MmapGuard {
     /// Create a read-only mmap of the given fd.
     ///
     /// # Safety
-    /// The fd must be a valid open file descriptor. The caller must ensure
-    /// the returned MmapGuard is not used after the fd is closed.
+    /// The fd must be a valid open descriptor with read permission.
+    /// The mapping is MAP_PRIVATE + PROT_READ, so no writes reach the file.
+    /// The caller must keep the fd open for the lifetime of this guard.
     unsafe fn new(fd: std::os::unix::io::RawFd, len: usize) -> std::io::Result<Self> {
         let ptr = libc::mmap(
             std::ptr::null_mut(),
@@ -34,7 +41,9 @@ impl MmapGuard {
     }
 
     fn as_slice(&self) -> &[u8] {
-        // SAFETY: ptr is valid for len bytes from mmap; region is PROT_READ.
+        // SAFETY: ptr is valid for len bytes from the mmap call. The region
+        // is PROT_READ, so reading through from_raw_parts is sound.
+        // The guard keeps the mapping alive for the slice's lifetime.
         unsafe { std::slice::from_raw_parts(self.ptr as *const u8, self.len) }
     }
 }
@@ -42,7 +51,9 @@ impl MmapGuard {
 #[allow(unsafe_code)]
 impl Drop for MmapGuard {
     fn drop(&mut self) {
-        // SAFETY: ptr and len are from a successful mmap call.
+        // SAFETY: ptr and len are from a successful mmap call. munmap
+        // releases the mapping. After drop, no references to the region
+        // exist because the guard owned the only slice.
         unsafe {
             libc::munmap(self.ptr, self.len);
         }
@@ -59,7 +70,7 @@ pub fn blake3_hash_fd(file: &File, size: u64, mmap_threshold: u64) -> Result<Str
     let mut hasher = blake3::Hasher::new();
 
     if size >= mmap_threshold && size > 0 {
-        // Direct mmap on the fd — no path re-open, eliminating the TOCTOU window
+        // Direct mmap on the fd; no path re-open, eliminating the TOCTOU window
         // that existed when using update_mmap() with /proc/self/fd/N paths.
         let raw_fd = file.as_raw_fd();
         match unsafe { MmapGuard::new(raw_fd, size as usize) } {
@@ -67,7 +78,7 @@ pub fn blake3_hash_fd(file: &File, size: u64, mmap_threshold: u64) -> Result<Str
                 hasher.update(guard.as_slice());
             }
             Err(_) => {
-                // mmap failed (e.g., special files, /proc entries) — fall back to buffered reader
+                // mmap failed (e.g., special files, /proc entries); fall back to buffered reader
                 hash_buffered(file, &mut hasher)?;
             }
         }

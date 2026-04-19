@@ -1,3 +1,10 @@
+//! HMAC operations for baseline, audit chain, and config integrity.
+//!
+//! All HMAC verification uses constant-time comparison (VIGIL-VULN-057).
+//! Keys are loaded once at startup and wrapped in `Zeroizing<Vec<u8>>` so
+//! they are zeroed on drop. File permission checks on the key file
+//! hard-fail in release builds (SEC-004).
+
 use std::path::Path;
 
 use hmac::{Hmac, Mac};
@@ -136,7 +143,7 @@ fn check_hmac_key_permissions(path: &Path) -> Result<()> {
                 path.display(),
                 e
             );
-            // Don't hard-fail on stat failure — the subsequent read will
+            // Don't hard-fail on stat failure.  The subsequent read will
             // produce a clear error if the file is truly inaccessible
             Ok(())
         }

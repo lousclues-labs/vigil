@@ -1,3 +1,5 @@
+//! `vigil watch` subcommand: run the daemon in the foreground.
+
 use std::path::Path;
 
 pub(crate) fn cmd_watch(config_path: Option<&Path>) -> vigil::Result<()> {

@@ -1,3 +1,5 @@
+//! `vigil log` subcommand: view journald entries for vigild.
+
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 

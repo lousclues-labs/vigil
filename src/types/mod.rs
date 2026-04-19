@@ -1,3 +1,5 @@
+//! Domain types re-exported for crate-wide use.
+
 pub mod alert;
 pub mod baseline;
 pub mod change;

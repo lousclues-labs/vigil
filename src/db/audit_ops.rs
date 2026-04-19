@@ -1,3 +1,9 @@
+//! Audit log database operations.
+//!
+//! Inserts detections into the HMAC-chained audit log, computes chain
+//! hashes, verifies chain integrity, and provides query/stats helpers
+//! for `vigil audit show` and `vigil audit verify`.
+
 use chrono::Utc;
 use rusqlite::{params, Connection};
 

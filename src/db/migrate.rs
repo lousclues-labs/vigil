@@ -1,3 +1,8 @@
+//! Schema migration for baseline and audit databases.
+//!
+//! Runs CREATE TABLE IF NOT EXISTS on open, so new tables are added
+//! transparently. Future version upgrades will add ALTER TABLE steps here.
+
 use rusqlite::Connection;
 
 use crate::error::Result;

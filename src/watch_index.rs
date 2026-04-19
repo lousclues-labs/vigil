@@ -1,3 +1,8 @@
+//! Watch group path index with O(log n) prefix lookups.
+//!
+//! Maps filesystem paths to their watch group config (severity, exclusions).
+//! Rebuilt from config on reload via `ArcSwap` for lock-free reads.
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

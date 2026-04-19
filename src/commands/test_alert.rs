@@ -1,3 +1,5 @@
+//! `vigil test-alert` subcommand: fire a test alert through all sinks.
+
 use std::path::Path;
 
 use vigil::db::{self, audit_ops};
@@ -156,7 +158,7 @@ pub(crate) fn cmd_test_alert(
 
 fn test_dbus_notification(severity: &Severity) -> ChannelResult {
     // Try to send a test notification via notify-send
-    let summary = format!("[TEST] Vigil Baseline — {} alert test", severity);
+    let summary = format!("[TEST] Vigil Baseline -- {} alert test", severity);
     let body = "This is a test alert from `vigil test alert`. No action required.";
 
     match std::process::Command::new("notify-send")

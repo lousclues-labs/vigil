@@ -1,3 +1,9 @@
+//! SQLite database layer -- split baseline and audit stores.
+//!
+//! Baseline DB holds the known-good filesystem state. Audit DB holds the
+//! HMAC-chained detection log. Connections are opened per-thread (never
+//! shared via Arc). WAL mode + FULL sync for crash safety.
+
 pub mod audit_ops;
 pub mod baseline_ops;
 pub mod migrate;

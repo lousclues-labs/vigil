@@ -1,3 +1,5 @@
+//! Configuration change diffing for hot-reload decisions.
+
 use std::collections::HashSet;
 
 use crate::config::Config;

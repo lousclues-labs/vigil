@@ -1,3 +1,10 @@
+//! WAL-to-audit-DB drain thread.
+//!
+//! Reads unconsumed detection records from the WAL, inserts them into the
+//! audit database with HMAC chain hashes, and marks each entry audit-done.
+//! On crash recovery, deduplicates against rows already present in the DB
+//! so no detection is recorded twice.
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -526,7 +533,7 @@ mod tests {
             }
         }
 
-        // Second pass: recover should dedup — no new entries inserted
+        // Second pass: recover should dedup, no new entries inserted
         {
             let audit_conn = db::open_audit_db(&cfg).unwrap();
             let baseline_conn = db::open_baseline_db(&cfg).unwrap();
@@ -631,7 +638,7 @@ mod tests {
         )
         .unwrap();
 
-        // Simulate one iteration of the run() consumption loop — this is where
+        // Simulate one iteration of the run() consumption loop.  This is where
         // gap detection actually happens (recover() doesn't check gaps).
         {
             let mut pending: Vec<_> = wal
@@ -793,7 +800,7 @@ mod tests {
         let _ = std::fs::remove_file(audit_db_path.with_extension("db-wal"));
         let _ = std::fs::remove_file(audit_db_path.with_extension("db-shm"));
 
-        // Attempt to commit entries — should fail because DB is gone
+        // Attempt to commit entries.  Should fail because DB is gone.
         let entries = wal.iter_unconsumed().unwrap();
         for entry in &entries {
             let _ = writer.commit_entry(entry);

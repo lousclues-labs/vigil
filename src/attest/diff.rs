@@ -1,4 +1,4 @@
-//! `vigil attest diff` — compare an attestation against current state or another attestation.
+//! `vigil attest diff` -- compare an attestation against current state or another attestation.
 
 use std::collections::BTreeMap;
 

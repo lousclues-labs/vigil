@@ -1,5 +1,8 @@
+//! Alert payload delivered to sinks (journal, D-Bus, JSON log, socket).
+
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+
 use std::path::PathBuf;
 
 use crate::types::Severity;

@@ -1,3 +1,11 @@
+//! Coordinator thread -- periodic maintenance for a running daemon.
+//!
+//! Ticks once per minute. Checks baseline/audit DB file identity (TOCTOU),
+//! detects mount evasion and clock anomalies, rotates the audit log,
+//! writes runtime snapshots (metrics, state, health), monitors backpressure
+//! and event-drop rates, checkpoints the WAL, and enforces maintenance
+//! window timeouts.
+
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -289,7 +297,7 @@ impl Coordinator {
                                 ) {
                                     tracing::error!(
                                         error = %e,
-                                        "failed to store config file HMAC — tamper detection weakened"
+                                        "failed to store config file HMAC; tamper detection weakened"
                                     );
                                 }
                             }
@@ -349,7 +357,7 @@ impl Coordinator {
             match identity.is_replaced(&cfg.daemon.db_path) {
                 Ok(true) => {
                     tracing::error!(
-                        "baseline database file replaced — possible tampering. \
+                        "baseline database file replaced; possible tampering. \
                          Inode/device changed since startup."
                     );
                     // VIGIL-VULN-071: drop stale connection immediately
@@ -382,7 +390,7 @@ impl Coordinator {
             match identity.is_replaced(&audit_path) {
                 Ok(true) => {
                     tracing::error!(
-                        "audit database file replaced — possible evidence \
+                        "audit database file replaced; possible evidence \
                          destruction. Inode/device changed since startup."
                     );
                     // VIGIL-VULN-071: drop stale connection immediately
@@ -417,7 +425,7 @@ impl Coordinator {
             Ok(true) => {
                 tracing::error!(
                     path = %path.display(),
-                    "WAL file replaced — possible tampering. Inode/device changed since startup."
+                    "WAL file replaced; possible tampering. Inode/device changed since startup."
                 );
                 let mut s = self.state.write();
                 *s = DaemonState::Degraded {
@@ -455,7 +463,7 @@ impl Coordinator {
                             tracing::error!(
                                 mount = %mount.display(),
                                 watch_path = %watch_path.display(),
-                                "new mount detected over watched path — \
+                                "new mount detected over watched path; \
                                  real-time monitoring may be compromised"
                             );
                             // VIGIL-VULN-069: dynamically apply fanotify mark
@@ -476,10 +484,10 @@ impl Coordinator {
                                         .fetch_add(1, Ordering::Relaxed);
                                 }
                             } else {
-                                // inotify backend or no channel — log degradation
+                                // inotify backend or no channel; log degradation
                                 tracing::error!(
                                     mount = %mount.display(),
-                                    "mount evasion detected but no fanotify mark channel available — \
+                                    "mount evasion detected but no fanotify mark channel available; \
                                      modifications under new mount not monitored until next scan"
                                 );
                             }
@@ -487,7 +495,7 @@ impl Coordinator {
                     }
                 }
             }
-            // Check for disappeared overlapping mounts — remove marks
+            // Check for disappeared overlapping mounts; remove marks
             let disappeared: Vec<_> = self.initial_mounts.difference(&current_set).collect();
             if !disappeared.is_empty() {
                 if let Some(ref tx) = self.mount_mark_tx {
@@ -517,7 +525,7 @@ impl Coordinator {
                 wall_delta,
                 mono_delta,
                 clock_skew,
-                "clock skew detected (wall vs monotonic) — skipping audit rotation"
+                "clock skew detected (wall vs monotonic); skipping audit rotation"
             );
             let mut s = self.state.write();
             if matches!(*s, DaemonState::Healthy) {
@@ -535,7 +543,7 @@ impl Coordinator {
         if wall_delta > 3600 {
             tracing::error!(
                 jump_secs = wall_delta,
-                "forward clock anomaly detected — skipping audit rotation to prevent evidence loss"
+                "forward clock anomaly detected; skipping audit rotation to prevent evidence loss"
             );
             self.last_rotation_timestamp = now_ts;
             self.last_tick_monotonic = std::time::Instant::now();
@@ -544,7 +552,7 @@ impl Coordinator {
         if wall_delta < -60 {
             tracing::error!(
                 jump_secs = wall_delta,
-                "negative clock jump detected — skipping audit rotation (possible clock manipulation replay)"
+                "negative clock jump detected; skipping audit rotation (possible clock manipulation replay)"
             );
             self.last_rotation_timestamp = now_ts;
             self.last_tick_monotonic = std::time::Instant::now();
@@ -561,7 +569,7 @@ impl Coordinator {
                     tracing::error!(
                         max_audit_ts = max_ts,
                         now = now_ts,
-                        "max audit timestamp is in the future — refusing rotation (clock rollback)"
+                        "max audit timestamp is in the future; refusing rotation (clock rollback)"
                     );
                     return true;
                 }
@@ -604,7 +612,7 @@ impl Coordinator {
             tracing::error!(
                 total = total,
                 would_delete = would_delete,
-                "audit rotation would delete >50% of entries — skipping (possible clock manipulation)"
+                "audit rotation would delete >50% of entries; skipping (possible clock manipulation)"
             );
         } else {
             match crate::db::audit_ops::rotate_audit_log(conn, cfg.database.audit_retention_days) {
@@ -648,7 +656,7 @@ impl Coordinator {
             let mut s = self.state.write();
             if let DaemonState::Degraded { reason, .. } = &*s {
                 if reason == "event_backpressure" {
-                    tracing::info!("backpressure resolved — returning to healthy state");
+                    tracing::info!("backpressure resolved; returning to healthy state");
                     *s = DaemonState::Healthy;
                 }
             }
@@ -666,7 +674,7 @@ impl Coordinator {
                 dropped = drop_delta,
                 total_dropped = current_dropped,
                 kernel_overflows = overflow_delta,
-                "filesystem events are being dropped — possible evasion attack or I/O overload"
+                "filesystem events are being dropped; possible evasion attack or I/O overload"
             );
         }
 
@@ -686,7 +694,7 @@ impl Coordinator {
                     drop_delta,
                     overflow_delta,
                     threshold,
-                    "event loss threshold exceeded — entering Degraded state"
+                    "event loss threshold exceeded; entering Degraded state"
                 );
             }
         } else if drop_delta == 0 && overflow_delta == 0 {
@@ -700,7 +708,7 @@ impl Coordinator {
                         if let DaemonState::Degraded { reason, .. } = &*s {
                             if reason == "event_loss_detected" {
                                 tracing::info!(
-                                    "event loss recovered for 5 consecutive ticks — returning to Healthy"
+                                    "event loss recovered for 5 consecutive ticks; returning to Healthy"
                                 );
                                 *s = DaemonState::Healthy;
                                 self.clean_ticks_since_event_loss = 0;
@@ -766,7 +774,7 @@ impl Coordinator {
             tracing::warn!(
                 elapsed_secs = elapsed_secs,
                 max_seconds,
-                "maintenance window exceeded safety timeout — auto-exiting"
+                "maintenance window exceeded safety timeout; auto-exiting"
             );
             self.maintenance_active.store(false, Ordering::Release);
             self.maintenance_entered_at.store(0, Ordering::Release);
@@ -792,7 +800,7 @@ impl Coordinator {
                 tracing::error!(
                     avg_changes_per_tick = avg,
                     threshold = threshold,
-                    "high baseline drift velocity — possible active compromise"
+                    "high baseline drift velocity; possible active compromise"
                 );
             }
         }
@@ -887,13 +895,13 @@ pub(crate) fn is_notify_socket_safe() -> bool {
             }
             tracing::warn!(
                 socket = %val,
-                "NOTIFY_SOCKET points to non-standard path — ignoring to prevent \
+                "NOTIFY_SOCKET points to non-standard path; ignoring to prevent \
                  lifecycle state leak"
             );
             false
         }
         Err(_) => {
-            // No NOTIFY_SOCKET set — sd_notify will be a no-op anyway
+            // No NOTIFY_SOCKET set; sd_notify will be a no-op anyway
             true
         }
     }
