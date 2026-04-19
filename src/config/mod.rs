@@ -624,18 +624,28 @@ pub struct MonitorConfig {
     /// the daemon enters Degraded state.
     #[serde(default = "default_event_loss_alert_threshold")]
     pub event_loss_alert_threshold: Option<u64>,
+
+    /// Recovery threshold for event loss. Deltas at or below this value count
+    /// as "clean" ticks for recovery. Default 1 (tolerates rare jitter).
+    #[serde(default = "default_event_loss_recovery_threshold")]
+    pub event_loss_recovery_threshold: u64,
 }
 
 impl Default for MonitorConfig {
     fn default() -> Self {
         Self {
             event_loss_alert_threshold: default_event_loss_alert_threshold(),
+            event_loss_recovery_threshold: default_event_loss_recovery_threshold(),
         }
     }
 }
 
 fn default_event_loss_alert_threshold() -> Option<u64> {
     Some(10)
+}
+
+fn default_event_loss_recovery_threshold() -> u64 {
+    1
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

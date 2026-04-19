@@ -942,28 +942,33 @@ impl Coordinator {
                     "event loss threshold exceeded; entering Degraded state"
                 );
             }
-        } else if drop_delta == 0 && overflow_delta == 0 {
-            let s = self.state.read();
-            if let DaemonState::Degraded { reason, .. } = &*s {
-                if reason == "event_loss_detected" {
-                    drop(s);
-                    self.clean_ticks_since_event_loss += 1;
-                    if self.clean_ticks_since_event_loss >= 5 {
-                        let mut s = self.state.write();
-                        if let DaemonState::Degraded { reason, .. } = &*s {
-                            if reason == "event_loss_detected" {
-                                tracing::info!(
-                                    "event loss recovered for 5 consecutive ticks; returning to Healthy"
-                                );
-                                *s = DaemonState::Healthy;
-                                self.clean_ticks_since_event_loss = 0;
+        } else {
+            // Recovery: allow deltas at or below the recovery threshold to count
+            // as clean ticks. This tolerates low-rate jitter on busy hosts.
+            let recovery_threshold = cfg.monitor.event_loss_recovery_threshold;
+            if drop_delta <= recovery_threshold && overflow_delta <= recovery_threshold {
+                let s = self.state.read();
+                if let DaemonState::Degraded { reason, .. } = &*s {
+                    if reason == "event_loss_detected" {
+                        drop(s);
+                        self.clean_ticks_since_event_loss += 1;
+                        if self.clean_ticks_since_event_loss >= 5 {
+                            let mut s = self.state.write();
+                            if let DaemonState::Degraded { reason, .. } = &*s {
+                                if reason == "event_loss_detected" {
+                                    tracing::info!(
+                                        "event loss recovered for 5 consecutive ticks; returning to Healthy"
+                                    );
+                                    *s = DaemonState::Healthy;
+                                    self.clean_ticks_since_event_loss = 0;
+                                }
                             }
                         }
                     }
                 }
+            } else {
+                self.clean_ticks_since_event_loss = 0;
             }
-        } else {
-            self.clean_ticks_since_event_loss = 0;
         }
 
         self.last_dropped = current_dropped;
