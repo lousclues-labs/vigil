@@ -540,16 +540,12 @@ fn log_control_action(method: &str, metrics: &Metrics) {
 /// Generate a random 32-byte hex nonce for challenge-response auth.
 /// Returns Err if randomness cannot be obtained, to prevent predictable nonces.
 fn generate_nonce() -> std::result::Result<String, std::io::Error> {
-    use std::io::Read;
-    let mut buf = [0u8; 32];
-    let mut f = std::fs::File::open("/dev/urandom")
-        .map_err(|e| std::io::Error::new(e.kind(), format!("cannot open /dev/urandom: {}", e)))?;
-    f.read_exact(&mut buf)
-        .map_err(|e| std::io::Error::new(e.kind(), format!("/dev/urandom read failed: {}", e)))?;
+    let buf = crate::util::random::random_bytes(32)
+        .map_err(|e| std::io::Error::other(format!("random_bytes failed: {}", e)))?;
     // Verify buffer is not all-zero (catastrophic RNG failure)
     if buf.iter().all(|&b| b == 0) {
         return Err(std::io::Error::other(
-            "urandom returned all zeros; refusing to generate nonce",
+            "getrandom returned all zeros; refusing to generate nonce",
         ));
     }
     Ok(hex::encode(buf))

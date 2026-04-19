@@ -563,26 +563,11 @@ pub fn fingerprint_for_key(key: &[u8]) -> [u8; 16] {
     fp
 }
 
-/// Generate a random 32-byte nonce using the getrandom syscall.
-/// Avoids the overhead and fd management of opening /dev/urandom per call.
-#[allow(unsafe_code)]
+/// Generate a random 32-byte nonce using the shared getrandom utility.
 fn random_nonce() -> Result<[u8; 32]> {
+    let bytes = crate::util::random::random_bytes(32)?;
     let mut nonce = [0u8; 32];
-    // SAFETY: getrandom fills `nonce` from the kernel CSPRNG; pointer and
-    // length are valid for the stack-allocated array. We pass flags=0, which
-    // blocks until the entropy pool is seeded. A short or negative return
-    // would leave the nonce partially random; the check below rejects that.
-    let ret = unsafe { libc::getrandom(nonce.as_mut_ptr() as *mut libc::c_void, 32, 0) };
-    if ret != 32 {
-        return Err(VigilError::Wal(format!(
-            "getrandom failed: {}",
-            if ret < 0 {
-                std::io::Error::last_os_error().to_string()
-            } else {
-                format!("short read: {} bytes", ret)
-            }
-        )));
-    }
+    nonce.copy_from_slice(&bytes);
     Ok(nonce)
 }
 

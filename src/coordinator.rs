@@ -693,15 +693,18 @@ impl Coordinator {
         if let Some(current_mounts) = crate::monitor::fanotify::parse_mountinfo() {
             let current_set: std::collections::HashSet<std::path::PathBuf> =
                 current_mounts.into_iter().collect();
-            let new_mounts: Vec<_> = current_set.difference(&self.initial_mounts).collect();
-            if !new_mounts.is_empty() {
+
+            let added: Vec<_> = current_set.difference(&self.initial_mounts).collect();
+            let removed: Vec<_> = self.initial_mounts.difference(&current_set).collect();
+
+            if !added.is_empty() {
                 // Expand watch paths once before checking against all new mounts
                 let all_watch_paths: Vec<std::path::PathBuf> = cfg
                     .watch
                     .values()
                     .flat_map(|group| crate::config::expand_user_paths(&group.paths))
                     .collect();
-                for mount in &new_mounts {
+                for mount in &added {
                     for watch_path in &all_watch_paths {
                         if mount.starts_with(watch_path) || watch_path.starts_with(mount.as_path())
                         {
@@ -741,10 +744,9 @@ impl Coordinator {
                 }
             }
             // Check for disappeared overlapping mounts; remove marks
-            let disappeared: Vec<_> = self.initial_mounts.difference(&current_set).collect();
-            if !disappeared.is_empty() {
+            if !removed.is_empty() {
                 if let Some(ref tx) = self.mount_mark_tx {
-                    for mount in disappeared {
+                    for mount in removed {
                         use crate::monitor::fanotify::{MountMarkOp, MountMarkRequest};
                         let _ = tx.send(MountMarkRequest {
                             mount: mount.to_path_buf(),

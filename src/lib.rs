@@ -30,6 +30,7 @@ pub mod scanner;
 pub mod supervised_thread;
 pub mod types;
 pub mod ui;
+pub mod util;
 pub mod wal;
 pub mod watch_index;
 pub mod worker;
