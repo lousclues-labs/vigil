@@ -543,7 +543,21 @@ fn read_header(file: &File) -> Result<[u8; WAL_HEADER_SIZE as usize]> {
     Ok(header)
 }
 
-fn fingerprint_for_key(key: &[u8]) -> [u8; 16] {
+/// Read the WAL header from a file path and return (magic_ok, version_ok, fingerprint).
+/// Used by the coordinator to verify WAL identity after inode change.
+pub fn read_header_identity(path: &std::path::Path) -> Result<(bool, bool, [u8; 16])> {
+    let file = std::fs::File::open(path)?;
+    let header = read_header(&file)?;
+    let magic_ok = header[0..4] == WAL_MAGIC;
+    let version = u16::from_le_bytes([header[4], header[5]]);
+    let version_ok = version == WAL_VERSION;
+    let mut fingerprint = [0u8; 16];
+    fingerprint.copy_from_slice(&header[16..32]);
+    Ok((magic_ok, version_ok, fingerprint))
+}
+
+/// Compute a 16-byte fingerprint from an HMAC key for WAL identity verification.
+pub fn fingerprint_for_key(key: &[u8]) -> [u8; 16] {
     let mut fp = [0u8; 16];
     fp.copy_from_slice(&blake3::hash(key).as_bytes()[..16]);
     fp

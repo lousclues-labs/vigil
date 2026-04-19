@@ -51,6 +51,10 @@ pub struct Metrics {
     pub detections_wal_sink_lag: AtomicU64,
     /// WAL entries rejected due to HMAC verification failure or zero-HMAC when HMAC required.
     pub wal_entries_rejected_hmac: AtomicU64,
+    /// Inode changes where content verification succeeded and the new identity was accepted.
+    pub inode_changes_recovered: AtomicU64,
+    /// Inode changes where content verification failed and the daemon entered Degraded.
+    pub inode_changes_rejected: AtomicU64,
     /// Unix timestamp set once at daemon startup.
     pub uptime_start: i64,
 }
@@ -95,6 +99,8 @@ impl Metrics {
             detections_wal_audit_lag: AtomicU64::new(0),
             detections_wal_sink_lag: AtomicU64::new(0),
             wal_entries_rejected_hmac: AtomicU64::new(0),
+            inode_changes_recovered: AtomicU64::new(0),
+            inode_changes_rejected: AtomicU64::new(0),
             uptime_start: chrono::Utc::now().timestamp(),
         }
     }
@@ -153,6 +159,8 @@ impl Metrics {
             detections_wal_audit_lag: self.detections_wal_audit_lag.load(Ordering::Relaxed),
             detections_wal_sink_lag: self.detections_wal_sink_lag.load(Ordering::Relaxed),
             wal_entries_rejected_hmac: self.wal_entries_rejected_hmac.load(Ordering::Relaxed),
+            inode_changes_recovered: self.inode_changes_recovered.load(Ordering::Relaxed),
+            inode_changes_rejected: self.inode_changes_rejected.load(Ordering::Relaxed),
             uptime_start: self.uptime_start,
         }
     }
@@ -204,6 +212,8 @@ pub struct MetricsSnapshot {
     pub detections_wal_audit_lag: u64,
     pub detections_wal_sink_lag: u64,
     pub wal_entries_rejected_hmac: u64,
+    pub inode_changes_recovered: u64,
+    pub inode_changes_rejected: u64,
     pub uptime_start: i64,
 }
 
@@ -422,6 +432,18 @@ impl MetricsSnapshot {
             "vigil_wal_entries_rejected_hmac_total",
             "WAL entries rejected due to HMAC failure or zero-HMAC bypass attempt",
             self.wal_entries_rejected_hmac,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_inode_changes_recovered_total",
+            "Inode changes where content verification succeeded",
+            self.inode_changes_recovered,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_inode_changes_rejected_total",
+            "Inode changes where content verification failed",
+            self.inode_changes_rejected,
         );
 
         let _ = writeln!(out);
