@@ -1,3 +1,4 @@
+mod attest;
 mod audit;
 mod baseline;
 mod check;
@@ -17,6 +18,7 @@ mod update;
 mod watch;
 mod why_silent;
 
+pub(crate) use attest::cmd_attest;
 pub(crate) use audit::cmd_audit;
 pub(crate) use baseline::cmd_baseline;
 pub(crate) use check::{cmd_check, cmd_check_live, CheckOpts};

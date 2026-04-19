@@ -240,6 +240,45 @@ The HMAC key is also used for:
 
 ---
 
+## Attestation Signing Key Lifecycle
+
+The attestation signing key is intentionally separate from `/etc/vigil/hmac.key`.
+
+Key separation rationale:
+
+- audit HMAC key signs live on-host audit entries,
+- attestation key signs portable `.vatt` evidence artifacts,
+- compromise of one key does not automatically compromise the other trust domain,
+- operators can rotate each key independently to match operational risk.
+
+Generate key with Vigil:
+
+```bash
+sudo vigil setup attest
+```
+
+Defaults:
+
+- path: `/etc/vigil/attest.key`
+- mode: `0600`
+- file format: `0x01 || 32 random bytes`
+
+Key ID derivation (`signing_key_id`):
+
+- first 8 bytes of `BLAKE3("vigil-attest-key-id-v1" || key)`
+
+Rotation recommendations:
+
+1. generate new attestation key,
+2. archive prior key with historical attestation set,
+3. verify current artifacts with new key,
+4. document key epoch boundaries in evidence records.
+
+Loss of attestation key means HMAC signatures on prior attestations cannot be
+re-verified, so key backup quality directly affects long-term evidentiary value.
+
+---
+
 ## Control Socket Security
 
 The daemon control socket (`/run/vigil/control.sock`) accepts commands for `status`, `reload`, `scan`, and other operations.

@@ -6,6 +6,12 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ### Features
 
+- **`vigil attest` (new):** create, verify, diff, show, and list signed portable attestation artifacts (`.vatt`) capturing baseline/audit state for offline evidence workflows.
+- **`vigil setup attest` (new):** generate dedicated attestation signing key (`/etc/vigil/attest.key`, mode `0600`) with independent key lifecycle from audit HMAC key.
+- **Doctor coverage:** `vigil doctor` now checks attestation key presence/permissions and reports `Attest key` health status.
+- **Audit anchoring for evidence generation:** successful `vigil attest create` writes an `attestation_created` receipt into the audit chain with the attestation content hash.
+- **Portable verification path:** `vigil attest verify` remains standalone (file + key + binary), validating magic/version/content-hash/signature/embedded chain links without daemon runtime.
+
 - **`vigil status` (enhanced):** one-shot query of Vigil's current state with `ok`/`degraded`/`down` verdict. Works with or without daemon running. Stable JSON schema.
 - **`vigil explain <path>`:** query why a path is watched, its watch group, severity, baseline entry, and audit history. Shows nearby watched paths when a path is not covered.
 - **`vigil why-silent`:** query every reason Vigil could currently be silent. Ends with a single-sentence headline reason.
@@ -18,6 +24,11 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ### Documentation
 
+- **`docs/ATTEST.md` (new):** complete attestation design, wire format, key lifecycle, workflows, and verifier exit-code contract.
+- **`README.md` + `docs/README.md`:** added attestation capability and index links for operator discoverability.
+- **`docs/CLI.md`:** documented `vigil attest` verbs, `vigil setup attest`, and `attest verify` exit codes.
+- **`docs/SECURITY.md`:** added attestation signing key lifecycle guidance and rotation recommendations.
+- **`docs/THREAT_MODEL.md`:** added attestation-specific threat model, guarantees, and non-goals.
 - **`docs/MINIMUM_VIABLE.md`:** documented "minimum viable trust" mode for constrained environments.
 - **`docs/FORENSICS.md`:** offline comparison workflows with `vigil inspect`.
 - **`docs/TROUBLESHOOTING.md`:** added quick diagnostic commands table, `vigil why-silent` and `vigil test alert` recommendations.
@@ -25,8 +36,18 @@ All notable changes to Vigil Baseline will be documented in this file.
 - **`docs/CONFIGURATION.md`:** documented `mode` field for watch groups and `self_check_interval` daemon config.
 - **`docs/THREAT_MODEL.md`:** added closed-set detection, absence-of-receipts signal, alert delivery degradation tracking.
 
+### Testing
+
+- **`tests/attest_tests.rs` (new):** deterministic create tests, tamper detection, unknown-version rejection, standalone verification without local DBs, structural diff, and chain-fork detection.
+- **Fuzzing additions:** new fuzz targets for attestation parser/serializer and verifier paths (`fuzz_attest_file`, `fuzz_attest_verify`).
+
+### Dependencies
+
+- Added `ciborium` for deterministic CBOR attestation serialization.
+
 ### New Audit Entry Types
 
+- `attestation_created` — recorded on successful attestation generation with content-hash reference
 - `check_completed` — verification receipt from `vigil check --reason`
 - `self_check` — daemon-driven or operator-invoked health check result
 - `self_check_skipped` — daemon skipped a scheduled self-check

@@ -45,10 +45,12 @@ pub(crate) fn cmd_doctor(config_path: Option<&Path>, format: OutputFormat) -> vi
     println!();
     println!("  Configuration");
     println!("  ─────────────");
-    for check in checks
-        .iter()
-        .filter(|c| matches!(c.name.as_str(), "Config" | "HMAC key" | "Scan timer"))
-    {
+    for check in checks.iter().filter(|c| {
+        matches!(
+            c.name.as_str(),
+            "Config" | "HMAC key" | "Attest key" | "Scan timer"
+        )
+    }) {
         print_check(check);
     }
 

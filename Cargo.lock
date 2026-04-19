@@ -1544,6 +1544,7 @@ dependencies = [
  "arc-swap",
  "blake3",
  "chrono",
+ "ciborium",
  "clap",
  "constant_time_eq",
  "crc32fast",

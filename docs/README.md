@@ -22,6 +22,7 @@ Use this index when you need answers fast.
 | [Resilience](RESILIENCE.md) | Failure modes, fallback behavior, recovery procedures |
 | [Minimum Viable Trust](MINIMUM_VIABLE.md) | Smallest deployment and what it provides |
 | [Forensics](FORENSICS.md) | Offline comparison workflows with `vigil inspect` |
+| [Attestation](ATTEST.md) | Portable signed evidence files (`.vatt`) and offline verification |
 | [Security](SECURITY.md) | Security policy, dependency justification, trust model |
 | [Vulnerabilities](VULNERABILITIES.md) | All remediated vulnerabilities with VIGIL-VULN tracking IDs |
 

@@ -39,6 +39,7 @@ vigil [GLOBAL_OPTIONS] <COMMAND> [COMMAND_OPTIONS]
 | `log` | show daemon log entries (errors, warnings, operational messages) |
 | `maintenance` | maintenance window operations (for package manager hooks) |
 | `baseline` | baseline operations (refresh) |
+| `attest` | create, verify, diff, show, and list attestation files |
 | `version` | print version string |
 
 ---
@@ -674,6 +675,106 @@ vigil setup socket --path /run/vigil/alert.sock
 vigil setup socket --disable
 ```
 
+### `setup attest`
+
+Generate attestation signing key.
+
+```bash
+vigil setup attest [--key-path <PATH>] [--force]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--key-path <PATH>` | `/etc/vigil/attest.key` | path to write the attestation key file |
+| `--force` | false | overwrite existing key file without prompting |
+
+Examples:
+
+```bash
+vigil setup attest
+vigil setup attest --key-path /secure/evidence/attest.key --force
+```
+
+---
+
+## `attest`
+
+Portable, signed attestations of baseline and audit state.
+
+```bash
+vigil attest <SUBCOMMAND>
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `create` | create a new `.vatt` attestation file |
+| `verify` | verify an attestation file |
+| `diff` | compare an attestation to current state or another attestation |
+| `show` | display attestation metadata and contents |
+| `list` | list attestation files in a directory |
+
+### `attest create`
+
+```bash
+vigil attest create [--scope full\|baseline-only\|head-only] [--out <PATH>] [--key-path <PATH>]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--scope <SCOPE>` | `full` | attestation scope: `full`, `baseline-only`, `head-only` |
+| `--out <PATH>` | auto-generated `.vatt` name | output file path |
+| `--key-path <PATH>` | key search paths | explicit attestation signing key path |
+
+### `attest verify`
+
+```bash
+vigil attest verify <attestation-file> [--key-path <PATH>]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<attestation-file>` | required | path to `.vatt` file |
+| `--key-path <PATH>` | key search paths | explicit signing key path for signature verification |
+
+Verification checks:
+
+- magic bytes and format version
+- recomputed content hash vs declared hash
+- signature validity and key ID match
+- embedded audit chain link integrity (when audit entries are present)
+
+### `attest diff`
+
+```bash
+vigil attest diff <attestation-file> [--against current\|<other-attestation-file>]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<attestation-file>` | required | left-hand attestation file |
+| `--against` | `current` | compare against live baseline/audit state or another `.vatt` file |
+
+### `attest show`
+
+```bash
+vigil attest show <attestation-file> [--verbose]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<attestation-file>` | required | path to `.vatt` file |
+| `--verbose` | false | include embedded baseline/audit/watch-group details |
+
+### `attest list`
+
+```bash
+vigil attest list [--dir <PATH>]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--dir <PATH>` | `.` | directory to scan for `.vatt` files |
+
 ---
 
 ## `log`
@@ -901,6 +1002,7 @@ Details:
 - `check` exit codes are severity-based: 0 (clean), 1 (low/medium), 2 (high), 3 (critical). The exit code is self-documented in TTY output.
 - `doctor` uses explicit health exit codes: `0` (all OK), `1` (warnings only), `2` (failures present).
 - `config validate` exits with `1` on validation failure.
+- `attest verify` uses: `0` (valid), `1` (invalid attestation), `2` (usage error), `3` (I/O error).
 
 ---
 

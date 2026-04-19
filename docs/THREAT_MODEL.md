@@ -180,6 +180,51 @@ vigil audit show --path 'vigil:check_completed'
 
 ---
 
+## Attestation Threat Model
+
+Attestations address a different question than runtime detection:
+
+> Can an operator prove what Vigil's baseline and audit chain looked like at a
+> specific past time, even if the original host is no longer trustworthy?
+
+### Scenario
+
+The source host may later be seized, coerced, silently modified, or otherwise
+unable to serve as a trustworthy witness to its own historical state.
+
+### Security Objective
+
+`vigil attest` creates a signed, portable artifact (`.vatt`) that can be verified
+offline using only:
+
+- a Vigil binary,
+- the attestation file,
+- and the attestation signing key (for HMAC-BLAKE3 signatures).
+
+Verification does not require:
+
+- daemon runtime,
+- baseline DB presence,
+- network access,
+- cloud trust anchors,
+- package manager state.
+
+### Guarantees
+
+- Tampering with header/body after creation is detected by content-hash mismatch.
+- Signature mismatch or wrong key is detected during verification.
+- Embedded audit chain link breaks are detected when audit entries are present.
+- `attest diff --against current` can detect live-chain divergence (fork/rewrites)
+    relative to an attested chain head.
+
+### Non-Goals (Attestation)
+
+- It is not a recovery mechanism.
+- It does not rebuild host state.
+- It does not prove runtime behavior; it proves declared structural state.
+
+---
+
 ## Alert Delivery Degradation
 
 Per-channel delivery status is recorded with every alert. Historical

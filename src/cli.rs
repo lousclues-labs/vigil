@@ -201,6 +201,12 @@ pub enum Command {
         action: BaselineAction,
     },
 
+    /// Create and verify portable attestations of baseline state
+    Attest {
+        #[command(subcommand)]
+        action: AttestAction,
+    },
+
     /// Print version
     Version,
 }
@@ -299,6 +305,17 @@ pub enum SetupAction {
         #[arg(long)]
         disable: bool,
     },
+
+    /// Generate attestation signing key
+    Attest {
+        /// Path to write the attestation key file
+        #[arg(long, default_value = "/etc/vigil/attest.key")]
+        key_path: PathBuf,
+
+        /// Overwrite existing key file without prompting
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -363,6 +380,65 @@ pub enum BaselineAction {
         /// Suppress output
         #[arg(long)]
         quiet: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AttestAction {
+    /// Create a signed attestation of the current baseline and audit state
+    Create {
+        /// Attestation scope: full, baseline-only, or head-only
+        #[arg(long, default_value = "full")]
+        scope: String,
+
+        /// Output file path (defaults to ./vigil-attest-<timestamp>-<host>.vatt)
+        #[arg(long)]
+        out: Option<PathBuf>,
+
+        /// Path to attestation signing key
+        #[arg(long)]
+        key_path: Option<PathBuf>,
+
+        /// Pin wall-clock time for deterministic output (RFC 3339, testing only)
+        #[arg(long, hide = true)]
+        deterministic_time: Option<String>,
+    },
+
+    /// Verify an attestation file
+    Verify {
+        /// Path to the attestation file
+        file: PathBuf,
+
+        /// Path to attestation signing key for signature verification
+        #[arg(long)]
+        key_path: Option<PathBuf>,
+    },
+
+    /// Compare an attestation against the current baseline or another attestation
+    Diff {
+        /// Path to the attestation file
+        file: PathBuf,
+
+        /// Compare against: "current" (live baseline) or path to another .vatt file
+        #[arg(long, default_value = "current")]
+        against: String,
+    },
+
+    /// Display attestation contents
+    Show {
+        /// Path to the attestation file
+        file: PathBuf,
+
+        /// Show full entry listing
+        #[arg(long)]
+        verbose: bool,
+    },
+
+    /// List attestation files in a directory
+    List {
+        /// Directory to search (defaults to current directory)
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
     },
 }
 
@@ -799,6 +875,93 @@ mod tests {
                 action: BaselineAction::Refresh { quiet },
             } => assert!(!quiet),
             _ => panic!("expected baseline refresh"),
+        }
+    }
+
+    #[test]
+    fn setup_attest_parses_defaults() {
+        let cli = Cli::try_parse_from(["vigil", "setup", "attest"]).expect("parse setup attest");
+        match cli.command {
+            Command::Setup {
+                action: SetupAction::Attest { key_path, force },
+            } => {
+                assert_eq!(key_path, PathBuf::from("/etc/vigil/attest.key"));
+                assert!(!force);
+            }
+            _ => panic!("expected setup attest command"),
+        }
+    }
+
+    #[test]
+    fn attest_create_parses_defaults() {
+        let cli = Cli::try_parse_from(["vigil", "attest", "create"]).expect("parse attest create");
+        match cli.command {
+            Command::Attest {
+                action:
+                    AttestAction::Create {
+                        scope,
+                        out,
+                        key_path,
+                        deterministic_time,
+                    },
+            } => {
+                assert_eq!(scope, "full");
+                assert!(out.is_none());
+                assert!(key_path.is_none());
+                assert!(deterministic_time.is_none());
+            }
+            _ => panic!("expected attest create"),
+        }
+    }
+
+    #[test]
+    fn attest_verify_parses_with_key_path() {
+        let cli = Cli::try_parse_from([
+            "vigil",
+            "attest",
+            "verify",
+            "sample.vatt",
+            "--key-path",
+            "/tmp/attest.key",
+        ])
+        .expect("parse attest verify");
+
+        match cli.command {
+            Command::Attest {
+                action: AttestAction::Verify { file, key_path },
+            } => {
+                assert_eq!(file, PathBuf::from("sample.vatt"));
+                assert_eq!(key_path, Some(PathBuf::from("/tmp/attest.key")));
+            }
+            _ => panic!("expected attest verify"),
+        }
+    }
+
+    #[test]
+    fn attest_diff_defaults_to_current() {
+        let cli =
+            Cli::try_parse_from(["vigil", "attest", "diff", "a.vatt"]).expect("parse attest diff");
+        match cli.command {
+            Command::Attest {
+                action: AttestAction::Diff { file, against },
+            } => {
+                assert_eq!(file, PathBuf::from("a.vatt"));
+                assert_eq!(against, "current");
+            }
+            _ => panic!("expected attest diff"),
+        }
+    }
+
+    #[test]
+    fn attest_list_default_dir() {
+        let cli = Cli::try_parse_from(["vigil", "attest", "list"]).expect("parse attest list");
+        match cli.command {
+            Command::Attest {
+                action: AttestAction::List { dir },
+            } => {
+                assert_eq!(dir, PathBuf::from("."));
+            }
+            _ => panic!("expected attest list"),
         }
     }
 }

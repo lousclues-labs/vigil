@@ -8,6 +8,7 @@ pub(crate) fn cmd_setup(config_path: Option<&Path>, action: SetupAction) -> vigi
     match action {
         SetupAction::Hmac { key_path, force } => cmd_setup_hmac(config_path, &key_path, force),
         SetupAction::Socket { path, disable } => cmd_setup_socket(config_path, &path, disable),
+        SetupAction::Attest { key_path, force } => cmd_setup_attest(&key_path, force),
     }
 }
 
@@ -133,6 +134,51 @@ fn cmd_setup_socket(
     println!();
     println!("  To listen for alerts:");
     println!("    socat UNIX-LISTEN:{} -", socket_path.display());
+
+    Ok(())
+}
+
+fn cmd_setup_attest(key_path: &Path, force: bool) -> vigil::Result<()> {
+    use std::io::{self, Write};
+
+    if key_path.exists() && !force {
+        print!(
+            "Attestation key file {} already exists. Overwrite? [y/N] ",
+            key_path.display()
+        );
+        io::stdout().flush()?;
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            println!("Attestation key setup cancelled.");
+            return Ok(());
+        }
+    }
+
+    let key_id = vigil::attest::key::generate_attest_key(key_path).map_err(|e| {
+        vigil::VigilError::Attest(format!("failed to generate attestation key: {}", e))
+    })?;
+
+    // Set ownership to root:root if we're root
+    if nix::unistd::geteuid().is_root() {
+        let _ = nix::unistd::chown(
+            key_path,
+            Some(nix::unistd::Uid::from_raw(0)),
+            Some(nix::unistd::Gid::from_raw(0)),
+        );
+    }
+
+    println!();
+    println!("  ● Attestation key written to {}", key_path.display());
+    println!(
+        "    Key ID:      {}",
+        vigil::attest::key::format_key_id(&key_id)
+    );
+    println!("    Permissions: 0600");
+    println!();
+    println!("  This key is separate from the audit chain HMAC key.");
+    println!("  It signs portable attestation files created with `vigil attest create`.");
+    println!("  Back it up securely — it is needed to verify attestations.");
 
     Ok(())
 }

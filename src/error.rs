@@ -66,6 +66,9 @@ pub enum VigilError {
 
     #[error("WAL error: {0}")]
     Wal(String),
+
+    #[error("attestation error: {0}")]
+    Attest(String),
 }
 
 pub type Result<T> = std::result::Result<T, VigilError>;
@@ -87,6 +90,7 @@ impl VigilError {
                 VigilError::HmacVerification(format!("{}: {}", ctx, msg))
             }
             VigilError::Wal(msg) => VigilError::Wal(format!("{}: {}", ctx, msg)),
+            VigilError::Attest(msg) => VigilError::Attest(format!("{}: {}", ctx, msg)),
             VigilError::DBus(msg) => VigilError::DBus(format!("{}: {}", ctx, msg)),
             VigilError::PackageManager(msg) => {
                 VigilError::PackageManager(format!("{}: {}", ctx, msg))
@@ -150,6 +154,7 @@ impl PartialEq for VigilError {
             (VigilError::Syslog(a), VigilError::Syslog(b)) => a == b,
             (VigilError::Control(a), VigilError::Control(b)) => a == b,
             (VigilError::Wal(a), VigilError::Wal(b)) => a == b,
+            (VigilError::Attest(a), VigilError::Attest(b)) => a == b,
             // TomlParse and Json compare by Display output
             (VigilError::TomlParse(a), VigilError::TomlParse(b)) => a.to_string() == b.to_string(),
             (VigilError::Json(a), VigilError::Json(b)) => a.to_string() == b.to_string(),

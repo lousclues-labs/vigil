@@ -66,5 +66,17 @@ path = "fuzz_targets/fuzz_wal_recovery.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "fuzz_attest_verify"
+path = "fuzz_targets/fuzz_attest_verify.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_attest_file"
+path = "fuzz_targets/fuzz_attest_file.rs"
+test = false
+doc = false
+
 [workspace]
 members = ["."]

@@ -64,6 +64,7 @@ Built with AI. Every line held to the same standard as my own. Every decision is
 - HMAC-chained audit trail. Delete an entry and the chain breaks.
 - Suppression affects notifications. It never affects the audit trail.
 - `vigil audit verify` proves the chain is intact.
+- `vigil attest` creates signed portable attestations (`.vatt`) for offline verification.
 
 **Stay informed.**
 - Desktop notifications, journald, JSON log, Unix signal socket
@@ -215,6 +216,7 @@ See [Configuration](docs/CONFIGURATION.md) for the full reference.
 | [Configuration](docs/CONFIGURATION.md) | The config file explained |
 | [Architecture](docs/ARCHITECTURE.md) | How it's built |
 | [Security](docs/SECURITY.md) | Security model, dependency justification |
+| [Attestation](docs/ATTEST.md) | Portable signed attestations and offline verification |
 | [Threat Model](docs/THREAT_MODEL.md) | What Vigil Baseline detects and what it doesn't |
 | [Testing](docs/TESTING.md) | Test suite, fuzz targets, coverage |
 | [Development](docs/DEVELOPMENT.md) | Dev setup, building, debugging |

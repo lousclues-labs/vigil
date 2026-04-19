@@ -309,6 +309,7 @@ pub fn run_diagnostics(config: &Config) -> Vec<DiagnosticCheck> {
     checks.push(check_config(config));
     checks.push(check_scan_timer(config));
     checks.push(check_hmac_key(config));
+    checks.push(check_attest_key());
     checks.push(check_package_hooks());
     checks.push(check_notify_send());
     checks.push(check_signal_socket(config));
@@ -865,6 +866,90 @@ fn check_hmac_key(config: &Config) -> DiagnosticCheck {
             status: CheckStatus::Warning,
             detail: joined,
             fix: Some(format!("sudo chown root:root {}", key_path.display())),
+        }
+    }
+}
+
+fn check_attest_key() -> DiagnosticCheck {
+    let search_paths = crate::attest::key::attest_key_search_paths();
+    let found = search_paths.iter().find(|p| p.exists());
+
+    match found {
+        None => DiagnosticCheck {
+            name: "Attest key".to_string(),
+            status: CheckStatus::Unknown,
+            detail: "not configured (optional; needed for `vigil attest`)".to_string(),
+            fix: Some("sudo vigil setup attest".to_string()),
+        },
+        Some(key_path) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                match fs::metadata(key_path) {
+                    Ok(meta) => {
+                        let mode = meta.permissions().mode() & 0o777;
+                        let mut issues = Vec::new();
+
+                        if mode & 0o077 != 0 {
+                            issues.push(format!("permissions {:04o} (should be 0600)", mode));
+                        }
+
+                        let key_in_etc = key_path.starts_with("/etc/");
+                        if key_in_etc && meta.uid() != 0 {
+                            issues.push(format!(
+                                "owner uid {} (expected root for /etc key)",
+                                meta.uid()
+                            ));
+                        }
+
+                        let size = meta.len();
+                        if size != 33 {
+                            issues.push(format!("unexpected size {} bytes", size));
+                        }
+
+                        if issues.is_empty() {
+                            let owner = if meta.uid() == 0 {
+                                "root-owned"
+                            } else {
+                                "non-root owner"
+                            };
+                            DiagnosticCheck {
+                                name: "Attest key".to_string(),
+                                status: CheckStatus::Ok,
+                                detail: format!(
+                                    "present at {}, permissions {:04o}, {}",
+                                    key_path.display(),
+                                    mode,
+                                    owner
+                                ),
+                                fix: None,
+                            }
+                        } else {
+                            DiagnosticCheck {
+                                name: "Attest key".to_string(),
+                                status: CheckStatus::Warning,
+                                detail: format!("{}: {}", key_path.display(), issues.join("; ")),
+                                fix: Some(format!("sudo chmod 600 {}", key_path.display())),
+                            }
+                        }
+                    }
+                    Err(e) => DiagnosticCheck {
+                        name: "Attest key".to_string(),
+                        status: CheckStatus::Failed,
+                        detail: format!("cannot stat {}: {}", key_path.display(), e),
+                        fix: Some("sudo vigil setup attest".to_string()),
+                    },
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                DiagnosticCheck {
+                    name: "Attest key".to_string(),
+                    status: CheckStatus::Ok,
+                    detail: format!("present at {}", key_path.display()),
+                    fix: None,
+                }
+            }
         }
     }
 }
@@ -1573,7 +1658,7 @@ mod tests {
     fn diagnostics_returns_expected_number_of_checks() {
         let cfg = crate::config::default_config();
         let checks = run_diagnostics(&cfg);
-        assert_eq!(checks.len(), 12);
+        assert_eq!(checks.len(), 13);
         for check in checks {
             assert!(!check.name.trim().is_empty());
             match check.status {

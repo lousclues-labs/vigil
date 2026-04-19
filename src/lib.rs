@@ -1,6 +1,7 @@
 #![deny(unsafe_code)]
 
 pub mod alert;
+pub mod attest;
 pub mod bloom;
 pub mod cli;
 pub mod config;
