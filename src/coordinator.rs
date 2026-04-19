@@ -147,22 +147,23 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
 impl Coordinator {
     fn tick(&mut self) {
         let tick_start = std::time::Instant::now();
+        let mut failed_phases: Vec<&str> = Vec::new();
 
         let t = std::time::Instant::now();
         if !self.check_baseline_db_identity() {
-            return;
+            failed_phases.push("baseline_check");
         }
         let baseline_check_ms = t.elapsed().as_millis();
 
         let t = std::time::Instant::now();
         if !self.check_audit_db_identity() {
-            return;
+            failed_phases.push("audit_check");
         }
         let audit_check_ms = t.elapsed().as_millis();
 
         let t = std::time::Instant::now();
         if !self.check_wal_identity() {
-            return;
+            failed_phases.push("wal_check");
         }
         let wal_check_ms = t.elapsed().as_millis();
 
@@ -256,6 +257,13 @@ impl Coordinator {
                 drift_ms = drift_ms as u64,
                 "coordinator tick took {}ms",
                 total_ms
+            );
+        }
+
+        if !failed_phases.is_empty() {
+            tracing::warn!(
+                failed = ?failed_phases,
+                "coordinator tick completed with failed phases"
             );
         }
 
