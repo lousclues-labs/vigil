@@ -253,6 +253,12 @@ impl ControlHandler {
             }
         };
         let method = request["method"].as_str().unwrap_or("");
+
+        // Streaming commands get the raw stream for multi-line output.
+        if method == "baseline_refresh" {
+            return self.handle_baseline_refresh_streaming(&stream);
+        }
+
         let response = self.dispatch(method, &request);
         self.write_response(&stream, &response)
     }
@@ -471,43 +477,244 @@ impl ControlHandler {
     }
 
     fn handle_baseline_refresh(&self) -> serde_json::Value {
-        // Refuse baseline refresh while in degraded state to prevent
-        // cementing compromised filesystem state as the new baseline
+        // Non-streaming fallback (used only by dispatch table for unknown callers).
+        // The primary path is handle_baseline_refresh_streaming.
+        serde_json::json!({
+            "ok": false,
+            "error": "baseline_refresh requires a streaming connection"
+        })
+    }
+
+    /// Streaming baseline refresh: builds a new baseline in a temp DB,
+    /// streams progress events over the socket, then atomically swaps.
+    fn handle_baseline_refresh_streaming(
+        &self,
+        stream: &std::os::unix::net::UnixStream,
+    ) -> Result<()> {
+        use std::io::Write;
+
+        let write_event =
+            |stream: &std::os::unix::net::UnixStream, event: &serde_json::Value| -> Result<()> {
+                let mut writer = stream;
+                let s = serde_json::to_string(event)
+                    .map_err(|e| VigilError::Control(format!("serialize: {}", e)))?;
+                writer
+                    .write_all(s.as_bytes())
+                    .map_err(|e| VigilError::Control(format!("write: {}", e)))?;
+                writer
+                    .write_all(b"\n")
+                    .map_err(|e| VigilError::Control(format!("write: {}", e)))?;
+                writer
+                    .flush()
+                    .map_err(|e| VigilError::Control(format!("flush: {}", e)))?;
+                Ok(())
+            };
+
+        // Refuse during Degraded state
         {
             let state = self.state.read();
             if let DaemonState::Degraded { reason, .. } = &*state {
-                return serde_json::json!({
-                    "ok": false,
-                    "error": format!("baseline refresh refused: daemon is degraded ({})", reason)
-                });
+                let msg = format!(
+                    "vigild is degraded (reason: {}). Refresh refused. \
+                     Investigate before refreshing: vigil doctor. \
+                     A refresh during degraded state could absorb a compromise into the baseline.",
+                    reason
+                );
+                let _ = write_event(stream, &serde_json::json!({"event": "error", "error": msg}));
+                return Ok(());
             }
         }
-        let cfg = self.config.load();
 
-        // Build the new baseline into a temporary in-memory connection to
-        // avoid holding the live baseline_conn lock during the (potentially
-        // minutes-long) scan. Only briefly lock to swap the results in.
+        let cfg = self.config.load();
         let db_path = &cfg.daemon.db_path;
-        let tmp_conn = match crate::db::open_baseline_db_at_path(db_path) {
+
+        // Check disk space: need at least existing DB size + 20% headroom
+        let existing_size = std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0);
+        let needed = existing_size + (existing_size / 5).max(10 * 1024 * 1024); // +20% or 10MB min
+        if let Ok(stat) = nix::sys::statvfs::statvfs(db_path.parent().unwrap_or(db_path)) {
+            let available = stat.blocks_available() * stat.fragment_size();
+            if available < needed {
+                let msg = format!(
+                    "not enough disk space for refresh. \
+                     Need approximately {} MB free at {}; have {} MB. \
+                     Free space and retry, or move the data directory.",
+                    needed / (1024 * 1024),
+                    db_path.parent().unwrap_or(db_path).display(),
+                    available / (1024 * 1024),
+                );
+                let _ = write_event(stream, &serde_json::json!({"event": "error", "error": msg}));
+                return Ok(());
+            }
+        }
+
+        // Build into a temp sibling file
+        let tmp_path = db_path.with_extension("db.refresh");
+        // Remove any leftover temp file from a previous failed attempt
+        let _ = std::fs::remove_file(&tmp_path);
+
+        let tmp_conn = match crate::db::open_baseline_db_at_path(&tmp_path) {
             Ok(c) => c,
             Err(e) => {
-                return serde_json::json!({"ok": false, "error": format!("failed to open temp baseline connection: {}", e)});
+                let _ = write_event(
+                    stream,
+                    &serde_json::json!({
+                        "event": "error",
+                        "error": format!("failed to create temp baseline at {}: {}", tmp_path.display(), e)
+                    }),
+                );
+                return Ok(());
+            }
+        };
+        if let Err(e) = crate::db::schema::create_baseline_tables(&tmp_conn) {
+            let _ = std::fs::remove_file(&tmp_path);
+            let _ = write_event(
+                stream,
+                &serde_json::json!({
+                    "event": "error",
+                    "error": format!("failed to init temp baseline schema: {}", e)
+                }),
+            );
+            return Ok(());
+        }
+
+        // Send initial progress event
+        let _ = write_event(
+            stream,
+            &serde_json::json!({"event": "progress", "phase": "scanning", "done": 0, "total": 0}),
+        );
+
+        // Increase socket timeouts for the long-running refresh
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(600)));
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(600)));
+
+        // Rate-limited progress sender: max 4 events/second
+        let last_progress = std::sync::Mutex::new(std::time::Instant::now());
+        let progress_stream = stream;
+        let progress_cb = |done: u64, total: u64, phase: &str| {
+            let mut last = last_progress.lock().unwrap();
+            if last.elapsed() >= Duration::from_millis(250) || done == total {
+                *last = std::time::Instant::now();
+                let _ = write_event(
+                    progress_stream,
+                    &serde_json::json!({
+                        "event": "progress",
+                        "phase": phase,
+                        "done": done,
+                        "total": total,
+                    }),
+                );
             }
         };
 
-        match crate::scanner::build_initial_baseline(&tmp_conn, &cfg) {
-            Ok(result) => {
-                serde_json::json!({
-                    "ok": true,
-                    "message": "baseline refreshed",
-                    "total_count": result.total_count,
-                    "duration_ms": result.duration.as_millis() as u64,
-                })
+        // Build baseline with progress
+        let result =
+            crate::scanner::build_initial_baseline_with_progress(&tmp_conn, &cfg, &progress_cb);
+
+        match result {
+            Ok(ref init_result) => {
+                // Verify the temp DB before swapping
+                let verify_ok = tmp_conn
+                    .query_row("SELECT COUNT(*) FROM baseline", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .is_ok();
+
+                if !verify_ok {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    let _ = write_event(
+                        stream,
+                        &serde_json::json!({
+                            "event": "error",
+                            "error": "temp baseline failed verification; live baseline untouched"
+                        }),
+                    );
+                    return Ok(());
+                }
+
+                // Close temp connection before rename
+                drop(tmp_conn);
+
+                // Atomic swap: rename temp over live
+                if let Err(e) = std::fs::rename(&tmp_path, db_path) {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    let _ = write_event(
+                        stream,
+                        &serde_json::json!({
+                            "event": "error",
+                            "error": format!("failed to swap baseline: {}", e)
+                        }),
+                    );
+                    return Ok(());
+                }
+
+                // Reopen the daemon's baseline connection
+                {
+                    let mut conn = self.baseline_conn.lock();
+                    match crate::db::open_baseline_db_at_path(db_path) {
+                        Ok(new_conn) => {
+                            *conn = new_conn;
+                            tracing::info!("baseline connection reopened after refresh");
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "failed to reopen baseline after swap");
+                        }
+                    }
+                }
+
+                // Update config_state in the new DB
+                if let Ok(conn) = crate::db::open_baseline_db_at_path(db_path) {
+                    let now = chrono::Utc::now().timestamp();
+                    let _ = crate::db::baseline_ops::set_config_state(
+                        &conn,
+                        "last_baseline_refresh",
+                        &now.to_string(),
+                    );
+                    let _ = crate::db::baseline_ops::set_config_state(
+                        &conn,
+                        "baseline_initialized",
+                        "true",
+                    );
+                    // Recompute HMAC if configured
+                    if cfg.security.hmac_signing {
+                        if let Ok(key) = crate::hmac::load_hmac_key(&cfg.security.hmac_key_path) {
+                            if let Ok(hmac) =
+                                crate::db::baseline_ops::compute_baseline_hmac(&conn, &key)
+                            {
+                                let _ = crate::db::baseline_ops::set_config_state(
+                                    &conn,
+                                    "baseline_hmac",
+                                    &hmac,
+                                );
+                            }
+                        }
+                    }
+                }
+
+                let total = init_result.total_count;
+                let duration_ms = init_result.duration.as_millis() as u64;
+
+                let _ = write_event(
+                    stream,
+                    &serde_json::json!({
+                        "event": "complete",
+                        "duration_ms": duration_ms,
+                        "total": total,
+                    }),
+                );
             }
             Err(e) => {
-                serde_json::json!({"ok": false, "error": format!("baseline refresh failed: {}", e)})
+                let _ = std::fs::remove_file(&tmp_path);
+                let _ = write_event(
+                    stream,
+                    &serde_json::json!({
+                        "event": "error",
+                        "error": format!("baseline refresh failed: {}", e)
+                    }),
+                );
             }
         }
+
+        Ok(())
     }
 }
 
@@ -877,12 +1084,25 @@ mod tests {
             control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
         };
 
-        let result = handler.handle_baseline_refresh();
-        assert_eq!(result["ok"], false);
-        assert!(
-            result["error"].as_str().unwrap().contains("degraded"),
-            "should mention degraded state"
-        );
+        // Use a Unix socket pair to capture the streaming response
+        let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+        handler.handle_baseline_refresh_streaming(&server).unwrap();
+        drop(server);
+
+        use std::io::{BufRead, BufReader};
+        let reader = BufReader::new(client);
+        let mut found_degraded = false;
+        for line in reader.lines().map_while(|r| r.ok()) {
+            if let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) {
+                if event.get("event").and_then(|v| v.as_str()) == Some("error") {
+                    let err = event["error"].as_str().unwrap_or("");
+                    if err.contains("degraded") {
+                        found_degraded = true;
+                    }
+                }
+            }
+        }
+        assert!(found_degraded, "should mention degraded state");
     }
 
     /// Regression test for CRITICAL audit finding: HMAC verification must use

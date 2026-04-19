@@ -209,6 +209,191 @@ pub fn build_initial_baseline(conn: &Connection, config: &Config) -> Result<Base
     })
 }
 
+/// Build a full initial baseline with a streaming progress callback.
+///
+/// The `progress` closure is called with `(files_processed, estimated_total, phase)`.
+/// Rate limiting is the caller's responsibility.
+pub fn build_initial_baseline_with_progress<F>(
+    conn: &Connection,
+    config: &Config,
+    progress: &F,
+) -> Result<BaselineInitResult>
+where
+    F: Fn(u64, u64, &str),
+{
+    let started = Instant::now();
+    let mut total_count = 0u64;
+    let mut processed = 0u64;
+    let now = chrono::Utc::now().timestamp();
+    let exclusions = crate::filter::exclusion::ExclusionFilter::new(config);
+
+    let skip_package_owner = {
+        #[cfg(any(test, debug_assertions))]
+        {
+            std::env::var("VIGIL_SKIP_PACKAGE_OWNER")
+                .map(|v| {
+                    let v = v.trim();
+                    v == "1"
+                        || v.eq_ignore_ascii_case("true")
+                        || v.eq_ignore_ascii_case("yes")
+                        || v.eq_ignore_ascii_case("on")
+                })
+                .unwrap_or(false)
+        }
+        #[cfg(not(any(test, debug_assertions)))]
+        {
+            false
+        }
+    };
+
+    // Count total files first for accurate progress
+    let mut estimated_total = 0u64;
+    for group in config.watch.values() {
+        let roots = crate::config::expand_user_paths(&group.paths);
+        for root in &roots {
+            walk_files(root, &exclusions, &mut |_path| {
+                estimated_total += 1;
+                Ok(())
+            })?;
+        }
+    }
+
+    progress(0, estimated_total, "scanning");
+
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+
+    let package_cache = if !skip_package_owner {
+        progress(0, estimated_total, "packages");
+        crate::package::build_package_cache(&config.package_manager)
+    } else {
+        None
+    };
+
+    progress(0, estimated_total, "scanning");
+
+    let result = (|| -> Result<Vec<GroupInitResult>> {
+        let mut groups = Vec::with_capacity(config.watch.len());
+
+        let base_opts = CaptureOpts {
+            force_hash: true,
+            max_file_size: config.scanner.max_file_size,
+            mmap_threshold: config.scanner.mmap_threshold,
+            baseline_mtime: None,
+            baseline_hash: None,
+        };
+
+        for (group_name, group) in &config.watch {
+            let mut group_count = 0u64;
+            let mut group_errors = 0u64;
+            let roots = crate::config::expand_user_paths(&group.paths);
+            for root in roots {
+                walk_files(&root, &exclusions, &mut |path| {
+                    processed += 1;
+                    progress(processed, estimated_total, "scanning");
+
+                    #[allow(clippy::manual_is_multiple_of)]
+                    if processed % 5000 == 0 && crate::coordinator::is_notify_socket_safe() {
+                        let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+                    }
+
+                    match crate::types::FileSnapshot::from_path(path, &base_opts) {
+                        Ok(SnapshotOrDeleted::Snapshot(snapshot)) => {
+                            let package = if skip_package_owner {
+                                None
+                            } else if let Some(ref cache) = package_cache {
+                                cache.get(path).cloned()
+                            } else {
+                                crate::package::query_package_owner(path, &config.package_manager)
+                            };
+
+                            let entry = crate::types::BaselineEntry {
+                                id: None,
+                                path: path.to_path_buf(),
+                                identity: snapshot.identity,
+                                content: snapshot.content,
+                                permissions: snapshot.permissions,
+                                security: snapshot.security,
+                                mtime: snapshot.mtime,
+                                package,
+                                source: crate::types::BaselineSource::AutoScan,
+                                added_at: now,
+                                updated_at: now,
+                            };
+                            baseline_ops::upsert(conn, &entry)?;
+                            total_count += 1;
+                            group_count += 1;
+                        }
+                        Ok(SnapshotOrDeleted::Deleted) => {}
+                        Err(e) => {
+                            group_errors += 1;
+                            tracing::debug!(
+                                path = %path.display(),
+                                error = %e,
+                                "baseline capture error"
+                            );
+                        }
+                    }
+
+                    Ok(())
+                })?;
+            }
+
+            groups.push(GroupInitResult {
+                name: group_name.clone(),
+                paths: group.paths.clone(),
+                file_count: group_count,
+                errors: group_errors,
+            });
+        }
+
+        Ok(groups)
+    })();
+
+    let groups = match result {
+        Ok(groups) => {
+            progress(processed, estimated_total, "writing");
+            conn.execute_batch("COMMIT")?;
+            if crate::coordinator::is_notify_socket_safe() {
+                let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+            }
+            groups
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+    };
+
+    baseline_ops::set_config_state(conn, "last_baseline_refresh", &now.to_string())?;
+
+    if config.security.hmac_signing {
+        if let Ok(key) = crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
+            match baseline_ops::compute_baseline_hmac(conn, &key) {
+                Ok(hmac) => {
+                    let _ = baseline_ops::set_config_state(conn, "baseline_hmac", &hmac);
+                }
+                Err(e) => tracing::warn!(error = %e, "failed to compute baseline HMAC"),
+            }
+        }
+    }
+    if crate::coordinator::is_notify_socket_safe() {
+        let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+    }
+
+    let db_size_bytes = std::fs::metadata(&config.daemon.db_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    progress(total_count, total_count, "complete");
+
+    Ok(BaselineInitResult {
+        total_count,
+        groups,
+        duration: started.elapsed(),
+        db_size_bytes,
+    })
+}
+
 /// Run a baseline comparison scan.
 pub fn run_scan(conn: &Connection, config: &Config, mode: ScanMode) -> Result<ScanResult> {
     run_scan_with_progress(conn, config, mode, |_, _| {})

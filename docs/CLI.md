@@ -1101,33 +1101,55 @@ vigil baseline <SUBCOMMAND>
 
 ### `baseline refresh`
 
-Rebuild the baseline from all configured watch paths. If the daemon is
-running, uses the control socket for a live refresh. If the daemon is not
-running, falls back to direct database access.
+Rebuild the baseline from all configured watch paths. Requires vigild
+to be running; the CLI sends the refresh command through the control socket.
+The daemon builds the new baseline into a temp file and atomically swaps
+it over the live database when complete.
 
 ```bash
-vigil baseline refresh [--quiet]
+sudo vigil baseline refresh [--quiet]
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--quiet` | suppress all output; exit 0 even if both daemon and DB access fail |
+| `--quiet` | suppress all output; exit 0 even on failure (for package manager hooks) |
 
-Examples:
+Progress output (TTY):
+
+```
+Refreshing baseline.
+[████████████████░░░░] 76% scanning  (1,847 / 2,431 files)
+```
+
+Completion output:
+
+```
+Baseline refreshed in 94 seconds.
+  total:    2,431 files
+
+Changes during refresh are recorded in the audit log.
+Review them: vigil audit show --since 2m
+```
+
+The canonical post-package-install workflow:
 
 ```bash
-vigil baseline refresh
-vigil baseline refresh --quiet
+sudo vigil maintenance enter
+sudo pacman -Syu
+sudo vigil baseline refresh
+sudo vigil maintenance exit
 ```
 
 Notes:
-- When invoked via control socket, the refresh uses the daemon's existing
-  database connection (no TOCTOU risk from re-opening by path).
-- When falling back to direct DB access, opens the baseline database,
-  calls `build_initial_baseline()`, and recomputes the HMAC if signing
-  is enabled.
-- `--quiet` mode is designed for package manager hooks. On any failure,
-  the command exits 0 silently.
+- The CLI never opens the baseline database directly. All writes go
+  through the daemon.
+- If vigild is not running, the command returns a clear error.
+- If the daemon is in a Degraded state, refresh is refused. Investigate
+  with `vigil doctor` before refreshing.
+- Events that occur during refresh are evaluated against the old baseline
+  and recorded in the audit log normally.
+- The new baseline is built in a sibling temp file. If the build fails,
+  the live baseline is untouched.
 
 ---
 

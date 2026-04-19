@@ -314,6 +314,33 @@ If socket delivery fails, other channels keep working.
 
 ---
 
+## Baseline Refresh Integrity
+
+`vigil baseline refresh` builds the new baseline in a temp file
+(`baseline.db.refresh`) alongside the live database. The live database
+continues to serve reads during the build. Events that occur during
+refresh are evaluated against the old baseline and recorded in the
+audit log normally.
+
+On completion, the daemon atomically renames the temp file over the
+live database and reopens its connection. The swap window is
+milliseconds; the build window is minutes.
+
+If the build fails (disk full, I/O error), the temp file is deleted
+and the live database is untouched. The daemon remains healthy.
+
+An attacker who modifies a file during the refresh window does not get
+their change absorbed silently. The modification is recorded in the
+audit log against the old baseline before the swap. After the swap,
+the new baseline reflects the attacker's change; but the audit log
+entry survives.
+
+The daemon refuses refresh while in a Degraded state. A refresh during
+Degraded state could cement compromised filesystem state as the new
+baseline.
+
+---
+
 ## Unsafe Code Policy
 
 The crate root declares `#![deny(unsafe_code)]`.
