@@ -61,6 +61,8 @@ pub struct Metrics {
     pub worker_db_reopen_attempts: AtomicU64,
     /// Worker DB reopen failures (reopen itself failed).
     pub worker_db_reopen_failures: AtomicU64,
+    /// Auto-rebaseline entries rejected due to empty hash or zero mtime.
+    pub auto_rebaseline_rejected: AtomicU64,
     /// Unix timestamp set once at daemon startup.
     pub uptime_start: i64,
 }
@@ -110,6 +112,7 @@ impl Metrics {
             fanotify_thread_restarts: AtomicU64::new(0),
             worker_db_reopen_attempts: AtomicU64::new(0),
             worker_db_reopen_failures: AtomicU64::new(0),
+            auto_rebaseline_rejected: AtomicU64::new(0),
             uptime_start: chrono::Utc::now().timestamp(),
         }
     }
@@ -173,6 +176,7 @@ impl Metrics {
             fanotify_thread_restarts: self.fanotify_thread_restarts.load(Ordering::Relaxed),
             worker_db_reopen_attempts: self.worker_db_reopen_attempts.load(Ordering::Relaxed),
             worker_db_reopen_failures: self.worker_db_reopen_failures.load(Ordering::Relaxed),
+            auto_rebaseline_rejected: self.auto_rebaseline_rejected.load(Ordering::Relaxed),
             uptime_start: self.uptime_start,
         }
     }
@@ -229,6 +233,7 @@ pub struct MetricsSnapshot {
     pub fanotify_thread_restarts: u64,
     pub worker_db_reopen_attempts: u64,
     pub worker_db_reopen_failures: u64,
+    pub auto_rebaseline_rejected: u64,
     pub uptime_start: i64,
 }
 

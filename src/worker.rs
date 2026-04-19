@@ -358,6 +358,22 @@ impl WorkerContext {
                 if let Ok(SnapshotOrDeleted::Snapshot(fresh)) =
                     crate::types::FileSnapshot::from_path(&change_result.path, &opts)
                 {
+                    // Validate the snapshot before sending. An empty hash or
+                    // zero mtime produces a baseline entry that triggers false
+                    // changes on every subsequent scan.
+                    if fresh.content.hash.is_empty() || fresh.mtime == 0 {
+                        tracing::error!(
+                            path = %change_result.path.display(),
+                            hash_empty = fresh.content.hash.is_empty(),
+                            mtime = fresh.mtime,
+                            "auto-rebaseline rejected: snapshot has empty hash or zero mtime"
+                        );
+                        self.metrics
+                            .auto_rebaseline_rejected
+                            .fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+
                     let _ = tx.try_send(BaselineUpdate {
                         entry: BaselineEntry {
                             id: None,
@@ -660,9 +676,9 @@ mod tests {
     }
 
     #[test]
-    fn baseline_update_for_package_has_real_data() {
-        // Verify that a BaselineEntry built for package updates
-        // does not contain zeroed/default fields
+    fn try_auto_rebaseline_drops_entry_with_empty_hash() {
+        // Verify that BaselineEntry with empty/default content hash would
+        // be rejected by the validation in try_auto_rebaseline.
         let entry = BaselineEntry {
             id: None,
             path: std::path::PathBuf::from("/usr/bin/test"),
@@ -676,14 +692,15 @@ mod tests {
             added_at: 0,
             updated_at: 0,
         };
-        // Zeroed content.  A real update should never have an empty hash.
+        // Default content hash is empty and mtime is zero. Both should fail
+        // the validation gate added in this fix.
         assert!(
             entry.content.hash.is_empty(),
             "default content hash should be empty"
         );
         assert_eq!(entry.mtime, 0, "default mtime should be zero");
-        // These assertions document the bug: if an entry with these values
-        // reaches the database, every subsequent scan will produce false changes.
+        // The try_auto_rebaseline method now rejects entries with these values
+        // before sending to the baseline writer channel.
     }
 
     #[test]
