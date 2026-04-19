@@ -55,6 +55,9 @@ desktop_notifications = true
 syslog = true
 log_file = "/var/log/vigil/alerts.json"
 webhook_url = ""
+webhook_bearer_token = ""
+storm_threshold = 50
+storm_window_secs = 60
 rate_limit = 10
 cooldown_seconds = 300
 notification_rate_limit = 5
@@ -171,6 +174,9 @@ paths = [
 | `notification_rate_limit` | integer | `5` | desktop sink limit |
 | `notification_rate_window_secs` | integer | `10` | desktop sink window |
 | `max_alerts_per_minute` | integer | `10000` | hard ceiling in alert dispatcher |
+
+For policy behavior (immediate/coalesced/digest delivery, storm transitions,
+and critical escalation semantics), see `docs/NOTIFICATIONS.md`.
 
 ### `[alerts.severity_filter]`
 
@@ -311,7 +317,7 @@ It does not restart all initialized components.
 | `daemon.monitor_backend` | backend thread starts at startup |
 | `daemon.worker_threads` | worker pool size is fixed at startup |
 | `daemon.debounce_ms` | worker event filter is built at startup |
-| `alerts.*` including `notification_rate_limit`, `notification_rate_window_secs`, `max_alerts_per_minute` | alert dispatcher and sinks are built at startup |
+| `alerts.*` including `notification_rate_limit`, `notification_rate_window_secs`, `max_alerts_per_minute`, `storm_threshold`, `storm_window_secs`, `webhook_*` | alert dispatcher and sinks are built at startup |
 | `exclusions.*` | worker exclusion filter is built at startup |
 | `watch.*` path coverage | monitor watch registration happens at startup |
 | `database.sync_mode`, `database.busy_timeout_ms`, `database.wal_mode` | DB connection pragmas are applied at open time |

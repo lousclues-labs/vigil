@@ -73,12 +73,13 @@ Vigil Baseline has one job. Detect filesystem boundary changes and record them.
 - WAL sink runner thread (`vigil-wal-sinks`) in `src/wal/sink_runner.rs`. Dispatches alerts from WAL to sinks (when WAL enabled).
 - alert dispatcher thread in `src/alert/mod.rs`. Runs `AlertDispatcher::run()` (handles fallback alerts, skips audit writes when WAL active).
 - baseline writer thread in `src/lib.rs`. Batches auto-rebaseline writes.
-- coordinator thread in `src/coordinator.rs`. Runs a `Coordinator` struct's tick loop.
+- coordinator guardian thread (`vigil-guardian`) in `src/coordinator.rs`. Fast 1s loop for watchdog, backpressure, and state snapshots.
+- coordinator maintenance thread (`vigil-maintenance`) in `src/coordinator.rs`. Heavy 60s loop for identity checks, rotation, drift, and housekeeping.
 - scan scheduler thread in `src/scan_scheduler.rs`
 - control socket thread in `src/control.rs`. Dispatches via a `ControlHandler` struct.
 
 The `DaemonRuntime` owns all `JoinHandle`s, channel senders, and shutdown state.
-The coordinator owns lifecycle coordination and periodic housekeeping.
+The coordinator owns lifecycle coordination across two cadences: fast guardian checks and slower maintenance work.
 
 ---
 
@@ -92,7 +93,9 @@ src/
 |   |-- journal.rs          # journald/syslog logging.
 |   |-- json_log.rs         # Append-only JSON alert file.
 |   |-- remote_syslog.rs    # Remote syslog forwarding over TCP or UDP.
-|   `-- socket.rs           # Unix signal socket event writer.
+|   |-- router.rs           # Notification routing primitives: policy, coalescing, storm, escalation.
+|   |-- socket.rs           # Unix signal socket event writer.
+|   `-- webhook.rs          # Webhook sink (HTTP POST + optional bearer auth).
 |
 |-- attest/
 |   |-- mod.rs              # Attestation engine: create, verify, diff, show, list.
@@ -180,7 +183,7 @@ src/
 |-- bloom.rs                # Bloom filter for fast path membership reject.
 |-- cli.rs                  # clap command tree and flags.
 |-- control.rs              # Unix control socket. ControlHandler struct dispatches methods.
-|-- coordinator.rs          # Coordinator struct with tick loop and named housekeeping methods.
+|-- coordinator.rs          # Coordinator guardian/maintenance loops and named housekeeping methods.
 |-- daemon.rs               # vigild binary entrypoint.
 |-- detection.rs            # Shared WAL-or-alert dispatch helper (dispatch_detection).
 |-- doctor.rs               # System health diagnostics and health snapshot.
@@ -215,9 +218,10 @@ These modules are easy to miss. They are core to the runtime.
 - `src/wal/audit_writer.rs` defines `AuditWriter`, the `vigil-wal-audit` background thread. Consumes WAL entries sorted by severity (Critical first), writes to audit DB with HMAC chain integrity. Features: sequence gap detection (`detections_wal_gaps` metric), crash recovery with deduplication, DB connection reopen after 3 consecutive failures, periodic compaction every 60s. On shutdown, drains completely before exiting. No entries can be lost.
 - `src/wal/sink_runner.rs` defines `SinkRunner`, the `vigil-wal-sinks` background thread. Consumes WAL entries sorted by sequence, dispatches to configured alert sinks. Uses an `LruCache<String, Instant>` bounded to 10,000 entries for path cooldowns. Suppressed entries are marked `sink_done` immediately (no infinite retry). Operates independently of AuditWriter.
 - `src/control.rs` defines `ControlHandler`, a struct holding metrics, state, reload flag, scan trigger, DB path, HMAC key, and auth flag. Methods: `handle_connection` (auth-or-read, dispatch, write), `authenticate_and_read` (challenge-response), `read_request`, `write_response`, `dispatch`. When HMAC signing is enabled, connections are authenticated via nonce-based challenge-response. All `reload` and `scan` commands are logged with peer credentials.
-- `src/coordinator.rs` defines `CoordinatorConfig` (spawn arguments) and `Coordinator` (runtime state). The main loop calls `handle_reload()` on flag and `tick()` every 60 seconds. `tick()` sequences: `check_baseline_db_identity`, `check_audit_db_identity`, `check_wal_identity`, `check_mount_evasion`, `notify_watchdog`, `detect_clock_anomaly`, `rotate_audit_log`, `notify_watchdog`, `write_snapshots`, `notify_watchdog`, `check_backpressure`, `check_event_drops`, `maybe_checkpoint_wal`, `check_maintenance_timeout`, `check_drift_velocity`. Watchdog pings are interleaved between expensive sub-methods within `tick()` and also sent on every loop iteration (~1s) via `notify_watchdog()`. DB connections are held as `Option<Connection>` and intentionally dropped to `None` on Degraded transitions for `*_db_replaced` or `wal_file_replaced` (VIGIL-VULN-071); operator restart is required to recover. Clock anomaly detection uses monotonic-time comparison (VIGIL-VULN-070). Mount evasion sends dynamic fanotify marks via `mount_mark_tx` channel (VIGIL-VULN-069).
+- `src/coordinator.rs` defines `CoordinatorConfig` (spawn arguments) and `Coordinator` (runtime state), then launches two loops: `vigil-guardian` at 1s cadence and `vigil-maintenance` at 60s cadence. Guardian handles watchdog heartbeats, fast backpressure checks, baseline-identity guardrails, and frequent `state.json` updates. Maintenance handles reload application, DB/WAL identity checks, mount-evasion scans, clock anomaly checks, audit rotation, event-drop checks, WAL checkpointing, maintenance timeout enforcement, and drift-velocity tracking. DB connections remain `Option<Connection>` and are dropped on `*_db_replaced` / `wal_file_replaced` degraded transitions (VIGIL-VULN-071) so operators must explicitly recover.
 - `src/worker.rs` defines `WorkerSpawnArgs` (spawn arguments) and `WorkerContext` (per-worker state: connection, config, watch index, metrics, filter, LRU cache, generation tracker). Key methods: `evaluate` (cache lookup + baseline + snapshot + diff + classify), `process_safe` (catch_unwind wrapper), `drain_debounced` (debounced re-check). Logs self-protection warnings when config or HMAC key files are modified.
 - `src/alert/mod.rs` defines `AlertDispatcher` with extracted methods: `record_audit` (DB write + error recovery + retry buffer + DB reopen) and `dispatch_to_sinks` (sink iteration). `run()` is ~17 lines.
+- `src/alert/router.rs` defines routing primitives for per-severity policy decisions, coalescing windows, storm detection, and critical escalation tracking.
 - `src/scan_scheduler.rs` parses cron strings with `croner` and executes scheduled scans.
 - `src/bloom.rs` provides fast probabilistic reject for unrelated paths.
 - `src/watch_index.rs` maps a path to the most specific watch group.

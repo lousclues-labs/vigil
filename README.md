@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/badge/CI-GitHub_Actions-success)](.github/workflows/ci.yml)
 [![Security Audit](https://img.shields.io/badge/Security-Audit-success)](.github/workflows/scheduled.yml)
-[![Version](https://img.shields.io/badge/version-0.41.0-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.42.0-blue)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange.svg)](https://www.rust-lang.org/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
 
@@ -68,7 +68,10 @@ Built with AI. Every line held to the same standard as my own. Every decision is
 - `vigil inspect` compares files against a baseline on a different machine. No daemon required.
 
 **Stay informed.**
+- Policy-based notification routing supports immediate, coalesced, and digest delivery modes
+- Storm suppression and critical escalation tracking keep alerting actionable under heavy churn
 - Desktop notifications, journald, JSON log, Unix signal socket
+- Optional webhook delivery for external incident pipelines
 - `vigil doctor` runs twelve self-diagnostics
 - `vigil diff` compares any file against baseline and audit history
 
@@ -182,6 +185,10 @@ max_file_size = 2147483648         # 2 GB -- skip larger files
 
 [alerts]
 desktop_notifications = true       # D-Bus via notify-send (with --app-name=Vigil Baseline and urgency mapping)
+webhook_url = ""                  # optional HTTP endpoint for alert delivery
+webhook_bearer_token = ""         # optional Authorization: Bearer token
+storm_threshold = 50               # events before storm suppression activates
+storm_window_secs = 60             # rolling window (seconds) for storm detection
 cooldown_seconds = 300             # per-path alert cooldown (5 min)
 rate_limit = 10                    # max alerts per minute
 
@@ -204,6 +211,7 @@ paths = [
 ```
 
 See [Configuration](docs/CONFIGURATION.md) for the full reference.
+See [Notifications](docs/NOTIFICATIONS.md) for routing, coalescing, and escalation behavior.
 
 ---
 
@@ -215,6 +223,7 @@ See [Configuration](docs/CONFIGURATION.md) for the full reference.
 | [Installation](docs/INSTALL.md) | Building, dependencies, systemd setup |
 | [CLI Reference](docs/CLI.md) | Every command, every flag |
 | [Configuration](docs/CONFIGURATION.md) | The config file explained |
+| [Notifications](docs/NOTIFICATIONS.md) | Routing policy, coalescing, storm suppression, webhook |
 | [Architecture](docs/ARCHITECTURE.md) | How it's built |
 | [Security](docs/SECURITY.md) | Security model, dependency justification |
 | [Vulnerabilities](docs/VULNERABILITIES.md) | All remediated vulnerabilities with tracking IDs |

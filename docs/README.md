@@ -18,6 +18,7 @@ Use this index when you need answers fast.
 | Document | What's Inside |
 |----------|---------------|
 | [Architecture](ARCHITECTURE.md) | System design, data flow, module structure |
+| [Notifications](NOTIFICATIONS.md) | Alert routing policy, coalescing, storm suppression, escalation |
 | [Threat Model](THREAT_MODEL.md) | What Vigil Baseline detects, what it doesn't, adversary assumptions |
 | [Resilience](RESILIENCE.md) | Failure modes, fallback behavior, recovery procedures |
 | [Minimum Viable Trust](MINIMUM_VIABLE.md) | Smallest deployment and what it provides |

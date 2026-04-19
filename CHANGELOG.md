@@ -2,6 +2,42 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [0.42.0] - 2026-04-19
+
+### Resilience
+
+- **Coordinator split into two loops.** `src/coordinator.rs` now runs a fast `vigil-guardian` loop (1s cadence for watchdog, backpressure, and live state snapshots) plus a heavy `vigil-maintenance` loop (60s cadence for DB/WAL identity checks, rotation, drift, and housekeeping).
+- **Fanotify supervision with bounded restarts.** The monitor path adds recovery behavior for transient fanotify thread failures and records restart telemetry.
+- **Worker DB reopen backoff.** Workers now attempt baseline DB reopen with exponential backoff and transition to explicit degraded state on unrecoverable failure.
+- **Event-drop recovery threshold.** Degraded transitions caused by event loss now honor `monitor.event_loss_alert_threshold` and recover after sustained clean ticks.
+- **Baseline refresh lock-scope fix.** Baseline refresh no longer contends on the long-lived coordinator connection; it uses a separate connection path.
+
+### Alerting
+
+- **Notification routing foundation.** Added severity-policy routing primitives (`immediate`, `coalesce`, `digest`) with coalescing keys, rolling-window storm detection, and critical escalation tracking in `src/alert/router.rs`.
+- **Webhook sink implementation.** Added `src/alert/webhook.rs` with optional bearer-token auth and retry/backoff behavior for transient delivery failures.
+- **Alert config extensions.** Added/standardized notification controls for `webhook_bearer_token`, `storm_threshold`, and `storm_window_secs`.
+
+### Correctness
+
+- **Auto-rebaseline validation.** Worker auto-rebaseline now rejects invalid baseline records before write/dispatch (`empty hash`, `zero mtime`) and increments explicit metrics.
+- **Reload hash semantics tightened.** Coordinator now updates observed config hash on every reload attempt, even when reload validation fails, preventing repeated stale-hash warnings.
+- **Drift snapshot contract fixed.** `drift_velocity` is always present in state snapshots (nullable when unavailable), improving consumer stability.
+- **Typed degraded reasons.** `DegradedReason` and `DaemonStateHandle` were introduced to remove stringly-typed state transitions and centralize state mutation logic.
+- **Monitor API tightening.** `start_monitor` now requires daemon state and scan trigger in production call paths to prevent silent loss of degradation and overflow signaling.
+
+### Internal
+
+- **Coordinator tick deduplication.** Repeated phase-timing boilerplate replaced with `time_phase!` macro.
+- **Status serialization cleanup.** Control/status JSON now derives from `MetricsSnapshot::status_view()` to keep schema extensions synchronized with metric additions.
+- **Worker refactor cleanup.** Removed duplicate event-processing path and added `WorkerContext::for_test` for deterministic tests.
+- **Utility extraction.** Shared FD guard, random nonce, and mount-delta helpers moved to `src/util/`.
+
+### Documentation
+
+- Added `docs/NOTIFICATIONS.md` covering routing policy, coalescing behavior, storm suppression, escalation lifecycle, and webhook configuration.
+- Updated architecture and configuration documentation for guardian/maintenance coordinator behavior and notification-routing configuration fields.
+
 ## [0.41.0] - 2026-04-18
 
 ### Features
