@@ -1080,12 +1080,18 @@ pub fn validate_config_deep(config: &Config) -> Result<Vec<String>> {
             .any(|p| config_path_str.starts_with(p.trim_end_matches('/')) || p == config_path_str)
     });
     if !config_covered {
-        warnings.push("vigil config file is not covered by any watch group".into());
+        warnings.push(
+            "vigil config file is not covered by any watch group. \
+             Add /etc/vigil to a watch group so vigil detects config tampering."
+                .into(),
+        );
     }
 
     if config.daemon.detection_wal && !config.daemon.detection_wal_persistent {
         warnings.push(
-            "detection_wal is enabled with detection_wal_persistent=false; WAL on tmpfs does not survive kernel panics"
+            "detection_wal is enabled with detection_wal_persistent=false; \
+             WAL on tmpfs does not survive kernel panics. \
+             Set detection_wal_persistent=true in [daemon] to write the WAL to disk."
                 .into(),
         );
     }
