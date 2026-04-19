@@ -9,8 +9,9 @@ use vigil::cli::{Cli, Command};
 mod commands;
 use commands::{
     cmd_attest, cmd_audit, cmd_baseline, cmd_check, cmd_check_live, cmd_config, cmd_diff,
-    cmd_doctor, cmd_explain, cmd_init, cmd_inspect, cmd_log, cmd_maintenance, cmd_setup,
-    cmd_status, cmd_test_alert, cmd_update, cmd_watch, cmd_why_silent, CheckOpts,
+    cmd_doctor, cmd_explain, cmd_init, cmd_inspect, cmd_log, cmd_maintenance, cmd_selftest,
+    cmd_setup, cmd_status, cmd_test_alert, cmd_update, cmd_watch, cmd_welcome, cmd_why,
+    cmd_why_silent, CheckOpts,
 };
 
 fn main() {
@@ -37,7 +38,16 @@ fn run(cli: Cli) -> vigil::Result<i32> {
     let config_path = cli.config;
     let format = cli.format;
 
-    match cli.command {
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => {
+            // `vigil` with no args defaults to `vigil status`
+            cmd_status(config_path.as_deref(), format)?;
+            return Ok(0);
+        }
+    };
+
+    match command {
         Command::Init { force } => {
             cmd_init(config_path.as_deref(), format, force)?;
             Ok(0)
@@ -99,6 +109,9 @@ fn run(cli: Cli) -> vigil::Result<i32> {
             cmd_status(config_path.as_deref(), format)?;
             Ok(0)
         }
+        Command::Welcome => cmd_welcome(config_path.as_deref()),
+        Command::Why { path } => cmd_why(config_path.as_deref(), path.as_deref(), format),
+        Command::Selftest => cmd_selftest(config_path.as_deref()),
         Command::Explain { path, verbose } => {
             cmd_explain(config_path.as_deref(), &path, verbose, format)?;
             Ok(0)
@@ -133,7 +146,12 @@ fn run(cli: Cli) -> vigil::Result<i32> {
         Command::Doctor {
             format: doctor_format,
             now: _now,
-        } => cmd_doctor(config_path.as_deref(), doctor_format.unwrap_or(format)),
+            verbose,
+        } => cmd_doctor(
+            config_path.as_deref(),
+            doctor_format.unwrap_or(format),
+            verbose,
+        ),
         Command::Update {
             repo,
             quiet,

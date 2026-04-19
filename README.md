@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/badge/CI-GitHub_Actions-success)](.github/workflows/ci.yml)
 [![Security Audit](https://img.shields.io/badge/Security-Audit-success)](.github/workflows/scheduled.yml)
-[![Version](https://img.shields.io/badge/version-0.43.0-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange.svg)](https://www.rust-lang.org/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
 
@@ -77,6 +77,16 @@ Built with AI. Every line held to the same standard as my own. Every decision is
 
 ---
 
+## First time?
+
+    sudo vigil welcome
+
+Configures vigil in 90 seconds. Idempotent: safe to re-run.
+
+Operators who prefer to configure by hand can skip ahead to Quick Start.
+
+---
+
 ## Quick Start
 
 ```bash
@@ -96,10 +106,12 @@ The baseline is your source of truth. Everything starts there.
 ### Setup
 
 ```bash
+vigil welcome                      # First-run configuration (interactive, idempotent)
 vigil init                         # Create baseline from configured watch paths
 vigil init --force                 # Overwrite existing baseline without asking
 vigil status                       # Show baseline stats and daemon health
-vigil doctor                       # Run self-diagnostics
+vigil doctor                       # Run self-diagnostics (compact; --verbose for full)
+vigil selftest                     # End-to-end verification on this machine
 ```
 
 ### Real-Time Monitoring
@@ -118,6 +130,8 @@ vigil check --now                  # Trigger scan on running daemon via control 
 vigil check --since 24h            # Show only changes with recent audit evidence
 vigil check --brief                # Single-line summary output
 vigil diff /etc/passwd             # Compare file against baseline + audit history
+vigil why /etc/resolv.conf         # Explain a single change (facts only)
+vigil why                          # Explain the most recent change
 ```
 
 ### Accepting Changes
@@ -246,6 +260,20 @@ See [Notifications](docs/NOTIFICATIONS.md) for routing, coalescing, and escalati
 | [NOTICE](NOTICE) | Project identity and attribution |
 | [Trademarks](TRADEMARKS.md) | Trademark usage policy |
 | [Contributing](CONTRIBUTING.md) | How to help |
+
+---
+
+## What 1.0 doesn't have, and won't
+
+- No TUI. No web UI.
+- No rule engine. No plugin system.
+- No telemetry, opt-in or otherwise.
+- No auto-updates.
+- No anthropomorphized daemon name.
+- No webhook or MQTT notification channels.
+- No machine learning, no Bayesian inference, no adaptive thresholds.
+
+The signal socket is the integration point for anyone who needs more.
 
 ---
 

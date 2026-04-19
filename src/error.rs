@@ -6,70 +6,70 @@ use thiserror::Error;
 /// Central error type for Vigil.
 #[derive(Error, Debug)]
 pub enum VigilError {
-    #[error("I/O error: {0}")]
+    #[error("{0}")]
     Io(#[from] std::io::Error),
 
-    #[error("database error: {0}")]
+    #[error("{0}")]
     Database(#[from] rusqlite::Error),
 
-    #[error("configuration error: {0}")]
+    #[error("{0}")]
     Config(String),
 
-    #[error("TOML parse error: {0}")]
+    #[error("configuration file parse error: {0}")]
     TomlParse(#[from] toml::de::Error),
 
-    #[error("JSON error: {0}")]
+    #[error("{0}")]
     Json(#[from] serde_json::Error),
 
-    #[error("hash error: {0}")]
+    #[error("{0}")]
     Hash(String),
 
-    #[error("fanotify error: {0}")]
+    #[error("{0}")]
     Fanotify(String),
 
-    #[error("inotify error: {0}")]
+    #[error("{0}")]
     Inotify(String),
 
-    #[error("monitor error: {0}")]
+    #[error("{0}")]
     Monitor(String),
 
-    #[error("baseline error: {0}")]
+    #[error("{0}")]
     Baseline(String),
 
-    #[error("alert error: {0}")]
+    #[error("{0}")]
     Alert(String),
 
-    #[error("D-Bus error: {0}")]
+    #[error("{0}")]
     DBus(String),
 
-    #[error("HMAC verification failed: {0}")]
+    #[error("{0}")]
     HmacVerification(String),
 
-    #[error("package manager error: {0}")]
+    #[error("{0}")]
     PackageManager(String),
 
-    #[error("permission denied: {0}")]
+    #[error("{0}")]
     PermissionDenied(String),
 
-    #[error("daemon error: {0}")]
+    #[error("{0}")]
     Daemon(String),
 
-    #[error("path error: {0}")]
+    #[error("{0}")]
     Path(String),
 
-    #[error("syslog error: {0}")]
+    #[error("{0}")]
     Syslog(String),
 
-    #[error("control socket error: {0}")]
+    #[error("{0}")]
     Control(String),
 
-    #[error("glob pattern error: {0}")]
+    #[error("{0}")]
     GlobPattern(#[from] globset::Error),
 
-    #[error("WAL error: {0}")]
+    #[error("{0}")]
     Wal(String),
 
-    #[error("attestation error: {0}")]
+    #[error("{0}")]
     Attest(String),
 }
 
@@ -227,6 +227,103 @@ mod tests {
                 assert!(msg.contains("I/O error"));
             }
             other => panic!("expected Daemon variant, got {:?}", other),
+        }
+    }
+
+    /// Returns sample error messages for every string-based VigilError variant.
+    fn sample_errors() -> Vec<VigilError> {
+        vec![
+            VigilError::Config("invalid watch path: /nonexistent does not exist".into()),
+            VigilError::Hash("BLAKE3 hash mismatch for /etc/passwd".into()),
+            VigilError::Fanotify("kernel rejected fanotify_init at /dev/fanotify; check CAP_SYS_ADMIN or run `vigil doctor`".into()),
+            VigilError::Inotify("inotify watch limit reached; increase /proc/sys/fs/inotify/max_user_watches".into()),
+            VigilError::Monitor("monitor thread exited; run `vigil doctor` for diagnostics".into()),
+            VigilError::Baseline("baseline at /var/lib/vigil/baseline.db was previously initialized but is now empty; possible tampering. Run `vigil doctor`".into()),
+            VigilError::Alert("desktop notification failed; notify-send not found at /usr/bin/notify-send".into()),
+            VigilError::DBus("D-Bus session bus unavailable; desktop notifications disabled. Check /run/user/$UID/bus".into()),
+            VigilError::HmacVerification("HMAC key file /etc/vigil/hmac.key has unsafe permissions 0644; fix with: sudo chmod 600 /etc/vigil/hmac.key".into()),
+            VigilError::PackageManager("pacman query timed out after 5s; check `pacman -Qi` manually".into()),
+            VigilError::PermissionDenied("cannot open /var/lib/vigil/baseline.db; run with elevated privileges: sudo vigil doctor".into()),
+            VigilError::Daemon("Another vigild is running. Stop it first: `sudo systemctl stop vigild`.".into()),
+            VigilError::Path("path /var/lib/vigil/baseline.db is not a regular file".into()),
+            VigilError::Syslog("cannot open /dev/log; journald may not be running".into()),
+            VigilError::Control("Another vigild is running (control socket /run/vigil/control.sock already in use). Stop it first: `sudo systemctl stop vigild`.".into()),
+            VigilError::Wal("The detection log is full. Run `vigil status` and `vigil doctor` to investigate.".into()),
+            VigilError::Attest("attestation key not found at /etc/vigil/attest.key; run `vigil setup attest`".into()),
+        ]
+    }
+
+    #[test]
+    fn error_messages_are_human_readable() {
+        let forbidden_jargon = ["unwrap", "Result", "Option", "Box", "panic", "dyn", "serde"];
+        let forbidden_marketing = [
+            "leverage",
+            "robust",
+            "comprehensive",
+            "seamless",
+            "powerful",
+            "intuitive",
+        ];
+        let forbidden_phrases = [
+            "live your life",
+            "hang tight",
+            "don't worry",
+            "you got this",
+            "whoops",
+            "oops",
+            "uh oh",
+            "you're fine",
+        ];
+
+        for err in sample_errors() {
+            let msg = err.to_string();
+
+            // Length under 250 characters
+            assert!(
+                msg.len() <= 250,
+                "error message too long ({} chars): {}",
+                msg.len(),
+                msg
+            );
+
+            // Contains a CLI command in backticks, a file path, or both
+            let has_backtick_cmd = msg.contains('`');
+            let has_path = msg.contains('/');
+            assert!(
+                has_backtick_cmd || has_path,
+                "error message must contain a command or path: {}",
+                msg
+            );
+
+            // No Rust jargon
+            for word in &forbidden_jargon {
+                assert!(
+                    !msg.to_lowercase().contains(&word.to_lowercase()),
+                    "error message contains forbidden jargon '{}': {}",
+                    word,
+                    msg
+                );
+            }
+
+            // No marketing words
+            for word in &forbidden_marketing {
+                assert!(
+                    !msg.to_lowercase().contains(&word.to_lowercase()),
+                    "error message contains forbidden marketing word '{}': {}",
+                    word,
+                    msg
+                );
+            }
+
+            // No forbidden phrases
+            for phrase in &forbidden_phrases {
+                assert!(
+                    !msg.to_lowercase().contains(phrase),
+                    "error message contains forbidden phrase '{}': {}",
+                    phrase,
+                    msg
+                );
+            }
         }
     }
 }

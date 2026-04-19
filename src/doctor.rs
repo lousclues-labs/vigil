@@ -667,11 +667,11 @@ fn check_audit_log(config: &Config) -> DiagnosticCheck {
                     name: "Audit log".to_string(),
                     status: CheckStatus::Warning,
                     detail: format!(
-                        "{} entries, {} chain breaks detected",
+                        "tampered at entry {}; {} entries total. Save a copy of the audit DB, then run `vigil audit verify -v`.",
+                        breaks.first().map(|b| b.0).unwrap_or(0),
                         format_count(total),
-                        breaks.len()
                     ),
-                    fix: Some("vigil audit verify".to_string()),
+                    fix: Some("vigil audit verify -v".to_string()),
                 }
             } else if missing > 0 {
                 DiagnosticCheck {

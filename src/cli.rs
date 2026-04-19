@@ -13,7 +13,7 @@ use crate::types::{OutputFormat, Severity};
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 
     /// Configuration file path (overrides default search)
     #[arg(short, long, global = true)]
@@ -96,6 +96,18 @@ pub enum Command {
     /// Show daemon status
     Status,
 
+    /// First-run configuration flow
+    Welcome,
+
+    /// Explain a change to a path
+    Why {
+        /// Path to explain (omit for most recent change)
+        path: Option<PathBuf>,
+    },
+
+    /// End-to-end verification of vigil on the current machine
+    Selftest,
+
     /// Query why a path is watched (or not)
     Explain {
         /// Path to explain
@@ -146,6 +158,10 @@ pub enum Command {
         /// Trigger a self-check on the running daemon via control socket
         #[arg(long)]
         now: bool,
+
+        /// Show full diagnostic breakdown (default: compact summary)
+        #[arg(short, long)]
+        verbose: bool,
     },
 
     /// Update Vigil Baseline from a local git repository
@@ -452,7 +468,7 @@ mod tests {
     fn init_force_flag_parses() {
         let cli = Cli::try_parse_from(["vigil", "init", "--force"]).expect("parse init --force");
         match cli.command {
-            Command::Init { force } => assert!(force),
+            Some(Command::Init { force }) => assert!(force),
             _ => panic!("expected init command"),
         }
     }
@@ -462,7 +478,7 @@ mod tests {
         let cli = Cli::try_parse_from(["vigil", "doctor", "--format", "json"])
             .expect("parse doctor --format json");
         match cli.command {
-            Command::Doctor { format, .. } => assert_eq!(format, Some(OutputFormat::Json)),
+            Some(Command::Doctor { format, .. }) => assert_eq!(format, Some(OutputFormat::Json)),
             _ => panic!("expected doctor command"),
         }
     }
@@ -472,7 +488,7 @@ mod tests {
         let cli = Cli::try_parse_from(["vigil", "update", "--repo", "/opt/vigil"])
             .expect("parse update --repo");
         match cli.command {
-            Command::Update { repo, .. } => {
+            Some(Command::Update { repo, .. }) => {
                 assert_eq!(repo, Some(PathBuf::from("/opt/vigil")));
             }
             _ => panic!("expected update command"),
@@ -484,12 +500,12 @@ mod tests {
         let cli =
             Cli::try_parse_from(["vigil", "update", "--quiet"]).expect("parse update --quiet");
         match cli.command {
-            Command::Update {
+            Some(Command::Update {
                 quiet,
                 verbose,
                 no_progress,
                 ..
-            } => {
+            }) => {
                 assert!(quiet);
                 assert!(!verbose);
                 assert!(!no_progress);
@@ -502,12 +518,12 @@ mod tests {
     fn update_verbose_flag() {
         let cli = Cli::try_parse_from(["vigil", "update", "-v"]).expect("parse update -v");
         match cli.command {
-            Command::Update {
+            Some(Command::Update {
                 quiet,
                 verbose,
                 no_progress,
                 ..
-            } => {
+            }) => {
                 assert!(!quiet);
                 assert!(verbose);
                 assert!(!no_progress);
@@ -521,12 +537,12 @@ mod tests {
         let cli = Cli::try_parse_from(["vigil", "update", "--no-progress"])
             .expect("parse update --no-progress");
         match cli.command {
-            Command::Update {
+            Some(Command::Update {
                 quiet,
                 verbose,
                 no_progress,
                 ..
-            } => {
+            }) => {
                 assert!(!quiet);
                 assert!(!verbose);
                 assert!(no_progress);
@@ -552,9 +568,9 @@ mod tests {
     fn setup_hmac_parses_defaults() {
         let cli = Cli::try_parse_from(["vigil", "setup", "hmac"]).expect("parse setup hmac");
         match cli.command {
-            Command::Setup {
+            Some(Command::Setup {
                 action: SetupAction::Hmac { key_path, force },
-            } => {
+            }) => {
                 assert_eq!(key_path, PathBuf::from("/etc/vigil/hmac.key"));
                 assert!(!force);
             }
@@ -574,9 +590,9 @@ mod tests {
         ])
         .expect("parse setup hmac with args");
         match cli.command {
-            Command::Setup {
+            Some(Command::Setup {
                 action: SetupAction::Hmac { key_path, force },
-            } => {
+            }) => {
                 assert_eq!(key_path, PathBuf::from("/custom/key"));
                 assert!(force);
             }
@@ -588,9 +604,9 @@ mod tests {
     fn setup_socket_parses_defaults() {
         let cli = Cli::try_parse_from(["vigil", "setup", "socket"]).expect("parse setup socket");
         match cli.command {
-            Command::Setup {
+            Some(Command::Setup {
                 action: SetupAction::Socket { path, disable },
-            } => {
+            }) => {
                 assert_eq!(path, PathBuf::from("/run/vigil/alert.sock"));
                 assert!(!disable);
             }
@@ -603,9 +619,9 @@ mod tests {
         let cli = Cli::try_parse_from(["vigil", "setup", "socket", "--disable"])
             .expect("parse setup socket --disable");
         match cli.command {
-            Command::Setup {
+            Some(Command::Setup {
                 action: SetupAction::Socket { disable, .. },
-            } => {
+            }) => {
                 assert!(disable);
             }
             _ => panic!("expected setup socket command"),
@@ -616,13 +632,13 @@ mod tests {
     fn check_accept_flag_parses() {
         let cli = Cli::try_parse_from(["vigil", "check", "--accept"]).expect("parse");
         match cli.command {
-            Command::Check {
+            Some(Command::Check {
                 accept,
                 full,
                 now,
                 path,
                 ..
-            } => {
+            }) => {
                 assert!(accept);
                 assert!(!full);
                 assert!(!now);
@@ -636,7 +652,7 @@ mod tests {
     fn check_accept_and_full_parses() {
         let cli = Cli::try_parse_from(["vigil", "check", "--accept", "--full"]).expect("parse");
         match cli.command {
-            Command::Check { accept, full, .. } => {
+            Some(Command::Check { accept, full, .. }) => {
                 assert!(accept);
                 assert!(full);
             }
@@ -648,7 +664,7 @@ mod tests {
     fn diff_command_parses() {
         let cli = Cli::try_parse_from(["vigil", "diff", "/etc/passwd"]).expect("parse diff");
         match cli.command {
-            Command::Diff { path } => {
+            Some(Command::Diff { path }) => {
                 assert_eq!(path, PathBuf::from("/etc/passwd"));
             }
             _ => panic!("expected diff command"),
@@ -682,13 +698,13 @@ mod tests {
         .expect("parse accept filters");
 
         match cli.command {
-            Command::Check {
+            Some(Command::Check {
                 accept,
                 dry_run,
                 accept_severity,
                 accept_group,
                 ..
-            } => {
+            }) => {
                 assert!(accept);
                 assert!(dry_run);
                 assert_eq!(accept_severity, Some(Severity::Low));
@@ -703,7 +719,7 @@ mod tests {
         let cli = Cli::try_parse_from(["vigil", "check", "--accept", "--path", "/usr/bin/vigil*"])
             .expect("parse");
         match cli.command {
-            Command::Check { accept, path, .. } => {
+            Some(Command::Check { accept, path, .. }) => {
                 assert!(accept);
                 assert_eq!(path, Some("/usr/bin/vigil*".to_string()));
             }
@@ -715,7 +731,7 @@ mod tests {
     fn check_since_parses() {
         let cli = Cli::try_parse_from(["vigil", "check", "--since", "24h"]).expect("parse");
         match cli.command {
-            Command::Check { since, .. } => {
+            Some(Command::Check { since, .. }) => {
                 assert_eq!(since.as_deref(), Some("24h"));
             }
             _ => panic!("expected check command"),
@@ -740,7 +756,7 @@ mod tests {
         ])
         .expect("parse");
         match cli.command {
-            Command::Audit {
+            Some(Command::Audit {
                 action:
                     AuditAction::Show {
                         last,
@@ -750,7 +766,7 @@ mod tests {
                         verbose,
                         ..
                     },
-            } => {
+            }) => {
                 assert_eq!(last, 100);
                 assert_eq!(path, Some("/etc/*".to_string()));
                 assert_eq!(severity, Some("high".to_string()));
@@ -765,7 +781,7 @@ mod tests {
     fn audit_show_defaults_parses() {
         let cli = Cli::try_parse_from(["vigil", "audit", "show"]).expect("parse");
         match cli.command {
-            Command::Audit {
+            Some(Command::Audit {
                 action:
                     AuditAction::Show {
                         last,
@@ -778,7 +794,7 @@ mod tests {
                         suppressed,
                         verbose,
                     },
-            } => {
+            }) => {
                 assert_eq!(last, 50);
                 assert!(path.is_none());
                 assert!(severity.is_none());
@@ -798,9 +814,9 @@ mod tests {
         let cli =
             Cli::try_parse_from(["vigil", "audit", "stats", "--period", "30d"]).expect("parse");
         match cli.command {
-            Command::Audit {
+            Some(Command::Audit {
                 action: AuditAction::Stats { period },
-            } => {
+            }) => {
                 assert_eq!(period, "30d");
             }
             _ => panic!("expected audit stats"),
@@ -811,9 +827,9 @@ mod tests {
     fn audit_stats_default_period() {
         let cli = Cli::try_parse_from(["vigil", "audit", "stats"]).expect("parse");
         match cli.command {
-            Command::Audit {
+            Some(Command::Audit {
                 action: AuditAction::Stats { period },
-            } => {
+            }) => {
                 assert_eq!(period, "7d");
             }
             _ => panic!("expected audit stats"),
@@ -825,9 +841,9 @@ mod tests {
         let cli = Cli::try_parse_from(["vigil", "maintenance", "enter", "--quiet"])
             .expect("parse maintenance enter --quiet");
         match cli.command {
-            Command::Maintenance {
+            Some(Command::Maintenance {
                 action: MaintenanceAction::Enter { quiet },
-            } => assert!(quiet),
+            }) => assert!(quiet),
             _ => panic!("expected maintenance enter"),
         }
     }
@@ -837,9 +853,9 @@ mod tests {
         let cli =
             Cli::try_parse_from(["vigil", "maintenance", "exit"]).expect("parse maintenance exit");
         match cli.command {
-            Command::Maintenance {
+            Some(Command::Maintenance {
                 action: MaintenanceAction::Exit { quiet },
-            } => assert!(!quiet),
+            }) => assert!(!quiet),
             _ => panic!("expected maintenance exit"),
         }
     }
@@ -849,9 +865,9 @@ mod tests {
         let cli = Cli::try_parse_from(["vigil", "maintenance", "status"])
             .expect("parse maintenance status");
         match cli.command {
-            Command::Maintenance {
+            Some(Command::Maintenance {
                 action: MaintenanceAction::Status,
-            } => {}
+            }) => {}
             _ => panic!("expected maintenance status"),
         }
     }
@@ -861,9 +877,9 @@ mod tests {
         let cli = Cli::try_parse_from(["vigil", "baseline", "refresh", "--quiet"])
             .expect("parse baseline refresh --quiet");
         match cli.command {
-            Command::Baseline {
+            Some(Command::Baseline {
                 action: BaselineAction::Refresh { quiet },
-            } => assert!(quiet),
+            }) => assert!(quiet),
             _ => panic!("expected baseline refresh"),
         }
     }
@@ -873,9 +889,9 @@ mod tests {
         let cli =
             Cli::try_parse_from(["vigil", "baseline", "refresh"]).expect("parse baseline refresh");
         match cli.command {
-            Command::Baseline {
+            Some(Command::Baseline {
                 action: BaselineAction::Refresh { quiet },
-            } => assert!(!quiet),
+            }) => assert!(!quiet),
             _ => panic!("expected baseline refresh"),
         }
     }
@@ -884,9 +900,9 @@ mod tests {
     fn setup_attest_parses_defaults() {
         let cli = Cli::try_parse_from(["vigil", "setup", "attest"]).expect("parse setup attest");
         match cli.command {
-            Command::Setup {
+            Some(Command::Setup {
                 action: SetupAction::Attest { key_path, force },
-            } => {
+            }) => {
                 assert_eq!(key_path, PathBuf::from("/etc/vigil/attest.key"));
                 assert!(!force);
             }
@@ -898,7 +914,7 @@ mod tests {
     fn attest_create_parses_defaults() {
         let cli = Cli::try_parse_from(["vigil", "attest", "create"]).expect("parse attest create");
         match cli.command {
-            Command::Attest {
+            Some(Command::Attest {
                 action:
                     AttestAction::Create {
                         scope,
@@ -906,7 +922,7 @@ mod tests {
                         key_path,
                         deterministic_time,
                     },
-            } => {
+            }) => {
                 assert_eq!(scope, "full");
                 assert!(out.is_none());
                 assert!(key_path.is_none());
@@ -929,9 +945,9 @@ mod tests {
         .expect("parse attest verify");
 
         match cli.command {
-            Command::Attest {
+            Some(Command::Attest {
                 action: AttestAction::Verify { file, key_path },
-            } => {
+            }) => {
                 assert_eq!(file, PathBuf::from("sample.vatt"));
                 assert_eq!(key_path, Some(PathBuf::from("/tmp/attest.key")));
             }
@@ -944,9 +960,9 @@ mod tests {
         let cli =
             Cli::try_parse_from(["vigil", "attest", "diff", "a.vatt"]).expect("parse attest diff");
         match cli.command {
-            Command::Attest {
+            Some(Command::Attest {
                 action: AttestAction::Diff { file, against },
-            } => {
+            }) => {
                 assert_eq!(file, PathBuf::from("a.vatt"));
                 assert_eq!(against, "current");
             }
@@ -958,9 +974,9 @@ mod tests {
     fn attest_list_default_dir() {
         let cli = Cli::try_parse_from(["vigil", "attest", "list"]).expect("parse attest list");
         match cli.command {
-            Command::Attest {
+            Some(Command::Attest {
                 action: AttestAction::List { dir },
-            } => {
+            }) => {
                 assert_eq!(dir, PathBuf::from("."));
             }
             _ => panic!("expected attest list"),

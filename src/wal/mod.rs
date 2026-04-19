@@ -223,12 +223,15 @@ impl DetectionWal {
 
             let header = read_header(&file)?;
             if header[0..4] != WAL_MAGIC {
-                return Err(VigilError::Wal("invalid WAL magic".into()));
+                return Err(VigilError::Wal(format!(
+                    "The file at {} is not a vigil detection log. Either it was overwritten, or vigil is pointed at the wrong path. Check the [daemon] section of /etc/vigil/vigil.toml.",
+                    path.display()
+                )));
             }
             let version = u16::from_le_bytes([header[4], header[5]]);
             if version != WAL_VERSION {
                 return Err(VigilError::Wal(format!(
-                    "unsupported WAL version {}",
+                    "The detection log was written by an older vigil (version {}). Run `vigil baseline migrate-wal` to upgrade.",
                     version
                 )));
             }
@@ -249,7 +252,7 @@ impl DetectionWal {
                 && header_fingerprint != provided_fingerprint
             {
                 return Err(VigilError::Wal(
-                    "WAL HMAC key fingerprint mismatch".to_string(),
+                    "The detection log was created with a different HMAC key than the one at /etc/vigil/hmac.key. If you rotated the key, restore the old one or rebuild with `vigil baseline refresh`. If you did not rotate, treat this as suspicious and check the audit log.".to_string(),
                 ));
             }
         }
@@ -305,7 +308,10 @@ impl DetectionWal {
         // threads on the mutex just to discover the WAL is full.
         let current_len = self.file_len.load(Ordering::Acquire);
         if current_len + entry_size > self.max_size_bytes {
-            return Err(VigilError::Wal("WAL full".into()));
+            return Err(VigilError::Wal(
+                "The detection log is full. Run `vigil status` and `vigil doctor` to investigate."
+                    .into(),
+            ));
         }
 
         let _guard = self.write_lock.lock();
@@ -313,7 +319,10 @@ impl DetectionWal {
         // Re-check capacity under lock (another thread may have appended)
         let current_len = self.file_len.load(Ordering::Acquire);
         if current_len + entry_size > self.max_size_bytes {
-            return Err(VigilError::Wal("WAL full".into()));
+            return Err(VigilError::Wal(
+                "The detection log is full. Run `vigil status` and `vigil doctor` to investigate."
+                    .into(),
+            ));
         }
 
         let sequence = self.sequence.fetch_add(1, Ordering::AcqRel);
@@ -1049,7 +1058,7 @@ mod tests {
             let r = wal.append(&make_record(1, Severity::Low, DetectionSource::Realtime));
             if let Err(e) = r {
                 match e {
-                    VigilError::Wal(msg) => assert!(msg.contains("WAL full")),
+                    VigilError::Wal(msg) => assert!(msg.contains("detection log is full")),
                     _ => panic!("unexpected error type"),
                 }
                 break;
@@ -1182,7 +1191,7 @@ mod tests {
         }
 
         match DetectionWal::open(&bad_path, None, 64 * 1024 * 1024) {
-            Err(VigilError::Wal(msg)) => assert!(msg.contains("invalid WAL magic")),
+            Err(VigilError::Wal(msg)) => assert!(msg.contains("not a vigil detection log")),
             Err(other) => panic!("unexpected error kind: {}", other),
             Ok(_) => panic!("expected invalid WAL magic error"),
         }

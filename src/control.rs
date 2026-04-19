@@ -79,11 +79,18 @@ pub fn spawn(
     }
 
     let listener = UnixListener::bind(&socket_path).map_err(|e| {
-        VigilError::Control(format!(
-            "cannot bind control socket {}: {}",
-            socket_path.display(),
-            e
-        ))
+        if e.kind() == std::io::ErrorKind::AddrInUse {
+            VigilError::Control(format!(
+                "Another vigild is running (control socket {} already in use). Stop it first: `sudo systemctl stop vigild`.",
+                socket_path.display(),
+            ))
+        } else {
+            VigilError::Control(format!(
+                "cannot bind control socket {}: {}",
+                socket_path.display(),
+                e
+            ))
+        }
     })?;
 
     // Set socket permissions to 0600

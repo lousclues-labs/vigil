@@ -23,10 +23,13 @@ vigil [GLOBAL_OPTIONS] <COMMAND> [COMMAND_OPTIONS]
 | Command | Description |
 |---------|-------------|
 | `init` | initialize baseline database |
+| `welcome` | first-run configuration flow |
 | `watch` | start real-time monitoring daemon in foreground |
 | `check` | run one-shot integrity check |
 | `diff` | compare a single file against its baseline |
 | `status` | one-shot query of current state with verdict |
+| `why` | explain a change to a path |
+| `selftest` | end-to-end verification on the current machine |
 | `explain` | query why a path is watched (or not) |
 | `why-silent` | query why Vigil is currently quiet |
 | `inspect` | offline forensic comparison against arbitrary paths/baselines |
@@ -220,6 +223,8 @@ Vigil Baseline -- Diff: /etc/passwd
 
 One-shot query of Vigil's current state. Works whether vigild is running or not.
 
+`vigil` with no subcommand runs `vigil status`.
+
 ```bash
 vigil status [--format json]
 ```
@@ -248,7 +253,7 @@ Falls back to `/run/vigil/health.json` for baseline counts when the active user 
   "daemon_running": true,
   "daemon_pid": 8432,
   "daemon_uptime": "3d 14h",
-  "version": "0.41.0",
+  "version": "1.0.0",
   "backend": "fanotify",
   "backend_degraded": false,
   "watching_paths": 4217,
@@ -265,6 +270,133 @@ Falls back to `/run/vigil/health.json` for baseline counts when the active user 
 ```
 
 No fields are ever omitted; absent values are explicit `null`.
+
+---
+
+## `welcome`
+
+First-run configuration flow. Detects distro, root filesystem, and package
+manager from three reads (`/etc/os-release`, `/proc/mounts`, `$PATH`).
+Presents static baseline suggestions for interactive review, writes config,
+builds the initial baseline, starts vigild, and runs selftest inline.
+
+```bash
+sudo vigil welcome
+```
+
+Idempotent: re-running detects existing config and offers to keep or overwrite.
+Vigil does not scan the filesystem before showing suggestions.
+
+Example output before confirmation:
+
+```
+Configure which files vigil should watch.
+
+System detected: Arch Linux, btrfs, pacman.
+
+Suggested baseline (standard Linux file integrity targets):
+
+  [system]   /etc, /usr/bin, /usr/sbin, /boot              critical
+  [persist]  /etc/systemd, /etc/cron*, /etc/rc.local       high
+  [you]      ~/.ssh, ~/.bashrc, ~/.config/autostart        high
+
+Suggestions are static. Vigil has not read your filesystem.
+Edit before accepting if your system is unusual.
+
+Press enter to accept, or:
+  a   add a path
+  r   remove a path
+  s   show what's in a group
+  q   quit and edit /etc/vigil/vigil.toml directly
+
+>
+```
+
+---
+
+## `why`
+
+Explain a single change. Reports facts only -- no assessment, no judgment.
+
+```bash
+vigil why [<path>] [--format json]
+```
+
+Without a path argument, shows the most recent change in the audit log.
+
+Example output:
+
+```
+/etc/resolv.conf changed at 14:32 today.
+
+Changes:
+  content        BLAKE3 hash differs
+  permissions    unchanged
+  owner          unchanged
+
+Attribution:
+  pid 8821, /usr/bin/dhclient
+  method:    pidfd (race-resistant)
+
+Context:
+  No maintenance window was active.
+  Group: [system], severity: high.
+  Package owner: systemd.
+
+Historical (informational, not a judgment):
+  This path appears in the audit log 47 times in the last 30 days.
+  See `vigil audit show --path '/etc/resolv.conf' --since 30d` for the full record.
+```
+
+When the path has no audit history:
+
+```
+No changes recorded for /etc/resolv.conf.
+
+This path may not be in any watch group. Check: vigil config show
+```
+
+---
+
+## `selftest`
+
+End-to-end verification of vigil on the current machine.
+
+```bash
+sudo vigil selftest
+```
+
+Creates a temporary file, modifies it, verifies daemon detection, checks audit
+chain integrity, checks notification availability, and cleans up.
+
+```
+Selftest:
+  [✓] created /tmp/vigil-selftest-A7K2P
+  [✓] modified the test file
+  [✓] vigild detected the change in 47ms
+  [✓] audit log recorded the event with HMAC chain intact
+  [✓] desktop notification: notify-send available
+  [✓] test artifacts cleaned
+
+Selftest passed.
+```
+
+On partial failure:
+
+```
+Selftest: 5 of 6 passed.
+Vigild functional. Desktop notifications unavailable.
+Install your desktop's notification daemon to enable them.
+```
+
+On total failure (vigild not running):
+
+```
+  [✗] cannot connect to vigild: control socket not found at /run/vigil/control.sock
+
+Selftest aborted. Vigild is not running.
+Start it: sudo systemctl start vigild
+```
 
 ---
 
@@ -424,13 +556,29 @@ Per-channel status values: `ok`, `failed`, `no_listener`, `unconfigured`.
 Run environment and health diagnostics.
 
 ```bash
-vigil doctor [--format <human|json>] [--now]
+vigil doctor [--format <human|json>] [--now] [--verbose]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--format` | output format (human or json) |
 | `--now` | trigger a self-check on the running daemon via control socket |
+| `-v`, `--verbose` | show full diagnostic breakdown (default: compact 5-line summary) |
+
+Default output is a compact preamble:
+
+```
+Vigil Baseline v1.0.0. Healthy.
+
+  Daemon         running (pid 8432, uptime 4d 2h)
+  Baseline       fresh, 59,122 entries (last refresh: 3h ago)
+  Audit log      intact, 226,317 entries
+  Config         valid, no warnings
+
+Use --verbose for the full diagnostic.
+```
+
+Every warning includes urgency (`Not urgent` / `Soon` / `Now`) and a corrective command.
 
 What it checks:
 - fanotify availability

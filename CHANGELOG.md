@@ -2,6 +2,51 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.0.0] - 2026-04-19
+
+Vigil Baseline is 1.0. After 43 prereleases, the codebase has 70+ self-reported
+and remediated vulnerabilities, a test suite that exercises every documented
+principle, and a stable on-disk format. The WAL format, audit log format,
+control socket protocol, configuration schema, and CLI surface are now stable.
+Changes that break them require a 2.0.
+
+### Added
+
+- `vigil welcome`: first-run configuration. Static suggestions, no filesystem scan.
+- `vigil why <path>`: explanation of a single change. Reports facts; does not assess.
+- `vigil selftest`: end-to-end verification on the current machine.
+
+### Changed
+
+- `vigil` with no subcommand now prints status.
+- `vigil doctor` healthy output is five lines. Full diagnostic at `--verbose`.
+- Every doctor warning includes urgency (`not urgent` / `soon` / `now`).
+- Every `VigilError` variant rewritten in plain language. Enforced by
+  `error_messages_are_human_readable` test.
+- Desktop notifications end with `vigil why <path>` hint.
+
+### Stability contract
+
+The following are now stable. Changes require a major version:
+
+- WAL on-disk format (version 2)
+- Audit log schema and HMAC chain format
+- Control socket JSON protocol
+- Configuration file structure and key names
+- CLI subcommand and flag names
+
+Internal APIs, log formats, doctor section structure, and metric names
+are NOT covered by this contract.
+
+### Removed
+
+Nothing.
+
+### Notes
+
+To everyone who reported a VIGIL-VULN between v0.18 and v0.43:
+the log exists because of you. Keep reporting.
+
 ## [0.43.0] - 2026-04-19
 
 ### Inviting: silence the journal for healthy systems

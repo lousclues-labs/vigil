@@ -101,7 +101,7 @@ impl AlertSink for DbusSink {
             body.push_str("\n[during maintenance window]");
         }
 
-        body.push_str("\nRun 'vigil audit show --last 5' for details.");
+        body.push_str(&format!("\nvigil why {}", alert.file.path.display()));
 
         let status = Command::new(notify_send_binary())
             .arg("--app-name=Vigil Baseline")

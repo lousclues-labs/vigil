@@ -1,6 +1,6 @@
 [package]
 name = "vigil-baseline"
-version = "0.43.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.85"
 description = "Lightweight file integrity monitor for Linux desktops"
