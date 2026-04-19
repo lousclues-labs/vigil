@@ -146,91 +146,64 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
         .map_err(|e| crate::VigilError::Daemon(format!("cannot spawn coordinator thread: {}", e)))
 }
 
+/// Time a tick phase and record its name + duration.
+macro_rules! time_phase {
+    ($phases:expr, $name:expr, $body:expr) => {{
+        let _t = std::time::Instant::now();
+        let _result = $body;
+        $phases.push(($name, _t.elapsed().as_millis()));
+        _result
+    }};
+}
+
 impl Coordinator {
     fn tick(&mut self) {
         let tick_start = std::time::Instant::now();
         let mut failed_phases: Vec<&str> = Vec::new();
+        let mut phase_timings: Vec<(&str, u128)> = Vec::new();
 
-        let t = std::time::Instant::now();
-        if !self.check_baseline_db_identity() {
+        if !time_phase!(
+            phase_timings,
+            "baseline_check",
+            self.check_baseline_db_identity()
+        ) {
             failed_phases.push("baseline_check");
         }
-        let baseline_check_ms = t.elapsed().as_millis();
-
-        let t = std::time::Instant::now();
-        if !self.check_audit_db_identity() {
+        if !time_phase!(phase_timings, "audit_check", self.check_audit_db_identity()) {
             failed_phases.push("audit_check");
         }
-        let audit_check_ms = t.elapsed().as_millis();
-
-        let t = std::time::Instant::now();
-        if !self.check_wal_identity() {
+        if !time_phase!(phase_timings, "wal_check", self.check_wal_identity()) {
             failed_phases.push("wal_check");
         }
-        let wal_check_ms = t.elapsed().as_millis();
-
-        let t = std::time::Instant::now();
-        self.check_mount_evasion();
-        let mount_check_ms = t.elapsed().as_millis();
-
+        time_phase!(phase_timings, "mount_check", self.check_mount_evasion());
         self.notify_watchdog();
 
-        let t = std::time::Instant::now();
-        let clock_anomaly = self.detect_clock_anomaly();
-        let clock_check_ms = t.elapsed().as_millis();
-
-        let t = std::time::Instant::now();
-        if !clock_anomaly {
-            self.rotate_audit_log();
-        }
-        let rotation_ms = t.elapsed().as_millis();
-
+        let clock_anomaly = time_phase!(phase_timings, "clock_check", self.detect_clock_anomaly());
+        time_phase!(phase_timings, "rotation", {
+            if !clock_anomaly {
+                self.rotate_audit_log();
+            }
+        });
         self.notify_watchdog();
 
-        let t = std::time::Instant::now();
-        self.write_snapshots();
-        let snapshots_ms = t.elapsed().as_millis();
-
+        time_phase!(phase_timings, "snapshots", self.write_snapshots());
         self.notify_watchdog();
 
-        let t = std::time::Instant::now();
-        self.check_backpressure();
-        let backpressure_ms = t.elapsed().as_millis();
-
-        let t = std::time::Instant::now();
-        self.check_event_drops();
-        let drops_ms = t.elapsed().as_millis();
-
-        let t = std::time::Instant::now();
-        self.maybe_checkpoint_wal();
-        let checkpoint_ms = t.elapsed().as_millis();
-
-        let t = std::time::Instant::now();
-        self.check_maintenance_timeout();
-        let maintenance_ms = t.elapsed().as_millis();
-
-        let t = std::time::Instant::now();
-        self.check_drift_velocity();
-        let drift_ms = t.elapsed().as_millis();
+        time_phase!(phase_timings, "backpressure", self.check_backpressure());
+        time_phase!(phase_timings, "drops", self.check_event_drops());
+        time_phase!(phase_timings, "checkpoint", self.maybe_checkpoint_wal());
+        time_phase!(
+            phase_timings,
+            "maintenance",
+            self.check_maintenance_timeout()
+        );
+        time_phase!(phase_timings, "drift", self.check_drift_velocity());
 
         let total_ms = tick_start.elapsed().as_millis();
 
         // Log individual sub-method timings if any exceeded 5 seconds
         let threshold_ms = 5000;
-        for (name, dur) in [
-            ("baseline_check", baseline_check_ms),
-            ("audit_check", audit_check_ms),
-            ("wal_check", wal_check_ms),
-            ("mount_check", mount_check_ms),
-            ("clock_check", clock_check_ms),
-            ("rotation", rotation_ms),
-            ("snapshots", snapshots_ms),
-            ("backpressure", backpressure_ms),
-            ("drops", drops_ms),
-            ("checkpoint", checkpoint_ms),
-            ("maintenance", maintenance_ms),
-            ("drift", drift_ms),
-        ] {
+        for &(name, dur) in &phase_timings {
             if dur > threshold_ms {
                 tracing::warn!(
                     method = name,
@@ -245,18 +218,7 @@ impl Coordinator {
         if total_ms > 10_000 {
             tracing::warn!(
                 total_ms = total_ms as u64,
-                baseline_check_ms = baseline_check_ms as u64,
-                audit_check_ms = audit_check_ms as u64,
-                wal_check_ms = wal_check_ms as u64,
-                mount_check_ms = mount_check_ms as u64,
-                clock_check_ms = clock_check_ms as u64,
-                rotation_ms = rotation_ms as u64,
-                snapshots_ms = snapshots_ms as u64,
-                backpressure_ms = backpressure_ms as u64,
-                drops_ms = drops_ms as u64,
-                checkpoint_ms = checkpoint_ms as u64,
-                maintenance_ms = maintenance_ms as u64,
-                drift_ms = drift_ms as u64,
+                phases = ?phase_timings,
                 "coordinator tick took {}ms",
                 total_ms
             );
