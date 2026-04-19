@@ -24,6 +24,18 @@ Changes that break them require a 2.0.
 - Every `VigilError` variant rewritten in plain language. Enforced by
   `error_messages_are_human_readable` test.
 - Desktop notifications end with `vigil why <path>` hint.
+- `vigil baseline refresh` is now a first-class operation. CLI sends refresh
+  through the control socket; the daemon builds into a temp file, streams
+  progress events, and atomically swaps on completion. No direct DB access
+  from the CLI. Clear errors for: no daemon, no permission, degraded state,
+  disk full.
+- `vigil update` reinstalls when the binary content changes at the same
+  version (BLAKE3 hash comparison instead of version-string-only skip).
+- Config validation warnings include corrective actions: which config key
+  to change and where.
+- Package cache build for pacman/rpm uses streaming BufReader instead of
+  buffered `run_with_timeout`, fixing a pipe deadlock on systems with
+  400k+ package files.
 
 ### Stability contract
 
