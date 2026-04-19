@@ -8,7 +8,9 @@ pub mod dbus;
 pub mod journal;
 pub mod json_log;
 pub mod remote_syslog;
+pub mod router;
 pub mod socket;
+pub mod webhook;
 
 use std::path::Path;
 use std::sync::Arc;

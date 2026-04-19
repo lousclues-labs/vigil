@@ -53,6 +53,14 @@ If you're receiving alerts during a normal day, either your system is
 compromised or Vigil Baseline is poorly configured. Fix the configuration before
 you investigate the system.
 
+Coalescing and storm suppression honor this principle harder, not less.
+When 50 package files change during `pacman -Syu`, the operator sees one
+coalesced notification with a "Likely cause: package install" line -- not
+50 individual desktop popups. When a filesystem storm produces hundreds
+of events per second, the storm detector fires once and suppresses until
+the rate drops. The audit log still records everything. Only the
+operator's attention budget is protected.
+
 **The test:** Run Vigil Baseline for seven days on a clean Arch install with normal
 desktop use and package manager hooks installed. If it produces more than
 one alert per day that does not correspond to a real filesystem change,

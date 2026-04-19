@@ -1045,4 +1045,18 @@ Example:
 
 ---
 
+## `vigil ack`
+
+Acknowledge a critical alert, canceling further escalation notifications.
+
+```bash
+vigil ack <event_id>           # acknowledge a specific critical alert
+vigil ack --all-criticals      # acknowledge all pending critical alerts
+```
+
+Acknowledged alerts stop re-firing on the configured escalation schedule.
+The acknowledgment is recorded in the audit log.
+
+---
+
 *Short commands. Deterministic output. No hidden behavior.*

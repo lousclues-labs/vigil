@@ -397,6 +397,16 @@ pub struct AlertsConfig {
     pub remote_syslog: RemoteSyslogConfig,
     #[serde(default = "default_max_alerts_per_minute")]
     pub max_alerts_per_minute: u32,
+    /// Bearer token for webhook authentication. Optional.
+    #[serde(default)]
+    pub webhook_bearer_token: Option<String>,
+    /// Storm threshold: suppress individual notifications when this many
+    /// events are eligible for delivery within storm_window_secs.
+    #[serde(default = "default_storm_threshold")]
+    pub storm_threshold: u64,
+    /// Storm window in seconds.
+    #[serde(default = "default_storm_window_secs")]
+    pub storm_window_secs: u64,
 }
 
 impl Default for AlertsConfig {
@@ -413,8 +423,19 @@ impl Default for AlertsConfig {
             notification_rate_window_secs: default_notification_rate_window(),
             remote_syslog: RemoteSyslogConfig::default(),
             max_alerts_per_minute: default_max_alerts_per_minute(),
+            webhook_bearer_token: None,
+            storm_threshold: default_storm_threshold(),
+            storm_window_secs: default_storm_window_secs(),
         }
     }
+}
+
+fn default_storm_threshold() -> u64 {
+    50
+}
+
+fn default_storm_window_secs() -> u64 {
+    60
 }
 
 fn default_notification_rate_limit() -> u32 {

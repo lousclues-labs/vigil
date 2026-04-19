@@ -162,7 +162,10 @@ paths = [
 | `desktop_notifications` | bool | `true` | enables desktop notification sink (via `notify-send` with `--app-name=Vigil Baseline` and severity-based urgency) |
 | `syslog` | bool | `true` | enables journald/syslog sink |
 | `log_file` | path | `/var/log/vigil/alerts.json` | JSON alert sink path |
-| `webhook_url` | string | empty | reserved field |
+| `webhook_url` | string | empty | HTTP POST endpoint for webhook alerts. Empty = disabled. |
+| `webhook_bearer_token` | string (optional) | none | Bearer token for webhook authentication. |
+| `storm_threshold` | integer | `50` | events within storm_window_secs before storm suppression activates. |
+| `storm_window_secs` | integer | `60` | rolling window (seconds) for storm detection. |
 | `rate_limit` | integer | `10` | global alert rate gate |
 | `cooldown_seconds` | integer | `300` | per-path cooldown |
 | `notification_rate_limit` | integer | `5` | desktop sink limit |
