@@ -85,7 +85,7 @@ jobs:
       - name: Generate SBOM
         run: |
           cargo install cargo-cyclonedx --locked
-          cargo cyclonedx --format json --output-pattern release-sbom
+          cargo cyclonedx --format json --override-filename release-sbom
 
       - name: Extract changelog section
         id: changelog
