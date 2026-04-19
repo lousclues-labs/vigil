@@ -146,26 +146,34 @@ pub(crate) fn cmd_update(
     let new_version = version_from_binary(&repo_vigil)?;
 
     if current_version != "unknown" && current_version == new_version {
-        prog.end_step_ok(None);
-        prog.set_summary_outcome("no changes installed");
-        prog.skip_remaining_with_reason("no version change");
-        prog.finish_summary();
-        return Ok(());
-    }
-
-    // Version downgrade warning
-    if current_version != "unknown" {
-        let cur = current_version.trim_start_matches('v');
-        let new = new_version.trim_start_matches('v');
-        if new < cur {
-            prog.warn(&format!(
-                "downgrade: {} \u{2192} {}",
-                current_version, new_version
-            ));
+        // Same version string; check if the binary content actually changed.
+        let installed = installed_vigil_path();
+        let changed = binary_content_differs(&installed, &repo_vigil);
+        if !changed {
+            prog.end_step_ok(None);
+            prog.set_summary_outcome("no changes installed");
+            prog.skip_remaining_with_reason("no version change");
+            prog.finish_summary();
+            return Ok(());
         }
+        prog.end_step_ok(Some(&format!(
+            "{} (binary differs, reinstalling)",
+            new_version
+        )));
+    } else {
+        // Version downgrade warning
+        if current_version != "unknown" {
+            let cur = current_version.trim_start_matches('v');
+            let new = new_version.trim_start_matches('v');
+            if new < cur {
+                prog.warn(&format!(
+                    "downgrade: {} \u{2192} {}",
+                    current_version, new_version
+                ));
+            }
+        }
+        prog.end_step_ok(None);
     }
-
-    prog.end_step_ok(None);
 
     // ── Step 4: Stop daemon ────────────────────────────────
     prog.begin_step(UpdateStep::StopDaemon);
@@ -958,6 +966,22 @@ fn installed_vigil_path() -> std::path::PathBuf {
         }
     }
     std::path::PathBuf::from("vigil")
+}
+
+/// Compare two binaries by size and BLAKE3 hash. Returns true if they differ.
+fn binary_content_differs(a: &Path, b: &Path) -> bool {
+    let (meta_a, meta_b) = match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(ma), Ok(mb)) => (ma, mb),
+        _ => return true, // if we can't read either, assume different
+    };
+    if meta_a.len() != meta_b.len() {
+        return true;
+    }
+    let (data_a, data_b) = match (std::fs::read(a), std::fs::read(b)) {
+        (Ok(da), Ok(db)) => (da, db),
+        _ => return true,
+    };
+    blake3::hash(&data_a) != blake3::hash(&data_b)
 }
 
 fn version_from_binary(path: &Path) -> vigil::Result<String> {
