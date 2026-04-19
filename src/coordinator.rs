@@ -72,6 +72,7 @@ struct Coordinator {
     maintenance_active: Arc<AtomicBool>,
     maintenance_entered_at: Arc<AtomicI64>,
     last_config_hash: Option<String>,
+    last_accepted_config_hash: Option<String>,
     initial_mounts: std::collections::HashSet<std::path::PathBuf>,
     last_tick: std::time::Instant,
     checkpoint_counter: u32,
@@ -111,6 +112,7 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
         maintenance_active: cfg.maintenance_active,
         maintenance_entered_at: cfg.maintenance_entered_at,
         last_config_hash: config_file_hash(),
+        last_accepted_config_hash: config_file_hash(),
         initial_mounts: crate::monitor::fanotify::parse_mountinfo()
             .unwrap_or_default()
             .into_iter()
@@ -271,7 +273,11 @@ impl Coordinator {
     }
 
     fn handle_reload(&mut self) {
-        // Check config file integrity before reload
+        // Check config file integrity before reload.
+        // Always update last_config_hash to record what we observed,
+        // regardless of whether reload succeeds or fails. This prevents
+        // the warning from firing on every reload signal when config is
+        // persistently broken.
         let new_config_hash = config_file_hash();
         if new_config_hash != self.last_config_hash {
             tracing::warn!(
@@ -280,6 +286,7 @@ impl Coordinator {
                 "config file hash changed during reload"
             );
         }
+        self.last_config_hash = new_config_hash.clone();
 
         // If HMAC signing is enabled, verify config HMAC
         let cfg = self.config.load();
@@ -348,7 +355,7 @@ impl Coordinator {
                 self.config.store(Arc::new(new_cfg.clone()));
                 self.watch_index
                     .store(Arc::new(WatchGroupIndex::from_config(&new_cfg)));
-                self.last_config_hash = new_config_hash.clone();
+                self.last_accepted_config_hash = new_config_hash;
 
                 // Notify the monitor to rebuild its Bloom filter with new watch paths
                 if let Some(ref tx) = self.reconfigure_tx {
@@ -1203,6 +1210,7 @@ mod tests {
             maintenance_active: Arc::new(AtomicBool::new(false)),
             maintenance_entered_at: Arc::new(AtomicI64::new(0)),
             last_config_hash: None,
+            last_accepted_config_hash: None,
             initial_mounts: std::collections::HashSet::new(),
             last_tick: std::time::Instant::now() - Duration::from_secs(60),
             checkpoint_counter: 0,
@@ -1265,6 +1273,7 @@ mod tests {
             maintenance_active: Arc::new(AtomicBool::new(false)),
             maintenance_entered_at: Arc::new(AtomicI64::new(0)),
             last_config_hash: None,
+            last_accepted_config_hash: None,
             initial_mounts: std::collections::HashSet::new(),
             last_tick: std::time::Instant::now() - Duration::from_secs(60),
             checkpoint_counter: 0,
@@ -1348,6 +1357,7 @@ mod tests {
             maintenance_active: Arc::new(AtomicBool::new(false)),
             maintenance_entered_at: Arc::new(AtomicI64::new(0)),
             last_config_hash: None,
+            last_accepted_config_hash: None,
             initial_mounts: std::collections::HashSet::new(),
             last_tick: std::time::Instant::now() - Duration::from_secs(60),
             checkpoint_counter: 0,
