@@ -20,6 +20,25 @@ fn test_config(tmp: &TempDir) -> vigil::config::Config {
     cfg
 }
 
+fn open_test_baseline_db(cfg: &vigil::config::Config) -> rusqlite::Connection {
+    if let Some(parent) = cfg.daemon.db_path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    let conn = rusqlite::Connection::open(&cfg.daemon.db_path).unwrap();
+    vigil::db::schema::create_baseline_tables(&conn).unwrap();
+    conn
+}
+
+fn open_test_audit_db(cfg: &vigil::config::Config) -> rusqlite::Connection {
+    let audit_path = vigil::db::audit_db_path(cfg);
+    if let Some(parent) = audit_path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    let conn = rusqlite::Connection::open(audit_path).unwrap();
+    vigil::db::schema::create_audit_tables(&conn).unwrap();
+    conn
+}
+
 fn mk_entry(path: &str, hash: &str, inode: u64) -> BaselineEntry {
     BaselineEntry {
         id: None,
@@ -79,10 +98,10 @@ fn insert_audit_event(
 }
 
 fn seed_state(cfg: &vigil::config::Config) {
-    let baseline_conn = vigil::db::open_baseline_db(cfg).unwrap();
+    let baseline_conn = open_test_baseline_db(cfg);
     baseline_ops::upsert(&baseline_conn, &mk_entry("/etc/passwd", "abc123", 100)).unwrap();
 
-    let audit_conn = vigil::db::open_audit_db(cfg).unwrap();
+    let audit_conn = open_test_audit_db(cfg);
     insert_audit_event(&audit_conn, 1700000000, "/etc/passwd", "high", "[]");
 }
 
@@ -262,7 +281,7 @@ fn attest_diff_against_current_detects_structural_change() {
     let att = read_attestation(&out);
 
     // mutate baseline after attestation
-    let baseline_conn = vigil::db::open_baseline_db(&cfg).unwrap();
+    let baseline_conn = open_test_baseline_db(&cfg);
     baseline_ops::upsert(&baseline_conn, &mk_entry("/etc/passwd", "zzz999", 100)).unwrap();
 
     let report = attest::diff::diff_against_current(&att, &cfg).unwrap();
@@ -289,7 +308,7 @@ fn attest_diff_against_current_detects_chain_fork() {
     let att = read_attestation(&out);
 
     // Rewrite audit chain to a new branch.
-    let audit_conn = vigil::db::open_audit_db(&cfg).unwrap();
+    let audit_conn = open_test_audit_db(&cfg);
     audit_conn.execute("DELETE FROM audit_log", []).unwrap();
     insert_audit_event(&audit_conn, 1700000100, "/etc/shadow", "critical", "[]");
 
@@ -330,8 +349,8 @@ fn attest_create_and_verify_empty_state() {
     let cfg = test_config(&tmp);
 
     // Create empty baseline and empty audit databases.
-    let _baseline_conn = vigil::db::open_baseline_db(&cfg).unwrap();
-    let _audit_conn = vigil::db::open_audit_db(&cfg).unwrap();
+    let _baseline_conn = open_test_baseline_db(&cfg);
+    let _audit_conn = open_test_audit_db(&cfg);
 
     let key_path = tmp.path().join("attest.key");
     attest::key::generate_attest_key(&key_path).unwrap();
@@ -359,7 +378,7 @@ fn attest_large_state_100k_entries() {
     let tmp = TempDir::new().unwrap();
     let cfg = test_config(&tmp);
 
-    let baseline_conn = vigil::db::open_baseline_db(&cfg).unwrap();
+    let baseline_conn = open_test_baseline_db(&cfg);
     let tx = baseline_conn.unchecked_transaction().unwrap();
     for i in 0..100_000_u64 {
         let p = format!("/var/lib/test/file-{}", i);
@@ -367,7 +386,7 @@ fn attest_large_state_100k_entries() {
     }
     tx.commit().unwrap();
 
-    let _audit_conn = vigil::db::open_audit_db(&cfg).unwrap();
+    let _audit_conn = open_test_audit_db(&cfg);
 
     let key_path = tmp.path().join("attest.key");
     attest::key::generate_attest_key(&key_path).unwrap();
