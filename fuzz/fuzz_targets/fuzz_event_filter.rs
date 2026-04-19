@@ -40,6 +40,7 @@ fuzz_target!(|input: FuzzInput| {
         timestamp: chrono::Utc::now(),
         event_fd: None,
         process: None,
+        bloom_generation: 0,
     };
 
     let _ = filter.should_process(&event);
