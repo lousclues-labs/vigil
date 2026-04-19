@@ -27,6 +27,7 @@ pub mod package;
 pub mod receipt;
 pub mod scan_scheduler;
 pub mod scanner;
+pub mod supervised_thread;
 pub mod types;
 pub mod ui;
 pub mod wal;

@@ -183,312 +183,57 @@ pub fn start(
         }
     }
 
+    let restart_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let restart_counter_for_thread = restart_counter.clone();
+
     std::thread::Builder::new()
         .name("vigil-fanotify".into())
         .spawn(move || {
             let _fan_guard = fan_fd_owned;
             let fan_fd = _fan_guard.0;
-            let mut buf = Box::new([0u8; 262_144]);
-            let mut current_bloom = bloom;
 
-            let mut current_mounts: HashSet<PathBuf> = mount_points.into_iter().collect();
+            let result = crate::supervised_thread::run_supervised(
+                || {
+                    run_event_loop(
+                        fan_fd,
+                        &shutdown,
+                        &control_rx,
+                        &mount_mark_rx,
+                        &event_tx,
+                        &watch_index,
+                        &metrics,
+                        &bloom,
+                        &state,
+                        &scan_trigger,
+                        mask,
+                        &mount_points,
+                    )
+                },
+                3, // max restarts
+                std::time::Duration::from_secs(5),
+                &restart_counter_for_thread,
+            );
 
-            while !shutdown.load(Ordering::Acquire) {
-                while let Ok(new_paths) = control_rx.try_recv() {
-                    let new_mounts: HashSet<PathBuf> =
-                        resolve_mount_points(&new_paths).into_iter().collect();
+            // Update the shared metric with total restarts.
+            metrics.fanotify_thread_restarts.fetch_add(
+                restart_counter_for_thread.load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
 
-                    // Rebuild the Bloom filter FIRST so any in-flight events for
-                    // newly-added paths are not falsely rejected during the
-                    // mark add window.
-                    current_bloom = Arc::new(BloomFilter::from_watch_paths(&new_paths));
-
-                    for mount in new_mounts.difference(&current_mounts) {
-                        if let Err(e) = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD) {
-                            tracing::error!(
-                                mount = %mount.display(),
-                                error = %e,
-                                "fanotify_mark FAN_MARK_ADD failed during reload; coverage degraded for this mount"
-                            );
-                            metrics
-                                .fanotify_mark_failures
-                                .fetch_add(1, Ordering::Relaxed);
-                            if let Some(s) = &state {
-                                let mut guard = s.write();
-                                if matches!(*guard, DaemonState::Healthy) {
-                                    *guard = DaemonState::Degraded {
-                                        reason: format!(
-                                            "fanotify_mark add failed for {}: {}",
-                                            mount.display(),
-                                            e
-                                        ),
-                                        since: Utc::now(),
-                                    };
-                                }
-                            }
-                        }
-                    }
-                    for mount in current_mounts.difference(&new_mounts) {
-                        if let Err(e) = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_REMOVE) {
-                            tracing::warn!(
-                                mount = %mount.display(),
-                                error = %e,
-                                "fanotify_mark FAN_MARK_REMOVE failed during reload"
-                            );
-                            metrics
-                                .fanotify_mark_failures
-                                .fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                    current_mounts = new_mounts;
-                }
-
-                // VIGIL-VULN-069: process dynamic mount mark requests from
-                // the coordinator when new mounts overlap watched paths.
-                if let Some(ref rx) = mount_mark_rx {
-                    while let Ok(req) = rx.try_recv() {
-                        let op_flag = match req.op {
-                            MountMarkOp::Add => FAN_MARK_ADD,
-                            MountMarkOp::Remove => FAN_MARK_REMOVE,
+            if let crate::supervised_thread::ExitReason::Fatal(ref msg) = result.final_reason {
+                tracing::error!(
+                    restarts = result.restarts,
+                    reason = %msg,
+                    "fanotify supervisor exhausted restarts. entering Degraded."
+                );
+                if let Some(s) = &state {
+                    let mut guard = s.write();
+                    if matches!(*guard, DaemonState::Healthy) {
+                        *guard = DaemonState::Degraded {
+                            reason: "fanotify read failed after max restarts".to_string(),
+                            since: Utc::now(),
                         };
-                        if let Err(e) = apply_fanotify_mark(fan_fd, &req.mount, mask, op_flag) {
-                            tracing::error!(
-                                mount = %req.mount.display(),
-                                op = ?req.op,
-                                error = %e,
-                                "dynamic fanotify_mark failed for overlapping mount"
-                            );
-                            metrics
-                                .fanotify_mark_failures
-                                .fetch_add(1, Ordering::Relaxed);
-                        } else {
-                            tracing::info!(
-                                mount = %req.mount.display(),
-                                op = ?req.op,
-                                "dynamic fanotify_mark applied for overlapping mount"
-                            );
-                            if matches!(req.op, MountMarkOp::Add) {
-                                current_mounts.insert(req.mount);
-                            } else {
-                                current_mounts.remove(&req.mount);
-                            }
-                        }
                     }
-                }
-
-                // SAFETY: valid fd + valid buffer pointer + length. The kernel
-                // writes at most buf.len() bytes. Return checked for errors.
-                let n = unsafe { libc::read(fan_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
-                if n < 0 {
-                    let err = std::io::Error::last_os_error();
-                    let raw = err.raw_os_error();
-                    if raw == Some(libc::EAGAIN) || raw == Some(libc::EWOULDBLOCK) {
-                        std::thread::sleep(Duration::from_millis(50));
-                        continue;
-                    }
-                    if raw == Some(libc::EINTR) {
-                        continue;
-                    }
-                    tracing::error!(
-                        error = %err,
-                        errno = ?raw,
-                        "fanotify read() failed with non-recoverable error; stopping monitor"
-                    );
-                    metrics
-                        .fanotify_read_errors
-                        .fetch_add(1, Ordering::Relaxed);
-                    if let Some(s) = &state {
-                        let mut guard = s.write();
-                        if matches!(*guard, DaemonState::Healthy) {
-                            *guard = DaemonState::Degraded {
-                                reason: format!("fanotify read failed: {}", err),
-                                since: Utc::now(),
-                            };
-                        }
-                    }
-                    return;
-                }
-                if n == 0 {
-                    std::thread::sleep(Duration::from_millis(50));
-                    continue;
-                }
-
-                let n_usize = n as usize;
-                let mut offset = 0usize;
-                while offset + FAN_EVENT_METADATA_LEN <= n_usize {
-                    // SAFETY: offset bounds-checked above and the kernel produced
-                    // this buffer. Using read_unaligned because the buffer offset
-                    // may not satisfy FanotifyEventMetadata alignment requirements.
-                    let event: FanotifyEventMetadata =
-                        unsafe { std::ptr::read_unaligned(buf.as_ptr().add(offset) as *const FanotifyEventMetadata) };
-
-                    // Validate event_len BEFORE using it: the kernel may report a
-                    // malformed value that would otherwise cause an infinite loop
-                    // (event_len == 0) or buffer over-read (event_len > remaining).
-                    let len = event.event_len as usize;
-                    if len < FAN_EVENT_METADATA_LEN || offset + len > n_usize {
-                        tracing::error!(
-                            event_len = len,
-                            offset,
-                            buf_len = n_usize,
-                            "malformed fanotify event_len; dropping remaining buffer and resyncing"
-                        );
-                        metrics
-                            .fanotify_read_errors
-                            .fetch_add(1, Ordering::Relaxed);
-                        break;
-                    }
-
-                    // Handle kernel queue overflow: fanotify dropped events
-                    if event.mask & FAN_Q_OVERFLOW != 0 {
-                        tracing::error!(
-                            "fanotify kernel queue overflow (FAN_Q_OVERFLOW). \
-                             Events were dropped by the kernel. Triggering compensating full scan."
-                        );
-                        metrics
-                            .kernel_queue_overflows
-                            .fetch_add(1, Ordering::Relaxed);
-                        // Mark the daemon Degraded so operators see this in `vigil status`
-                        if let Some(s) = &state {
-                            let mut guard = s.write();
-                            if matches!(*guard, DaemonState::Healthy) {
-                                *guard = DaemonState::Degraded {
-                                    reason: "fanotify queue overflow; events dropped by kernel"
-                                        .to_string(),
-                                    since: Utc::now(),
-                                };
-                            }
-                        }
-                        // Trigger a full scan so the missed events are caught by the
-                        // next baseline diff. The scan response is discarded; the
-                        // scheduler will attribute changes through normal channels.
-                        if let Some(tx) = &scan_trigger {
-                            let (resp_tx, _resp_rx) = crossbeam_channel::bounded(1);
-                            if tx
-                                .try_send(crate::control::ScanRequest {
-                                    mode: ScanMode::Full,
-                                    response_tx: resp_tx,
-                                })
-                                .is_ok()
-                            {
-                                metrics
-                                    .fanotify_overflow_scans_triggered
-                                    .fetch_add(1, Ordering::Relaxed);
-                            }
-                        }
-                        offset += len;
-                        continue;
-                    }
-
-                    if event.fd >= 0 {
-                        // Wrap event fd in a guard to prevent leaks on any code path
-                        let fd_guard = EventFdGuard(event.fd);
-
-                        // Resolve process attribution immediately to minimize the
-                        // PID recycling window. The fd is still open and valid here.
-                        // NOTE: FAN_REPORT_PIDFD (Linux 6.2+) would eliminate this
-                        // race by providing a stable pidfd reference.
-                        let process = if event.pid > 0 {
-                            let exe = std::fs::read_link(format!("/proc/{}/exe", event.pid))
-                                .ok()
-                                .map(|p| p.to_string_lossy().to_string());
-                            if exe.is_some() {
-                                Some(ProcessAttribution {
-                                    pid: event.pid as u32,
-                                    exe,
-                                })
-                            } else {
-                                // Process already exited.  PID may have been recycled.
-                                tracing::debug!(
-                                    pid = event.pid,
-                                    "process exited before attribution; PID may be stale"
-                                );
-                                Some(ProcessAttribution {
-                                    pid: event.pid as u32,
-                                    exe: None,
-                                })
-                            }
-                        } else {
-                            None
-                        };
-
-                        let fd_link = format!("/proc/self/fd/{}", event.fd);
-                        if let Ok(raw_path) = std::fs::read_link(&fd_link) {
-                            // VIGIL-VULN-068: strip " (deleted)" suffix appended
-                            // by the kernel when a file is unlinked between event
-                            // production and fd→path resolution.
-                            let (path, was_deleted) = strip_deleted_suffix(&raw_path);
-                            if was_deleted {
-                                tracing::info!(
-                                    raw = %raw_path.display(),
-                                    stripped = %path.display(),
-                                    "resolved deleted-file path from fanotify event"
-                                );
-                            }
-
-                            // Bloom filter fast-reject: check if any prefix of the
-                            // event path is in the filter (not the full path, which
-                            // was never inserted)
-                            if !current_bloom.might_contain_prefix_of(&path) {
-                                // fd_guard drops and closes the fd automatically
-                                offset += len;
-                                continue;
-                            }
-
-                            let idx = watch_index.load();
-                            let is_watched = idx.is_watched(&path);
-
-                            if is_watched {
-                                // Force Delete event type if file was unlinked
-                                let event_type_resolved = if was_deleted {
-                                    Some(FsEventType::Delete)
-                                } else {
-                                    mask_to_event_type(event.mask)
-                                };
-                                if let Some(event_type) = event_type_resolved {
-                                    metrics
-                                        .events_received
-                                        .fetch_add(1, Ordering::Relaxed);
-
-                                    // Transfer fd ownership into OwnedFd; prevent guard from closing it
-                                    let raw = fd_guard.take();
-                                    // SAFETY: raw fd is uniquely owned (take() consumed
-                                    // the guard) and has not been closed.
-                                    let owned_fd = unsafe { OwnedFd::from_raw_fd(raw) };
-
-                                    let fs_event = FsEvent {
-                                        path: Arc::new(path.clone()),
-                                        event_type,
-                                        timestamp: Utc::now(),
-                                        event_fd: Some(owned_fd),
-                                        process,
-                                    };
-
-                                    match event_tx.send_timeout(fs_event, Duration::from_secs(1)) {
-                                        Ok(()) => {}
-                                        Err(crossbeam_channel::SendTimeoutError::Timeout(_dropped)) => {
-                                            metrics
-                                                .events_dropped
-                                                .fetch_add(1, Ordering::Relaxed);
-                                            tracing::warn!(
-                                                path = %path.display(),
-                                                "fanotify event channel full for 1s; dropping event fd"
-                                            );
-                                        }
-                                        Err(crossbeam_channel::SendTimeoutError::Disconnected(_dropped)) => {
-                                            tracing::error!("event channel disconnected");
-                                            return;
-                                        }
-                                    }
-                                }
-                                // else: unrecognized mask. fd_guard drops and closes.
-                            }
-                            // else: not watched. fd_guard drops and closes.
-                        }
-                        // else: read_link failed. fd_guard drops and closes.
-                    }
-
-                    offset += len;
                 }
             }
 
@@ -497,6 +242,318 @@ pub fn start(
         .map_err(|e| VigilError::Fanotify(format!("cannot spawn thread: {}", e)))?;
 
     Ok(control_tx)
+}
+
+/// The fanotify event loop body. Returns an ExitReason for the supervisor.
+#[allow(clippy::too_many_arguments)]
+fn run_event_loop(
+    fan_fd: RawFd,
+    shutdown: &Arc<AtomicBool>,
+    control_rx: &crossbeam_channel::Receiver<Vec<PathBuf>>,
+    mount_mark_rx: &Option<crossbeam_channel::Receiver<MountMarkRequest>>,
+    event_tx: &Sender<FsEvent>,
+    watch_index: &Arc<ArcSwap<WatchGroupIndex>>,
+    metrics: &Arc<Metrics>,
+    bloom: &Arc<BloomFilter>,
+    state: &Option<Arc<RwLock<DaemonState>>>,
+    scan_trigger: &Option<Sender<crate::control::ScanRequest>>,
+    mask: u64,
+    initial_mounts: &[PathBuf],
+) -> crate::supervised_thread::ExitReason {
+    let mut buf = Box::new([0u8; 262_144]);
+    let mut current_bloom = bloom.clone();
+    let mut current_mounts: HashSet<PathBuf> = initial_mounts.iter().cloned().collect();
+
+    while !shutdown.load(Ordering::Acquire) {
+        while let Ok(new_paths) = control_rx.try_recv() {
+            let new_mounts: HashSet<PathBuf> =
+                resolve_mount_points(&new_paths).into_iter().collect();
+
+            // Rebuild the Bloom filter FIRST so any in-flight events for
+            // newly-added paths are not falsely rejected during the
+            // mark add window.
+            current_bloom = Arc::new(BloomFilter::from_watch_paths(&new_paths));
+
+            for mount in new_mounts.difference(&current_mounts) {
+                if let Err(e) = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD) {
+                    tracing::error!(
+                        mount = %mount.display(),
+                        error = %e,
+                        "fanotify_mark FAN_MARK_ADD failed during reload; coverage degraded for this mount"
+                    );
+                    metrics
+                        .fanotify_mark_failures
+                        .fetch_add(1, Ordering::Relaxed);
+                    if let Some(s) = &state {
+                        let mut guard = s.write();
+                        if matches!(*guard, DaemonState::Healthy) {
+                            *guard = DaemonState::Degraded {
+                                reason: format!(
+                                    "fanotify_mark add failed for {}: {}",
+                                    mount.display(),
+                                    e
+                                ),
+                                since: Utc::now(),
+                            };
+                        }
+                    }
+                }
+            }
+            for mount in current_mounts.difference(&new_mounts) {
+                if let Err(e) = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_REMOVE) {
+                    tracing::warn!(
+                        mount = %mount.display(),
+                        error = %e,
+                        "fanotify_mark FAN_MARK_REMOVE failed during reload"
+                    );
+                    metrics
+                        .fanotify_mark_failures
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            current_mounts = new_mounts;
+        }
+
+        // VIGIL-VULN-069: process dynamic mount mark requests from
+        // the coordinator when new mounts overlap watched paths.
+        if let Some(ref rx) = mount_mark_rx {
+            while let Ok(req) = rx.try_recv() {
+                let op_flag = match req.op {
+                    MountMarkOp::Add => FAN_MARK_ADD,
+                    MountMarkOp::Remove => FAN_MARK_REMOVE,
+                };
+                if let Err(e) = apply_fanotify_mark(fan_fd, &req.mount, mask, op_flag) {
+                    tracing::error!(
+                        mount = %req.mount.display(),
+                        op = ?req.op,
+                        error = %e,
+                        "dynamic fanotify_mark failed for overlapping mount"
+                    );
+                    metrics
+                        .fanotify_mark_failures
+                        .fetch_add(1, Ordering::Relaxed);
+                } else {
+                    tracing::info!(
+                        mount = %req.mount.display(),
+                        op = ?req.op,
+                        "dynamic fanotify_mark applied for overlapping mount"
+                    );
+                    if matches!(req.op, MountMarkOp::Add) {
+                        current_mounts.insert(req.mount);
+                    } else {
+                        current_mounts.remove(&req.mount);
+                    }
+                }
+            }
+        }
+
+        // SAFETY: valid fd + valid buffer pointer + length. The kernel
+        // writes at most buf.len() bytes. Return checked for errors.
+        let n = unsafe { libc::read(fan_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+        if n < 0 {
+            let err = std::io::Error::last_os_error();
+            let raw = err.raw_os_error();
+            if raw == Some(libc::EAGAIN) || raw == Some(libc::EWOULDBLOCK) {
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+            if raw == Some(libc::EINTR) {
+                continue;
+            }
+            tracing::error!(
+                error = %err,
+                errno = ?raw,
+                "fanotify read() failed; supervisor will attempt restart"
+            );
+            metrics.fanotify_read_errors.fetch_add(1, Ordering::Relaxed);
+            return crate::supervised_thread::ExitReason::Recoverable(format!(
+                "fanotify read failed: {}",
+                err
+            ));
+        }
+        if n == 0 {
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        }
+
+        let n_usize = n as usize;
+        let mut offset = 0usize;
+        while offset + FAN_EVENT_METADATA_LEN <= n_usize {
+            // SAFETY: offset bounds-checked above and the kernel produced
+            // this buffer. Using read_unaligned because the buffer offset
+            // may not satisfy FanotifyEventMetadata alignment requirements.
+            let event: FanotifyEventMetadata = unsafe {
+                std::ptr::read_unaligned(buf.as_ptr().add(offset) as *const FanotifyEventMetadata)
+            };
+
+            // Validate event_len BEFORE using it: the kernel may report a
+            // malformed value that would otherwise cause an infinite loop
+            // (event_len == 0) or buffer over-read (event_len > remaining).
+            let len = event.event_len as usize;
+            if len < FAN_EVENT_METADATA_LEN || offset + len > n_usize {
+                tracing::error!(
+                    event_len = len,
+                    offset,
+                    buf_len = n_usize,
+                    "malformed fanotify event_len; dropping remaining buffer and resyncing"
+                );
+                metrics.fanotify_read_errors.fetch_add(1, Ordering::Relaxed);
+                break;
+            }
+
+            // Handle kernel queue overflow: fanotify dropped events
+            if event.mask & FAN_Q_OVERFLOW != 0 {
+                tracing::error!(
+                    "fanotify kernel queue overflow (FAN_Q_OVERFLOW). \
+                             Events were dropped by the kernel. Triggering compensating full scan."
+                );
+                metrics
+                    .kernel_queue_overflows
+                    .fetch_add(1, Ordering::Relaxed);
+                // Mark the daemon Degraded so operators see this in `vigil status`
+                if let Some(s) = &state {
+                    let mut guard = s.write();
+                    if matches!(*guard, DaemonState::Healthy) {
+                        *guard = DaemonState::Degraded {
+                            reason: "fanotify queue overflow; events dropped by kernel".to_string(),
+                            since: Utc::now(),
+                        };
+                    }
+                }
+                // Trigger a full scan so the missed events are caught by the
+                // next baseline diff. The scan response is discarded; the
+                // scheduler will attribute changes through normal channels.
+                if let Some(tx) = &scan_trigger {
+                    let (resp_tx, _resp_rx) = crossbeam_channel::bounded(1);
+                    if tx
+                        .try_send(crate::control::ScanRequest {
+                            mode: ScanMode::Full,
+                            response_tx: resp_tx,
+                        })
+                        .is_ok()
+                    {
+                        metrics
+                            .fanotify_overflow_scans_triggered
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                offset += len;
+                continue;
+            }
+
+            if event.fd >= 0 {
+                // Wrap event fd in a guard to prevent leaks on any code path
+                let fd_guard = EventFdGuard(event.fd);
+
+                // Resolve process attribution immediately to minimize the
+                // PID recycling window. The fd is still open and valid here.
+                // NOTE: FAN_REPORT_PIDFD (Linux 6.2+) would eliminate this
+                // race by providing a stable pidfd reference.
+                let process = if event.pid > 0 {
+                    let exe = std::fs::read_link(format!("/proc/{}/exe", event.pid))
+                        .ok()
+                        .map(|p| p.to_string_lossy().to_string());
+                    if exe.is_some() {
+                        Some(ProcessAttribution {
+                            pid: event.pid as u32,
+                            exe,
+                        })
+                    } else {
+                        // Process already exited.  PID may have been recycled.
+                        tracing::debug!(
+                            pid = event.pid,
+                            "process exited before attribution; PID may be stale"
+                        );
+                        Some(ProcessAttribution {
+                            pid: event.pid as u32,
+                            exe: None,
+                        })
+                    }
+                } else {
+                    None
+                };
+
+                let fd_link = format!("/proc/self/fd/{}", event.fd);
+                if let Ok(raw_path) = std::fs::read_link(&fd_link) {
+                    // VIGIL-VULN-068: strip " (deleted)" suffix appended
+                    // by the kernel when a file is unlinked between event
+                    // production and fd→path resolution.
+                    let (path, was_deleted) = strip_deleted_suffix(&raw_path);
+                    if was_deleted {
+                        tracing::info!(
+                            raw = %raw_path.display(),
+                            stripped = %path.display(),
+                            "resolved deleted-file path from fanotify event"
+                        );
+                    }
+
+                    // Bloom filter fast-reject: check if any prefix of the
+                    // event path is in the filter (not the full path, which
+                    // was never inserted)
+                    if !current_bloom.might_contain_prefix_of(&path) {
+                        // fd_guard drops and closes the fd automatically
+                        offset += len;
+                        continue;
+                    }
+
+                    let idx = watch_index.load();
+                    let is_watched = idx.is_watched(&path);
+
+                    if is_watched {
+                        // Force Delete event type if file was unlinked
+                        let event_type_resolved = if was_deleted {
+                            Some(FsEventType::Delete)
+                        } else {
+                            mask_to_event_type(event.mask)
+                        };
+                        if let Some(event_type) = event_type_resolved {
+                            metrics.events_received.fetch_add(1, Ordering::Relaxed);
+
+                            // Transfer fd ownership into OwnedFd; prevent guard from closing it
+                            let raw = fd_guard.take();
+                            // SAFETY: raw fd is uniquely owned (take() consumed
+                            // the guard) and has not been closed.
+                            let owned_fd = unsafe { OwnedFd::from_raw_fd(raw) };
+
+                            let fs_event = FsEvent {
+                                path: Arc::new(path.clone()),
+                                event_type,
+                                timestamp: Utc::now(),
+                                event_fd: Some(owned_fd),
+                                process,
+                            };
+
+                            match event_tx.send_timeout(fs_event, Duration::from_secs(1)) {
+                                Ok(()) => {}
+                                Err(crossbeam_channel::SendTimeoutError::Timeout(_dropped)) => {
+                                    metrics.events_dropped.fetch_add(1, Ordering::Relaxed);
+                                    tracing::warn!(
+                                        path = %path.display(),
+                                        "fanotify event channel full for 1s; dropping event fd"
+                                    );
+                                }
+                                Err(crossbeam_channel::SendTimeoutError::Disconnected(
+                                    _dropped,
+                                )) => {
+                                    tracing::error!("event channel disconnected");
+                                    return crate::supervised_thread::ExitReason::Fatal(
+                                        "event channel disconnected".into(),
+                                    );
+                                }
+                            }
+                        }
+                        // else: unrecognized mask. fd_guard drops and closes.
+                    }
+                    // else: not watched. fd_guard drops and closes.
+                }
+                // else: read_link failed. fd_guard drops and closes.
+            }
+
+            offset += len;
+        }
+    }
+
+    crate::supervised_thread::ExitReason::Shutdown
 }
 
 /// Strip the ` (deleted)` suffix the kernel appends to `/proc/self/fd/N`

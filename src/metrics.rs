@@ -55,6 +55,8 @@ pub struct Metrics {
     pub inode_changes_recovered: AtomicU64,
     /// Inode changes where content verification failed and the daemon entered Degraded.
     pub inode_changes_rejected: AtomicU64,
+    /// Fanotify thread supervised restarts after recoverable errors.
+    pub fanotify_thread_restarts: AtomicU64,
     /// Unix timestamp set once at daemon startup.
     pub uptime_start: i64,
 }
@@ -101,6 +103,7 @@ impl Metrics {
             wal_entries_rejected_hmac: AtomicU64::new(0),
             inode_changes_recovered: AtomicU64::new(0),
             inode_changes_rejected: AtomicU64::new(0),
+            fanotify_thread_restarts: AtomicU64::new(0),
             uptime_start: chrono::Utc::now().timestamp(),
         }
     }
@@ -161,6 +164,7 @@ impl Metrics {
             wal_entries_rejected_hmac: self.wal_entries_rejected_hmac.load(Ordering::Relaxed),
             inode_changes_recovered: self.inode_changes_recovered.load(Ordering::Relaxed),
             inode_changes_rejected: self.inode_changes_rejected.load(Ordering::Relaxed),
+            fanotify_thread_restarts: self.fanotify_thread_restarts.load(Ordering::Relaxed),
             uptime_start: self.uptime_start,
         }
     }
@@ -214,6 +218,7 @@ pub struct MetricsSnapshot {
     pub wal_entries_rejected_hmac: u64,
     pub inode_changes_recovered: u64,
     pub inode_changes_rejected: u64,
+    pub fanotify_thread_restarts: u64,
     pub uptime_start: i64,
 }
 
@@ -444,6 +449,12 @@ impl MetricsSnapshot {
             "vigil_inode_changes_rejected_total",
             "Inode changes where content verification failed",
             self.inode_changes_rejected,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_fanotify_thread_restarts_total",
+            "Fanotify thread supervised restarts after recoverable errors",
+            self.fanotify_thread_restarts,
         );
 
         let _ = writeln!(out);
