@@ -58,7 +58,6 @@ struct Coordinator {
     watch_index: Arc<ArcSwap<WatchGroupIndex>>,
     shutdown: Arc<AtomicBool>,
     reload_flag: Arc<AtomicBool>,
-    backpressure: Arc<AtomicBool>,
     baseline_db_identity: Option<crate::db::DbFileIdentity>,
     audit_db_identity: Option<crate::db::DbFileIdentity>,
     startup_hmac_key: Option<zeroize::Zeroizing<Vec<u8>>>,
@@ -87,21 +86,41 @@ struct Coordinator {
 }
 
 pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()>> {
+    // Shared state between guardian and maintenance threads.
+    let config = cfg.config;
+    let metrics = cfg.metrics;
+    let state = cfg.state;
+    let watch_index = cfg.watch_index;
+    let shutdown = cfg.shutdown;
+    let reload_flag = cfg.reload_flag;
+    let backpressure = cfg.backpressure;
+    let maintenance_active = cfg.maintenance_active.clone();
+    let maintenance_entered_at = cfg.maintenance_entered_at.clone();
+
+    let wal_hmac_fingerprint = cfg
+        .startup_hmac_key
+        .as_ref()
+        .map(|k| crate::wal::fingerprint_for_key(k))
+        .unwrap_or([0u8; 16]);
+
+    // Guardian-specific: fast checks on 1-second cadence
+    let _g_config = config.clone();
+    let g_metrics = metrics.clone();
+    let g_state = state.clone();
+    let g_shutdown = shutdown.clone();
+    let g_backpressure = backpressure.clone();
+
+    // Maintenance-specific: heavy operations on 60-second cadence
     let mut coordinator = Coordinator {
-        config: cfg.config,
-        metrics: cfg.metrics,
-        state: cfg.state,
-        watch_index: cfg.watch_index,
-        shutdown: cfg.shutdown,
-        reload_flag: cfg.reload_flag,
-        backpressure: cfg.backpressure,
+        config: config.clone(),
+        metrics: metrics.clone(),
+        state: state.clone(),
+        watch_index,
+        shutdown: shutdown.clone(),
+        reload_flag,
         baseline_db_identity: cfg.baseline_db_identity,
         audit_db_identity: cfg.audit_db_identity,
-        wal_hmac_fingerprint: cfg
-            .startup_hmac_key
-            .as_ref()
-            .map(|k| crate::wal::fingerprint_for_key(k))
-            .unwrap_or([0u8; 16]),
+        wal_hmac_fingerprint,
         startup_hmac_key: cfg.startup_hmac_key,
         startup_baseline_conn: Some(cfg.startup_baseline_conn),
         startup_audit_conn: Some(cfg.startup_audit_conn),
@@ -109,8 +128,8 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
         mount_mark_tx: cfg.mount_mark_tx,
         wal_identity: cfg.wal_identity,
         wal_path: cfg.wal_path,
-        maintenance_active: cfg.maintenance_active,
-        maintenance_entered_at: cfg.maintenance_entered_at,
+        maintenance_active: maintenance_active.clone(),
+        maintenance_entered_at: maintenance_entered_at.clone(),
         last_config_hash: config_file_hash(),
         last_accepted_config_hash: config_file_hash(),
         initial_mounts: crate::monitor::fanotify::parse_mountinfo()
@@ -129,21 +148,84 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
         clean_ticks_since_event_loss: 0,
     };
 
+    // Clone identity data for guardian before coordinator is moved.
+    let g_baseline_identity = coordinator.baseline_db_identity;
+    let g_db_path = coordinator.config.load().daemon.db_path.clone();
+    let g_runtime_dir = coordinator.config.load().daemon.runtime_dir.clone();
+
+    // Spawn guardian thread (1-second cadence): identity checks, backpressure,
+    // watchdog, state snapshot. Fast. Never blocks.
+    let guardian_handle = std::thread::Builder::new()
+        .name("vigil-guardian".into())
+        .spawn(move || {
+            while !g_shutdown.load(Ordering::Acquire) {
+                // Notify watchdog on every 1-second tick.
+                if is_notify_socket_safe() {
+                    let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+                }
+
+                // Fast identity checks.
+                if let Some(ref identity) = g_baseline_identity {
+                    if let Ok(true) = identity.is_replaced(&g_db_path) {
+                        g_metrics
+                            .inode_changes_rejected
+                            .fetch_add(1, Ordering::Relaxed);
+                        let mut s = g_state.write();
+                        if matches!(*s, DaemonState::Healthy) {
+                            *s = DaemonState::Degraded {
+                                reason: DegradedReason::BaselineDbReplaced,
+                                since: Utc::now(),
+                            };
+                        }
+                    }
+                }
+
+                // Backpressure check.
+                if g_backpressure.load(Ordering::Relaxed) {
+                    let mut s = g_state.write();
+                    if matches!(*s, DaemonState::Healthy) {
+                        *s = DaemonState::Degraded {
+                            reason: DegradedReason::EventBackpressure,
+                            since: Utc::now(),
+                        };
+                    }
+                } else {
+                    let mut s = g_state.write();
+                    if let DaemonState::Degraded { reason, .. } = &*s {
+                        if matches!(reason, DegradedReason::EventBackpressure) {
+                            tracing::info!("backpressure resolved; returning to healthy state");
+                            *s = DaemonState::Healthy;
+                        }
+                    }
+                }
+
+                // Write state snapshot on every guardian tick for operator visibility.
+                let drift_velocity = Some(serde_json::Value::Null); // guardian doesn't track drift
+                let _ = write_state_snapshot(&g_runtime_dir, &g_state, drift_velocity);
+
+                std::thread::sleep(Duration::from_millis(1000));
+            }
+        })
+        .map_err(|e| crate::VigilError::Daemon(format!("cannot spawn guardian thread: {}", e)))?;
+
+    // Spawn maintenance thread (60-second cadence): audit rotation, WAL checkpoint,
+    // drift velocity, mount evasion, clock anomaly. Heavy. Allowed to take time.
     std::thread::Builder::new()
-        .name("vigil-coordinator".into())
+        .name("vigil-maintenance".into())
         .spawn(move || {
             while !coordinator.shutdown.load(Ordering::Acquire) {
                 if coordinator.reload_flag.swap(false, Ordering::AcqRel) {
                     coordinator.handle_reload();
                 }
                 if coordinator.last_tick.elapsed() >= Duration::from_secs(60) {
-                    coordinator.tick();
+                    coordinator.maintenance_tick();
                 }
-                coordinator.notify_watchdog();
                 std::thread::sleep(Duration::from_millis(1000));
             }
+            // Wait for guardian to finish.
+            let _ = guardian_handle.join();
         })
-        .map_err(|e| crate::VigilError::Daemon(format!("cannot spawn coordinator thread: {}", e)))
+        .map_err(|e| crate::VigilError::Daemon(format!("cannot spawn maintenance thread: {}", e)))
 }
 
 /// Time a tick phase and record its name + duration.
@@ -157,7 +239,9 @@ macro_rules! time_phase {
 }
 
 impl Coordinator {
-    fn tick(&mut self) {
+    /// Maintenance tick: heavy operations on 60-second cadence.
+    /// Guardian thread handles fast checks (watchdog, backpressure, state snapshot).
+    fn maintenance_tick(&mut self) {
         let tick_start = std::time::Instant::now();
         let mut failed_phases: Vec<&str> = Vec::new();
         let mut phase_timings: Vec<(&str, u128)> = Vec::new();
@@ -176,7 +260,6 @@ impl Coordinator {
             failed_phases.push("wal_check");
         }
         time_phase!(phase_timings, "mount_check", self.check_mount_evasion());
-        self.notify_watchdog();
 
         let clock_anomaly = time_phase!(phase_timings, "clock_check", self.detect_clock_anomaly());
         time_phase!(phase_timings, "rotation", {
@@ -184,12 +267,9 @@ impl Coordinator {
                 self.rotate_audit_log();
             }
         });
-        self.notify_watchdog();
 
         time_phase!(phase_timings, "snapshots", self.write_snapshots());
-        self.notify_watchdog();
 
-        time_phase!(phase_timings, "backpressure", self.check_backpressure());
         time_phase!(phase_timings, "drops", self.check_event_drops());
         time_phase!(phase_timings, "checkpoint", self.maybe_checkpoint_wal());
         time_phase!(
@@ -856,25 +936,7 @@ impl Coordinator {
         }
     }
 
-    fn check_backpressure(&self) {
-        if self.backpressure.load(Ordering::Relaxed) {
-            let mut s = self.state.write();
-            if matches!(*s, DaemonState::Healthy) {
-                *s = DaemonState::Degraded {
-                    reason: DegradedReason::EventBackpressure,
-                    since: Utc::now(),
-                };
-            }
-        } else {
-            let mut s = self.state.write();
-            if let DaemonState::Degraded { reason, .. } = &*s {
-                if matches!(reason, DegradedReason::EventBackpressure) {
-                    tracing::info!("backpressure resolved; returning to healthy state");
-                    *s = DaemonState::Healthy;
-                }
-            }
-        }
-    }
+    // check_backpressure moved to guardian thread.
 
     fn check_event_drops(&mut self) {
         let current_dropped = self.metrics.events_dropped.load(Ordering::Relaxed);
@@ -973,11 +1035,7 @@ impl Coordinator {
         }
     }
 
-    fn notify_watchdog(&self) {
-        if is_notify_socket_safe() {
-            let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
-        }
-    }
+    // notify_watchdog moved to guardian thread.
 
     fn check_maintenance_timeout(&self) {
         if !self.maintenance_active.load(Ordering::Acquire) {
@@ -1167,7 +1225,6 @@ mod tests {
             watch_index: Arc::new(ArcSwap::from_pointee(WatchGroupIndex::from_config(&cfg))),
             shutdown: Arc::new(AtomicBool::new(false)),
             reload_flag: Arc::new(AtomicBool::new(false)),
-            backpressure: Arc::new(AtomicBool::new(false)),
             baseline_db_identity: crate::db::DbFileIdentity::from_path(
                 &Arc::new(ArcSwap::from_pointee(crate::config::default_config()))
                     .load()
@@ -1236,7 +1293,6 @@ mod tests {
             watch_index: Arc::new(ArcSwap::from_pointee(WatchGroupIndex::from_config(&cfg))),
             shutdown: Arc::new(AtomicBool::new(false)),
             reload_flag: Arc::new(AtomicBool::new(false)),
-            backpressure: Arc::new(AtomicBool::new(false)),
             baseline_db_identity: Some(identity),
             audit_db_identity: None,
             wal_hmac_fingerprint: [0u8; 16],
@@ -1320,7 +1376,6 @@ mod tests {
             watch_index: Arc::new(ArcSwap::from_pointee(WatchGroupIndex::from_config(&cfg))),
             shutdown: Arc::new(AtomicBool::new(false)),
             reload_flag: Arc::new(AtomicBool::new(false)),
-            backpressure: Arc::new(AtomicBool::new(false)),
             baseline_db_identity: Some(identity),
             audit_db_identity: None,
             wal_hmac_fingerprint: [0u8; 16],
