@@ -1126,9 +1126,25 @@ Completion output:
 ```
 Baseline refreshed in 94 seconds.
   total:    2,431 files
+  added:    3
+  removed:  1
+  changed:  17 (14 from package updates, 3 unattributed)
 
-Changes during refresh are recorded in the audit log.
-Review them: vigil audit show --since 2m
+Unattributed changes:
+  /etc/resolv.conf    content modified
+  /etc/hosts          content modified
+  /etc/machine-id     content modified
+
+Full record: vigil audit show --since 2m
+```
+
+Package-attributed changes are collapsed into a count. Unattributed
+changes are listed individually -- those are the ones that matter.
+
+Non-TTY output (e.g. piped to a file or from cron):
+
+```
+[14:33:35] refresh complete: 2,431 files, 3 added, 1 removed, 17 changed
 ```
 
 The canonical post-package-install workflow:

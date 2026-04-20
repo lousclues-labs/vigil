@@ -2,6 +2,21 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.1.0] - 2026-04-19
+
+### Added
+
+- `vigil baseline refresh` shows an inline diff at completion. Package-attributed
+  changes are collapsed with a count; unattributed changes are listed individually
+  with their paths. Added, removed, and changed file counts included in summary.
+
+### Changed
+
+- Non-TTY refresh output includes added/removed/changed counts on the completion line.
+- Control socket `baseline_refresh` `complete` event now includes `added`, `removed`,
+  `changed`, `changed_pkg`, `changed_unattributed`, `added_paths`, and `removed_paths`
+  fields.
+
 ## [1.0.0] - 2026-04-19
 
 Vigil Baseline is 1.0. After 43 prereleases, the codebase has 70+ self-reported

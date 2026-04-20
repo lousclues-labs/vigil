@@ -606,6 +606,21 @@ impl ControlHandler {
             }
         };
 
+        // Snapshot old baseline entries for post-refresh diff.
+        // Map path -> (hash, package) for comparison after the new baseline is built.
+        let old_entries: std::collections::HashMap<String, (String, Option<String>)> = {
+            let conn = self.baseline_conn.lock();
+            let mut map = std::collections::HashMap::new();
+            let _ = crate::db::baseline_ops::for_each_entry(&conn, |entry| {
+                map.insert(
+                    entry.path.to_string_lossy().to_string(),
+                    (entry.content.hash.clone(), entry.package.clone()),
+                );
+                Ok(())
+            });
+            map
+        };
+
         // Build baseline with progress
         let result =
             crate::scanner::build_initial_baseline_with_progress(&tmp_conn, &cfg, &progress_cb);
@@ -630,6 +645,50 @@ impl ControlHandler {
                     );
                     return Ok(());
                 }
+
+                // Compute diff: compare old baseline snapshot against new temp DB
+                let mut added = Vec::new();
+                let mut removed = Vec::new();
+                let mut changed = Vec::new();
+                let mut changed_pkg_count = 0u64; // package-attributed changes
+
+                // Collect new entries
+                let mut new_entries: std::collections::HashMap<String, (String, Option<String>)> =
+                    std::collections::HashMap::new();
+                let _ = crate::db::baseline_ops::for_each_entry(&tmp_conn, |entry| {
+                    new_entries.insert(
+                        entry.path.to_string_lossy().to_string(),
+                        (entry.content.hash.clone(), entry.package.clone()),
+                    );
+                    Ok(())
+                });
+
+                // Find added and changed
+                for (path, (new_hash, new_pkg)) in &new_entries {
+                    match old_entries.get(path) {
+                        None => added.push(path.clone()),
+                        Some((old_hash, _)) if old_hash != new_hash => {
+                            if new_pkg.is_some() {
+                                changed_pkg_count += 1;
+                            } else {
+                                changed.push(path.clone());
+                            }
+                        }
+                        _ => {} // unchanged
+                    }
+                }
+
+                // Find removed
+                for path in old_entries.keys() {
+                    if !new_entries.contains_key(path) {
+                        removed.push(path.clone());
+                    }
+                }
+
+                // Sort for deterministic output
+                added.sort();
+                removed.sort();
+                changed.sort();
 
                 // Close temp connection before rename
                 drop(tmp_conn);
@@ -693,12 +752,21 @@ impl ControlHandler {
                 let total = init_result.total_count;
                 let duration_ms = init_result.duration.as_millis() as u64;
 
+                let total_changed = changed.len() as u64 + changed_pkg_count;
+
                 let _ = write_event(
                     stream,
                     &serde_json::json!({
                         "event": "complete",
                         "duration_ms": duration_ms,
                         "total": total,
+                        "added": added.len(),
+                        "removed": removed.len(),
+                        "changed": total_changed,
+                        "changed_pkg": changed_pkg_count,
+                        "changed_unattributed": changed,
+                        "added_paths": added.iter().take(20).collect::<Vec<_>>(),
+                        "removed_paths": removed.iter().take(20).collect::<Vec<_>>(),
                     }),
                 );
             }
