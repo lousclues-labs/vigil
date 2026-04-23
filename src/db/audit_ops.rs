@@ -1083,3 +1083,69 @@ mod tests {
         assert_eq!(state.latest_in_window, Some(300));
     }
 }
+
+// ── Audit Segment Operations ──────────────────────────────────
+
+/// An audit segment row.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AuditSegment {
+    pub id: i64,
+    pub first_sequence: i64,
+    pub last_sequence: i64,
+    pub first_timestamp: i64,
+    pub last_timestamp: i64,
+    pub first_chain_hash: String,
+    pub sealed_chain_hash: String,
+    pub sealed_at: i64,
+    pub archive_path: Option<String>,
+}
+
+/// List all audit segments.
+pub fn list_segments(conn: &Connection) -> Result<Vec<AuditSegment>> {
+    // The table might not exist in older databases.
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='audit_segments'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap_or(false);
+
+    if !exists {
+        return Ok(Vec::new());
+    }
+
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, first_sequence, last_sequence, first_timestamp,
+                last_timestamp, first_chain_hash, sealed_chain_hash,
+                sealed_at, archive_path
+         FROM audit_segments ORDER BY id ASC",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok(AuditSegment {
+            id: row.get(0)?,
+            first_sequence: row.get(1)?,
+            last_sequence: row.get(2)?,
+            first_timestamp: row.get(3)?,
+            last_timestamp: row.get(4)?,
+            first_chain_hash: row.get(5)?,
+            sealed_chain_hash: row.get(6)?,
+            sealed_at: row.get(7)?,
+            archive_path: row.get(8)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+/// Count entries in the live audit log.
+pub fn count_entries(conn: &Connection) -> Result<u64> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?;
+    Ok(count.max(0) as u64)
+}

@@ -148,6 +148,14 @@ Vigil Baseline is strongest when:
 - package hooks are installed
 - alert channels are monitored and audit log is retained
 
+## Audit Log Segmentation
+
+Audit log segmentation preserves chain integrity across rotation boundaries. When a segment is sealed, its HMAC covers the chain from first to last entry. The next live entry uses the sealed segment's chain hash as its `previous_chain_hash`, extending the chain across segments without a break.
+
+Sealed segments can be moved to cold storage without breaking verification. The `vigil audit verify` command warns when an archived segment file is missing but does not treat it as a chain break -- the operator may have intentionally moved it to offline storage. If the file is present, its seal HMAC and internal chain are verified.
+
+Pruning sealed segments is irreversible and audited. The `vigil audit prune --confirm` command records a `DetectionSource::AuditPrune` entry in the live audit log before deleting archived data. Operators should retain at least one full chain from baseline establishment to current for forensic purposes.
+
 Vigil Baseline is not a silver bullet.
 It is a high-signal boundary witness.
 

@@ -104,6 +104,19 @@ pub fn create_audit_tables(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_audit_path ON audit_log(path);
         CREATE INDEX IF NOT EXISTS idx_audit_severity ON audit_log(severity);
         CREATE INDEX IF NOT EXISTS idx_audit_group ON audit_log(monitored_group);
+
+        CREATE TABLE IF NOT EXISTS audit_segments (
+            id                INTEGER PRIMARY KEY,
+            first_sequence    INTEGER NOT NULL,
+            last_sequence     INTEGER NOT NULL,
+            first_timestamp   INTEGER NOT NULL,
+            last_timestamp    INTEGER NOT NULL,
+            first_chain_hash  TEXT NOT NULL,
+            sealed_chain_hash TEXT NOT NULL,
+            seal_hmac         TEXT NOT NULL,
+            sealed_at         INTEGER NOT NULL,
+            archive_path      TEXT
+        );
         ",
     )?;
     Ok(())

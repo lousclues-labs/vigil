@@ -67,6 +67,7 @@ pub struct ControlHandler {
     pub control_unauthenticated_connections: Arc<AtomicU64>,
     pub wal: Option<Arc<DetectionWal>>,
     pub shared_baseline_identity: Option<Arc<crate::coordinator::SharedBaselineIdentity>>,
+    pub baseline_generation: Arc<AtomicU64>,
 }
 
 pub fn spawn(
@@ -711,6 +712,10 @@ impl ControlHandler {
                     }
                 }
 
+                // Increment generation so workers and scan scheduler
+                // invalidate caches / reopen connections.
+                self.baseline_generation.fetch_add(1, Ordering::Release);
+
                 // Update config_state in the new DB
                 if let Ok(conn) = crate::db::open_baseline_db_at_path(db_path) {
                     let now = chrono::Utc::now().timestamp();
@@ -953,6 +958,7 @@ mod tests {
             control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
             wal: None,
             shared_baseline_identity: None,
+            baseline_generation: Arc::new(AtomicU64::new(0)),
         };
         let handle = spawn(socket_path.clone(), handler, shutdown.clone()).unwrap();
 
@@ -1077,6 +1083,7 @@ mod tests {
             control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
             wal: None,
             shared_baseline_identity: None,
+            baseline_generation: Arc::new(AtomicU64::new(0)),
         };
 
         let result = handler.dispatch("status", &serde_json::json!({"method": "status"}));
@@ -1116,6 +1123,7 @@ mod tests {
             control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
             wal: None,
             shared_baseline_identity: None,
+            baseline_generation: Arc::new(AtomicU64::new(0)),
         };
 
         handler.dispatch("reload", &serde_json::json!({"method": "reload"}));
@@ -1186,6 +1194,7 @@ mod tests {
             control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
             wal: None,
             shared_baseline_identity: None,
+            baseline_generation: Arc::new(AtomicU64::new(0)),
         };
 
         // Use a Unix socket pair to capture the streaming response

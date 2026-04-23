@@ -667,6 +667,7 @@ impl DaemonRuntime {
             scan_baseline_conn,
             wal.clone(),
             daemon.maintenance_active.clone(),
+            baseline_generation.clone(),
         )?;
 
         send_watchdog_heartbeat();
@@ -693,6 +694,7 @@ impl DaemonRuntime {
                 control_unauthenticated_connections: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 wal: wal.clone(),
                 shared_baseline_identity: shared_baseline_identity.clone(),
+                baseline_generation: baseline_generation.clone(),
             };
             Some(control::spawn(
                 cfg.daemon.control_socket.clone(),

@@ -1,6 +1,6 @@
 //! Cron-scheduled and on-demand scan orchestration.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -26,16 +26,41 @@ pub fn spawn(
     baseline_conn: rusqlite::Connection,
     wal: Option<Arc<DetectionWal>>,
     maintenance_active: Arc<AtomicBool>,
+    baseline_generation: Arc<AtomicU64>,
 ) -> crate::Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name("vigil-scan-scheduler".into())
         .spawn(move || {
+            let mut conn = baseline_conn;
+            let mut local_generation = baseline_generation.load(Ordering::Acquire);
             while !shutdown.load(Ordering::Acquire) {
+                // Reopen connection if baseline was refreshed since last check.
+                let current_gen = baseline_generation.load(Ordering::Acquire);
+                if current_gen != local_generation {
+                    let cfg = config.load();
+                    match crate::db::open_baseline_db_at_path(&cfg.daemon.db_path) {
+                        Ok(new_conn) => {
+                            conn = new_conn;
+                            local_generation = current_gen;
+                            tracing::info!(
+                                generation = current_gen,
+                                "scan scheduler reopened baseline after refresh"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "scan scheduler failed to reopen baseline; using stale connection"
+                            );
+                        }
+                    }
+                }
+
                 // Service on-demand scan requests first
                 while let Ok(request) = scan_trigger_rx.try_recv() {
                     let cfg = config.load();
                     let response =
-                        match crate::scanner::run_scan(&baseline_conn, &cfg, request.mode) {
+                        match crate::scanner::run_scan(&conn, &cfg, request.mode) {
                             Ok(scan_result) => {
                                 for change in scan_result.changes {
                                     detection::dispatch_detection(
@@ -116,8 +141,25 @@ pub fn spawn(
                         return;
                     }
 
-                    // Use startup baseline connection; never re-open by path
-                    match crate::scanner::run_scan(&baseline_conn, &cfg, cfg.scanner.scheduled_mode)
+                    // Reopen if baseline was refreshed since the last generation check.
+                    let current_gen = baseline_generation.load(Ordering::Acquire);
+                    if current_gen != local_generation {
+                        match crate::db::open_baseline_db_at_path(&cfg.daemon.db_path) {
+                            Ok(new_conn) => {
+                                conn = new_conn;
+                                local_generation = current_gen;
+                                tracing::info!(
+                                    generation = current_gen,
+                                    "scan scheduler reopened baseline before scheduled scan"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(error = %e, "failed to reopen baseline for scheduled scan");
+                            }
+                        }
+                    }
+
+                    match crate::scanner::run_scan(&conn, &cfg, cfg.scanner.scheduled_mode)
                     {
                         Ok(scan_result) => {
                             for change in scan_result.changes {

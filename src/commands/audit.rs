@@ -275,6 +275,39 @@ pub(crate) fn cmd_audit(
                 );
             }
         }
+        vigil::cli::AuditAction::Segments => {
+            let segments = vigil::db::audit_ops::list_segments(&conn)?;
+            if segments.is_empty() {
+                println!("No sealed segments. All entries are in the live audit log.");
+            } else {
+                print_header("Vigil Baseline -- Audit Segments");
+                let header_archive = "Archive";
+                println!(
+                    "  {:<6} {:<14} {:<14} {:<22} {:<22} {}",
+                    "ID",
+                    "First seq",
+                    "Last seq",
+                    "First timestamp",
+                    "Last timestamp",
+                    header_archive
+                );
+                for seg in &segments {
+                    let first_ts = format_audit_timestamp(seg.first_timestamp);
+                    let last_ts = format_audit_timestamp(seg.last_timestamp);
+                    let archive = seg.archive_path.as_deref().unwrap_or("(live)");
+                    println!(
+                        "  {:<6} {:<14} {:<14} {:<22} {:<22} {}",
+                        seg.id, seg.first_sequence, seg.last_sequence, first_ts, last_ts, archive
+                    );
+                }
+                println!();
+                println!(
+                    "  {} segment{}.",
+                    segments.len(),
+                    if segments.len() == 1 { "" } else { "s" }
+                );
+            }
+        }
     }
 
     Ok(())

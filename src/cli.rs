@@ -289,6 +289,9 @@ pub enum AuditAction {
 
     /// Verify audit chain integrity
     Verify,
+
+    /// List sealed audit segments
+    Segments,
 }
 
 #[derive(Subcommand)]
