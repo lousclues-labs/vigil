@@ -63,6 +63,8 @@ pub struct Metrics {
     pub worker_db_reopen_failures: AtomicU64,
     /// Auto-rebaseline entries rejected due to empty hash or zero mtime.
     pub auto_rebaseline_rejected: AtomicU64,
+    /// Unattributed changes recorded during baseline refresh.
+    pub baseline_refresh_unattributed_changes: AtomicU64,
     /// Unix timestamp set once at daemon startup.
     pub uptime_start: i64,
 }
@@ -113,6 +115,7 @@ impl Metrics {
             worker_db_reopen_attempts: AtomicU64::new(0),
             worker_db_reopen_failures: AtomicU64::new(0),
             auto_rebaseline_rejected: AtomicU64::new(0),
+            baseline_refresh_unattributed_changes: AtomicU64::new(0),
             uptime_start: chrono::Utc::now().timestamp(),
         }
     }
@@ -177,6 +180,9 @@ impl Metrics {
             worker_db_reopen_attempts: self.worker_db_reopen_attempts.load(Ordering::Relaxed),
             worker_db_reopen_failures: self.worker_db_reopen_failures.load(Ordering::Relaxed),
             auto_rebaseline_rejected: self.auto_rebaseline_rejected.load(Ordering::Relaxed),
+            baseline_refresh_unattributed_changes: self
+                .baseline_refresh_unattributed_changes
+                .load(Ordering::Relaxed),
             uptime_start: self.uptime_start,
         }
     }
@@ -234,6 +240,7 @@ pub struct MetricsSnapshot {
     pub worker_db_reopen_attempts: u64,
     pub worker_db_reopen_failures: u64,
     pub auto_rebaseline_rejected: u64,
+    pub baseline_refresh_unattributed_changes: u64,
     pub uptime_start: i64,
 }
 
@@ -488,6 +495,12 @@ impl MetricsSnapshot {
             "vigil_worker_db_reopen_failures_total",
             "Worker DB reopen failures",
             self.worker_db_reopen_failures,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_baseline_refresh_unattributed_changes_total",
+            "Unattributed changes recorded during baseline refresh",
+            self.baseline_refresh_unattributed_changes,
         );
 
         let _ = writeln!(out);

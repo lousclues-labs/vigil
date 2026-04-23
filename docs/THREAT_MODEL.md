@@ -134,6 +134,7 @@ Mitigations in design:
 - New mounts overlapping watched paths receive dynamic fanotify marks; modifications under new mounts are monitored in real-time (VIGIL-VULN-069, fanotify backend only; inotify detects and logs but cannot mark)
 - Clock anomaly detection compares wall-clock delta against monotonic time; slow drift > 5s tolerance triggers Degraded state and skips audit rotation (VIGIL-VULN-070)
 - Audit rotation refused when max audit timestamp exceeds current wall-clock time (clock rollback detection)
+- Baseline refresh records unattributed changes to the detection WAL with `DetectionSource::BaselineRefresh` and `Severity::High`. An attacker who modifies files and then triggers a baseline refresh cannot use the refresh to silently absorb the modifications; the audit trail will contain a record of every path whose hash changed without package attribution. Diff computation failures do not suppress this recording; the refresh proceeds and the `complete` event reports `diff_unavailable: true`.
 
 ---
 

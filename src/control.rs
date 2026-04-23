@@ -19,6 +19,7 @@ use crate::db::baseline_ops;
 use crate::error::{Result, VigilError};
 use crate::metrics::Metrics;
 use crate::types::{DaemonState, ScanMode};
+use crate::wal::DetectionWal;
 use zeroize::Zeroizing;
 
 /// Maximum size of a single control socket request line.
@@ -64,6 +65,7 @@ pub struct ControlHandler {
     pub maintenance_active: Arc<AtomicBool>,
     pub maintenance_entered_at: Arc<AtomicI64>,
     pub control_unauthenticated_connections: Arc<AtomicU64>,
+    pub wal: Option<Arc<DetectionWal>>,
 }
 
 pub fn spawn(
@@ -607,18 +609,15 @@ impl ControlHandler {
         };
 
         // Snapshot old baseline entries for post-refresh diff.
-        // Map path -> (hash, package) for comparison after the new baseline is built.
-        let old_entries: std::collections::HashMap<String, (String, Option<String>)> = {
+        let old_entries = {
             let conn = self.baseline_conn.lock();
-            let mut map = std::collections::HashMap::new();
-            let _ = crate::db::baseline_ops::for_each_entry(&conn, |entry| {
-                map.insert(
-                    entry.path.to_string_lossy().to_string(),
-                    (entry.content.hash.clone(), entry.package.clone()),
-                );
-                Ok(())
-            });
-            map
+            match crate::baseline_diff::snapshot_from_conn(&conn) {
+                Ok(map) => map,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to snapshot old baseline for diff");
+                    std::collections::HashMap::new()
+                }
+            }
         };
 
         // Build baseline with progress
@@ -646,54 +645,37 @@ impl ControlHandler {
                     return Ok(());
                 }
 
-                // Compute diff: compare old baseline snapshot against new temp DB
-                let mut added = Vec::new();
-                let mut removed = Vec::new();
-                let mut changed = Vec::new();
-                let mut changed_pkg_count = 0u64; // package-attributed changes
+                // Snapshot new baseline entries for diff.
+                let new_entries = match crate::baseline_diff::snapshot_from_conn(&tmp_conn) {
+                    Ok(map) => Some(map),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to snapshot new baseline for diff");
+                        None
+                    }
+                };
 
-                // Collect new entries
-                let mut new_entries: std::collections::HashMap<String, (String, Option<String>)> =
-                    std::collections::HashMap::new();
-                let _ = crate::db::baseline_ops::for_each_entry(&tmp_conn, |entry| {
-                    new_entries.insert(
-                        entry.path.to_string_lossy().to_string(),
-                        (entry.content.hash.clone(), entry.package.clone()),
-                    );
-                    Ok(())
-                });
-
-                // Find added and changed
-                for (path, (new_hash, new_pkg)) in &new_entries {
-                    match old_entries.get(path) {
-                        None => added.push(path.clone()),
-                        Some((old_hash, _)) if old_hash != new_hash => {
-                            if new_pkg.is_some() {
-                                changed_pkg_count += 1;
-                            } else {
-                                changed.push(path.clone());
-                            }
+                // Compute diff with panic isolation (Principle X).
+                // Diff failure must never abort the baseline swap.
+                let diff_result = if let Some(ref new_map) = new_entries {
+                    match crate::baseline_diff::compute_diff_safe(&old_entries, new_map) {
+                        Ok(diff) => Some(diff),
+                        Err(panic_msg) => {
+                            tracing::warn!(
+                                error = %panic_msg,
+                                "diff computation panicked; swap will proceed without diff"
+                            );
+                            None
                         }
-                        _ => {} // unchanged
                     }
-                }
-
-                // Find removed
-                for path in old_entries.keys() {
-                    if !new_entries.contains_key(path) {
-                        removed.push(path.clone());
-                    }
-                }
-
-                // Sort for deterministic output
-                added.sort();
-                removed.sort();
-                changed.sort();
+                } else {
+                    None
+                };
 
                 // Close temp connection before rename
                 drop(tmp_conn);
 
-                // Atomic swap: rename temp over live
+                // Atomic swap: rename temp over live.
+                // This MUST happen regardless of diff outcome.
                 if let Err(e) = std::fs::rename(&tmp_path, db_path) {
                     let _ = std::fs::remove_file(&tmp_path);
                     let _ = write_event(
@@ -752,23 +734,60 @@ impl ControlHandler {
                 let total = init_result.total_count;
                 let duration_ms = init_result.duration.as_millis() as u64;
 
-                let total_changed = changed.len() as u64 + changed_pkg_count;
+                // Record unattributed changes to the detection WAL
+                // (Principle XIII: Audit Trail Never Lies).
+                if let Some(ref diff) = diff_result {
+                    if !diff.changed_unattributed.is_empty() {
+                        let maintenance = self.maintenance_active.load(Ordering::Acquire);
+                        if let Some(ref wal) = self.wal {
+                            let appended = crate::baseline_diff::record_unattributed_to_wal(
+                                wal,
+                                &diff.changed_unattributed,
+                                maintenance,
+                            );
+                            self.metrics
+                                .baseline_refresh_unattributed_changes
+                                .fetch_add(appended, Ordering::Relaxed);
+                        }
+                    }
+                }
 
-                let _ = write_event(
-                    stream,
-                    &serde_json::json!({
-                        "event": "complete",
-                        "duration_ms": duration_ms,
-                        "total": total,
-                        "added": added.len(),
-                        "removed": removed.len(),
-                        "changed": total_changed,
-                        "changed_pkg": changed_pkg_count,
-                        "changed_unattributed": changed,
-                        "added_paths": added.iter().take(20).collect::<Vec<_>>(),
-                        "removed_paths": removed.iter().take(20).collect::<Vec<_>>(),
-                    }),
-                );
+                // Build the complete event.
+                // JSON field naming convention:
+                //   *_paths_sample  -- capped list (added/removed: max 20)
+                //   *_paths         -- complete list (changed_unattributed: never truncated)
+                let event = match &diff_result {
+                    Some(diff) => {
+                        let unattr_paths: Vec<&str> = diff
+                            .changed_unattributed
+                            .iter()
+                            .map(|e| e.path.as_str())
+                            .collect();
+                        serde_json::json!({
+                            "event": "complete",
+                            "duration_ms": duration_ms,
+                            "total": total,
+                            "added": diff.added.len(),
+                            "removed": diff.removed.len(),
+                            "changed": diff.total_changed(),
+                            "changed_pkg": diff.changed_pkg.len(),
+                            "changed_unattributed": unattr_paths.len(),
+                            "changed_unattributed_paths": unattr_paths,
+                            "added_paths_sample": diff.added.iter().take(20).collect::<Vec<_>>(),
+                            "removed_paths_sample": diff.removed.iter().take(20).collect::<Vec<_>>(),
+                        })
+                    }
+                    None => {
+                        serde_json::json!({
+                            "event": "complete",
+                            "duration_ms": duration_ms,
+                            "total": total,
+                            "diff_unavailable": true,
+                            "diff_error": "diff computation failed; baseline was swapped successfully",
+                        })
+                    }
+                };
+                let _ = write_event(stream, &event);
             }
             Err(e) => {
                 let _ = std::fs::remove_file(&tmp_path);
@@ -923,6 +942,7 @@ mod tests {
             maintenance_active: Arc::new(AtomicBool::new(false)),
             maintenance_entered_at: Arc::new(AtomicI64::new(0)),
             control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
+            wal: None,
         };
         let handle = spawn(socket_path.clone(), handler, shutdown.clone()).unwrap();
 
@@ -1045,6 +1065,7 @@ mod tests {
             maintenance_active: Arc::new(AtomicBool::new(false)),
             maintenance_entered_at: Arc::new(AtomicI64::new(0)),
             control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
+            wal: None,
         };
 
         let result = handler.dispatch("status", &serde_json::json!({"method": "status"}));
@@ -1082,6 +1103,7 @@ mod tests {
             maintenance_active: Arc::new(AtomicBool::new(false)),
             maintenance_entered_at: Arc::new(AtomicI64::new(0)),
             control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
+            wal: None,
         };
 
         handler.dispatch("reload", &serde_json::json!({"method": "reload"}));
@@ -1150,6 +1172,7 @@ mod tests {
             maintenance_active: Arc::new(AtomicBool::new(false)),
             maintenance_entered_at: Arc::new(AtomicI64::new(0)),
             control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
+            wal: None,
         };
 
         // Use a Unix socket pair to capture the streaming response
@@ -1198,5 +1221,98 @@ mod tests {
             crate::hmac::verify_hmac(key, nonce, &expected),
             "correct response must authenticate"
         );
+    }
+
+    /// Diff failure must not abort the baseline swap. When diff_result is None
+    /// (simulating a panic or read error), the complete event must contain
+    /// `diff_unavailable: true` and `diff_error`.
+    #[test]
+    fn diff_unavailable_fields_in_complete_event() {
+        // Simulate a complete event when diff is unavailable
+        let duration_ms = 1234u64;
+        let total = 100u64;
+
+        // This mirrors the None branch in handle_baseline_refresh_streaming
+        let event = serde_json::json!({
+            "event": "complete",
+            "duration_ms": duration_ms,
+            "total": total,
+            "diff_unavailable": true,
+            "diff_error": "diff computation failed; baseline was swapped successfully",
+        });
+
+        assert_eq!(event["event"], "complete");
+        assert_eq!(event["diff_unavailable"], true);
+        assert!(event["diff_error"]
+            .as_str()
+            .unwrap()
+            .contains("swapped successfully"));
+        // The diff fields (added, removed, etc.) must NOT appear
+        assert!(event.get("added").is_none());
+        assert!(event.get("changed_unattributed_paths").is_none());
+    }
+
+    /// Complete event with diff available must contain all required fields
+    /// with the correct naming convention: _sample for capped, _paths for full.
+    #[test]
+    fn complete_event_field_naming_convention() {
+        use crate::baseline_diff::{BaselineDiff, ChangedEntry};
+
+        let diff = BaselineDiff {
+            added: (0..25).map(|i| format!("/new/{}", i)).collect(),
+            removed: (0..5).map(|i| format!("/old/{}", i)).collect(),
+            changed_pkg: vec!["/pkg/a".into()],
+            changed_unattributed: vec![
+                ChangedEntry {
+                    path: "/etc/x".into(),
+                    old_hash: "aaa".into(),
+                    new_hash: "bbb".into(),
+                },
+                ChangedEntry {
+                    path: "/etc/y".into(),
+                    old_hash: "ccc".into(),
+                    new_hash: "ddd".into(),
+                },
+            ],
+        };
+
+        let unattr_paths: Vec<&str> = diff
+            .changed_unattributed
+            .iter()
+            .map(|e| e.path.as_str())
+            .collect();
+        let event = serde_json::json!({
+            "event": "complete",
+            "duration_ms": 500,
+            "total": 100,
+            "added": diff.added.len(),
+            "removed": diff.removed.len(),
+            "changed": diff.total_changed(),
+            "changed_pkg": diff.changed_pkg.len(),
+            "changed_unattributed": unattr_paths.len(),
+            "changed_unattributed_paths": unattr_paths,
+            "added_paths_sample": diff.added.iter().take(20).collect::<Vec<_>>(),
+            "removed_paths_sample": diff.removed.iter().take(20).collect::<Vec<_>>(),
+        });
+
+        // changed_unattributed_paths: complete list, never truncated
+        let paths = event["changed_unattributed_paths"].as_array().unwrap();
+        assert_eq!(paths.len(), 2, "all unattributed paths must be present");
+
+        // added_paths_sample: capped at 20
+        let added_sample = event["added_paths_sample"].as_array().unwrap();
+        assert_eq!(added_sample.len(), 20, "added_paths_sample capped at 20");
+
+        // removed_paths_sample: complete when under cap
+        let removed_sample = event["removed_paths_sample"].as_array().unwrap();
+        assert_eq!(
+            removed_sample.len(),
+            5,
+            "removed_paths_sample uncapped when <= 20"
+        );
+
+        // Count fields present
+        assert_eq!(event["changed_unattributed"], 2);
+        assert_eq!(event["changed"], 3); // 1 pkg + 2 unattributed
     }
 }

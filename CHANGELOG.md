@@ -2,6 +2,30 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.1.1] - 2026-04-22
+
+### Added
+
+- Unattributed changes detected during baseline refresh are now recorded in the
+  detection WAL with `DetectionSource::BaselineRefresh` and `Severity::High`.
+  The audit trail captures every unexplained modification absorbed by a refresh
+  (Principle XIII).
+- `baseline_refresh_unattributed_changes_total` Prometheus counter tracks
+  unattributed changes recorded across all refreshes.
+- Diff failure isolation: if the diff computation fails (OOM, panic, DB read
+  error), the baseline swap still proceeds. The `complete` event includes
+  `diff_unavailable: true` and `diff_error` instead of diff fields (Principle X).
+- `changed_unattributed_paths` is never truncated in the JSON event or TTY
+  output. Added/removed paths remain sampled to 20 via `*_paths_sample` fields
+  (Principle V).
+
+### Changed
+
+- Control socket `baseline_refresh` `complete` event field names updated:
+  `added_paths` -> `added_paths_sample`, `removed_paths` -> `removed_paths_sample`,
+  `changed_unattributed` (array) -> `changed_unattributed_paths` (array) +
+  `changed_unattributed` (count). New field: `diff_unavailable` (bool).
+
 ## [1.1.0] - 2026-04-19
 
 ### Added

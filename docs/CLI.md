@@ -1139,13 +1139,48 @@ Full record: vigil audit show --since 2m
 ```
 
 Package-attributed changes are collapsed into a count. Unattributed
-changes are listed individually -- those are the ones that matter.
+changes -- files whose hash changed and whose path is not owned by any
+installed package per pacman/apt/dpkg -- are listed individually in full.
+Added and removed paths are sampled to the first 20; unattributed paths
+are never truncated.
 
 Non-TTY output (e.g. piped to a file or from cron):
 
 ```
 [14:33:35] refresh complete: 2,431 files, 3 added, 1 removed, 17 changed
 ```
+
+The JSON `complete` event includes counts and path lists:
+
+```json
+{
+  "event": "complete",
+  "duration_ms": 94000,
+  "total": 2431,
+  "added": 3,
+  "removed": 1,
+  "changed": 17,
+  "changed_pkg": 14,
+  "changed_unattributed": 3,
+  "changed_unattributed_paths": [
+    "/etc/resolv.conf",
+    "/etc/hosts",
+    "/etc/machine-id"
+  ],
+  "added_paths_sample": ["/usr/bin/newcmd", "/usr/lib/libfoo.so"],
+  "removed_paths_sample": ["/usr/bin/oldcmd"]
+}
+```
+
+Field naming convention: `*_paths_sample` lists are capped at 20 entries.
+`changed_unattributed_paths` is always complete. When diff computation
+fails (e.g. OOM on a very large baseline), the event instead contains
+`"diff_unavailable": true` and `"diff_error": "<reason>"`.
+
+Unattributed changes are recorded in the detection WAL with
+`DetectionSource::BaselineRefresh` and `Severity::High`. This ensures
+the audit trail captures every unexplained modification absorbed by a
+refresh, even if the operator does not review the CLI output.
 
 The canonical post-package-install workflow:
 

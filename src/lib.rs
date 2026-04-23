@@ -8,6 +8,7 @@
 
 pub mod alert;
 pub mod attest;
+pub mod baseline_diff;
 pub mod bloom;
 pub mod cli;
 pub mod config;
@@ -683,6 +684,7 @@ impl DaemonRuntime {
                 maintenance_active: daemon.maintenance_active.clone(),
                 maintenance_entered_at: daemon.maintenance_entered_at.clone(),
                 control_unauthenticated_connections: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                wal: wal.clone(),
             };
             Some(control::spawn(
                 cfg.daemon.control_socket.clone(),

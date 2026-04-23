@@ -198,6 +198,10 @@ fn finish_event(event: &serde_json::Value, quiet: bool, is_tty: bool) -> vigil::
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         let duration_secs = duration_ms / 1000;
+        let diff_unavailable = event
+            .get("diff_unavailable")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let added = event.get("added").and_then(|v| v.as_u64()).unwrap_or(0);
         let removed = event.get("removed").and_then(|v| v.as_u64()).unwrap_or(0);
         let changed = event.get("changed").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -205,8 +209,9 @@ fn finish_event(event: &serde_json::Value, quiet: bool, is_tty: bool) -> vigil::
             .get("changed_pkg")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        let changed_unattributed: Vec<String> = event
-            .get("changed_unattributed")
+        // changed_unattributed_paths: full list, never truncated (Principle V)
+        let changed_unattributed_paths: Vec<String> = event
+            .get("changed_unattributed_paths")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
@@ -214,8 +219,9 @@ fn finish_event(event: &serde_json::Value, quiet: bool, is_tty: bool) -> vigil::
                     .collect()
             })
             .unwrap_or_default();
+        // added_paths_sample / removed_paths_sample: capped to 20
         let added_paths: Vec<String> = event
-            .get("added_paths")
+            .get("added_paths_sample")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
@@ -224,7 +230,7 @@ fn finish_event(event: &serde_json::Value, quiet: bool, is_tty: bool) -> vigil::
             })
             .unwrap_or_default();
         let removed_paths: Vec<String> = event
-            .get("removed_paths")
+            .get("removed_paths_sample")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
@@ -236,7 +242,14 @@ fn finish_event(event: &serde_json::Value, quiet: bool, is_tty: bool) -> vigil::
         if is_tty {
             eprintln!("Baseline refreshed in {} seconds.", duration_secs);
             eprintln!("  total:    {} files", format_count(total));
-            if added > 0 || removed > 0 || changed > 0 {
+
+            if diff_unavailable {
+                let diff_error = event
+                    .get("diff_error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                eprintln!("  diff:     unavailable ({})", diff_error);
+            } else if added > 0 || removed > 0 || changed > 0 {
                 eprintln!("  added:    {}", added);
                 eprintln!("  removed:  {}", removed);
                 if changed_pkg > 0 {
@@ -244,16 +257,17 @@ fn finish_event(event: &serde_json::Value, quiet: bool, is_tty: bool) -> vigil::
                         "  changed:  {} ({} from package updates, {} unattributed)",
                         changed,
                         changed_pkg,
-                        changed_unattributed.len()
+                        changed_unattributed_paths.len()
                     );
                 } else {
                     eprintln!("  changed:  {}", changed);
                 }
 
-                if !changed_unattributed.is_empty() {
+                // Unattributed changes: render every path, no cap (Principle V)
+                if !changed_unattributed_paths.is_empty() {
                     eprintln!();
                     eprintln!("Unattributed changes:");
-                    for path in &changed_unattributed {
+                    for path in &changed_unattributed_paths {
                         eprintln!("  {}    content modified", path);
                     }
                 }
