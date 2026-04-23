@@ -128,10 +128,15 @@ fn print_compact(
         }
 
         eprintln!();
-        if urgent == 0 {
-            eprintln!("{} warnings, none urgent.", warning_count);
+        let issue_word = if warning_count == 1 {
+            "warning"
         } else {
-            eprintln!("{} warnings, {} urgent.", warning_count, urgent);
+            "warnings"
+        };
+        if urgent == 0 {
+            eprintln!("{} {}, none urgent.", warning_count, issue_word);
+        } else {
+            eprintln!("{} {}, {} urgent.", warning_count, issue_word, urgent);
         }
     }
 
@@ -153,7 +158,18 @@ fn print_verbose(checks: &[doctor::DiagnosticCheck], cfg: &vigil::config::Config
     eprintln!("  ───────");
     for check in checks
         .iter()
-        .filter(|c| matches!(c.name.as_str(), "Daemon" | "Backend" | "Control"))
+        .filter(|c| matches!(c.name.as_str(), "Daemon" | "State" | "Backend" | "Control"))
+    {
+        print_check_verbose(check);
+    }
+
+    // Pipeline
+    eprintln!();
+    eprintln!("  Pipeline");
+    eprintln!("  ────────");
+    for check in checks
+        .iter()
+        .filter(|c| matches!(c.name.as_str(), "WAL pipeline"))
     {
         print_check_verbose(check);
     }
@@ -162,10 +178,12 @@ fn print_verbose(checks: &[doctor::DiagnosticCheck], cfg: &vigil::config::Config
     eprintln!();
     eprintln!("  Data");
     eprintln!("  ────");
-    for check in checks
-        .iter()
-        .filter(|c| matches!(c.name.as_str(), "Baseline" | "Database" | "Audit log"))
-    {
+    for check in checks.iter().filter(|c| {
+        matches!(
+            c.name.as_str(),
+            "Baseline" | "Database" | "Audit log" | "Data dir"
+        )
+    }) {
         print_check_verbose(check);
     }
 
@@ -235,10 +253,15 @@ fn print_verbose(checks: &[doctor::DiagnosticCheck], cfg: &vigil::config::Config
             }
         }
         let total_issues = failures + warnings;
-        if urgent == 0 {
-            eprintln!("  {} warnings, none urgent.", total_issues);
+        let issue_word = if total_issues == 1 {
+            "warning"
         } else {
-            eprintln!("  {} warnings, {} urgent.", total_issues, urgent);
+            "warnings"
+        };
+        if urgent == 0 {
+            eprintln!("  {} {}, none urgent.", total_issues, issue_word);
+        } else {
+            eprintln!("  {} {}, {} urgent.", total_issues, issue_word, urgent);
         }
     }
 
@@ -268,8 +291,8 @@ fn print_check_verbose(check: &doctor::DiagnosticCheck) {
 /// Classify urgency of a warning: "not urgent", "soon", or "now".
 fn classify_urgency(check_name: &str) -> &'static str {
     match check_name {
-        "Daemon" | "Control" => "now",
-        "Baseline" | "Database" | "HMAC key" => "soon",
+        "Daemon" | "Control" | "State" => "now",
+        "Baseline" | "Database" | "HMAC key" | "Data dir" | "WAL pipeline" => "soon",
         _ => "not urgent",
     }
 }

@@ -301,14 +301,18 @@ pub fn diagnostics_exit_code(checks: &[DiagnosticCheck]) -> i32 {
 
 /// Run all diagnostic checks and return results.
 pub fn run_diagnostics(config: &Config) -> Vec<DiagnosticCheck> {
-    let mut checks = Vec::with_capacity(11);
+    let mut checks = Vec::with_capacity(16);
 
     let (daemon_check, daemon_probe) = check_daemon(config);
     checks.push(daemon_check);
+    checks.push(check_daemon_state(config, daemon_probe.running));
     checks.push(check_backend(config, daemon_probe.running));
+    checks.push(check_control_socket(config));
     checks.push(check_baseline(config));
     checks.push(check_database_integrity(config));
     checks.push(check_audit_log(config));
+    checks.push(check_storage(config));
+    checks.push(check_wal_pipeline(config, daemon_probe.running));
     checks.push(check_config(config));
     checks.push(check_scan_timer(config));
     checks.push(check_hmac_key(config));
@@ -316,7 +320,6 @@ pub fn run_diagnostics(config: &Config) -> Vec<DiagnosticCheck> {
     checks.push(check_package_hooks());
     checks.push(check_notify_send());
     checks.push(check_signal_socket(config));
-    checks.push(check_control_socket(config));
 
     checks
 }
@@ -1110,6 +1113,213 @@ fn check_control_socket(config: &Config) -> DiagnosticCheck {
     }
 }
 
+/// Check internal daemon state (healthy/degraded) from state.json.
+fn check_daemon_state(config: &Config, daemon_running: bool) -> DiagnosticCheck {
+    if !daemon_running {
+        return DiagnosticCheck {
+            name: "State".into(),
+            status: CheckStatus::Unknown,
+            detail: "unknown (daemon not running)".into(),
+            fix: None,
+        };
+    }
+
+    match read_state_json(config) {
+        Some(state) => {
+            let status_str = state
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            match status_str {
+                "healthy" => DiagnosticCheck {
+                    name: "State".into(),
+                    status: CheckStatus::Ok,
+                    detail: "healthy".into(),
+                    fix: None,
+                },
+                "degraded" => {
+                    let reason = state
+                        .get("reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let since = state
+                        .get("since")
+                        .and_then(|v| v.as_str())
+                        .map(|s| format!(" (since {})", s))
+                        .unwrap_or_default();
+                    DiagnosticCheck {
+                        name: "State".into(),
+                        status: CheckStatus::Failed,
+                        detail: format!("degraded: {}{}", reason, since),
+                        fix: Some(format!(
+                            "vigil recover --reason {}",
+                            reason.split_whitespace().next().unwrap_or(reason)
+                        )),
+                    }
+                }
+                _ => DiagnosticCheck {
+                    name: "State".into(),
+                    status: CheckStatus::Warning,
+                    detail: format!("unrecognized state: {}", status_str),
+                    fix: None,
+                },
+            }
+        }
+        None => DiagnosticCheck {
+            name: "State".into(),
+            status: CheckStatus::Unknown,
+            detail: "state.json not available".into(),
+            fix: None,
+        },
+    }
+}
+
+/// Check WAL pipeline health from metrics.json.
+fn check_wal_pipeline(config: &Config, daemon_running: bool) -> DiagnosticCheck {
+    if !daemon_running {
+        return DiagnosticCheck {
+            name: "WAL pipeline".into(),
+            status: CheckStatus::Unknown,
+            detail: "unknown (daemon not running)".into(),
+            fix: None,
+        };
+    }
+
+    if !config.daemon.detection_wal {
+        return DiagnosticCheck {
+            name: "WAL pipeline".into(),
+            status: CheckStatus::Unknown,
+            detail: "disabled".into(),
+            fix: None,
+        };
+    }
+
+    let metrics_path = config.daemon.runtime_dir.join("metrics.json");
+    let raw = match fs::read_to_string(&metrics_path) {
+        Ok(r) => r,
+        Err(_) => {
+            return DiagnosticCheck {
+                name: "WAL pipeline".into(),
+                status: CheckStatus::Unknown,
+                detail: "metrics.json not available".into(),
+                fix: None,
+            };
+        }
+    };
+
+    let snap: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => {
+            return DiagnosticCheck {
+                name: "WAL pipeline".into(),
+                status: CheckStatus::Warning,
+                detail: "metrics.json unreadable".into(),
+                fix: None,
+            };
+        }
+    };
+
+    let pending = snap
+        .get("detections_wal_pending")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let bytes = snap
+        .get("detections_wal_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let backpressure = snap
+        .get("backpressure_events")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    let detail = format!(
+        "{} pending ({}), backpressure events: {}",
+        pending,
+        format_size(bytes),
+        backpressure
+    );
+
+    if pending > 10_000 {
+        DiagnosticCheck {
+            name: "WAL pipeline".into(),
+            status: CheckStatus::Failed,
+            detail,
+            fix: Some("vigil doctor --verbose".into()),
+        }
+    } else if pending > 1_000 {
+        DiagnosticCheck {
+            name: "WAL pipeline".into(),
+            status: CheckStatus::Warning,
+            detail,
+            fix: None,
+        }
+    } else {
+        DiagnosticCheck {
+            name: "WAL pipeline".into(),
+            status: CheckStatus::Ok,
+            detail,
+            fix: None,
+        }
+    }
+}
+
+/// Check data directory disk space.
+fn check_storage(config: &Config) -> DiagnosticCheck {
+    let data_dir = config
+        .daemon
+        .db_path
+        .parent()
+        .unwrap_or(std::path::Path::new("/var/lib/vigil"));
+
+    match nix::sys::statvfs::statvfs(data_dir) {
+        Ok(stat) => {
+            let total = stat.blocks() * stat.fragment_size();
+            let free = stat.blocks_available() * stat.fragment_size();
+            let pct_free = if total > 0 {
+                (free as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            let detail = format!(
+                "{} ({}, {:.1}% free)",
+                data_dir.display(),
+                format_size(free),
+                pct_free
+            );
+
+            if pct_free < 5.0 {
+                DiagnosticCheck {
+                    name: "Data dir".into(),
+                    status: CheckStatus::Failed,
+                    detail,
+                    fix: Some("Free space in the data directory. Baseline refresh will be refused below 5% free.".into()),
+                }
+            } else if pct_free < 10.0 {
+                DiagnosticCheck {
+                    name: "Data dir".into(),
+                    status: CheckStatus::Warning,
+                    detail,
+                    fix: None,
+                }
+            } else {
+                DiagnosticCheck {
+                    name: "Data dir".into(),
+                    status: CheckStatus::Ok,
+                    detail,
+                    fix: None,
+                }
+            }
+        }
+        Err(_) => DiagnosticCheck {
+            name: "Data dir".into(),
+            status: CheckStatus::Unknown,
+            detail: format!("{} (cannot stat)", data_dir.display()),
+            fix: None,
+        },
+    }
+}
+
 fn query_control_socket_quick(
     socket_path: &Path,
     security: &crate::config::SecurityConfig,
@@ -1663,7 +1873,7 @@ mod tests {
     fn diagnostics_returns_expected_number_of_checks() {
         let cfg = crate::config::default_config();
         let checks = run_diagnostics(&cfg);
-        assert_eq!(checks.len(), 13);
+        assert_eq!(checks.len(), 16);
         for check in checks {
             assert!(!check.name.trim().is_empty());
             match check.status {
@@ -1939,5 +2149,19 @@ mod tests {
         let verdict = diagnostics_verdict(&checks);
         assert!(verdict.contains("1 issue"), "got: {}", verdict);
         assert!(!verdict.contains("1 issues"));
+    }
+
+    #[test]
+    fn no_duplicate_check_names() {
+        let cfg = crate::config::default_config();
+        let checks = run_diagnostics(&cfg);
+        let mut seen = std::collections::HashSet::new();
+        for check in &checks {
+            assert!(
+                seen.insert(&check.name),
+                "duplicate check name: {}",
+                check.name
+            );
+        }
     }
 }
