@@ -9,9 +9,9 @@ use vigil::cli::{Cli, Command};
 mod commands;
 use commands::{
     cmd_attest, cmd_audit, cmd_baseline, cmd_check, cmd_check_live, cmd_config, cmd_diff,
-    cmd_doctor, cmd_explain, cmd_init, cmd_inspect, cmd_log, cmd_maintenance, cmd_selftest,
-    cmd_setup, cmd_status, cmd_test_alert, cmd_update, cmd_watch, cmd_welcome, cmd_why,
-    cmd_why_silent, CheckOpts,
+    cmd_doctor, cmd_explain, cmd_init, cmd_inspect, cmd_log, cmd_maintenance, cmd_recover,
+    cmd_selftest, cmd_setup, cmd_status, cmd_test_alert, cmd_update, cmd_watch, cmd_welcome,
+    cmd_why, cmd_why_silent, CheckOpts,
 };
 
 fn main() {
@@ -186,6 +186,10 @@ fn run(cli: Cli) -> vigil::Result<i32> {
             Ok(0)
         }
         Command::Attest { action } => cmd_attest(config_path.as_deref(), action),
+        Command::Recover { reason, list, yes } => {
+            cmd_recover(config_path.as_deref(), reason, list, yes)?;
+            Ok(0)
+        }
         Command::Version => {
             println!("vigil {}", env!("CARGO_PKG_VERSION"));
             Ok(0)

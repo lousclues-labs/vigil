@@ -225,6 +225,21 @@ pub enum Command {
         action: AttestAction,
     },
 
+    /// Recover from a degraded daemon state
+    Recover {
+        /// Degraded reason to recover from (e.g. baseline_db_replaced)
+        #[arg(long)]
+        reason: Option<String>,
+
+        /// List all known degraded reasons and their recovery procedures
+        #[arg(long)]
+        list: bool,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+
     /// Print version
     Version,
 }

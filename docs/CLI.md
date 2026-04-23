@@ -1307,6 +1307,40 @@ Notes:
 
 ---
 
+## `recover`
+
+Recover the daemon from a degraded state. Each degraded reason has a
+named recovery procedure.
+
+```bash
+sudo vigil recover --reason <reason> [--yes]
+vigil recover --list
+```
+
+| Option | Description |
+|--------|-------------|
+| `--reason <reason>` | degraded reason to recover from |
+| `--list` | list all known reasons with descriptions |
+| `--yes` | skip confirmation prompt |
+
+Examples:
+
+```bash
+# List known degraded reasons
+vigil recover --list
+
+# Recover from baseline_db_replaced
+sudo vigil recover --reason baseline_db_replaced
+
+# Non-interactive (for scripts)
+sudo vigil recover --reason baseline_db_replaced --yes
+```
+
+Recovery operations are audited: the daemon writes a `DetectionRecord`
+with the recovery action and operator attribution.
+
+---
+
 ## `version`
 
 Print CLI version.

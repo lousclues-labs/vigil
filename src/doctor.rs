@@ -966,10 +966,11 @@ fn check_package_hooks() -> DiagnosticCheck {
             let pre = Path::new("/etc/pacman.d/hooks/vigil-pre.hook").exists();
             let post = Path::new("/etc/pacman.d/hooks/vigil-post.hook").exists();
             if pre && post {
+                let trigger_info = hook_last_trigger("vigil-pacman");
                 DiagnosticCheck {
                     name: "Hooks".to_string(),
                     status: CheckStatus::Ok,
-                    detail: "pacman pre/post installed".to_string(),
+                    detail: format!("pacman pre/post installed{}", trigger_info),
                     fix: None,
                 }
             } else {
@@ -986,10 +987,11 @@ fn check_package_hooks() -> DiagnosticCheck {
         PackageBackend::Dpkg => {
             let apt_hook = Path::new("/etc/apt/apt.conf.d/99vigil").exists();
             if apt_hook {
+                let trigger_info = hook_last_trigger("vigil-apt");
                 DiagnosticCheck {
                     name: "Hooks".to_string(),
                     status: CheckStatus::Ok,
-                    detail: "apt hook installed".to_string(),
+                    detail: format!("apt hook installed{}", trigger_info),
                     fix: None,
                 }
             } else {
@@ -1016,6 +1018,47 @@ fn check_package_hooks() -> DiagnosticCheck {
             detail: "no supported package manager detected".to_string(),
             fix: None,
         },
+    }
+}
+
+/// Query journald for the last hook trigger entry.
+fn hook_last_trigger(syslog_tag: &str) -> String {
+    let output = Command::new("journalctl")
+        .args([
+            "-t",
+            syslog_tag,
+            "--output=short-iso",
+            "-n",
+            "1",
+            "--no-pager",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let line = text.lines().last().unwrap_or("").trim();
+            if line.is_empty()
+                || line.starts_with("-- No entries")
+                || line.starts_with("-- Journal")
+            {
+                String::new()
+            } else if line.contains("failed") || line.contains("error") {
+                format!(
+                    "; last trigger: {} (failure; see journalctl -t {})",
+                    line.split_whitespace().next().unwrap_or("?"),
+                    syslog_tag
+                )
+            } else {
+                format!(
+                    "; last trigger: {}",
+                    line.split_whitespace().next().unwrap_or("?")
+                )
+            }
+        }
+        _ => String::new(),
     }
 }
 
