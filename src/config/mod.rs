@@ -1083,8 +1083,7 @@ pub fn validate_config_deep(config: &Config) -> Result<Vec<String>> {
         warnings.push(
             "vigil config file is not covered by any watch group. \
              Add /etc/vigil to a watch group so vigil detects config tampering. \
-             Fix: add '/etc/vigil' to a watch group paths list in vigil.toml, \
-             then run `sudo systemctl reload vigild`."
+             Fix: `sudo vigil config watch add /etc/vigil`"
                 .into(),
         );
     }
@@ -1093,8 +1092,7 @@ pub fn validate_config_deep(config: &Config) -> Result<Vec<String>> {
         warnings.push(
             "detection_wal is enabled with detection_wal_persistent=false; \
              WAL on tmpfs does not survive kernel panics. \
-             Fix: set `detection_wal_persistent = true` in the [daemon] section \
-             of vigil.toml, then restart vigild with `sudo systemctl restart vigild`."
+             Fix: `sudo vigil config set daemon.detection_wal_persistent true`"
                 .into(),
         );
     }

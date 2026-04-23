@@ -298,6 +298,49 @@ pub enum ConfigAction {
 
     /// Validate configuration
     Validate,
+
+    /// Watch group operations
+    Watch {
+        #[command(subcommand)]
+        action: ConfigWatchAction,
+    },
+
+    /// Set a configuration value
+    Set {
+        /// Dotted key path (e.g. daemon.detection_wal_persistent)
+        key: String,
+        /// Value to set (TOML literal: true, false, 42, "string")
+        value: String,
+        /// Show the resulting diff without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Get a configuration value
+    Get {
+        /// Dotted key path (e.g. daemon.detection_wal_persistent)
+        key: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ConfigWatchAction {
+    /// Add a path to a watch group
+    Add {
+        /// Path to add to the watch group
+        path: String,
+        /// Watch group name (default: system_critical)
+        #[arg(long, default_value = "system_critical")]
+        group: String,
+    },
+    /// Remove a path from a watch group
+    Remove {
+        /// Path to remove from the watch group
+        path: String,
+        /// Watch group name (default: system_critical)
+        #[arg(long, default_value = "system_critical")]
+        group: String,
+    },
 }
 
 #[derive(Subcommand)]

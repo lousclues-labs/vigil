@@ -788,6 +788,98 @@ vigil config validate
 Valid config prints `Configuration is valid.` and exits 0.
 Invalid config prints the error and exits 1.
 
+### `config watch add`
+
+Add a path to a watch group. Idempotent -- re-adding an existing path
+is a no-op. Creates the group if it does not exist (default severity: high).
+
+```bash
+sudo vigil config watch add <path> [--group <name>]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--group <name>` | `system_critical` | watch group to add the path to |
+
+Examples:
+
+```bash
+# Add /etc/vigil to the default system_critical group
+sudo vigil config watch add /etc/vigil
+
+# Add to a custom group (created if it doesn't exist)
+sudo vigil config watch add /opt/myapp --group custom_apps
+```
+
+The command atomically writes the config (temp file + fsync + rename),
+validates the result, and signals the daemon to reload.
+
+### `config watch remove`
+
+Remove a path from a watch group. Errors if the path is not present.
+
+```bash
+sudo vigil config watch remove <path> [--group <name>]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--group <name>` | `system_critical` | watch group to remove the path from |
+
+### `config set`
+
+Set a configuration value using dotted-path syntax. Validates the
+resulting config before writing. Signals daemon reload (or advises
+restart for keys that require it).
+
+```bash
+sudo vigil config set <key> <value> [--dry-run]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--dry-run` | show the change without writing |
+
+Examples:
+
+```bash
+# Enable persistent WAL
+sudo vigil config set daemon.detection_wal_persistent true
+
+# Change alert rate limit
+sudo vigil config set alerts.rate_limit 50
+
+# Preview a change without writing
+sudo vigil config set daemon.log_level '"debug"' --dry-run
+```
+
+Keys that require a daemon restart (not just reload):
+`daemon.detection_wal_persistent`, `daemon.detection_wal`,
+`daemon.monitor_backend`, `daemon.worker_threads`,
+`daemon.event_channel_capacity`.
+
+Keys that require special handling (`security.hmac_key_path`,
+`daemon.db_path`, `daemon.pid_file`) are refused with a message
+directing the operator to `vigil setup` or manual editing.
+
+### `config get`
+
+Read a configuration value.
+
+```bash
+vigil config get <key>
+```
+
+Examples:
+
+```bash
+vigil config get daemon.detection_wal_persistent
+# false
+
+vigil config get alerts.rate_limit
+# 10
+```
+
 ---
 
 ## `setup`
