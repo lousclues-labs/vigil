@@ -623,6 +623,12 @@ impl DaemonRuntime {
         let coordinator_baseline_conn = db::open_baseline_db(&cfg)?;
         let coordinator_audit_conn = db::open_audit_db(&cfg)?;
 
+        // Build shared baseline identity for TOCTOU coordination between
+        // the guardian thread and the control socket handler.
+        let shared_baseline_identity = daemon
+            .baseline_db_identity
+            .map(|id| Arc::new(coordinator::SharedBaselineIdentity::new(id)));
+
         let coordinator_handle = coordinator::spawn(coordinator::CoordinatorConfig {
             config: daemon.config.clone(),
             metrics: daemon.metrics.clone(),
@@ -642,6 +648,7 @@ impl DaemonRuntime {
             wal_path: wal_path_for_coord,
             maintenance_active: daemon.maintenance_active.clone(),
             maintenance_entered_at: daemon.maintenance_entered_at.clone(),
+            shared_baseline_identity: shared_baseline_identity.clone(),
         })?;
         send_watchdog_heartbeat();
 
@@ -685,6 +692,7 @@ impl DaemonRuntime {
                 maintenance_entered_at: daemon.maintenance_entered_at.clone(),
                 control_unauthenticated_connections: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 wal: wal.clone(),
+                shared_baseline_identity: shared_baseline_identity.clone(),
             };
             Some(control::spawn(
                 cfg.daemon.control_socket.clone(),

@@ -66,6 +66,7 @@ pub struct ControlHandler {
     pub maintenance_entered_at: Arc<AtomicI64>,
     pub control_unauthenticated_connections: Arc<AtomicU64>,
     pub wal: Option<Arc<DetectionWal>>,
+    pub shared_baseline_identity: Option<Arc<crate::coordinator::SharedBaselineIdentity>>,
 }
 
 pub fn spawn(
@@ -674,6 +675,14 @@ impl ControlHandler {
                 // Close temp connection before rename
                 drop(tmp_conn);
 
+                // Signal the guardian that an authorized replacement is about
+                // to happen, so it does not degrade on the inode change.
+                if let Some(ref shared_id) = self.shared_baseline_identity {
+                    let deadline =
+                        std::time::Instant::now() + crate::coordinator::BASELINE_REPLACEMENT_WINDOW;
+                    shared_id.expect_baseline_replacement(deadline);
+                }
+
                 // Atomic swap: rename temp over live.
                 // This MUST happen regardless of diff outcome.
                 if let Err(e) = std::fs::rename(&tmp_path, db_path) {
@@ -943,6 +952,7 @@ mod tests {
             maintenance_entered_at: Arc::new(AtomicI64::new(0)),
             control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
             wal: None,
+            shared_baseline_identity: None,
         };
         let handle = spawn(socket_path.clone(), handler, shutdown.clone()).unwrap();
 
@@ -1066,6 +1076,7 @@ mod tests {
             maintenance_entered_at: Arc::new(AtomicI64::new(0)),
             control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
             wal: None,
+            shared_baseline_identity: None,
         };
 
         let result = handler.dispatch("status", &serde_json::json!({"method": "status"}));
@@ -1104,6 +1115,7 @@ mod tests {
             maintenance_entered_at: Arc::new(AtomicI64::new(0)),
             control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
             wal: None,
+            shared_baseline_identity: None,
         };
 
         handler.dispatch("reload", &serde_json::json!({"method": "reload"}));
@@ -1173,6 +1185,7 @@ mod tests {
             maintenance_entered_at: Arc::new(AtomicI64::new(0)),
             control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
             wal: None,
+            shared_baseline_identity: None,
         };
 
         // Use a Unix socket pair to capture the streaming response

@@ -216,6 +216,7 @@ fn run_coordinator_adversarial(seed: u64) {
         wal_path: Some(wal_path2.clone()),
         maintenance_active: Arc::new(AtomicBool::new(false)),
         maintenance_entered_at: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+        shared_baseline_identity: None,
     };
 
     // Coordinator's first tick runs immediately (last_tick initialized to now - 60s).
@@ -285,6 +286,7 @@ fn run_coordinator_adversarial(seed: u64) {
         wal_path: None,
         maintenance_active: Arc::new(AtomicBool::new(false)),
         maintenance_entered_at: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+        shared_baseline_identity: None,
     };
 
     let handle3 = coordinator::spawn(coord_cfg3).unwrap();

@@ -166,6 +166,7 @@ fn run_clock_warfare(seed: u64) {
         wal_path: None,
         maintenance_active: Arc::new(AtomicBool::new(false)),
         maintenance_entered_at: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+        shared_baseline_identity: None,
     };
 
     let coord_handle = coordinator::spawn(coord_cfg).unwrap();

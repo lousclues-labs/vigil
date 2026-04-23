@@ -12,4 +12,4 @@ Target = boot/*
 [Action]
 Description = Vigil Baseline: entering maintenance window...
 When = PreTransaction
-Exec = /usr/bin/vigil maintenance enter --quiet
+Exec = /bin/sh -c 'if [ -x /usr/bin/vigil ]; then /usr/bin/vigil maintenance enter --quiet 2>/dev/null; fi; exit 0'

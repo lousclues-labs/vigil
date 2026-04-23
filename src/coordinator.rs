@@ -6,7 +6,7 @@
 //! and event-drop rates, checkpoints the WAL, and enforces maintenance
 //! window timeouts.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,6 +19,86 @@ use crate::types::{DaemonState, DegradedReason};
 use crate::watch_index::WatchGroupIndex;
 
 use chrono::Utc;
+
+/// Window during which an authorized baseline replacement is expected.
+/// After this duration, any inode change is treated as unauthorized.
+pub const BASELINE_REPLACEMENT_WINDOW: Duration = Duration::from_secs(30);
+
+/// Thread-safe shared baseline identity for TOCTOU coordination between
+/// the guardian thread and the control socket handler.
+///
+/// The control handler calls `expect_baseline_replacement()` immediately
+/// before `fs::rename()` during a baseline refresh. The guardian thread
+/// checks the deadline before degrading on inode change. If the deadline
+/// is still in the future, the guardian accepts the new inode and resets
+/// the deadline -- the replacement is authorized.
+pub struct SharedBaselineIdentity {
+    inode: AtomicU64,
+    device: AtomicU64,
+    /// Epoch nanos of the authorized-replacement deadline. 0 means no
+    /// replacement is expected.
+    replacement_deadline_nanos: AtomicI64,
+}
+
+impl SharedBaselineIdentity {
+    /// Create from an existing `DbFileIdentity`.
+    pub fn new(identity: crate::db::DbFileIdentity) -> Self {
+        Self {
+            inode: AtomicU64::new(identity.inode),
+            device: AtomicU64::new(identity.device),
+            replacement_deadline_nanos: AtomicI64::new(0),
+        }
+    }
+
+    /// Signal that an authorized baseline replacement is in progress.
+    /// The guardian thread will accept the next inode change if it occurs
+    /// before `deadline`.
+    pub fn expect_baseline_replacement(&self, deadline: std::time::Instant) {
+        // Convert Instant-based deadline to epoch nanos for cross-thread
+        // comparison. We use wall-clock nanos because Instant is opaque
+        // and not shareable as an integer.
+        let now_instant = std::time::Instant::now();
+        let remaining = deadline.saturating_duration_since(now_instant);
+        let wall_deadline =
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0) + remaining.as_nanos() as i64;
+        self.replacement_deadline_nanos
+            .store(wall_deadline, Ordering::Release);
+    }
+
+    /// Check whether the file at `path` has a different inode/device than
+    /// the recorded identity. Returns `true` if replaced.
+    pub fn is_replaced(&self, path: &std::path::Path) -> crate::Result<bool> {
+        let current = crate::db::DbFileIdentity::from_path(path)?;
+        let expected_inode = self.inode.load(Ordering::Acquire);
+        let expected_device = self.device.load(Ordering::Acquire);
+        Ok(current.inode != expected_inode || current.device != expected_device)
+    }
+
+    /// Check whether we are inside an authorized replacement window.
+    pub fn is_replacement_authorized(&self) -> bool {
+        let deadline = self.replacement_deadline_nanos.load(Ordering::Acquire);
+        if deadline == 0 {
+            return false;
+        }
+        let now = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        now < deadline
+    }
+
+    /// Accept the new identity after an authorized replacement and reset
+    /// the deadline.
+    pub fn accept_new_identity(&self, path: &std::path::Path) -> crate::Result<()> {
+        let current = crate::db::DbFileIdentity::from_path(path)?;
+        self.inode.store(current.inode, Ordering::Release);
+        self.device.store(current.device, Ordering::Release);
+        self.replacement_deadline_nanos.store(0, Ordering::Release);
+        Ok(())
+    }
+
+    /// Read the current deadline (epoch nanos). 0 means no window active.
+    pub fn replacement_deadline_nanos(&self) -> i64 {
+        self.replacement_deadline_nanos.load(Ordering::Acquire)
+    }
+}
 
 /// Source of a config reload request.
 #[derive(Debug, Clone)]
@@ -49,6 +129,7 @@ pub struct CoordinatorConfig {
     pub wal_path: Option<std::path::PathBuf>,
     pub maintenance_active: Arc<AtomicBool>,
     pub maintenance_entered_at: Arc<AtomicI64>,
+    pub shared_baseline_identity: Option<Arc<SharedBaselineIdentity>>,
 }
 
 struct Coordinator {
@@ -151,7 +232,7 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
     };
 
     // Clone identity data for guardian before coordinator is moved.
-    let g_baseline_identity = coordinator.baseline_db_identity;
+    let g_shared_identity = cfg.shared_baseline_identity.clone();
     let g_db_path = coordinator.config.load().daemon.db_path.clone();
     let g_runtime_dir = coordinator.config.load().daemon.runtime_dir.clone();
 
@@ -166,18 +247,32 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
                     let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
                 }
 
-                // Fast identity checks.
-                if let Some(ref identity) = g_baseline_identity {
-                    if let Ok(true) = identity.is_replaced(&g_db_path) {
-                        g_metrics
-                            .inode_changes_rejected
-                            .fetch_add(1, Ordering::Relaxed);
-                        let mut s = g_state.write();
-                        if matches!(*s, DaemonState::Healthy) {
-                            *s = DaemonState::Degraded {
-                                reason: DegradedReason::BaselineDbReplaced,
-                                since: Utc::now(),
-                            };
+                // Fast identity checks with refresh coordination.
+                // If a replacement is authorized (deadline not expired), accept the
+                // new inode and stay healthy. Otherwise, degrade.
+                if let Some(ref shared_id) = g_shared_identity {
+                    if let Ok(true) = shared_id.is_replaced(&g_db_path) {
+                        if shared_id.is_replacement_authorized() {
+                            // Authorized refresh: accept new identity, reset deadline.
+                            if let Ok(()) = shared_id.accept_new_identity(&g_db_path) {
+                                tracing::info!(
+                                    "baseline DB inode change accepted (authorized refresh)"
+                                );
+                                g_metrics
+                                    .inode_changes_recovered
+                                    .fetch_add(1, Ordering::Relaxed);
+                            }
+                        } else {
+                            g_metrics
+                                .inode_changes_rejected
+                                .fetch_add(1, Ordering::Relaxed);
+                            let mut s = g_state.write();
+                            if matches!(*s, DaemonState::Healthy) {
+                                *s = DaemonState::Degraded {
+                                    reason: DegradedReason::BaselineDbReplaced,
+                                    since: Utc::now(),
+                                };
+                            }
                         }
                     }
                 }

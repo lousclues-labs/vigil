@@ -2,6 +2,79 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.1.2] - 2026-04-22
+
+### Fixed
+
+- **Pacman/apt hooks no longer break package transactions.** The pacman
+  post-transaction hook and apt `DPkg::Post-Invoke` previously exited
+  non-zero when `vigil baseline refresh` failed. Pacman interpreted
+  this as a hook failure and reported `error: command failed to execute
+  correctly`, which could leave users believing their package
+  transaction failed. Hooks now always exit 0. Refresh failures are
+  logged to journald via `logger -t vigil-pacman` (or `vigil-apt`) and
+  surface a critical-urgency desktop notification via `notify-send`.
+  Both hooks validate that `/usr/bin/vigil` exists and is executable
+  before invocation; if missing, the hook logs and exits 0 silently
+  (Principle X: Fail Open, Principle XI: a security tool must never gate
+  the user's primary workflow).
+
+- **Baseline refresh no longer trips the TOCTOU tamper detector.** A
+  legitimate `baseline refresh` performs an atomic `rename(2)` over the
+  live baseline DB, which changes the file's `(dev, inode)` pair. The
+  coordinator's guardian thread (1-second cadence) previously detected
+  this as `BaselineDbReplaced` and degraded the daemon. The next
+  refresh was then refused because of the very state the previous
+  refresh caused -- a self-poisoning cycle. This is now fixed via
+  `SharedBaselineIdentity`, a thread-safe handshake between the control
+  socket handler and the guardian thread. The control handler calls
+  `expect_baseline_replacement(deadline)` immediately before the
+  `fs::rename()` call. The guardian thread checks the deadline before
+  degrading: if the inode change occurs within the 30-second
+  `BASELINE_REPLACEMENT_WINDOW`, the guardian accepts the new identity
+  and increments `inode_changes_recovered`. If the deadline has expired,
+  or no deadline was set, the guardian degrades as before. The window is
+  fail-closed: expiry re-engages normal tamper detection (Principle X:
+  Fail Open, Fail Loud; Principle II: Silence is the Default -- false
+  positives on the tamper detector train the operator to ignore real
+  signals).
+
+### Added
+
+- `coordinator::SharedBaselineIdentity` struct: thread-safe wrapper for
+  baseline DB inode/device identity with an atomic replacement deadline.
+  Methods: `new()`, `expect_baseline_replacement(deadline)`,
+  `is_replaced(path)`, `is_replacement_authorized()`,
+  `accept_new_identity(path)`, `replacement_deadline_nanos()`.
+- `coordinator::BASELINE_REPLACEMENT_WINDOW` constant: `Duration` of
+  30 seconds. Documents the authorized replacement window.
+- `ControlHandler::shared_baseline_identity` field: the control socket
+  handler's reference to the shared identity for pre-rename signaling.
+- New integration test `tests/refresh_toctou_coordination_tests.rs` with
+  7 tests: authorized refresh stays healthy, unauthorized rename
+  degrades, expired window degrades, initial deadline is zero, guardian
+  thread accepts authorized refresh, guardian thread degrades on
+  unauthorized rename, three consecutive authorized refreshes with WAL
+  record verification.
+- New integration test `tests/hook_failure_isolation_tests.rs` with 4
+  tests: pacman post-hook exits 0 when vigil missing, pacman post-hook
+  exits 0 when refresh fails, apt hook exits 0 when vigil missing,
+  pacman pre-hook exits 0 when vigil missing.
+
+### Changed
+
+- `hooks/pacman/vigil-post.hook`: rewrote `Exec` line to validate binary
+  existence, log failures to journald, send desktop notification on
+  failure, always exit 0.
+- `hooks/pacman/vigil-pre.hook`: guard with `-x` check, always exit 0.
+- `hooks/apt/99vigil`: same pattern as pacman hooks -- existence check,
+  journald logging, desktop notification on failure, always exits
+  successfully.
+- `CoordinatorConfig` struct gains `shared_baseline_identity` field.
+- Guardian thread uses `SharedBaselineIdentity` instead of a cloned
+  `DbFileIdentity` copy, enabling the control handler to coordinate
+  authorized replacements across threads.
+
 ## [1.1.1] - 2026-04-22
 
 ### Added

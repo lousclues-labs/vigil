@@ -1084,6 +1084,11 @@ Notes:
   the post-hook fails or the package manager crashes.
 - The maintenance window state is visible in `vigil status` output under
   the `daemon.maintenance_window` field.
+- Package manager hooks (pacman, apt) always exit 0 regardless of the
+  outcome of any vigil command. A missing binary, daemon failure, or
+  refresh error is logged to journald (`vigil-pacman` or `vigil-apt`
+  tag) and surfaces a desktop notification, but never blocks the
+  package transaction.
 
 ---
 
@@ -1197,6 +1202,12 @@ Notes:
 - If vigild is not running, the command returns a clear error.
 - If the daemon is in a Degraded state, refresh is refused. Investigate
   with `vigil doctor` before refreshing.
+- The refresh atomically swaps the baseline DB via `rename(2)`, which
+  changes the file's inode. The daemon's TOCTOU detector coordinates
+  with the control handler via `SharedBaselineIdentity` to accept this
+  inode change within a 30-second authorized window. If the window
+  expires before the rename completes, the inode change is treated as
+  unauthorized tampering.
 - Events that occur during refresh are evaluated against the old baseline
   and recorded in the audit log normally.
 - The new baseline is built in a sibling temp file. If the build fails,
