@@ -2,6 +2,117 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.2.0] - 2026-04-23
+
+### Added
+
+- **`vigil config watch add <path> [--group <name>]`**: add a path to a
+  watch group from the CLI. Creates the group if it does not exist
+  (default severity: high). Idempotent -- re-adding an existing path is
+  a no-op. Atomically writes the config (temp file + fsync + rename),
+  validates the result, and signals the daemon to reload. Designed for
+  the config-not-watched doctor warning: operators can now fix it with
+  `sudo vigil config watch add /etc/vigil` instead of hand-editing TOML
+  (Principle XV: give operators named operations).
+- **`vigil config watch remove <path> [--group <name>]`**: remove a path
+  from a watch group. Errors if the path is not present.
+- **`vigil config set <key> <value> [--dry-run]`**: set a configuration
+  value using dotted-path syntax (e.g. `daemon.detection_wal_persistent`).
+  Validates the resulting config before writing. Signals daemon reload,
+  or advises restart for keys that require it (detection_wal_persistent,
+  monitor_backend, worker_threads, event_channel_capacity). Refuses
+  unsafe keys (hmac_key_path, db_path, pid_file) with a message
+  directing the operator to `vigil setup`. `--dry-run` shows the change
+  without writing.
+- **`vigil config get <key>`**: read a configuration value. Prints the
+  current value in TOML format.
+- **`vigil recover --reason <reason> [--yes] [--list]`**: guided recovery
+  from degraded daemon states. Known reasons: `baseline_db_replaced`,
+  `baseline_hmac_mismatch`, `audit_db_replaced`, `wal_file_replaced`,
+  `event_backpressure`. Each reason has a plain-English description of
+  the situation and the action the recovery will take. Requires operator
+  confirmation (typed `yes`) unless `--yes` is passed. Sends the
+  recovery command through the control socket. `--list` shows all known
+  reasons with descriptions (Principle XV: give operators named
+  operations, not ad-hoc instructions).
+- **`vigil audit segments`**: list all sealed audit segments with
+  sequence ranges, timestamps, and archive paths. When no segments
+  exist, reports that all entries are in the live audit log.
+- **Doctor: State check.** `vigil doctor` now reads `state.json` from
+  the daemon's runtime directory and surfaces the internal daemon state:
+  `● healthy` or `✗ degraded: <reason> (since <timestamp>)`. When
+  degraded, the fix hint shows `vigil recover --reason <reason>`.
+  Urgency: now (Principle X: silent degradation is a security
+  vulnerability).
+- **Doctor: WAL pipeline check.** Reads `metrics.json` for pending WAL
+  entries and backpressure event count. Warns at >1,000 pending
+  entries; fails at >10,000. Urgency: soon.
+- **Doctor: Data dir check.** Uses `statvfs` to report free space in
+  the data directory. Warns at <10% free; fails at <5% free. At
+  critical level, baseline refresh is refused early with a clear
+  message rather than failing mid-write (Principle X: fail loud).
+- **Doctor: Hook last-trigger telemetry.** The Hooks row now probes
+  journald for the most recent `vigil-pacman` or `vigil-apt` log
+  entry and shows the timestamp. If the last trigger was a failure
+  (detected via log content), the timestamp is flagged with a
+  reference to `journalctl -t vigil-pacman`.
+- **`util::pluralize(n, singular, plural)`**: shared helper for
+  grammatically correct count formatting. Used in doctor output to
+  fix "1 warnings" → "1 warning".
+- **`audit_segments` table** in the audit database schema. Tracks sealed
+  segment metadata: sequence range, timestamp range, chain hashes,
+  seal HMAC, and archive path. Supports future segment rotation and
+  cold-storage archival.
+- **`audit_ops::list_segments()`** and **`audit_ops::count_entries()`**:
+  query functions for the segment and entry tables.
+- New integration test `tests/config_cli_tests.rs` with 13 tests:
+  watch add to existing group, idempotent re-add, add creates new
+  group, watch remove existing path, remove nonexistent path errors,
+  set bool/int/string, set unknown key errors, set unsafe key errors,
+  dry-run does not modify file, get existing key, atomic write leaves
+  no orphaned .new file.
+- Doctor: `no_duplicate_check_names` test enforces that every
+  diagnostic row label is unique.
+
+### Fixed
+
+- **Scan/refresh race condition.** The scan scheduler held a startup
+  database connection that never saw baseline refreshes. After
+  `rename(2)`, SQLite connections keep reading the old inode; the next
+  scheduled scan would compare the filesystem against the stale
+  pre-refresh baseline, potentially reporting thousands of false
+  changes. The scan scheduler now receives `baseline_generation`
+  (an `Arc<AtomicU64>`) and reopens its connection when the generation
+  increments. The control handler increments `baseline_generation`
+  after every successful refresh swap (Principle II: a healthy system
+  produces zero alerts).
+- **Doctor grammar: "1 warnings" → "1 warning."** All doctor verdict
+  lines now use correct singular/plural via `pluralize()`.
+- **Config validation warnings now include fix commands.** The
+  config-not-watched warning says
+  `Fix: \`sudo vigil config watch add /etc/vigil\`` instead of
+  directing operators to hand-edit TOML. The WAL-not-persistent warning
+  says `Fix: \`sudo vigil config set daemon.detection_wal_persistent true\``.
+
+### Changed
+
+- `ControlHandler` gains `baseline_generation: Arc<AtomicU64>` field.
+  After a successful baseline refresh swap, the handler increments the
+  generation to signal workers and the scan scheduler.
+- `scan_scheduler::spawn` takes a new `baseline_generation` parameter.
+  Before each scan (on-demand or scheduled), the scheduler checks the
+  generation and reopens its database connection if stale.
+- Doctor check count increased from 13 to 16 (added State, WAL
+  pipeline, Data dir).
+- Doctor verbose output reorganized into five sections: Runtime
+  (Daemon, State, Backend, Control), Pipeline (WAL pipeline), Data
+  (Baseline, Database, Audit log, Data dir), Configuration, and
+  Integrations.
+- `classify_urgency` updated: State is "now", Data dir and WAL
+  pipeline are "soon".
+- `src/commands/recover.rs`: new module for the `vigil recover`
+  subcommand.
+
 ## [1.1.2] - 2026-04-22
 
 ### Fixed

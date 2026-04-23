@@ -324,6 +324,45 @@ Deep validation warns when directories or watch paths do not exist yet.
 
 ---
 
+## CLI Editing
+
+Configuration can be edited safely from the command line without
+hand-editing TOML. All CLI edits atomically write the config (temp file,
+fsync, rename), validate the result, and signal the daemon to reload.
+
+```bash
+# Add a path to a watch group
+sudo vigil config watch add /etc/vigil
+sudo vigil config watch add /opt/myapp --group custom_apps
+
+# Remove a path
+sudo vigil config watch remove /opt/myapp --group custom_apps
+
+# Set a value (dotted-path syntax)
+sudo vigil config set daemon.detection_wal_persistent true
+sudo vigil config set alerts.rate_limit 50
+
+# Preview a change without writing
+sudo vigil config set daemon.log_level '"debug"' --dry-run
+
+# Read a value
+vigil config get daemon.detection_wal_persistent
+```
+
+Keys that require a daemon restart (not just reload):
+`daemon.detection_wal_persistent`, `daemon.detection_wal`,
+`daemon.monitor_backend`, `daemon.worker_threads`,
+`daemon.event_channel_capacity`. The `set` command prints a restart
+advisory for these keys.
+
+Keys that require special handling (`security.hmac_key_path`,
+`daemon.db_path`, `daemon.pid_file`) are refused with a message
+directing the operator to `vigil setup` or manual editing.
+
+See `docs/CLI.md` for full reference.
+
+---
+
 ## Reload Behavior (SIGHUP)
 
 `SIGHUP` reload swaps `Config` in memory and logs field differences.
