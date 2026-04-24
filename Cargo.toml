@@ -3,7 +3,7 @@ name = "vigil-baseline"
 version = "1.3.2"
 edition = "2021"
 rust-version = "1.85"
-description = "Lightweight file integrity monitor for Linux desktops"
+description = "Linux file integrity monitor. Kernel-level filesystem watching, BLAKE3 hashing, HMAC-chained audit trail. Silent by default, local by design, deeply paranoid."
 # Vigil Baseline is dual-licensed: GPL-3.0-only for open-source use,
 # or Commercial License for proprietary use. See licenses/LICENSE-COMMERCIAL.md
 license = "GPL-3.0-only"
@@ -11,7 +11,7 @@ authors = ["loujr"]
 repository = "https://github.com/lousclues-labs/vigil"
 homepage = "https://github.com/lousclues-labs/vigil"
 readme = "README.md"
-keywords = ["file-integrity", "linux", "security", "monitoring", "baseline"]
+keywords = ["security", "filesystem", "integrity", "audit", "fim"]
 categories = ["command-line-utilities", "filesystem"]
 exclude = [
     "aur/",
