@@ -19,7 +19,6 @@ exclude = [
     "contrib/",
     "docs/",
     "fuzz/",
-    "hooks/",
     "scripts/",
     "systemd/",
     "deny.toml",
