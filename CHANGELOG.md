@@ -2,6 +2,183 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.3.2] - 2026-04-24
+
+### Added
+
+- **Doctor recovery actions are now commands when vigil can
+  perform the recovery.** A new corollary to Principle V
+  (documented in docs/PRINCIPLES.md as V.a) requires every
+  doctor row that identifies a fixable problem to offer a
+  CLI command, reserving manual prose for actions vigil
+  structurally cannot take. The Socket and Hooks rows are
+  updated to follow the discipline; future doctor rows must
+  also follow it.
+
+- **`vigil alerts socket disable`** removes the alert socket
+  configuration. **`vigil alerts socket enable <path>`**
+  adds or updates it. **`vigil alerts socket status`**
+  reports current configuration and listener-attachment
+  (Principle V; Principle XV).
+
+- **`vigil hooks verify`** compares installed pacman/apt hook
+  scripts against the canonical versions embedded in the
+  vigil binary; reports drift. **`vigil hooks repair`**
+  reinstalls canonical versions atomically. The 1.3.1
+  hook-script-sentinel-path bug would have been caught by
+  `vigil hooks verify` as routine diagnostic work
+  (Principle X: Fail Open, Fail Loud).
+
+### Changed
+
+- The Socket doctor row now suggests `vigil alerts socket
+  disable` as the primary recovery, with the listener-attachment
+  alternative in parentheses (Principle V.a).
+
+- The Hooks doctor row now suggests `vigil hooks verify` as
+  the primary diagnostic when the last trigger failed, with
+  `journalctl -t vigil-pacman` as a secondary investigation
+  hint. Missing hooks suggest `vigil hooks repair` (Principle
+  V.a).
+
+## [1.3.1] - 2026-04-24
+
+### Fixed
+
+- **Doctor recovery hints are real commands or honest prose, never
+  prose disguised as commands.** A row that suggested "attach a
+  listener or remove the socket path from vigil.toml" was rendered
+  as `Run \`attach a listener ...\` when convenient`, producing a
+  fake command that operators could not execute. Recovery actions
+  are now typed: real commands render with `recover with:`, manual
+  guidance renders as prose without a fake "Run X" wrapper, and
+  documentation references render with `see:` (Principle V:
+  Unambiguous; Principle XV: do not fabricate to fill template
+  slots).
+
+- **Doctor row markers and urgency classifications cannot
+  contradict.** A row with marker `✗` (failure) previously could
+  be classified as "Not urgent"; the marker and summary now derive
+  from the row's status directly, making contradictions structurally
+  impossible (Principle V).
+
+- **Doctor summary distinguishes failures from warnings from
+  optional features.** "3 warnings, none urgent" previously counted
+  `✗` failures and `○` optional-not-configured rows together as
+  warnings. The summary now reports each category accurately
+  (Principle V).
+
+- **Doctor filesystem capacity uses appropriate units.**
+  `318008.7 MB free of 936778.1 MB` now renders as `318 GB free
+  of 937 GB`, auto-scaling to the appropriate unit (Principle V:
+  operator should not perform mental arithmetic on diagnostic
+  output).
+
+- **Doctor time fields use relative durations where appropriate.**
+  Scan-timer "next: 03:13" now reads as "next scan in 1h 34m"
+  (Principle V).
+
+- **`vigil check` no longer suggests unrelated flags on parse
+  errors.** A typo of `--update` previously suggested `--path`,
+  which is not operationally similar; the misleading suggestion
+  is suppressed (Principle V: a wrong hint is worse than no hint).
+
+- **Repository-ownership warnings fire exactly once during
+  `vigil update`, and are suppressed when running under `sudo`
+  against a repository owned by `SUDO_USER`.** Previously the
+  warnings fired twice and produced noise for developers building
+  their own code (Principle II: silence the unhelpful noise;
+  Principle XV: trust the operator's setup).
+
+- **Pacman/apt hooks now reference the correct vigil binary
+  path.** A sentinel value (`/nonexistent/vigil`) had been
+  shipping in installed hooks on some systems, causing every
+  package transaction's baseline refresh to be silently skipped.
+  The bug was invisible until the doctor honesty patch (this
+  release) made the Hooks row report last-trigger status
+  accurately. Hooks now reference `/usr/bin/vigil` directly
+  and capture stderr in failure messages for diagnostics
+  (Principle X: Fail Open, Fail Loud -- silent skip is the
+  failure mode this principle exists to prevent).
+
+- **Hook failure messages no longer duplicate.** Each hook
+  invocation previously produced two log lines per failure
+  (a specific cause and a generic "baseline refresh failed"
+  follow-up); the generic follow-up is removed. Hook output
+  is now exactly one line per outcome (Principle V: Unambiguous;
+  Principle II: silence the unhelpful noise).
+
+## [1.3.0] - 2026-04-24
+
+### Added
+
+- **Bounded audit retention via cryptographic checkpoints.** The daemon
+  prunes audit entries older than `audit.retention_days` (default 365)
+  on a daily cadence, replacing each pruned range with a single
+  `AuditCheckpoint` record. The HMAC chain extends across the checkpoint
+  without break. The operator never thinks about retention
+  (Principles XIII, XII, XI, II, XV).
+- **`vigil audit prune --before <date> [--confirm]`.** Manual prune with
+  dry-run default. The pruning is itself audited with operator UID, PID,
+  exe path, and argv (Principle XIII: audit trail never lies).
+- **`vigil audit stats` enhanced.** Reports retention-relevant numbers:
+  DB size, cap percentage, live vs. checkpointed entries, oldest live
+  entry.
+- **`vigil audit verify` reports checkpoint presence.** Shows checkpoint
+  count, covered entries, and earliest coverage date. Detects checkpoint
+  tampering and deletion.
+- **`Audit retention` doctor row.** Reports retention days, cap
+  percentage, and escalates to warning/failure at 90%/100% of cap.
+- **`[audit]` config section.** Four new keys: `retention_days` (365),
+  `retention_check_interval` ("24h"), `max_size_mb` (1024),
+  `min_entries_to_keep` (1000).
+- **`DegradedReason::AuditLogFull`.** Daemon enters Degraded state when
+  audit DB hits `audit.max_size_mb` cap (Principle X: fail loud).
+- **`DetectionSource::AuditRetentionFailure` and `OperatorPrune`.**
+  Sweep failures and operator prunes are recorded in the audit log.
+
+### Changed
+
+- **Audit chain verification is checkpoint-aware.** The verifier walks
+  checkpoints as bridge records, verifying their HMAC integrity without
+  requiring the original pruned entries. The chain hash extends
+  transparently across pruned ranges.
+- **`vigil audit stats` output restructured.** Now leads with retention
+  summary (DB size, cap%, entries breakdown) before period statistics.
+- **`vigil baseline refresh` output now names audit log preservation
+  explicitly.** The completion line includes `audit log: unchanged
+  (N entries, chain intact)`, stating the fact that the refresh does
+  not modify the audit log and providing the post-refresh entry count
+  and chain integrity status as evidence. The streamed `complete` JSON
+  event gains an `audit_log` object with the same information
+  (Principle V: Unambiguous; Principle XIII: Audit Trail Never Lies).
+
+### Fixed
+
+- **Audit DB schema migration.** Adding checkpoint columns to existing
+  1.2.x audit databases uses `ALTER TABLE ADD COLUMN` with safe defaults.
+  Existing entries verify clean after migration.
+
+## [1.2.1] - 2026-04-23
+
+### Fixed
+
+- **Doctor reports vigil's actual data directory usage.** The `Data dir`
+  row previously reported the host filesystem's used space and free
+  percentage as if they were vigil's own footprint. Now reports vigil's
+  actual usage (computed by directory walk) and the filesystem's capacity
+  as two separate, clearly-labeled lines (Principle V: Unambiguous).
+- **Doctor's `Hooks` row marker reflects last-trigger status.** Previously
+  the row showed `●` even when the last hook trigger failed; now shows
+  `⚠` with a journalctl pointer (Principle X: accurate loudness).
+- **Doctor's `Socket` row reports actual routing behavior.** Previously
+  hidden as informational; now reports `✗` when alerts are dropped due
+  to no listener (Principle V).
+- **Doctor's summary distinguishes optional features from check failures.**
+  "14/16 checks passed" misrepresented optional not-configured features
+  as failures; the summary now reports them as a separate category
+  (Principle V).
+
 ## [1.2.0] - 2026-04-23
 
 ### Added

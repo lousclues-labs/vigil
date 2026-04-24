@@ -240,6 +240,18 @@ pub enum Command {
         yes: bool,
     },
 
+    /// Alert sink operations
+    Alerts {
+        #[command(subcommand)]
+        action: AlertsAction,
+    },
+
+    /// Package manager hook operations
+    Hooks {
+        #[command(subcommand)]
+        action: HooksAction,
+    },
+
     /// Print version
     Version,
 }
@@ -307,6 +319,17 @@ pub enum AuditAction {
 
     /// List sealed audit segments
     Segments,
+
+    /// Manually prune old entries with a checkpoint
+    Prune {
+        /// Prune entries older than this date (ISO 8601, e.g. '2025-01-01')
+        #[arg(long)]
+        before: String,
+
+        /// Actually execute the prune (default is dry-run)
+        #[arg(long)]
+        confirm: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -519,6 +542,39 @@ pub enum AttestAction {
         #[arg(long, default_value = ".")]
         dir: PathBuf,
     },
+}
+
+#[derive(Subcommand)]
+pub enum AlertsAction {
+    /// Alert socket operations
+    Socket {
+        #[command(subcommand)]
+        action: AlertsSocketAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AlertsSocketAction {
+    /// Show alert socket configuration and listener status
+    Status,
+
+    /// Enable the alert socket sink
+    Enable {
+        /// Path for the Unix domain socket
+        path: String,
+    },
+
+    /// Disable the alert socket sink
+    Disable,
+}
+
+#[derive(Subcommand)]
+pub enum HooksAction {
+    /// Compare installed hooks against canonical versions
+    Verify,
+
+    /// Reinstall canonical hook scripts
+    Repair,
 }
 
 #[cfg(test)]

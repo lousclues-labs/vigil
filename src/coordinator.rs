@@ -165,6 +165,7 @@ struct Coordinator {
     last_kernel_overflows: u64,
     clean_ticks_since_event_loss: u32,
     drop_rate_log_counter: u32,
+    last_retention_sweep: std::time::Instant,
 }
 
 pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()>> {
@@ -229,6 +230,7 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
         last_kernel_overflows: 0,
         clean_ticks_since_event_loss: 0,
         drop_rate_log_counter: 0,
+        last_retention_sweep: std::time::Instant::now(),
     };
 
     // Clone identity data for guardian before coordinator is moved.
@@ -362,6 +364,11 @@ impl Coordinator {
         time_phase!(phase_timings, "rotation", {
             if !clock_anomaly {
                 self.rotate_audit_log();
+            }
+        });
+        time_phase!(phase_timings, "retention", {
+            if !clock_anomaly {
+                self.retention_sweep();
             }
         });
 
@@ -1012,6 +1019,169 @@ impl Coordinator {
         self.last_rotation_timestamp = now_ts;
     }
 
+    /// Bounded audit retention sweep. Runs at most once per
+    /// `audit.retention_check_interval`. Replaces old detection entries
+    /// with a single AuditCheckpoint preserving the HMAC chain.
+    fn retention_sweep(&mut self) {
+        let cfg = self.config.load();
+        let check_interval = cfg.audit.retention_check_duration();
+
+        // Rate-limit: only run once per retention_check_interval
+        if self.last_retention_sweep.elapsed() < check_interval {
+            return;
+        }
+        self.last_retention_sweep = std::time::Instant::now();
+
+        let conn = match self.startup_audit_conn.as_ref() {
+            Some(c) => c,
+            None => {
+                tracing::warn!(
+                    "skipping retention sweep: audit DB connection dropped (daemon degraded)"
+                );
+                return;
+            }
+        };
+
+        let now_ts = Utc::now().timestamp();
+        let cutoff = now_ts - (cfg.audit.retention_days as i64 * 86400);
+
+        // Identify what to prune
+        let range = match crate::db::audit_ops::identify_prune_range(
+            conn,
+            cutoff,
+            cfg.audit.min_entries_to_keep,
+        ) {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                tracing::debug!("retention sweep: nothing to prune");
+                return;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "retention sweep: failed to identify prune range");
+                return;
+            }
+        };
+
+        let (first_id, last_id, entry_count) = range;
+
+        // Read entries to compute pruned-range HMAC
+        let entries = match crate::db::audit_ops::read_detection_range(conn, first_id, last_id) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::error!(error = %e, "retention sweep: failed to read prune range");
+                return;
+            }
+        };
+
+        if entries.is_empty() {
+            tracing::debug!("retention sweep: empty range, skipping");
+            return;
+        }
+
+        let prev_chain = match crate::db::audit_ops::get_previous_chain_hash(conn, first_id) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(error = %e, "retention sweep: failed to get previous chain hash");
+                return;
+            }
+        };
+
+        // Compute pruned-range HMAC: rolling hash over canonical entry encodings
+        let hmac_key_ref = self.startup_hmac_key.as_deref();
+        let pruned_range_hmac = {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(prev_chain.as_bytes());
+            for e in &entries {
+                // Canonical encoding: same fields used in compute_chain_hash
+                let canonical = format!(
+                    "{}|{}|{}|{}",
+                    e.timestamp, e.path, e.changes_json, e.severity
+                );
+                hasher.update(canonical.as_bytes());
+            }
+            hasher.finalize().to_hex().to_string()
+        };
+
+        let first_ts = entries.first().unwrap().timestamp;
+        let last_ts = entries.last().unwrap().timestamp;
+        let bridge = entries.last().unwrap().chain_hash.clone();
+
+        // Atomic transaction: delete originals, insert checkpoint
+        let result: Result<(), rusqlite::Error> = (|| {
+            conn.execute("BEGIN IMMEDIATE", [])?;
+
+            // Delete the originals first (frees the id for the checkpoint)
+            conn.execute(
+                "DELETE FROM audit_log WHERE id >= ?1 AND id <= ?2 AND (record_type = 'detection' OR record_type IS NULL)",
+                rusqlite::params![first_id, last_id],
+            )?;
+
+            // Insert checkpoint at the last pruned entry's id position
+            let hmac_val = hmac_key_ref.map(|key| {
+                let data = crate::db::audit_ops::build_checkpoint_hmac_data(
+                    now_ts,
+                    first_id,
+                    last_id,
+                    entry_count,
+                    &pruned_range_hmac,
+                    &prev_chain,
+                );
+                crate::hmac::compute_hmac(key, &data).unwrap_or_default()
+            });
+
+            conn.execute(
+                "INSERT INTO audit_log (
+                    id, timestamp, path, changes_json, severity, monitored_group,
+                    process_json, package, maintenance, suppressed, hmac, chain_hash,
+                    record_type, first_sequence, last_sequence, first_timestamp,
+                    last_timestamp, entry_count, pruned_range_hmac
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, NULL,
+                    NULL, NULL, 0, 0, ?6, ?7,
+                    'checkpoint', ?8, ?9, ?10,
+                    ?11, ?12, ?13
+                )",
+                rusqlite::params![
+                    last_id,
+                    now_ts,
+                    format!("vigil:checkpoint:{}-{}", first_id, last_id),
+                    format!("{{\"previous_chain_hash\":\"{}\"}}", prev_chain),
+                    "info",
+                    hmac_val,
+                    bridge,
+                    first_id,
+                    last_id,
+                    first_ts,
+                    last_ts,
+                    entry_count,
+                    pruned_range_hmac,
+                ],
+            )?;
+
+            conn.execute("COMMIT", [])?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                tracing::debug!(
+                    first_id = first_id,
+                    last_id = last_id,
+                    entries_pruned = entry_count,
+                    "retention sweep: checkpoint created"
+                );
+            }
+            Err(e) => {
+                // Rollback on failure
+                let _ = conn.execute("ROLLBACK", []);
+                tracing::error!(
+                    error = %e,
+                    "retention sweep failed; will retry next cycle"
+                );
+            }
+        }
+    }
+
     fn write_snapshots(&self) {
         let cfg = self.config.load();
         if let Err(e) = write_metrics_snapshot(&cfg.daemon.runtime_dir, &self.metrics) {
@@ -1356,6 +1526,7 @@ mod tests {
             last_kernel_overflows: 0,
             clean_ticks_since_event_loss: 0,
             drop_rate_log_counter: 0,
+            last_retention_sweep: std::time::Instant::now(),
         }
     }
 
@@ -1419,6 +1590,7 @@ mod tests {
             last_kernel_overflows: 0,
             clean_ticks_since_event_loss: 0,
             drop_rate_log_counter: 0,
+            last_retention_sweep: std::time::Instant::now(),
         };
 
         // Simulate inode change by copying the file to a new one and replacing.
@@ -1503,6 +1675,7 @@ mod tests {
             last_kernel_overflows: 0,
             clean_ticks_since_event_loss: 0,
             drop_rate_log_counter: 0,
+            last_retention_sweep: std::time::Instant::now(),
         };
 
         // Replace with an empty (no schema) SQLite database.

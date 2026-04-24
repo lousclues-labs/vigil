@@ -15,13 +15,73 @@ use crate::types::PackageBackend;
 
 const HEALTH_SNAPSHOT_MAX_AGE_SECS: i64 = 300;
 
+/// What the operator should do to resolve a doctor row's warning or failure.
+///
+/// The renderer formats each variant differently; rows must select the
+/// variant that honestly describes the recovery, never wrapping prose
+/// as a fake command.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", content = "value")]
+pub enum Recovery {
+    /// A real, executable command. Rendered as:
+    ///   `recover with: <command>`
+    Command(String),
+
+    /// A real command followed by manual context the operator must
+    /// understand to run it correctly. Rendered as:
+    ///   `recover with: <command>`
+    ///   `             <context>`
+    CommandWithContext { command: String, context: String },
+
+    /// Manual guidance that is not a single command. Rendered as:
+    ///   `<guidance>`
+    /// No "Run X when convenient" wrapper. The guidance stands alone
+    /// as prose.
+    Manual(String),
+
+    /// A reference to documentation the operator should read before
+    /// acting. Rendered as:
+    ///   `see: <path or URL>`
+    Documentation(String),
+
+    /// No recovery action. Rendered as nothing.
+    None,
+}
+
+impl Recovery {
+    /// Return the operator-visible text for this recovery, if any.
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Recovery::Command(s) => Some(s),
+            Recovery::CommandWithContext { command, .. } => Some(command),
+            Recovery::Manual(s) => Some(s),
+            Recovery::Documentation(s) => Some(s),
+            Recovery::None => None,
+        }
+    }
+}
+
 /// Result of a single diagnostic check.
 #[derive(Debug, Clone, Serialize)]
 pub struct DiagnosticCheck {
     pub name: String,
     pub status: CheckStatus,
     pub detail: String,
-    pub fix: Option<String>,
+    pub recovery: Recovery,
+}
+
+impl DiagnosticCheck {
+    /// True when this check represents an optional feature that is not
+    /// configured, as opposed to a genuine failure or unknown state.
+    pub fn is_optional_not_configured(&self) -> bool {
+        if self.status != CheckStatus::Unknown {
+            return false;
+        }
+        // These checks are optional features; Unknown means "not configured."
+        // Other checks use Unknown to mean "cannot determine" (e.g. daemon
+        // not running), which is not the same as optional-not-configured.
+        matches!(self.name.as_str(), "Attest key" | "Socket")
+    }
 }
 
 /// Health status for a single diagnostic check.
@@ -284,6 +344,72 @@ pub fn diagnostics_verdict(checks: &[DiagnosticCheck]) -> String {
     }
 }
 
+/// Produce the summary line for doctor verbose output.
+///
+/// Distinguishes healthy checks, failures, warnings, and optional
+/// features that are not configured.
+pub fn format_doctor_summary(checks: &[DiagnosticCheck]) -> String {
+    let healthy = checks
+        .iter()
+        .filter(|c| c.status == CheckStatus::Ok)
+        .count();
+    let failures = checks
+        .iter()
+        .filter(|c| c.status == CheckStatus::Failed)
+        .count();
+    let warnings = checks
+        .iter()
+        .filter(|c| c.status == CheckStatus::Warning)
+        .count();
+    let optional = checks
+        .iter()
+        .filter(|c| c.is_optional_not_configured())
+        .count();
+
+    let optional_suffix = if optional > 0 {
+        format!(
+            "; {}",
+            crate::util::pluralize(
+                optional as u64,
+                "optional feature not configured",
+                "optional features not configured"
+            )
+        )
+    } else {
+        String::new()
+    };
+
+    if failures == 0 && warnings == 0 {
+        if optional > 0 {
+            format!("all checks passed{}", optional_suffix)
+        } else {
+            "all checks passed".to_string()
+        }
+    } else if failures > 0 && warnings > 0 {
+        format!(
+            "{}; {}; {} healthy{}",
+            crate::util::pluralize(failures as u64, "failure", "failures"),
+            crate::util::pluralize(warnings as u64, "warning", "warnings"),
+            healthy,
+            optional_suffix,
+        )
+    } else if failures > 0 {
+        format!(
+            "{}; {} healthy{}",
+            crate::util::pluralize(failures as u64, "failure", "failures"),
+            healthy,
+            optional_suffix,
+        )
+    } else {
+        format!(
+            "{}; {} healthy{}",
+            crate::util::pluralize(warnings as u64, "warning", "warnings"),
+            healthy,
+            optional_suffix
+        )
+    }
+}
+
 /// Return doctor command exit code.
 pub fn diagnostics_exit_code(checks: &[DiagnosticCheck]) -> i32 {
     let failures = checks.iter().any(|c| c.status == CheckStatus::Failed);
@@ -311,6 +437,7 @@ pub fn run_diagnostics(config: &Config) -> Vec<DiagnosticCheck> {
     checks.push(check_baseline(config));
     checks.push(check_database_integrity(config));
     checks.push(check_audit_log(config));
+    checks.push(check_audit_retention(config));
     checks.push(check_storage(config));
     checks.push(check_wal_pipeline(config, daemon_probe.running));
     checks.push(check_config(config));
@@ -346,7 +473,7 @@ fn check_daemon(config: &Config) -> (DiagnosticCheck, DaemonProbe) {
                 name: "Daemon".to_string(),
                 status: CheckStatus::Ok,
                 detail,
-                fix: None,
+                recovery: Recovery::None,
             },
             probe,
         )
@@ -356,7 +483,7 @@ fn check_daemon(config: &Config) -> (DiagnosticCheck, DaemonProbe) {
                 name: "Daemon".to_string(),
                 status: CheckStatus::Failed,
                 detail: "not running".to_string(),
-                fix: Some("sudo systemctl start vigild.service".to_string()),
+                recovery: Recovery::Command("sudo systemctl start vigild.service".into()),
             },
             probe,
         )
@@ -369,7 +496,7 @@ fn check_backend(config: &Config, daemon_running: bool) -> DiagnosticCheck {
             name: "Backend".to_string(),
             status: CheckStatus::Unknown,
             detail: "unknown (daemon not running)".to_string(),
-            fix: None,
+            recovery: Recovery::None,
         };
     }
 
@@ -379,14 +506,16 @@ fn check_backend(config: &Config, daemon_running: bool) -> DiagnosticCheck {
             name: "Backend".to_string(),
             status: CheckStatus::Ok,
             detail: "fanotify (mount-wide coverage)".to_string(),
-            fix: None,
+            recovery: Recovery::None,
         }
     } else {
         DiagnosticCheck {
             name: "Backend".to_string(),
             status: CheckStatus::Warning,
             detail: "inotify fallback (reduced coverage)".to_string(),
-            fix: Some("Run daemon with CAP_SYS_ADMIN for full fanotify coverage".to_string()),
+            recovery: Recovery::Manual(
+                "grant CAP_SYS_ADMIN to the daemon for full fanotify coverage".into(),
+            ),
         }
     }
 }
@@ -398,7 +527,7 @@ fn check_baseline(config: &Config) -> DiagnosticCheck {
             name: "Baseline".to_string(),
             status: CheckStatus::Failed,
             detail: format!("database not found at {}", db_path.display()),
-            fix: Some("vigil init".to_string()),
+            recovery: Recovery::Command("vigil init".into()),
         };
     }
 
@@ -414,7 +543,7 @@ fn check_baseline(config: &Config) -> DiagnosticCheck {
                 "database present at {} (insufficient permissions for current user)",
                 db_path.display()
             ),
-            fix: Some("Run with elevated privileges: sudo vigil doctor".to_string()),
+            recovery: Recovery::Command("sudo vigil doctor".into()),
         };
     }
 
@@ -425,7 +554,7 @@ fn check_baseline(config: &Config) -> DiagnosticCheck {
                 name: "Baseline".to_string(),
                 status: CheckStatus::Failed,
                 detail: format!("cannot open baseline database: {}", e),
-                fix: Some("vigil init".to_string()),
+                recovery: Recovery::Command("vigil init".into()),
             };
         }
     };
@@ -437,7 +566,7 @@ fn check_baseline(config: &Config) -> DiagnosticCheck {
                 name: "Baseline".to_string(),
                 status: CheckStatus::Failed,
                 detail: format!("cannot read baseline: {}", e),
-                fix: Some("vigil init".to_string()),
+                recovery: Recovery::Command("vigil init".into()),
             };
         }
     };
@@ -447,7 +576,7 @@ fn check_baseline(config: &Config) -> DiagnosticCheck {
             name: "Baseline".to_string(),
             status: CheckStatus::Failed,
             detail: "no baseline found (database empty)".to_string(),
-            fix: Some("vigil init".to_string()),
+            recovery: Recovery::Command("vigil init".into()),
         };
     }
 
@@ -469,7 +598,7 @@ fn check_baseline(config: &Config) -> DiagnosticCheck {
                         count_label,
                         format_age(age)
                     ),
-                    fix: Some("vigil baseline refresh".to_string()),
+                    recovery: Recovery::Command("vigil baseline refresh".into()),
                 }
             } else {
                 DiagnosticCheck {
@@ -480,7 +609,7 @@ fn check_baseline(config: &Config) -> DiagnosticCheck {
                         count_label,
                         format_age(age)
                     ),
-                    fix: None,
+                    recovery: Recovery::None,
                 }
             }
         }
@@ -488,7 +617,7 @@ fn check_baseline(config: &Config) -> DiagnosticCheck {
             name: "Baseline".to_string(),
             status: CheckStatus::Ok,
             detail: format!("{} entries (last refresh: unknown)", count_label),
-            fix: None,
+            recovery: Recovery::None,
         },
     }
 }
@@ -502,7 +631,7 @@ fn check_database_integrity(config: &Config) -> DiagnosticCheck {
             name: "Database".to_string(),
             status: CheckStatus::Failed,
             detail: format!("baseline database not found at {}", baseline_path.display()),
-            fix: Some("vigil init".to_string()),
+            recovery: Recovery::Command("vigil init".into()),
         };
     }
 
@@ -511,7 +640,7 @@ fn check_database_integrity(config: &Config) -> DiagnosticCheck {
             name: "Database".to_string(),
             status: CheckStatus::Failed,
             detail: format!("audit database not found at {}", audit_path.display()),
-            fix: Some("vigil init".to_string()),
+            recovery: Recovery::Command("vigil init".into()),
         };
     }
 
@@ -534,7 +663,7 @@ fn check_database_integrity(config: &Config) -> DiagnosticCheck {
                 "integrity check unavailable for current user (cannot read: {})",
                 unreadable.join(", ")
             ),
-            fix: Some("Run with elevated privileges: sudo vigil doctor".to_string()),
+            recovery: Recovery::Command("sudo vigil doctor".into()),
         };
     }
 
@@ -545,7 +674,7 @@ fn check_database_integrity(config: &Config) -> DiagnosticCheck {
                 name: "Database".to_string(),
                 status: CheckStatus::Failed,
                 detail: format!("cannot open baseline database: {}", e),
-                fix: Some(format!(
+                recovery: Recovery::Command(format!(
                     "cp {} {}.bak && vigil init",
                     baseline_path.display(),
                     baseline_path.display()
@@ -559,7 +688,7 @@ fn check_database_integrity(config: &Config) -> DiagnosticCheck {
             name: "Database".to_string(),
             status: CheckStatus::Failed,
             detail: format!("integrity check failed: {}", e),
-            fix: Some(format!(
+            recovery: Recovery::Command(format!(
                 "cp {} {}.bak && vigil init",
                 baseline_path.display(),
                 baseline_path.display()
@@ -574,7 +703,7 @@ fn check_database_integrity(config: &Config) -> DiagnosticCheck {
                 name: "Database".to_string(),
                 status: CheckStatus::Failed,
                 detail: format!("cannot open audit database: {}", e),
-                fix: Some(format!(
+                recovery: Recovery::Command(format!(
                     "cp {} {}.bak && vigil init",
                     audit_path.display(),
                     audit_path.display()
@@ -588,7 +717,7 @@ fn check_database_integrity(config: &Config) -> DiagnosticCheck {
             name: "Database".to_string(),
             status: CheckStatus::Failed,
             detail: format!("integrity check failed: {}", e),
-            fix: Some(format!(
+            recovery: Recovery::Command(format!(
                 "cp {} {}.bak && vigil init",
                 baseline_path.display(),
                 baseline_path.display()
@@ -613,7 +742,7 @@ fn check_database_integrity(config: &Config) -> DiagnosticCheck {
             wal_mode,
             format_size(total_size)
         ),
-        fix: None,
+        recovery: Recovery::None,
     }
 }
 
@@ -624,7 +753,7 @@ fn check_audit_log(config: &Config) -> DiagnosticCheck {
             name: "Audit log".to_string(),
             status: CheckStatus::Failed,
             detail: format!("audit database not found at {}", audit_path.display()),
-            fix: Some("vigil init".to_string()),
+            recovery: Recovery::Command("vigil init".into()),
         };
     }
 
@@ -640,7 +769,7 @@ fn check_audit_log(config: &Config) -> DiagnosticCheck {
                 "audit log present at {} (insufficient permissions for current user)",
                 audit_path.display()
             ),
-            fix: Some("Run with elevated privileges: sudo vigil doctor".to_string()),
+            recovery: Recovery::Command("sudo vigil doctor".into()),
         };
     }
 
@@ -651,7 +780,7 @@ fn check_audit_log(config: &Config) -> DiagnosticCheck {
                 name: "Audit log".to_string(),
                 status: CheckStatus::Failed,
                 detail: format!("cannot open audit database: {}", e),
-                fix: Some("vigil audit verify".to_string()),
+                recovery: Recovery::Command("vigil audit verify".into()),
             };
         }
     };
@@ -674,7 +803,7 @@ fn check_audit_log(config: &Config) -> DiagnosticCheck {
                         breaks.first().map(|b| b.0).unwrap_or(0),
                         format_count(total),
                     ),
-                    fix: Some("vigil audit verify -v".to_string()),
+                    recovery: Recovery::Command("vigil audit verify -v".into()),
                 }
             } else if missing > 0 {
                 DiagnosticCheck {
@@ -685,14 +814,14 @@ fn check_audit_log(config: &Config) -> DiagnosticCheck {
                         format_count(total),
                         missing
                     ),
-                    fix: Some("vigil audit verify".to_string()),
+                    recovery: Recovery::Command("vigil audit verify".into()),
                 }
             } else {
                 DiagnosticCheck {
                     name: "Audit log".to_string(),
                     status: CheckStatus::Ok,
                     detail: format!("{} entries, chain intact, 0 breaks", format_count(total)),
-                    fix: None,
+                    recovery: Recovery::None,
                 }
             }
         }
@@ -700,8 +829,75 @@ fn check_audit_log(config: &Config) -> DiagnosticCheck {
             name: "Audit log".to_string(),
             status: CheckStatus::Failed,
             detail: format!("verification failed: {}", e),
-            fix: Some("vigil audit verify".to_string()),
+            recovery: Recovery::Command("vigil audit verify".into()),
         },
+    }
+}
+
+fn check_audit_retention(config: &Config) -> DiagnosticCheck {
+    let audit_path = crate::db::audit_db_path(config);
+    let conn = match rusqlite::Connection::open_with_flags(
+        &audit_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        Ok(c) => c,
+        Err(_) => {
+            return DiagnosticCheck {
+                name: "Audit retention".to_string(),
+                status: CheckStatus::Warning,
+                detail: "cannot open audit DB".to_string(),
+                recovery: Recovery::Command("vigil audit verify".into()),
+            };
+        }
+    };
+
+    let db_size_bytes = crate::db::audit_ops::db_file_size(&conn).unwrap_or(0);
+    let max_bytes = config.audit.max_size_bytes();
+    let pct = if max_bytes > 0 {
+        (db_size_bytes as f64 / max_bytes as f64 * 100.0) as u32
+    } else {
+        0
+    };
+
+    let retention_days = config.audit.retention_days;
+
+    if pct >= 100 {
+        DiagnosticCheck {
+            name: "Audit retention".to_string(),
+            status: CheckStatus::Failed,
+            detail: format!(
+                "audit DB at {} MB ({:.0}% of {} MB cap)",
+                db_size_bytes / 1_048_576,
+                pct,
+                config.audit.max_size_mb
+            ),
+            recovery: Recovery::CommandWithContext {
+                command: "vigil audit prune --before <date> --confirm".into(),
+                context: "or: vigil daemon recover --reason audit_log_full".into(),
+            },
+        }
+    } else if pct >= 90 {
+        DiagnosticCheck {
+            name: "Audit retention".to_string(),
+            status: CheckStatus::Warning,
+            detail: format!(
+                "{}d retention; {}% of {} MB cap; approaching limit",
+                retention_days, pct, config.audit.max_size_mb
+            ),
+            recovery: Recovery::Manual(
+                "consider lowering audit.retention_days or raising audit.max_size_mb".into(),
+            ),
+        }
+    } else {
+        DiagnosticCheck {
+            name: "Audit retention".to_string(),
+            status: CheckStatus::Ok,
+            detail: format!(
+                "{}d retention; {}% of {} MB cap",
+                retention_days, pct, config.audit.max_size_mb
+            ),
+            recovery: Recovery::None,
+        }
     }
 }
 
@@ -715,7 +911,7 @@ fn check_config(config: &Config) -> DiagnosticCheck {
             name: "Config".to_string(),
             status: CheckStatus::Failed,
             detail: format!("invalid: {}", e),
-            fix: Some("vigil config validate".to_string()),
+            recovery: Recovery::Command("vigil config validate".into()),
         };
     }
 
@@ -724,19 +920,19 @@ fn check_config(config: &Config) -> DiagnosticCheck {
             name: "Config".to_string(),
             status: CheckStatus::Ok,
             detail: format!("valid ({})", config_path),
-            fix: None,
+            recovery: Recovery::None,
         },
         Ok(warnings) => DiagnosticCheck {
             name: "Config".to_string(),
             status: CheckStatus::Warning,
             detail: format!("valid ({}) with {} warnings", config_path, warnings.len()),
-            fix: Some("vigil config validate".to_string()),
+            recovery: Recovery::Command("vigil config validate".into()),
         },
         Err(e) => DiagnosticCheck {
             name: "Config".to_string(),
             status: CheckStatus::Failed,
             detail: format!("invalid: {}", e),
-            fix: Some("vigil config validate".to_string()),
+            recovery: Recovery::Command("vigil config validate".into()),
         },
     }
 }
@@ -747,7 +943,7 @@ fn check_scan_timer(config: &Config) -> DiagnosticCheck {
             name: "Scan timer".to_string(),
             status: CheckStatus::Warning,
             detail: "timer not found".to_string(),
-            fix: Some("sudo systemctl enable --now vigil-scan.timer".to_string()),
+            recovery: Recovery::Command("sudo systemctl enable --now vigil-scan.timer".into()),
         };
     }
 
@@ -757,7 +953,7 @@ fn check_scan_timer(config: &Config) -> DiagnosticCheck {
             name: "Scan timer".to_string(),
             status: CheckStatus::Warning,
             detail: "timer not found".to_string(),
-            fix: Some("sudo systemctl enable --now vigil-scan.timer".to_string()),
+            recovery: Recovery::Command("sudo systemctl enable --now vigil-scan.timer".into()),
         };
     }
 
@@ -767,27 +963,27 @@ fn check_scan_timer(config: &Config) -> DiagnosticCheck {
             name: "Scan timer".to_string(),
             status: CheckStatus::Warning,
             detail: "timer inactive".to_string(),
-            fix: Some("sudo systemctl start vigil-scan.timer".to_string()),
+            recovery: Recovery::Command("sudo systemctl start vigil-scan.timer".into()),
         };
     }
 
     let next_raw = systemctl_show("vigil-scan.timer", "NextElapseUSecRealtime")
         .unwrap_or_else(|| "unknown".to_string());
-    let next = shorten_next_timer(&next_raw);
+    let next = format_next_timer_relative(&next_raw);
     let metrics = read_metrics(config);
     let last_scan_total = metrics.as_ref().map(|m| m.last_scan_total).unwrap_or(0);
     let last_scan = metrics_file_timestamp(config)
-        .map(format_relative_timestamp)
+        .map(format_relative_duration_from_timestamp)
         .unwrap_or_else(|| "unknown".to_string());
 
     DiagnosticCheck {
         name: "Scan timer".to_string(),
         status: CheckStatus::Ok,
         detail: format!(
-            "active (next: {}, last: {} -- {} changes)",
+            "active (next scan {}; previous scan {} found {} changes)",
             next, last_scan, last_scan_total
         ),
-        fix: None,
+        recovery: Recovery::None,
     }
 }
 
@@ -797,7 +993,7 @@ fn check_hmac_key(config: &Config) -> DiagnosticCheck {
             name: "HMAC key".to_string(),
             status: CheckStatus::Unknown,
             detail: "not configured".to_string(),
-            fix: None,
+            recovery: Recovery::None,
         };
     }
 
@@ -807,7 +1003,7 @@ fn check_hmac_key(config: &Config) -> DiagnosticCheck {
             name: "HMAC key".to_string(),
             status: CheckStatus::Failed,
             detail: format!("not found at {}", key_path.display()),
-            fix: Some(format!(
+            recovery: Recovery::Command(format!(
                 "openssl rand -hex 32 | sudo tee {} >/dev/null && sudo chmod 0600 {}",
                 key_path.display(),
                 key_path.display()
@@ -843,7 +1039,7 @@ fn check_hmac_key(config: &Config) -> DiagnosticCheck {
             name: "HMAC key".to_string(),
             status: CheckStatus::Ok,
             detail: format!("present, permissions {}, {}", mode, owner),
-            fix: None,
+            recovery: Recovery::None,
         };
     }
 
@@ -853,14 +1049,14 @@ fn check_hmac_key(config: &Config) -> DiagnosticCheck {
             name: "HMAC key".to_string(),
             status: CheckStatus::Warning,
             detail: joined,
-            fix: Some(format!("sudo chmod 0600 {}", key_path.display())),
+            recovery: Recovery::Command(format!("sudo chmod 0600 {}", key_path.display())),
         }
     } else if joined.contains("Cannot stat") {
         DiagnosticCheck {
             name: "HMAC key".to_string(),
             status: CheckStatus::Failed,
             detail: joined,
-            fix: Some(format!(
+            recovery: Recovery::Command(format!(
                 "openssl rand -hex 32 | sudo tee {} >/dev/null && sudo chmod 0600 {}",
                 key_path.display(),
                 key_path.display()
@@ -871,7 +1067,7 @@ fn check_hmac_key(config: &Config) -> DiagnosticCheck {
             name: "HMAC key".to_string(),
             status: CheckStatus::Warning,
             detail: joined,
-            fix: Some(format!("sudo chown root:root {}", key_path.display())),
+            recovery: Recovery::Command(format!("sudo chown root:root {}", key_path.display())),
         }
     }
 }
@@ -885,7 +1081,7 @@ fn check_attest_key() -> DiagnosticCheck {
             name: "Attest key".to_string(),
             status: CheckStatus::Unknown,
             detail: "not configured (optional; needed for `vigil attest`)".to_string(),
-            fix: Some("sudo vigil setup attest".to_string()),
+            recovery: Recovery::Command("sudo vigil setup attest".into()),
         },
         Some(key_path) => {
             #[cfg(unix)]
@@ -928,14 +1124,17 @@ fn check_attest_key() -> DiagnosticCheck {
                                     mode,
                                     owner
                                 ),
-                                fix: None,
+                                recovery: Recovery::None,
                             }
                         } else {
                             DiagnosticCheck {
                                 name: "Attest key".to_string(),
                                 status: CheckStatus::Warning,
                                 detail: format!("{}: {}", key_path.display(), issues.join("; ")),
-                                fix: Some(format!("sudo chmod 600 {}", key_path.display())),
+                                recovery: Recovery::Command(format!(
+                                    "sudo chmod 600 {}",
+                                    key_path.display()
+                                )),
                             }
                         }
                     }
@@ -943,7 +1142,7 @@ fn check_attest_key() -> DiagnosticCheck {
                         name: "Attest key".to_string(),
                         status: CheckStatus::Failed,
                         detail: format!("cannot stat {}: {}", key_path.display(), e),
-                        fix: Some("sudo vigil setup attest".to_string()),
+                        recovery: Recovery::Command("sudo vigil setup attest".into()),
                     },
                 }
             }
@@ -953,7 +1152,7 @@ fn check_attest_key() -> DiagnosticCheck {
                     name: "Attest key".to_string(),
                     status: CheckStatus::Ok,
                     detail: format!("present at {}", key_path.display()),
-                    fix: None,
+                    recovery: Recovery::None,
                 }
             }
         }
@@ -966,43 +1165,88 @@ fn check_package_hooks() -> DiagnosticCheck {
             let pre = Path::new("/etc/pacman.d/hooks/vigil-pre.hook").exists();
             let post = Path::new("/etc/pacman.d/hooks/vigil-post.hook").exists();
             if pre && post {
-                let trigger_info = hook_last_trigger("vigil-pacman");
+                let trigger = hook_last_trigger_parsed("vigil-pacman");
+                let (status, detail, recovery) = match trigger {
+                    HookTriggerResult::NeverTriggered => (
+                        CheckStatus::Ok,
+                        "installed (pacman pre/post); never triggered".to_string(),
+                        Recovery::None,
+                    ),
+                    HookTriggerResult::Success(ts) => (
+                        CheckStatus::Ok,
+                        format!("installed (pacman pre/post); last trigger {} ok", ts),
+                        Recovery::None,
+                    ),
+                    HookTriggerResult::Failure(ts, _tag) => (
+                        CheckStatus::Warning,
+                        format!("installed (pacman pre/post); last trigger {} failed", ts,),
+                        Recovery::CommandWithContext {
+                            command: "vigil hooks verify".into(),
+                            context: "investigate further: journalctl -t vigil-pacman".into(),
+                        },
+                    ),
+                    HookTriggerResult::Unknown => (
+                        CheckStatus::Ok,
+                        "installed (pacman pre/post)".to_string(),
+                        Recovery::None,
+                    ),
+                };
                 DiagnosticCheck {
                     name: "Hooks".to_string(),
-                    status: CheckStatus::Ok,
-                    detail: format!("pacman pre/post installed{}", trigger_info),
-                    fix: None,
+                    status,
+                    detail,
+                    recovery,
                 }
             } else {
                 DiagnosticCheck {
                     name: "Hooks".to_string(),
                     status: CheckStatus::Warning,
                     detail: "pacman detected but hooks not installed".to_string(),
-                    fix: Some(
-                        "sudo install -Dm644 hooks/pacman/vigil-pre.hook /etc/pacman.d/hooks/vigil-pre.hook && sudo install -Dm644 hooks/pacman/vigil-post.hook /etc/pacman.d/hooks/vigil-post.hook".to_string(),
-                    ),
+                    recovery: Recovery::Command("vigil hooks repair".into()),
                 }
             }
         }
         PackageBackend::Dpkg => {
             let apt_hook = Path::new("/etc/apt/apt.conf.d/99vigil").exists();
             if apt_hook {
-                let trigger_info = hook_last_trigger("vigil-apt");
+                let trigger = hook_last_trigger_parsed("vigil-apt");
+                let (status, detail, recovery) = match trigger {
+                    HookTriggerResult::NeverTriggered => (
+                        CheckStatus::Ok,
+                        "installed (apt hook); never triggered".to_string(),
+                        Recovery::None,
+                    ),
+                    HookTriggerResult::Success(ts) => (
+                        CheckStatus::Ok,
+                        format!("installed (apt hook); last trigger {} ok", ts),
+                        Recovery::None,
+                    ),
+                    HookTriggerResult::Failure(ts, _tag) => (
+                        CheckStatus::Warning,
+                        format!("installed (apt hook); last trigger {} failed", ts,),
+                        Recovery::CommandWithContext {
+                            command: "vigil hooks verify".into(),
+                            context: "investigate further: journalctl -t vigil-apt".into(),
+                        },
+                    ),
+                    HookTriggerResult::Unknown => (
+                        CheckStatus::Ok,
+                        "installed (apt hook)".to_string(),
+                        Recovery::None,
+                    ),
+                };
                 DiagnosticCheck {
                     name: "Hooks".to_string(),
-                    status: CheckStatus::Ok,
-                    detail: format!("apt hook installed{}", trigger_info),
-                    fix: None,
+                    status,
+                    detail,
+                    recovery,
                 }
             } else {
                 DiagnosticCheck {
                     name: "Hooks".to_string(),
                     status: CheckStatus::Warning,
                     detail: "apt detected but hook not installed".to_string(),
-                    fix: Some(
-                        "sudo install -Dm644 hooks/apt/99vigil /etc/apt/apt.conf.d/99vigil"
-                            .to_string(),
-                    ),
+                    recovery: Recovery::Command("vigil hooks repair".into()),
                 }
             }
         }
@@ -1010,19 +1254,32 @@ fn check_package_hooks() -> DiagnosticCheck {
             name: "Hooks".to_string(),
             status: CheckStatus::Unknown,
             detail: "rpm detected (no native hook template bundled)".to_string(),
-            fix: None,
+            recovery: Recovery::None,
         },
         PackageBackend::Auto => DiagnosticCheck {
             name: "Hooks".to_string(),
             status: CheckStatus::Unknown,
             detail: "no supported package manager detected".to_string(),
-            fix: None,
+            recovery: Recovery::None,
         },
     }
 }
 
-/// Query journald for the last hook trigger entry.
-fn hook_last_trigger(syslog_tag: &str) -> String {
+/// Parsed result of the last hook trigger query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HookTriggerResult {
+    /// journalctl returned no entries for this tag.
+    NeverTriggered,
+    /// Last entry indicates success; timestamp attached.
+    Success(String),
+    /// Last entry indicates failure; timestamp and syslog tag attached.
+    Failure(String, String),
+    /// journalctl unavailable or unparseable.
+    Unknown,
+}
+
+/// Query journald for the last hook trigger entry and return structured result.
+pub fn hook_last_trigger_parsed(syslog_tag: &str) -> HookTriggerResult {
     let output = Command::new("journalctl")
         .args([
             "-t",
@@ -1044,21 +1301,17 @@ fn hook_last_trigger(syslog_tag: &str) -> String {
                 || line.starts_with("-- No entries")
                 || line.starts_with("-- Journal")
             {
-                String::new()
-            } else if line.contains("failed") || line.contains("error") {
-                format!(
-                    "; last trigger: {} (failure; see journalctl -t {})",
-                    line.split_whitespace().next().unwrap_or("?"),
-                    syslog_tag
-                )
+                HookTriggerResult::NeverTriggered
             } else {
-                format!(
-                    "; last trigger: {}",
-                    line.split_whitespace().next().unwrap_or("?")
-                )
+                let ts = line.split_whitespace().next().unwrap_or("?").to_string();
+                if line.contains("failed") || line.contains("error") {
+                    HookTriggerResult::Failure(ts, syslog_tag.to_string())
+                } else {
+                    HookTriggerResult::Success(ts)
+                }
             }
         }
-        _ => String::new(),
+        _ => HookTriggerResult::Unknown,
     }
 }
 
@@ -1068,22 +1321,25 @@ fn check_notify_send() -> DiagnosticCheck {
             name: "Notify".to_string(),
             status: CheckStatus::Ok,
             detail: "notify-send available".to_string(),
-            fix: None,
+            recovery: Recovery::None,
         }
     } else {
-        let fix = match crate::package::detect_backend() {
-            PackageBackend::Pacman => "sudo pacman -S --needed libnotify",
-            PackageBackend::Dpkg => "sudo apt-get install -y libnotify-bin",
-            PackageBackend::Rpm => "sudo dnf install -y libnotify",
-            PackageBackend::Auto => "Install libnotify for your distribution",
-        }
-        .to_string();
+        let (recovery, cmd_str) = match crate::package::detect_backend() {
+            PackageBackend::Pacman => (true, "sudo pacman -S --needed libnotify"),
+            PackageBackend::Dpkg => (true, "sudo apt-get install -y libnotify-bin"),
+            PackageBackend::Rpm => (true, "sudo dnf install -y libnotify"),
+            PackageBackend::Auto => (false, "install libnotify for your distribution"),
+        };
 
         DiagnosticCheck {
             name: "Notify".to_string(),
             status: CheckStatus::Warning,
             detail: "notify-send not found (desktop notifications disabled)".to_string(),
-            fix: Some(fix),
+            recovery: if recovery {
+                Recovery::Command(cmd_str.into())
+            } else {
+                Recovery::Manual(cmd_str.into())
+            },
         }
     }
 }
@@ -1094,8 +1350,8 @@ fn check_signal_socket(config: &Config) -> DiagnosticCheck {
         return DiagnosticCheck {
             name: "Socket".to_string(),
             status: CheckStatus::Unknown,
-            detail: "not configured (optional)".to_string(),
-            fix: None,
+            detail: "not configured (optional alert sink)".to_string(),
+            recovery: Recovery::None,
         };
     }
 
@@ -1103,9 +1359,12 @@ fn check_signal_socket(config: &Config) -> DiagnosticCheck {
     if !path.exists() {
         return DiagnosticCheck {
             name: "Socket".to_string(),
-            status: CheckStatus::Unknown,
-            detail: "configured (no listener attached)".to_string(),
-            fix: None,
+            status: CheckStatus::Failed,
+            detail: "configured but no listener; alerts to this sink are dropped".to_string(),
+            recovery: Recovery::CommandWithContext {
+                command: "vigil alerts socket disable".into(),
+                context: format!("(or attach a listener at {})", socket_path),
+            },
         };
     }
 
@@ -1113,7 +1372,7 @@ fn check_signal_socket(config: &Config) -> DiagnosticCheck {
         name: "Socket".to_string(),
         status: CheckStatus::Ok,
         detail: format!("configured at {}", path.display()),
-        fix: None,
+        recovery: Recovery::None,
     }
 }
 
@@ -1123,7 +1382,7 @@ fn check_control_socket(config: &Config) -> DiagnosticCheck {
             name: "Control".into(),
             status: CheckStatus::Unknown,
             detail: "not configured (optional)".into(),
-            fix: None,
+            recovery: Recovery::None,
         };
     }
 
@@ -1136,7 +1395,7 @@ fn check_control_socket(config: &Config) -> DiagnosticCheck {
                 "{} does not exist (daemon not running?)",
                 socket_path.display()
             ),
-            fix: Some("Start the daemon: sudo systemctl start vigild".into()),
+            recovery: Recovery::Command("sudo systemctl start vigild".into()),
         };
     }
 
@@ -1145,13 +1404,13 @@ fn check_control_socket(config: &Config) -> DiagnosticCheck {
             name: "Control".into(),
             status: CheckStatus::Ok,
             detail: format!("responding ({})", socket_path.display()),
-            fix: None,
+            recovery: Recovery::None,
         },
         Err(e) => DiagnosticCheck {
             name: "Control".into(),
             status: CheckStatus::Warning,
             detail: format!("socket exists but not responding: {}", e),
-            fix: Some("Restart the daemon: sudo systemctl restart vigild".into()),
+            recovery: Recovery::Command("sudo systemctl restart vigild".into()),
         },
     }
 }
@@ -1163,7 +1422,7 @@ fn check_daemon_state(config: &Config, daemon_running: bool) -> DiagnosticCheck 
             name: "State".into(),
             status: CheckStatus::Unknown,
             detail: "unknown (daemon not running)".into(),
-            fix: None,
+            recovery: Recovery::None,
         };
     }
 
@@ -1178,7 +1437,7 @@ fn check_daemon_state(config: &Config, daemon_running: bool) -> DiagnosticCheck 
                     name: "State".into(),
                     status: CheckStatus::Ok,
                     detail: "healthy".into(),
-                    fix: None,
+                    recovery: Recovery::None,
                 },
                 "degraded" => {
                     let reason = state
@@ -1194,7 +1453,7 @@ fn check_daemon_state(config: &Config, daemon_running: bool) -> DiagnosticCheck 
                         name: "State".into(),
                         status: CheckStatus::Failed,
                         detail: format!("degraded: {}{}", reason, since),
-                        fix: Some(format!(
+                        recovery: Recovery::Command(format!(
                             "vigil recover --reason {}",
                             reason.split_whitespace().next().unwrap_or(reason)
                         )),
@@ -1204,7 +1463,7 @@ fn check_daemon_state(config: &Config, daemon_running: bool) -> DiagnosticCheck 
                     name: "State".into(),
                     status: CheckStatus::Warning,
                     detail: format!("unrecognized state: {}", status_str),
-                    fix: None,
+                    recovery: Recovery::None,
                 },
             }
         }
@@ -1212,7 +1471,7 @@ fn check_daemon_state(config: &Config, daemon_running: bool) -> DiagnosticCheck 
             name: "State".into(),
             status: CheckStatus::Unknown,
             detail: "state.json not available".into(),
-            fix: None,
+            recovery: Recovery::None,
         },
     }
 }
@@ -1224,7 +1483,7 @@ fn check_wal_pipeline(config: &Config, daemon_running: bool) -> DiagnosticCheck 
             name: "WAL pipeline".into(),
             status: CheckStatus::Unknown,
             detail: "unknown (daemon not running)".into(),
-            fix: None,
+            recovery: Recovery::None,
         };
     }
 
@@ -1233,7 +1492,7 @@ fn check_wal_pipeline(config: &Config, daemon_running: bool) -> DiagnosticCheck 
             name: "WAL pipeline".into(),
             status: CheckStatus::Unknown,
             detail: "disabled".into(),
-            fix: None,
+            recovery: Recovery::None,
         };
     }
 
@@ -1245,7 +1504,7 @@ fn check_wal_pipeline(config: &Config, daemon_running: bool) -> DiagnosticCheck 
                 name: "WAL pipeline".into(),
                 status: CheckStatus::Unknown,
                 detail: "metrics.json not available".into(),
-                fix: None,
+                recovery: Recovery::None,
             };
         }
     };
@@ -1257,7 +1516,7 @@ fn check_wal_pipeline(config: &Config, daemon_running: bool) -> DiagnosticCheck 
                 name: "WAL pipeline".into(),
                 status: CheckStatus::Warning,
                 detail: "metrics.json unreadable".into(),
-                fix: None,
+                recovery: Recovery::None,
             };
         }
     };
@@ -1287,21 +1546,21 @@ fn check_wal_pipeline(config: &Config, daemon_running: bool) -> DiagnosticCheck 
             name: "WAL pipeline".into(),
             status: CheckStatus::Failed,
             detail,
-            fix: Some("vigil doctor --verbose".into()),
+            recovery: Recovery::Command("vigil doctor --verbose".into()),
         }
     } else if pending > 1_000 {
         DiagnosticCheck {
             name: "WAL pipeline".into(),
             status: CheckStatus::Warning,
             detail,
-            fix: None,
+            recovery: Recovery::None,
         }
     } else {
         DiagnosticCheck {
             name: "WAL pipeline".into(),
             status: CheckStatus::Ok,
             detail,
-            fix: None,
+            recovery: Recovery::None,
         }
     }
 }
@@ -1314,7 +1573,11 @@ fn check_storage(config: &Config) -> DiagnosticCheck {
         .parent()
         .unwrap_or(std::path::Path::new("/var/lib/vigil"));
 
-    match nix::sys::statvfs::statvfs(data_dir) {
+    // Walk the data directory to compute vigil's actual usage.
+    let usage = walk_data_dir_usage(data_dir);
+
+    // Get filesystem capacity from statvfs.
+    let fs_line = match nix::sys::statvfs::statvfs(data_dir) {
         Ok(stat) => {
             let total = stat.blocks() * stat.fragment_size();
             let free = stat.blocks_available() * stat.fragment_size();
@@ -1323,44 +1586,170 @@ fn check_storage(config: &Config) -> DiagnosticCheck {
             } else {
                 0.0
             };
+            Some((free, total, pct_free))
+        }
+        Err(_) => None,
+    };
 
+    match (&usage, &fs_line) {
+        (Ok(du), Some((free, total, pct_free))) => {
             let detail = format!(
-                "{} ({}, {:.1}% free)",
-                data_dir.display(),
-                format_size(free),
-                pct_free
+                "{} used ({})\n    {:<14}   filesystem: {} free of {} ({:.1}% free)",
+                format_size(du.total),
+                du.breakdown_string(),
+                "",
+                format_size(*free),
+                format_size(*total),
+                pct_free,
             );
 
-            if pct_free < 5.0 {
+            if *pct_free < 5.0 {
                 DiagnosticCheck {
                     name: "Data dir".into(),
                     status: CheckStatus::Failed,
                     detail,
-                    fix: Some("Free space in the data directory. Baseline refresh will be refused below 5% free.".into()),
+                    recovery: Recovery::Manual("free space in the data directory; baseline refresh will be refused below 5% free".into()),
                 }
-            } else if pct_free < 10.0 {
+            } else if *pct_free < 10.0 {
                 DiagnosticCheck {
                     name: "Data dir".into(),
                     status: CheckStatus::Warning,
                     detail,
-                    fix: None,
+                    recovery: Recovery::None,
                 }
             } else {
                 DiagnosticCheck {
                     name: "Data dir".into(),
                     status: CheckStatus::Ok,
                     detail,
-                    fix: None,
+                    recovery: Recovery::None,
                 }
             }
         }
-        Err(_) => DiagnosticCheck {
+        (Ok(du), None) => DiagnosticCheck {
+            name: "Data dir".into(),
+            status: CheckStatus::Ok,
+            detail: format!(
+                "{} used ({})\n    {:<14}   filesystem: cannot stat",
+                format_size(du.total),
+                du.breakdown_string(),
+                "",
+            ),
+            recovery: Recovery::None,
+        },
+        (Err(walk_err), Some((free, total, pct_free))) => {
+            let detail = format!(
+                "usage unknown ({})\n    {:<14}   filesystem: {} free of {} ({:.1}% free)",
+                walk_err,
+                "",
+                format_size(*free),
+                format_size(*total),
+                pct_free,
+            );
+
+            if *pct_free < 5.0 {
+                DiagnosticCheck {
+                    name: "Data dir".into(),
+                    status: CheckStatus::Failed,
+                    detail,
+                    recovery: Recovery::Manual("free space in the data directory; baseline refresh will be refused below 5% free".into()),
+                }
+            } else {
+                DiagnosticCheck {
+                    name: "Data dir".into(),
+                    status: CheckStatus::Warning,
+                    detail,
+                    recovery: Recovery::None,
+                }
+            }
+        }
+        (Err(walk_err), None) => DiagnosticCheck {
             name: "Data dir".into(),
             status: CheckStatus::Unknown,
-            detail: format!("{} (cannot stat)", data_dir.display()),
-            fix: None,
+            detail: format!("{} (cannot stat filesystem)", walk_err),
+            recovery: Recovery::None,
         },
     }
+}
+
+/// Breakdown of data directory usage by component.
+#[derive(Debug, Default)]
+pub struct DataDirUsage {
+    pub total: u64,
+    pub audit: u64,
+    pub baseline: u64,
+    pub backups: u64,
+    pub wal: u64,
+    pub other: u64,
+}
+
+impl DataDirUsage {
+    /// Render a parenthesized breakdown of non-zero categories.
+    pub fn breakdown_string(&self) -> String {
+        let mut parts = Vec::new();
+        if self.audit > 0 {
+            parts.push(format!("audit: {}", format_size(self.audit)));
+        }
+        if self.baseline > 0 {
+            parts.push(format!("baseline: {}", format_size(self.baseline)));
+        }
+        if self.backups > 0 {
+            parts.push(format!("backups: {}", format_size(self.backups)));
+        }
+        if self.wal > 0 {
+            parts.push(format!("WAL: {}", format_size(self.wal)));
+        }
+        if self.other > 0 {
+            parts.push(format!("other: {}", format_size(self.other)));
+        }
+        if parts.is_empty() {
+            "empty".to_string()
+        } else {
+            parts.join(", ")
+        }
+    }
+}
+
+/// Walk a data directory recursively and sum file sizes by category.
+pub fn walk_data_dir_usage(dir: &Path) -> std::result::Result<DataDirUsage, String> {
+    let mut usage = DataDirUsage::default();
+    walk_data_dir_inner(dir, dir, &mut usage)
+        .map_err(|e| format!("cannot read {}: {}", dir.display(), e))?;
+    Ok(usage)
+}
+
+fn walk_data_dir_inner(base: &Path, dir: &Path, usage: &mut DataDirUsage) -> std::io::Result<()> {
+    let entries = fs::read_dir(dir)?;
+    for entry in entries {
+        let entry = entry?;
+        let meta = entry.metadata()?;
+        if meta.is_dir() {
+            walk_data_dir_inner(base, &entry.path(), usage)?;
+        } else if meta.is_file() {
+            let size = meta.len();
+            usage.total += size;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            let rel = entry.path();
+            let rel_path = rel.strip_prefix(base).unwrap_or(&rel);
+            let in_backups = rel_path
+                .components()
+                .any(|c| c.as_os_str() == "binary-backups");
+
+            if in_backups {
+                usage.backups += size;
+            } else if name_str.starts_with("audit.db") {
+                usage.audit += size;
+            } else if name_str.starts_with("baseline.db") {
+                usage.baseline += size;
+            } else if name_str.ends_with(".wal") {
+                usage.wal += size;
+            } else {
+                usage.other += size;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn query_control_socket_quick(
@@ -1465,7 +1854,7 @@ fn baseline_check_from_snapshot(config: &Config) -> Option<DiagnosticCheck> {
                 "daemon snapshot reports baseline issue: {} ({})",
                 err, snapshot_age
             ),
-            fix: Some("sudo vigil doctor".to_string()),
+            recovery: Recovery::Command("sudo vigil doctor".into()),
         });
     }
 
@@ -1475,7 +1864,7 @@ fn baseline_check_from_snapshot(config: &Config) -> Option<DiagnosticCheck> {
             name: "Baseline".to_string(),
             status: CheckStatus::Failed,
             detail: format!("no baseline found (daemon snapshot {})", snapshot_age),
-            fix: Some("vigil init".to_string()),
+            recovery: Recovery::Command("vigil init".into()),
         });
     }
 
@@ -1493,7 +1882,7 @@ fn baseline_check_from_snapshot(config: &Config) -> Option<DiagnosticCheck> {
                         format_age(age),
                         snapshot_age
                     ),
-                    fix: Some("vigil baseline refresh".to_string()),
+                    recovery: Recovery::Command("vigil baseline refresh".into()),
                 })
             } else {
                 Some(DiagnosticCheck {
@@ -1505,7 +1894,7 @@ fn baseline_check_from_snapshot(config: &Config) -> Option<DiagnosticCheck> {
                         format_age(age),
                         snapshot_age
                     ),
-                    fix: None,
+                    recovery: Recovery::None,
                 })
             }
         }
@@ -1516,7 +1905,7 @@ fn baseline_check_from_snapshot(config: &Config) -> Option<DiagnosticCheck> {
                 "{} entries (last refresh: unknown; daemon snapshot {})",
                 count_label, snapshot_age
             ),
-            fix: None,
+            recovery: Recovery::None,
         }),
     }
 }
@@ -1534,7 +1923,7 @@ fn database_check_from_snapshot(config: &Config) -> Option<DiagnosticCheck> {
                 "daemon snapshot reports database issue: {} ({})",
                 err, snapshot_age
             ),
-            fix: Some("sudo vigil doctor".to_string()),
+            recovery: Recovery::Command("sudo vigil doctor".into()),
         });
     }
 
@@ -1555,7 +1944,9 @@ fn database_check_from_snapshot(config: &Config) -> Option<DiagnosticCheck> {
                 unavailable.join("/"),
                 snapshot_age
             ),
-            fix: Some("sudo systemctl restart vigild.service && sudo vigil doctor".to_string()),
+            recovery: Recovery::Command(
+                "sudo systemctl restart vigild.service && sudo vigil doctor".into(),
+            ),
         });
     }
 
@@ -1574,7 +1965,7 @@ fn database_check_from_snapshot(config: &Config) -> Option<DiagnosticCheck> {
             format_size(database.total_size_bytes),
             snapshot_age
         ),
-        fix: Some("Run sudo vigil doctor for full integrity verification".to_string()),
+        recovery: Recovery::Command("sudo vigil doctor".into()),
     })
 }
 
@@ -1591,7 +1982,7 @@ fn audit_check_from_snapshot(config: &Config) -> Option<DiagnosticCheck> {
                 "daemon snapshot reports audit issue: {} ({})",
                 err, snapshot_age
             ),
-            fix: Some("sudo vigil doctor".to_string()),
+            recovery: Recovery::Command("sudo vigil doctor".into()),
         });
     }
 
@@ -1604,7 +1995,7 @@ fn audit_check_from_snapshot(config: &Config) -> Option<DiagnosticCheck> {
             format_count(total),
             snapshot_age
         ),
-        fix: Some("Run sudo vigil doctor to verify the audit chain".to_string()),
+        recovery: Recovery::Command("sudo vigil doctor".into()),
     })
 }
 
@@ -1906,6 +2297,67 @@ fn shorten_next_timer(raw: &str) -> String {
     trimmed.to_string()
 }
 
+/// Parse systemd timer timestamp and return a relative duration like "in 1h 34m".
+pub fn format_next_timer_relative(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "n/a" {
+        return "unknown".to_string();
+    }
+
+    // systemd emits "Day YYYY-MM-DD HH:MM:SS TZ" or similar.
+    // Try to parse something with chrono.
+    let now = Local::now();
+    // Try common systemd formats
+    for fmt in [
+        "%a %Y-%m-%d %H:%M:%S %Z",
+        "%Y-%m-%d %H:%M:%S %Z",
+        "%a %Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+    ] {
+        if let Ok(parsed) = chrono::NaiveDateTime::parse_from_str(trimmed.trim_end(), fmt) {
+            let target = Local.from_local_datetime(&parsed).earliest();
+            if let Some(target) = target {
+                let delta = target.signed_duration_since(now).num_seconds();
+                if delta <= 0 {
+                    return "overdue".to_string();
+                }
+                return format!("in {}", format_compact_duration(delta));
+            }
+        }
+    }
+
+    // Fallback: try to extract just HH:MM and compute duration to next occurrence
+    let shortened = shorten_next_timer(raw);
+    if shortened.contains(':') && shortened.len() == 5 {
+        if let (Ok(h), Ok(m)) = (shortened[..2].parse::<u32>(), shortened[3..].parse::<u32>()) {
+            let today = now.date_naive();
+            if let Some(target_time) = today.and_hms_opt(h, m, 0) {
+                let target = Local.from_local_datetime(&target_time).earliest();
+                if let Some(target) = target {
+                    let mut delta = target.signed_duration_since(now).num_seconds();
+                    if delta <= 0 {
+                        // Next day
+                        delta += 86_400;
+                    }
+                    return format!("in {}", format_compact_duration(delta));
+                }
+            }
+        }
+    }
+
+    shortened
+}
+
+/// Format a past Unix timestamp as a relative duration like "30m ago".
+pub fn format_relative_duration_from_timestamp(ts: i64) -> String {
+    let now = Utc::now().timestamp();
+    let delta = (now - ts).max(0);
+    if delta == 0 {
+        return "just now".to_string();
+    }
+    format!("{} ago", format_compact_duration(delta))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1916,7 +2368,7 @@ mod tests {
     fn diagnostics_returns_expected_number_of_checks() {
         let cfg = crate::config::default_config();
         let checks = run_diagnostics(&cfg);
-        assert_eq!(checks.len(), 16);
+        assert_eq!(checks.len(), 17);
         for check in checks {
             assert!(!check.name.trim().is_empty());
             match check.status {
@@ -1941,7 +2393,7 @@ mod tests {
             name: "x".to_string(),
             status: CheckStatus::Ok,
             detail: "ok".to_string(),
-            fix: None,
+            recovery: Recovery::None,
         }];
         assert_eq!(diagnostics_exit_code(&ok), 0);
 
@@ -1949,7 +2401,7 @@ mod tests {
             name: "x".to_string(),
             status: CheckStatus::Warning,
             detail: "warn".to_string(),
-            fix: None,
+            recovery: Recovery::None,
         }];
         assert_eq!(diagnostics_exit_code(&warning), 1);
 
@@ -1957,7 +2409,7 @@ mod tests {
             name: "x".to_string(),
             status: CheckStatus::Failed,
             detail: "fail".to_string(),
-            fix: None,
+            recovery: Recovery::None,
         }];
         assert_eq!(diagnostics_exit_code(&failed), 2);
     }
@@ -1998,9 +2450,9 @@ mod tests {
             "unexpected detail: {}",
             check.detail
         );
-        assert_eq!(
-            check.fix,
-            Some("Run with elevated privileges: sudo vigil doctor".to_string())
+        assert!(
+            matches!(check.recovery, Recovery::Command(ref cmd) if cmd == "sudo vigil doctor"),
+            "expected Recovery::Command for elevated privileges"
         );
     }
 
@@ -2174,7 +2626,7 @@ mod tests {
             name: "x".to_string(),
             status: CheckStatus::Warning,
             detail: "warn".to_string(),
-            fix: None,
+            recovery: Recovery::None,
         }];
         let verdict = diagnostics_verdict(&checks);
         assert!(verdict.contains("1 warning."), "got: {}", verdict);
@@ -2187,7 +2639,7 @@ mod tests {
             name: "x".to_string(),
             status: CheckStatus::Failed,
             detail: "fail".to_string(),
-            fix: None,
+            recovery: Recovery::None,
         }];
         let verdict = diagnostics_verdict(&checks);
         assert!(verdict.contains("1 issue"), "got: {}", verdict);

@@ -296,6 +296,41 @@ fn finish_event(event: &serde_json::Value, quiet: bool, is_tty: bool) -> vigil::
             }
             eprintln!();
             eprintln!("Full record: vigil audit show --since 2m");
+
+            // Audit log preservation line (Principle V: Unambiguous,
+            // Principle XIII: Audit Trail Never Lies).
+            if let Some(audit) = event.get("audit_log") {
+                let entry_count = audit.get("entry_count").and_then(|v| v.as_u64());
+                let chain_intact = audit.get("chain_intact").and_then(|v| v.as_bool());
+                let preserved = audit.get("preserved_by_refresh").and_then(|v| v.as_bool());
+                let error = audit.get("error").and_then(|v| v.as_str());
+
+                if let Some(err) = error {
+                    if chain_intact.is_none() && entry_count.is_none() {
+                        eprintln!("audit log: status unavailable (see vigil doctor)");
+                    } else {
+                        eprintln!("audit log: {}", err);
+                    }
+                } else if preserved == Some(false) {
+                    eprintln!(
+                        "audit log: integrity check failed (refresh succeeded; investigate immediately)"
+                    );
+                } else if chain_intact == Some(false) {
+                    let break_id = audit
+                        .get("chain_break_at")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    eprintln!(
+                        "audit log: chain broken at sequence {} (recover with: vigil daemon recover --reason audit_chain_broken)",
+                        break_id
+                    );
+                } else if let (Some(count), Some(true)) = (entry_count, chain_intact) {
+                    eprintln!(
+                        "audit log: unchanged ({} entries, chain intact)",
+                        format_count(count)
+                    );
+                }
+            }
         } else {
             let ts = chrono::Local::now().format("%H:%M:%S");
             eprintln!(
@@ -306,6 +341,33 @@ fn finish_event(event: &serde_json::Value, quiet: bool, is_tty: bool) -> vigil::
                 removed,
                 changed,
             );
+
+            // Non-TTY audit log line
+            if let Some(audit) = event.get("audit_log") {
+                let entry_count = audit.get("entry_count").and_then(|v| v.as_u64());
+                let chain_intact = audit.get("chain_intact").and_then(|v| v.as_bool());
+                let error = audit.get("error").and_then(|v| v.as_str());
+                let preserved = audit.get("preserved_by_refresh").and_then(|v| v.as_bool());
+
+                if error.is_some() || (chain_intact.is_none() && entry_count.is_none()) {
+                    eprintln!("audit log: status unavailable (see vigil doctor)");
+                } else if preserved == Some(false) {
+                    eprintln!(
+                        "audit log: integrity check failed (refresh succeeded; investigate immediately)"
+                    );
+                } else if chain_intact == Some(false) {
+                    let break_id = audit
+                        .get("chain_break_at")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    eprintln!("audit log: chain broken at sequence {}", break_id);
+                } else if let (Some(count), Some(true)) = (entry_count, chain_intact) {
+                    eprintln!(
+                        "audit log: unchanged ({} entries, chain intact)",
+                        format_count(count)
+                    );
+                }
+            }
         }
     }
 

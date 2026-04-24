@@ -77,7 +77,7 @@ pub(crate) fn cmd_update(
 
     // ── Step 1: Verify repository ──────────────────────────
     prog.begin_step(UpdateStep::VerifyRepo);
-    validate_vigil_repo_with_progress(&repo_path, Some(&mut prog)).map_err(|e| {
+    validate_vigil_repo_with_progress(&repo_path, Some(&mut prog), true).map_err(|e| {
         prog.end_step_err(&format!("invalid: {}", e));
         prog.skip_remaining_with_reason("repository validation failed");
         prog.finish_summary();
@@ -405,6 +405,7 @@ pub(crate) fn cmd_update(
 fn validate_vigil_repo_with_progress(
     repo: &Path,
     prog: Option<&mut Progress>,
+    emit_ownership_warnings: bool,
 ) -> vigil::Result<()> {
     let cargo_toml = repo.join("Cargo.toml");
     if !cargo_toml.exists() {
@@ -418,11 +419,17 @@ fn validate_vigil_repo_with_progress(
     // The typical workflow is `sudo vigil update` from a user-owned checkout.
     // The real security boundary is the binary smoke-test and rollback mechanism,
     // not source directory ownership.  A hard error here breaks the primary use case.
+    //
+    // Suppressed when SUDO_USER owns the repo (developer building own code),
+    // and only emitted once per invocation (emit_ownership_warnings flag).
     #[cfg(any(test, debug_assertions))]
-    let _ = &prog;
+    {
+        let _ = &prog;
+        let _ = emit_ownership_warnings;
+    }
 
     #[cfg(not(any(test, debug_assertions)))]
-    {
+    if emit_ownership_warnings {
         use std::os::unix::fs::MetadataExt;
 
         let mut prog = prog;
@@ -436,20 +443,26 @@ fn validate_vigil_repo_with_progress(
         };
 
         if nix::unistd::geteuid().is_root() {
+            // If SUDO_USER is set and owns the repo, suppress the warning.
+            // The developer is building their own code under sudo.
+            let sudo_user_uid = resolve_sudo_user_uid();
+
             let dir_meta = std::fs::metadata(repo)?;
-            if dir_meta.uid() != 0 {
+            let dir_uid = dir_meta.uid();
+            if dir_uid != 0 && Some(dir_uid) != sudo_user_uid {
                 emit_warning(format!(
                     "{} is owned by uid {} (not root)",
                     repo.display(),
-                    dir_meta.uid()
+                    dir_uid
                 ));
             }
             let toml_meta = std::fs::metadata(&cargo_toml)?;
-            if toml_meta.uid() != 0 {
+            let toml_uid = toml_meta.uid();
+            if toml_uid != 0 && Some(toml_uid) != sudo_user_uid {
                 emit_warning(format!(
                     "{} is owned by uid {} (not root)",
                     cargo_toml.display(),
-                    toml_meta.uid()
+                    toml_uid
                 ));
             }
         }
@@ -481,6 +494,22 @@ fn validate_vigil_repo_with_progress(
     }
 
     Ok(())
+}
+
+/// Resolve the UID of the user who invoked sudo, if `SUDO_USER` is set.
+///
+/// Returns `None` when not running under sudo or when the user cannot be resolved.
+#[cfg(not(any(test, debug_assertions)))]
+fn resolve_sudo_user_uid() -> Option<u32> {
+    let sudo_user = std::env::var("SUDO_USER").ok()?;
+    if sudo_user.is_empty() {
+        return None;
+    }
+    // Use nix::unistd::User to resolve username → uid
+    nix::unistd::User::from_name(&sudo_user)
+        .ok()
+        .flatten()
+        .map(|u| u.uid.as_raw())
 }
 
 /// Discover the Vigil Baseline source repository by searching well-known locations.
@@ -558,7 +587,7 @@ fn discover_vigil_repo(prog: &mut Progress) -> vigil::Result<PathBuf> {
     let mut rejections: Vec<String> = Vec::new();
 
     for (i, candidate) in candidates.iter().enumerate() {
-        match validate_vigil_repo_with_progress(candidate, None) {
+        match validate_vigil_repo_with_progress(candidate, None, false) {
             Ok(()) => {
                 prog.tick(Some(&format!("found: {}", candidate.display())));
                 return Ok(candidate.clone());
@@ -1113,7 +1142,7 @@ mod tests {
         )
         .expect("write Cargo.toml");
 
-        let result = validate_vigil_repo_with_progress(dir.path(), None);
+        let result = validate_vigil_repo_with_progress(dir.path(), None, false);
         assert!(result.is_ok(), "expected valid vigil repository");
     }
 
@@ -1132,7 +1161,7 @@ mod tests {
         )
         .expect("write Cargo.toml");
 
-        let result = validate_vigil_repo_with_progress(dir.path(), None);
+        let result = validate_vigil_repo_with_progress(dir.path(), None, false);
         assert!(result.is_ok(), "expected legacy vigil name to be accepted");
     }
 
@@ -1151,7 +1180,7 @@ mod tests {
         )
         .expect("write Cargo.toml");
 
-        let result = validate_vigil_repo_with_progress(dir.path(), None);
+        let result = validate_vigil_repo_with_progress(dir.path(), None, false);
         assert!(result.is_err(), "expected repository validation to fail");
     }
 
@@ -1174,7 +1203,7 @@ mod tests {
     fn validate_vigil_repo_error_messages() {
         // No Cargo.toml
         let dir = tempfile::tempdir().expect("create temp dir");
-        let err = validate_vigil_repo_with_progress(dir.path(), None).unwrap_err();
+        let err = validate_vigil_repo_with_progress(dir.path(), None, false).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("Cargo.toml not found"),
@@ -1185,7 +1214,7 @@ mod tests {
         // Parse error
         let dir2 = tempfile::tempdir().expect("create temp dir");
         std::fs::write(dir2.path().join("Cargo.toml"), "{{invalid toml}}").expect("write bad toml");
-        let err2 = validate_vigil_repo_with_progress(dir2.path(), None).unwrap_err();
+        let err2 = validate_vigil_repo_with_progress(dir2.path(), None, false).unwrap_err();
         let msg2 = err2.to_string();
         assert!(
             msg2.contains("Cargo.toml parse error"),
@@ -1204,7 +1233,7 @@ mod tests {
             "#,
         )
         .expect("write wrong name");
-        let err3 = validate_vigil_repo_with_progress(dir3.path(), None).unwrap_err();
+        let err3 = validate_vigil_repo_with_progress(dir3.path(), None, false).unwrap_err();
         let msg3 = err3.to_string();
         assert!(
             msg3.contains("package name is 'something-else'"),
@@ -1232,7 +1261,7 @@ mod tests {
         // since it requires /home/$SUDO_USER to exist, but we can verify
         // the candidate generation logic works by testing validate_vigil_repo
         // on the created directory (which is what discover calls internally).
-        assert!(validate_vigil_repo_with_progress(dir.path(), None).is_ok());
+        assert!(validate_vigil_repo_with_progress(dir.path(), None, false).is_ok());
 
         // Verify backup_path generation
         let p = Path::new("/usr/local/bin/vigil");

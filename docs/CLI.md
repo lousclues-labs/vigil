@@ -759,10 +759,47 @@ vigil audit stats --period all
 
 ### `audit verify`
 
-Verify BLAKE3 hash chain integrity of the audit log. If HMAC signing is enabled, also verifies HMAC signatures.
+Verify BLAKE3 hash chain integrity of the audit log. If HMAC signing is enabled, also verifies HMAC signatures. Reports checkpoint presence and coverage.
 
 ```bash
 vigil audit verify
+```
+
+Output with checkpoints:
+```
+audit log: 329,329 entries verified, chain intact
+checkpoints: 2 present, covering 145,210 entries dating back to 2024-04-23
+```
+
+Output without checkpoints:
+```
+audit log: 329,329 entries verified, chain intact
+```
+
+### `audit prune`
+
+Manually prune old audit entries. Dry-run by default; pass `--confirm`
+to execute. The pruning is audited with operator attribution.
+
+```bash
+vigil audit prune --before <DATE> [--confirm]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--before <DATE>` | Prune entries older than this date (ISO 8601) |
+| `--confirm` | Execute the prune (without this flag, dry-run only) |
+
+The prune follows the same algorithm as the daily retention sweep:
+original entries are replaced with a cryptographic checkpoint preserving
+the HMAC chain. See `docs/RETENTION.md` for details.
+
+```bash
+# Dry run:
+vigil audit prune --before 2025-01-01
+
+# Execute:
+vigil audit prune --before 2025-01-01 --confirm
 ```
 
 ---
@@ -1233,7 +1270,13 @@ Unattributed changes:
   /etc/machine-id     content modified
 
 Full record: vigil audit show --since 2m
+audit log: unchanged (329,331 entries, chain intact)
 ```
+
+The last line reports that the refresh did not modify the audit log,
+with the post-refresh entry count and chain integrity status as evidence.
+The streamed JSON `complete` event includes an `audit_log` object with
+`entry_count`, `chain_intact`, and `preserved_by_refresh` fields.
 
 Package-attributed changes are collapsed into a count. Unattributed
 changes -- files whose hash changed and whose path is not owned by any
@@ -1425,6 +1468,38 @@ vigil ack --all-criticals      # acknowledge all pending critical alerts
 
 Acknowledged alerts stop re-firing on the configured escalation schedule.
 The acknowledgment is recorded in the audit log.
+
+---
+
+## `vigil alerts socket`
+
+Manage the alert socket sink.
+
+```bash
+vigil alerts socket status     # show configuration and listener status
+vigil alerts socket enable /run/vigil/alert.sock   # enable socket sink at path
+vigil alerts socket disable    # disable socket sink
+```
+
+- `status` reports whether a socket is configured, the path, and whether a listener is attached.
+- `enable` validates the path (must be absolute, parent directory must exist), updates `vigil.toml`, and reloads the daemon.
+- `disable` removes the socket configuration from `vigil.toml` and reloads the daemon. Idempotent.
+
+---
+
+## `vigil hooks`
+
+Verify and repair package manager hook scripts.
+
+```bash
+vigil hooks verify             # compare installed hooks against canonical versions
+vigil hooks repair             # reinstall canonical hooks atomically
+```
+
+- `verify` compares installed hooks in `/etc/pacman.d/hooks/` and `/etc/apt/apt.conf.d/` against canonical versions embedded in the vigil binary. Exit code: `0` if all match, `2` if drift detected.
+- `repair` writes canonical hook scripts for detected package managers. Idempotent; skips hooks that already match. Must run as root.
+
+Both commands auto-detect the package manager (pacman, apt) and skip hooks for managers not present on the system.
 
 ---
 

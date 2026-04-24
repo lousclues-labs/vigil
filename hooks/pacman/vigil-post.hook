@@ -12,4 +12,4 @@ Target = boot/*
 [Action]
 Description = Vigil Baseline: refreshing baseline...
 When = PostTransaction
-Exec = /bin/sh -c 'if [ ! -x /usr/bin/vigil ]; then logger -t vigil-pacman "vigil binary not found at /usr/bin/vigil; skipping refresh"; exit 0; fi; if /usr/bin/vigil baseline refresh --quiet 2>/dev/null; then /usr/bin/vigil maintenance exit --quiet 2>/dev/null; else logger -t vigil-pacman "baseline refresh failed; investigate with: vigil doctor"; notify-send -u critical "Vigil" "Baseline refresh failed after package transaction. Run vigil doctor to investigate." 2>/dev/null; /usr/bin/vigil maintenance exit --quiet 2>/dev/null; fi; exit 0'
+Exec = /bin/sh -c 'VIGIL=/usr/bin/vigil; if [ ! -x "$VIGIL" ]; then logger -t vigil-pacman "vigil binary not found at $VIGIL; skipping refresh"; exit 0; fi; if refresh_err=$("$VIGIL" baseline refresh --quiet 2>&1); then "$VIGIL" maintenance exit --quiet 2>/dev/null; else logger -t vigil-pacman "baseline refresh failed: $refresh_err"; notify-send -u critical "Vigil" "Baseline refresh failed after package transaction. Run vigil doctor to investigate." 2>/dev/null; "$VIGIL" maintenance exit --quiet 2>/dev/null; fi; exit 0'

@@ -61,6 +61,8 @@ pub enum DetectionSource {
     Sentinel,
     HealthDegraded,
     BaselineRefresh,
+    AuditRetentionFailure,
+    OperatorPrune,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

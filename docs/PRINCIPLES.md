@@ -112,6 +112,37 @@ in the `system_critical` group. That's why it fired."
 **Unambiguous.** The boundary was crossed or it wasn't. There is no "maybe."
 No "potentially suspicious." No "anomalous." The hash matched or it didn't.
 
+### V.a -- Recovery Actions Are Commands When Vigil Can Act
+
+Every doctor row that identifies a fixable problem must offer a
+real CLI command to fix it. Manual prose guidance is reserved
+for actions vigil structurally cannot perform on the operator's
+behalf.
+
+The choice between `Recovery::Command` and `Recovery::Manual`
+follows from this rule:
+
+- **Use `Recovery::Command`** when vigil can perform the
+  recovery autonomously: removing a configuration section,
+  reinstalling hook scripts, refreshing the baseline, recovering
+  the daemon from a degraded state, repairing key file
+  permissions.
+
+- **Use `Recovery::Manual`** when the recovery requires
+  information vigil does not have: what listener program to
+  attach to a socket, what paths to add to a watch group, what
+  external archival schedule to set up.
+
+- **Use `Recovery::CommandWithContext`** when the recovery is a
+  command but the operator needs to know about an alternative
+  they could pursue manually (e.g., disable the socket OR attach
+  a listener).
+
+A row that suggests manual prose for an action vigil could
+perform is a bug. Reviewers reject doctor rows that violate this
+rule. New CLI commands are added to satisfy the rule when
+existing commands are insufficient.
+
 ## VI. The Filesystem Is the Source of Truth
 
 No external threat intelligence feeds. No cloud-hosted signature databases.

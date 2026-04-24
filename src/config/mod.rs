@@ -185,6 +185,8 @@ pub struct Config {
     #[serde(default)]
     pub database: DatabaseConfig,
     #[serde(default)]
+    pub audit: AuditConfig,
+    #[serde(default)]
     pub monitor: MonitorConfig,
     #[serde(default)]
     pub maintenance: MaintenanceConfig,
@@ -647,6 +649,96 @@ fn default_audit_retention_days() -> u32 {
     90
 }
 
+// ── Audit Retention Config ─────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AuditConfig {
+    /// Entries older than this many days are pruned on the next sweep.
+    /// Validated: must be >= 7. Default 365.
+    #[serde(default = "default_audit_config_retention_days")]
+    pub retention_days: u32,
+
+    /// How often the prune sweep runs. Default "24h".
+    /// Validated: must be between "1h" and "7d".
+    #[serde(default = "default_retention_check_interval")]
+    pub retention_check_interval: String,
+
+    /// Hard cap on the audit DB file size in MB. Default 1024 (1 GB).
+    /// Validated: must be >= 64.
+    #[serde(default = "default_max_size_mb")]
+    pub max_size_mb: u32,
+
+    /// The sweep will not prune so many entries that fewer than this remain.
+    /// Default 1000.
+    #[serde(default = "default_min_entries_to_keep")]
+    pub min_entries_to_keep: u32,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            retention_days: default_audit_config_retention_days(),
+            retention_check_interval: default_retention_check_interval(),
+            max_size_mb: default_max_size_mb(),
+            min_entries_to_keep: default_min_entries_to_keep(),
+        }
+    }
+}
+
+impl AuditConfig {
+    /// Parse `retention_check_interval` into a Duration.
+    pub fn retention_check_duration(&self) -> std::time::Duration {
+        parse_duration_string(&self.retention_check_interval)
+            .unwrap_or_else(|| std::time::Duration::from_secs(86400))
+    }
+
+    /// Max size in bytes.
+    pub fn max_size_bytes(&self) -> u64 {
+        self.max_size_mb as u64 * 1_048_576
+    }
+}
+
+fn default_audit_config_retention_days() -> u32 {
+    365
+}
+
+fn default_retention_check_interval() -> String {
+    "24h".to_string()
+}
+
+fn default_max_size_mb() -> u32 {
+    1024
+}
+
+fn default_min_entries_to_keep() -> u32 {
+    1000
+}
+
+/// Parse a simple duration string: "24h", "1h", "7d", "60s", etc.
+fn parse_duration_string(s: &str) -> Option<std::time::Duration> {
+    let s = s.trim();
+    if let Some(days) = s.strip_suffix('d') {
+        days.parse::<u64>()
+            .ok()
+            .map(|d| std::time::Duration::from_secs(d * 86400))
+    } else if let Some(hours) = s.strip_suffix('h') {
+        hours
+            .parse::<u64>()
+            .ok()
+            .map(|h| std::time::Duration::from_secs(h * 3600))
+    } else if let Some(secs) = s.strip_suffix('s') {
+        secs.parse::<u64>().ok().map(std::time::Duration::from_secs)
+    } else if let Some(mins) = s.strip_suffix('m') {
+        mins.parse::<u64>()
+            .ok()
+            .map(|m| std::time::Duration::from_secs(m * 60))
+    } else {
+        s.parse::<u64>().ok().map(std::time::Duration::from_secs)
+    }
+}
+
+// ── Monitor Config ─────────────────────────────────────────
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MonitorConfig {
     /// Event loss alert threshold per coordinator tick.
@@ -1015,6 +1107,26 @@ pub fn validate_config(config: &Config) -> Result<()> {
         ));
     }
 
+    // Audit retention validation
+    if config.audit.retention_days < 7 {
+        return Err(VigilError::Config(
+            "audit.retention_days must be >= 7; shorter values produce constant churn. Use `vigil audit prune` for one-time cleanup".into(),
+        ));
+    }
+
+    if config.audit.max_size_mb < 64 {
+        return Err(VigilError::Config("audit.max_size_mb must be >= 64".into()));
+    }
+
+    let check_dur = config.audit.retention_check_duration();
+    if check_dur < std::time::Duration::from_secs(3600)
+        || check_dur > std::time::Duration::from_secs(7 * 86400)
+    {
+        return Err(VigilError::Config(
+            "audit.retention_check_interval must be between 1h and 7d".into(),
+        ));
+    }
+
     Ok(())
 }
 
@@ -1227,6 +1339,7 @@ pub fn default_config() -> Config {
         hooks: HooksConfig::default(),
         security: SecurityConfig::default(),
         database: DatabaseConfig::default(),
+        audit: AuditConfig::default(),
         monitor: MonitorConfig::default(),
         maintenance: MaintenanceConfig::default(),
         update: UpdateConfig::default(),

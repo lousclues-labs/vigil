@@ -587,6 +587,20 @@ impl ControlHandler {
             &serde_json::json!({"event": "progress", "phase": "scanning", "done": 0, "total": 0}),
         );
 
+        // Capture audit chain head before refresh so we can verify
+        // the refresh did not modify any pre-existing audit entries.
+        let pre_refresh_chain_head = {
+            let cfg = self.config.load();
+            let audit_path = crate::db::audit_db_path(&cfg);
+            rusqlite::Connection::open_with_flags(
+                &audit_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+            .ok()
+            .and_then(|c| crate::db::audit_ops::get_last_chain_hash(&c).ok().flatten())
+        };
+
         // Increase socket timeouts for the long-running refresh
         let _ = stream.set_write_timeout(Some(Duration::from_secs(600)));
         let _ = stream.set_read_timeout(Some(Duration::from_secs(600)));
@@ -770,7 +784,7 @@ impl ControlHandler {
                 // JSON field naming convention:
                 //   *_paths_sample  -- capped list (added/removed: max 20)
                 //   *_paths         -- complete list (changed_unattributed: never truncated)
-                let event = match &diff_result {
+                let mut event = match &diff_result {
                     Some(diff) => {
                         let unattr_paths: Vec<&str> = diff
                             .changed_unattributed
@@ -801,6 +815,14 @@ impl ControlHandler {
                         })
                     }
                 };
+
+                // Query audit log status post-refresh (Principle V: Unambiguous).
+                // The refresh never modifies existing audit entries; verify that
+                // property and report it.
+                let audit_status =
+                    query_audit_log_status(&self.config.load(), pre_refresh_chain_head.as_deref());
+                event["audit_log"] = audit_status;
+
                 let _ = write_event(stream, &event);
             }
             Err(e) => {
@@ -817,6 +839,81 @@ impl ControlHandler {
 
         Ok(())
     }
+}
+
+/// Query audit log entry count and chain integrity for the refresh complete event.
+/// Returns a JSON object suitable for inclusion in the streamed `complete` event.
+/// If the query fails, returns an object with null fields and an error string.
+fn query_audit_log_status(
+    config: &crate::config::Config,
+    pre_refresh_chain_head: Option<&str>,
+) -> serde_json::Value {
+    let audit_path = crate::db::audit_db_path(config);
+    let conn = match rusqlite::Connection::open_with_flags(
+        &audit_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            return serde_json::json!({
+                "entry_count": null,
+                "chain_intact": null,
+                "preserved_by_refresh": null,
+                "error": format!("cannot open audit DB: {}", e),
+            });
+        }
+    };
+
+    let entry_count = crate::db::audit_ops::count(&conn).ok();
+
+    // Lightweight chain check: verify_chain walks all entries computing blake3
+    // hashes. For large DBs this is O(N) but matches what `vigil doctor` does.
+    let chain_result = crate::db::audit_ops::verify_chain(&conn);
+    let (chain_intact, chain_break_id) = match &chain_result {
+        Ok((_, _, breaks, _)) if breaks.is_empty() => (Some(true), None),
+        Ok((_, _, breaks, _)) => (Some(false), breaks.first().map(|(id, _)| *id)),
+        Err(_) => (None, None),
+    };
+
+    // Verify the refresh preserved all pre-existing entries: the pre-refresh
+    // chain head must still exist in the DB.
+    let preserved = match pre_refresh_chain_head {
+        Some(head) => {
+            let found: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM audit_log WHERE chain_hash = ?1",
+                    rusqlite::params![head],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+            Some(found)
+        }
+        None => {
+            // No pre-refresh chain head means the audit DB was empty before
+            // refresh. The refresh trivially preserved it.
+            Some(true)
+        }
+    };
+
+    let mut obj = serde_json::json!({
+        "entry_count": entry_count,
+        "chain_intact": chain_intact,
+        "preserved_by_refresh": preserved,
+    });
+
+    if let Some(id) = chain_break_id {
+        obj["chain_break_at"] = serde_json::json!(id);
+    }
+    if let Err(e) = &chain_result {
+        obj["error"] = serde_json::json!(format!("chain verification failed: {}", e));
+    }
+    if preserved == Some(false) {
+        tracing::error!(
+            "audit log integrity check failed: pre-refresh chain head not found post-refresh"
+        );
+    }
+
+    obj
 }
 
 /// Read a single line from the stream, bounded to MAX_REQUEST_LINE_BYTES.
@@ -1336,5 +1433,113 @@ mod tests {
         // Count fields present
         assert_eq!(event["changed_unattributed"], 2);
         assert_eq!(event["changed"], 3); // 1 pkg + 2 unattributed
+    }
+
+    #[test]
+    fn audit_log_status_intact_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::default_config();
+        cfg.daemon.db_path = dir.path().join("baseline.db");
+
+        // Create audit DB with entries
+        let audit_path = crate::db::audit_db_path(&cfg);
+        let conn = rusqlite::Connection::open(&audit_path).unwrap();
+        crate::db::schema::create_audit_tables(&conn).unwrap();
+        let genesis = blake3::hash(b"vigil-audit-chain-genesis")
+            .to_hex()
+            .to_string();
+        let h1 = crate::db::audit_ops::compute_chain_hash(&genesis, 1000, "/f", "[]", "high");
+        conn.execute(
+            "INSERT INTO audit_log (timestamp, path, changes_json, severity, maintenance, suppressed, chain_hash)
+             VALUES (1000, '/f', '[]', 'high', 0, 0, ?1)",
+            rusqlite::params![h1],
+        )
+        .unwrap();
+        drop(conn);
+
+        let status = query_audit_log_status(&cfg, Some(&h1));
+        assert_eq!(status["entry_count"], 1);
+        assert_eq!(status["chain_intact"], true);
+        assert_eq!(status["preserved_by_refresh"], true);
+        assert!(status.get("error").is_none() || status["error"].is_null());
+    }
+
+    #[test]
+    fn audit_log_status_broken_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::default_config();
+        cfg.daemon.db_path = dir.path().join("baseline.db");
+
+        let audit_path = crate::db::audit_db_path(&cfg);
+        let conn = rusqlite::Connection::open(&audit_path).unwrap();
+        crate::db::schema::create_audit_tables(&conn).unwrap();
+        let genesis = blake3::hash(b"vigil-audit-chain-genesis")
+            .to_hex()
+            .to_string();
+        let h1 = crate::db::audit_ops::compute_chain_hash(&genesis, 1000, "/f", "[]", "high");
+        conn.execute(
+            "INSERT INTO audit_log (timestamp, path, changes_json, severity, maintenance, suppressed, chain_hash)
+             VALUES (1000, '/f', '[]', 'high', 0, 0, ?1)",
+            rusqlite::params![h1],
+        )
+        .unwrap();
+        // Insert a second entry with a corrupted chain
+        conn.execute(
+            "INSERT INTO audit_log (timestamp, path, changes_json, severity, maintenance, suppressed, chain_hash)
+             VALUES (2000, '/g', '[]', 'high', 0, 0, 'corrupt')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let status = query_audit_log_status(&cfg, Some(&h1));
+        assert_eq!(status["chain_intact"], false);
+        assert!(status["chain_break_at"].is_number());
+    }
+
+    #[test]
+    fn audit_log_status_preserved_false_when_head_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::default_config();
+        cfg.daemon.db_path = dir.path().join("baseline.db");
+
+        let audit_path = crate::db::audit_db_path(&cfg);
+        let conn = rusqlite::Connection::open(&audit_path).unwrap();
+        crate::db::schema::create_audit_tables(&conn).unwrap();
+        drop(conn);
+
+        // Pre-refresh head was "some_hash" but audit DB is empty
+        let status = query_audit_log_status(&cfg, Some("nonexistent_hash"));
+        assert_eq!(status["preserved_by_refresh"], false);
+    }
+
+    #[test]
+    fn audit_log_status_empty_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::default_config();
+        cfg.daemon.db_path = dir.path().join("baseline.db");
+
+        let audit_path = crate::db::audit_db_path(&cfg);
+        let conn = rusqlite::Connection::open(&audit_path).unwrap();
+        crate::db::schema::create_audit_tables(&conn).unwrap();
+        drop(conn);
+
+        // No pre-refresh head (empty DB before refresh too)
+        let status = query_audit_log_status(&cfg, None);
+        assert_eq!(status["entry_count"], 0);
+        assert_eq!(status["chain_intact"], true);
+        assert_eq!(status["preserved_by_refresh"], true);
+    }
+
+    #[test]
+    fn audit_log_status_unavailable_when_db_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::default_config();
+        cfg.daemon.db_path = dir.path().join("nonexistent/baseline.db");
+
+        let status = query_audit_log_status(&cfg, None);
+        assert!(status["entry_count"].is_null());
+        assert!(status["chain_intact"].is_null());
+        assert!(status["error"].is_string());
     }
 }

@@ -434,7 +434,7 @@ fn validate_and_reload(toml_path: &Path, config_path: Option<&Path>) -> vigil::R
 }
 
 /// Send SIGHUP to vigild if it is running.
-fn reload_daemon_if_running() {
+pub(crate) fn reload_daemon_if_running() {
     // Try control socket reload first (preferred)
     let socket = std::path::Path::new("/run/vigil/control.sock");
     if socket.exists() {

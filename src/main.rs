@@ -8,16 +8,34 @@ use vigil::cli::{Cli, Command};
 
 mod commands;
 use commands::{
-    cmd_attest, cmd_audit, cmd_baseline, cmd_check, cmd_check_live, cmd_config, cmd_diff,
-    cmd_doctor, cmd_explain, cmd_init, cmd_inspect, cmd_log, cmd_maintenance, cmd_recover,
-    cmd_selftest, cmd_setup, cmd_status, cmd_test_alert, cmd_update, cmd_watch, cmd_welcome,
-    cmd_why, cmd_why_silent, CheckOpts,
+    cmd_alerts, cmd_attest, cmd_audit, cmd_baseline, cmd_check, cmd_check_live, cmd_config,
+    cmd_diff, cmd_doctor, cmd_explain, cmd_hooks, cmd_init, cmd_inspect, cmd_log, cmd_maintenance,
+    cmd_recover, cmd_selftest, cmd_setup, cmd_status, cmd_test_alert, cmd_update, cmd_watch,
+    cmd_welcome, cmd_why, cmd_why_silent, CheckOpts,
 };
 
 fn main() {
     init_tracing();
 
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            // Strip clap's automatic "did you mean" suggestions that are
+            // based on string distance rather than operational similarity.
+            // A wrong hint is worse than no hint (Principle V).
+            let msg = e.to_string();
+            if msg.contains("tip: a similar argument exists:") {
+                let cleaned = msg
+                    .lines()
+                    .filter(|line| !line.trim_start().starts_with("tip:"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                eprint!("{}", cleaned);
+                process::exit(2);
+            }
+            e.exit();
+        }
+    };
 
     match run(cli) {
         Ok(code) => process::exit(code),
@@ -190,6 +208,11 @@ fn run(cli: Cli) -> vigil::Result<i32> {
             cmd_recover(config_path.as_deref(), reason, list, yes)?;
             Ok(0)
         }
+        Command::Alerts { action } => {
+            cmd_alerts(config_path.as_deref(), action)?;
+            Ok(0)
+        }
+        Command::Hooks { action } => cmd_hooks(action),
         Command::Version => {
             println!("vigil {}", env!("CARGO_PKG_VERSION"));
             Ok(0)

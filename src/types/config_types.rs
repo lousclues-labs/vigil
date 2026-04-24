@@ -21,6 +21,7 @@ pub enum DegradedReason {
     WorkerDbUnrecoverable,
     BaselineHmacMismatch,
     FanotifyQueueOverflow,
+    AuditLogFull,
 }
 
 impl std::fmt::Display for DegradedReason {
@@ -48,6 +49,7 @@ impl std::fmt::Display for DegradedReason {
             DegradedReason::WorkerDbUnrecoverable => write!(f, "worker_db_unrecoverable"),
             DegradedReason::BaselineHmacMismatch => write!(f, "baseline_hmac_mismatch"),
             DegradedReason::FanotifyQueueOverflow => write!(f, "fanotify_queue_overflow"),
+            DegradedReason::AuditLogFull => write!(f, "audit_log_full"),
         }
     }
 }
@@ -347,6 +349,7 @@ mod tests {
                 DegradedReason::FanotifyQueueOverflow,
                 "fanotify_queue_overflow",
             ),
+            (DegradedReason::AuditLogFull, "audit_log_full"),
         ];
         for (reason, expected) in cases {
             assert_eq!(

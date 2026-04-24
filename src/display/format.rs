@@ -100,14 +100,31 @@ pub fn format_count(value: u64) -> String {
     out.chars().rev().collect()
 }
 
-/// Format bytes as human-readable size.
+/// Format bytes as human-readable size, auto-scaling to appropriate unit.
+///
+/// Uses decimal units (KB, MB, GB, TB) with precision appropriate for
+/// the scale: whole numbers at GB+, one decimal at MB/KB.
 pub fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{} B", bytes)
     } else if bytes < 1_048_576 {
         format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
+    } else if bytes < 1_073_741_824 {
         format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes < 1_099_511_627_776 {
+        let gb = bytes as f64 / 1_073_741_824.0;
+        if gb >= 100.0 {
+            format!("{} GB", gb.round() as u64)
+        } else {
+            format!("{:.1} GB", gb)
+        }
+    } else {
+        let tb = bytes as f64 / 1_099_511_627_776.0;
+        if tb >= 100.0 {
+            format!("{} TB", tb.round() as u64)
+        } else {
+            format!("{:.1} TB", tb)
+        }
     }
 }
 

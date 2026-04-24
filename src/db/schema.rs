@@ -119,6 +119,31 @@ pub fn create_audit_tables(conn: &Connection) -> Result<()> {
         );
         ",
     )?;
+    // v1.3.0: add checkpoint columns for bounded audit retention.
+    migrate_audit_checkpoint_columns(conn)?;
+    Ok(())
+}
+
+/// Add checkpoint-related columns to audit_log if missing.
+/// Uses ALTER TABLE ADD COLUMN which is safe on existing rows (defaults to NULL).
+fn migrate_audit_checkpoint_columns(conn: &Connection) -> Result<()> {
+    let has_record_type: bool = conn
+        .prepare("SELECT record_type FROM audit_log LIMIT 0")
+        .is_ok();
+    if has_record_type {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        ALTER TABLE audit_log ADD COLUMN record_type TEXT NOT NULL DEFAULT 'detection';
+        ALTER TABLE audit_log ADD COLUMN first_sequence INTEGER;
+        ALTER TABLE audit_log ADD COLUMN last_sequence INTEGER;
+        ALTER TABLE audit_log ADD COLUMN first_timestamp INTEGER;
+        ALTER TABLE audit_log ADD COLUMN last_timestamp INTEGER;
+        ALTER TABLE audit_log ADD COLUMN entry_count INTEGER;
+        ALTER TABLE audit_log ADD COLUMN pruned_range_hmac TEXT;
+        ",
+    )?;
     Ok(())
 }
 

@@ -93,38 +93,17 @@ fn print_compact(
     // Inline warnings with urgency
     if warning_count > 0 {
         eprintln!();
-        let mut urgent = 0usize;
         for check in checks
             .iter()
             .filter(|c| c.status == doctor::CheckStatus::Warning)
         {
-            let urgency = classify_urgency(&check.name);
-            if urgency == "now" {
-                urgent += 1;
-            }
-            let fix_hint = check.fix.as_deref().unwrap_or("");
-            if !fix_hint.is_empty() {
-                eprintln!(
-                    "  {:<14} {} {}",
-                    check.name,
-                    check.status.marker(),
-                    check.detail
-                );
-                eprintln!(
-                    "  {:<14} Run `{}` when convenient. {}.",
-                    "",
-                    fix_hint,
-                    capitalize_first(urgency)
-                );
-            } else {
-                eprintln!(
-                    "  {:<14} {} {} {}.",
-                    check.name,
-                    check.status.marker(),
-                    check.detail,
-                    capitalize_first(urgency)
-                );
-            }
+            eprintln!(
+                "  {:<14} {} {}",
+                check.name,
+                check.status.marker(),
+                check.detail
+            );
+            render_recovery_compact(&check.recovery);
         }
 
         eprintln!();
@@ -133,11 +112,7 @@ fn print_compact(
         } else {
             "warnings"
         };
-        if urgent == 0 {
-            eprintln!("{} {}, none urgent.", warning_count, issue_word);
-        } else {
-            eprintln!("{} {}, {} urgent.", warning_count, issue_word, urgent);
-        }
+        eprintln!("{} {}.", warning_count, issue_word);
     }
 
     eprintln!();
@@ -181,7 +156,7 @@ fn print_verbose(checks: &[doctor::DiagnosticCheck], cfg: &vigil::config::Config
     for check in checks.iter().filter(|c| {
         matches!(
             c.name.as_str(),
-            "Baseline" | "Database" | "Audit log" | "Data dir"
+            "Baseline" | "Database" | "Audit log" | "Audit retention" | "Data dir"
         )
     }) {
         print_check_verbose(check);
@@ -227,80 +202,58 @@ fn print_verbose(checks: &[doctor::DiagnosticCheck], cfg: &vigil::config::Config
 
     // Verdict
     eprintln!();
-
-    let failures = checks
-        .iter()
-        .filter(|c| c.status == doctor::CheckStatus::Failed)
-        .count();
-    let warnings = checks
-        .iter()
-        .filter(|c| c.status == doctor::CheckStatus::Warning)
-        .count();
-    let ok_count = checks
-        .iter()
-        .filter(|c| c.status == doctor::CheckStatus::Ok)
-        .count();
-
-    if failures == 0 && warnings == 0 {
-        eprintln!("  {}/{} checks passed.", ok_count, checks.len());
-    } else {
-        let mut urgent = 0usize;
-        for c in checks.iter().filter(|c| {
-            c.status == doctor::CheckStatus::Warning || c.status == doctor::CheckStatus::Failed
-        }) {
-            if classify_urgency(&c.name) == "now" {
-                urgent += 1;
-            }
-        }
-        let total_issues = failures + warnings;
-        let issue_word = if total_issues == 1 {
-            "warning"
-        } else {
-            "warnings"
-        };
-        if urgent == 0 {
-            eprintln!("  {} {}, none urgent.", total_issues, issue_word);
-        } else {
-            eprintln!("  {} {}, {} urgent.", total_issues, issue_word, urgent);
-        }
-    }
-
+    eprintln!("  {}", doctor::format_doctor_summary(checks));
     eprintln!();
 }
 
 fn print_check_verbose(check: &doctor::DiagnosticCheck) {
-    let urgency = classify_urgency(&check.name);
     eprintln!(
         "    {:<14} {} {}",
         check.name,
         check.status.marker(),
         check.detail
     );
-    if (check.status == doctor::CheckStatus::Warning || check.status == doctor::CheckStatus::Failed)
-        && check.fix.is_some()
-    {
-        eprintln!(
-            "    {:<14}   Run `{}` when convenient. {}.",
-            "",
-            check.fix.as_deref().unwrap_or(""),
-            capitalize_first(urgency)
-        );
+    if check.status == doctor::CheckStatus::Warning || check.status == doctor::CheckStatus::Failed {
+        render_recovery(&check.recovery);
     }
 }
 
-/// Classify urgency of a warning: "not urgent", "soon", or "now".
-fn classify_urgency(check_name: &str) -> &'static str {
-    match check_name {
-        "Daemon" | "Control" | "State" => "now",
-        "Baseline" | "Database" | "HMAC key" | "Data dir" | "WAL pipeline" => "soon",
-        _ => "not urgent",
+/// Render a recovery action. Each variant gets its own honest format.
+fn render_recovery(recovery: &doctor::Recovery) {
+    match recovery {
+        doctor::Recovery::Command(cmd) => {
+            eprintln!("    {:<14}   recover with: {}", "", cmd);
+        }
+        doctor::Recovery::CommandWithContext { command, context } => {
+            eprintln!("    {:<14}   recover with: {}", "", command);
+            eprintln!("    {:<14}                {}", "", context);
+        }
+        doctor::Recovery::Manual(guidance) => {
+            eprintln!("    {:<14}   {}", "", guidance);
+        }
+        doctor::Recovery::Documentation(path) => {
+            eprintln!("    {:<14}   see: {}", "", path);
+        }
+        doctor::Recovery::None => {}
     }
 }
 
-fn capitalize_first(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        None => String::new(),
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+/// Render a recovery action in compact mode.
+fn render_recovery_compact(recovery: &doctor::Recovery) {
+    match recovery {
+        doctor::Recovery::Command(cmd) => {
+            eprintln!("  {:<14}   recover with: {}", "", cmd);
+        }
+        doctor::Recovery::CommandWithContext { command, context } => {
+            eprintln!("  {:<14}   recover with: {}", "", command);
+            eprintln!("  {:<14}                {}", "", context);
+        }
+        doctor::Recovery::Manual(guidance) => {
+            eprintln!("  {:<14}   {}", "", guidance);
+        }
+        doctor::Recovery::Documentation(path) => {
+            eprintln!("  {:<14}   see: {}", "", path);
+        }
+        doctor::Recovery::None => {}
     }
 }

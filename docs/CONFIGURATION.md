@@ -277,6 +277,29 @@ Severity-aware delivery policies. Each severity level has its own sub-table.
 | `sync_mode` | enum | `normal` | `off`, `normal`, `full`, `extra` |
 | `busy_timeout_ms` | integer | `5000` | SQLite busy timeout |
 
+### `[audit]`
+
+Bounded audit retention. The daemon prunes old entries automatically,
+replacing each pruned range with a cryptographic checkpoint that
+preserves chain integrity. See `docs/RETENTION.md` for details.
+
+| Option | Type | Default | Valid range | Notes |
+|--------|------|---------|-------------|-------|
+| `retention_days` | integer | `365` | >= 7 | Entries older than this are pruned on the next sweep |
+| `retention_check_interval` | string | `"24h"` | 1h -- 7d | How often the prune sweep runs (e.g., `"12h"`, `"1d"`, `"7d"`) |
+| `max_size_mb` | integer | `1024` | >= 64 | Hard cap on audit DB file size in MB. At 90%: doctor warns. At 100%: daemon enters Degraded. |
+| `min_entries_to_keep` | integer | `1000` | any | Sweep refuses to prune below this threshold |
+
+Example:
+
+```toml
+[audit]
+retention_days = 730      # 2 years
+max_size_mb = 2048        # 2 GB cap
+retention_check_interval = "12h"
+min_entries_to_keep = 500
+```
+
 ### `[watch.<group>]`
 
 | Option | Type | Required | Default | Notes |

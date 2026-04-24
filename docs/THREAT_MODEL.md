@@ -247,3 +247,51 @@ vigil audit show --path 'vigil:test_alert'
 An attacker who degrades alert channels (e.g., kills the notification daemon)
 leaves a trail in the audit log showing that alerts were generated but
 delivery partially failed.
+
+---
+
+## Audit Log Retention
+
+Vigil's audit log is bounded by configuration. By default, entries older
+than 365 days are pruned automatically. Each pruned range is replaced with
+a single `AuditCheckpoint` record containing a cryptographic HMAC over the
+original entries. The chain extends across the checkpoint without break.
+
+**What this preserves:**
+
+- Full forensic detail for entries within the retention window.
+- Tamper-evidence forward from any checkpoint: an attacker cannot modify a
+  post-checkpoint entry without breaking the chain.
+- Tamper-evidence of the prune itself: an attacker cannot fabricate,
+  modify, or delete a checkpoint without the audit HMAC key.
+- Proof-of-existence for pruned entries: each checkpoint records the
+  sequence range, timestamp range, and entry count it covered.
+
+**What this does not preserve:**
+
+- The bytes of pruned entries. After a prune sweep, the original entries
+  are deleted. The checkpoint proves they existed and produced a specific
+  HMAC, but does not contain their content.
+- The ability to verify a specific old entry's HMAC, since the entry
+  itself is gone.
+
+**Operator options for longer retention:**
+
+- Configure `audit.retention_days` to a longer value (e.g., 1825 for 5
+  years). The audit DB grows accordingly; ensure `audit.max_size_mb` is
+  sized appropriately.
+- Archive the audit DB externally on a schedule (e.g., monthly `cp` to a
+  secondary storage location) before the retention sweep prunes entries.
+  The exported DB remains independently verifiable with the audit HMAC
+  key.
+- Both: configure longer retention AND archive externally for
+  defense-in-depth.
+
+**Non-goal:** vigil does not provide an archival subsystem. Operators who
+need long-term forensic recovery beyond the retention window are
+responsible for their own archival strategy. This is documented and
+intentional: archival is a separable concern with diverse operator
+requirements (encryption-at-rest, off-site replication, write-once media,
+compliance attestation), and bundling it into vigil would expand the
+attack surface and the operator-facing complexity for a need that varies
+widely between deployments.

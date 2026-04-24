@@ -1,5 +1,6 @@
 //! CLI command implementations.
 
+mod alerts;
 mod attest;
 mod audit;
 mod baseline;
@@ -9,6 +10,7 @@ mod config;
 mod diff;
 mod doctor;
 mod explain;
+mod hooks;
 mod init;
 mod inspect;
 mod log;
@@ -24,6 +26,7 @@ mod welcome;
 mod why;
 mod why_silent;
 
+pub(crate) use alerts::cmd_alerts;
 pub(crate) use attest::cmd_attest;
 pub(crate) use audit::cmd_audit;
 pub(crate) use baseline::cmd_baseline;
@@ -32,6 +35,7 @@ pub(crate) use config::cmd_config;
 pub(crate) use diff::cmd_diff;
 pub(crate) use doctor::cmd_doctor;
 pub(crate) use explain::cmd_explain;
+pub(crate) use hooks::cmd_hooks;
 pub(crate) use init::cmd_init;
 pub(crate) use inspect::cmd_inspect;
 pub(crate) use log::cmd_log;
