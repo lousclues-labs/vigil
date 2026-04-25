@@ -1215,9 +1215,7 @@ pub fn validate_config(config: &Config) -> Result<()> {
         VigilError::Config("doctor.event_warn_window must be a duration like 7d or 24h".into())
     })?;
     let inform = parse_duration_string(&config.doctor.event_inform_window).ok_or_else(|| {
-        VigilError::Config(
-            "doctor.event_inform_window must be a duration like 30d or 24h".into(),
-        )
+        VigilError::Config("doctor.event_inform_window must be a duration like 30d or 24h".into())
     })?;
     let hide = parse_duration_string(&config.doctor.event_hide_window).ok_or_else(|| {
         VigilError::Config("doctor.event_hide_window must be a duration like 90d or 24h".into())

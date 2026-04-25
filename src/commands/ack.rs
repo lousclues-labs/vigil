@@ -2,9 +2,7 @@
 
 use std::path::Path;
 
-use vigil::ack::{
-    self, AcknowledgmentKind, AcknowledgmentPayload, DoctorEventKind,
-};
+use vigil::ack::{self, AcknowledgmentKind, AcknowledgmentPayload, DoctorEventKind};
 use vigil::cli::AckAction;
 use vigil::db::audit_ops;
 
@@ -17,9 +15,7 @@ pub(crate) fn cmd_ack(
 ) -> vigil::Result<i32> {
     match action {
         Some(AckAction::List) => cmd_ack_list(config_path),
-        Some(AckAction::Revoke { kind, sequence }) => {
-            cmd_ack_revoke(config_path, &kind, sequence)
-        }
+        Some(AckAction::Revoke { kind, sequence }) => cmd_ack_revoke(config_path, &kind, sequence),
         Some(AckAction::Show { sequence }) => cmd_ack_show(config_path, sequence),
         None => {
             let k = kind.ok_or_else(|| {
@@ -71,10 +67,7 @@ fn cmd_ack_mark(
                 },
             )
             .map_err(|_| {
-                vigil::VigilError::Config(format!(
-                    "no audit record found with sequence {}",
-                    seq
-                ))
+                vigil::VigilError::Config(format!("no audit record found with sequence {}", seq))
             })?;
         (entry.0, entry.1, kind.description().to_string())
     } else {
@@ -94,12 +87,11 @@ fn cmd_ack_mark(
     );
     let payload_json = serde_json::to_string(&payload)?;
 
-    let previous_chain_hash = audit_ops::get_last_chain_hash(&conn)?
-        .unwrap_or_else(|| {
-            blake3::hash(b"vigil-audit-chain-genesis")
-                .to_hex()
-                .to_string()
-        });
+    let previous_chain_hash = audit_ops::get_last_chain_hash(&conn)?.unwrap_or_else(|| {
+        blake3::hash(b"vigil-audit-chain-genesis")
+            .to_hex()
+            .to_string()
+    });
 
     let (_new_hash, ack_seq) = audit_ops::insert_acknowledgment_entry(
         &conn,
@@ -114,18 +106,17 @@ fn cmd_ack_mark(
         "acknowledged: {} at {} (sequence {})",
         event_desc, ts_str, event_seq
     );
-    println!("operator: uid {} (PID {})", payload.operator_uid, payload.operator_pid);
+    println!(
+        "operator: uid {} (PID {})",
+        payload.operator_uid, payload.operator_pid
+    );
     println!("audit record: sequence {}", ack_seq);
     if let Some(n) = &note {
         println!("note: \"{}\"", n);
     }
     println!();
-    println!(
-        "the event remains visible in doctor output with this acknowledgment"
-    );
-    println!(
-        "attached. fresh occurrences will appear as new actionable events."
-    );
+    println!("the event remains visible in doctor output with this acknowledgment");
+    println!("attached. fresh occurrences will appear as new actionable events.");
 
     Ok(0)
 }
@@ -165,7 +156,8 @@ fn cmd_ack_list(config_path: Option<&Path>) -> vigil::Result<i32> {
             if !events.is_empty() {
                 println!(
                     "  {:<18}                            (acknowledge with: vigil ack {})",
-                    "", kind.cli_name()
+                    "",
+                    kind.cli_name()
                 );
             }
         }
@@ -243,8 +235,7 @@ fn cmd_ack_revoke(
         recent_acks
             .iter()
             .find(|(_, _, p)| {
-                p.event_kind == kind
-                    && p.acknowledgment_kind == AcknowledgmentKind::Acknowledge
+                p.event_kind == kind && p.acknowledgment_kind == AcknowledgmentKind::Acknowledge
             })
             .ok_or_else(|| {
                 vigil::VigilError::Config(format!(
@@ -264,12 +255,11 @@ fn cmd_ack_revoke(
     );
     let payload_json = serde_json::to_string(&payload)?;
 
-    let previous_chain_hash = audit_ops::get_last_chain_hash(&conn)?
-        .unwrap_or_else(|| {
-            blake3::hash(b"vigil-audit-chain-genesis")
-                .to_hex()
-                .to_string()
-        });
+    let previous_chain_hash = audit_ops::get_last_chain_hash(&conn)?.unwrap_or_else(|| {
+        blake3::hash(b"vigil-audit-chain-genesis")
+            .to_hex()
+            .to_string()
+    });
 
     let (_new_hash, revoke_seq) = audit_ops::insert_acknowledgment_entry(
         &conn,
@@ -320,10 +310,7 @@ fn cmd_ack_show(config_path: Option<&Path>, sequence: i64) -> vigil::Result<i32>
             },
         )
         .map_err(|_| {
-            vigil::VigilError::Config(format!(
-                "no audit record found with sequence {}",
-                sequence
-            ))
+            vigil::VigilError::Config(format!("no audit record found with sequence {}", sequence))
         })?;
 
     println!("Audit record: sequence {}", id);
@@ -353,7 +340,11 @@ fn cmd_ack_show(config_path: Option<&Path>, sequence: i64) -> vigil::Result<i32>
 
 fn format_timestamp(ts: i64) -> String {
     chrono::DateTime::from_timestamp(ts, 0)
-        .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%dT%H:%M:%S").to_string())
+        .map(|dt| {
+            dt.with_timezone(&chrono::Local)
+                .format("%Y-%m-%dT%H:%M:%S")
+                .to_string()
+        })
         .unwrap_or_else(|| ts.to_string())
 }
 

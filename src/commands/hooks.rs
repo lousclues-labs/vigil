@@ -433,5 +433,8 @@ fn hooks_disabled_from_audit(config_path: Option<&Path>) -> vigil::Result<bool> 
         [],
         |row| row.get(0),
     );
-    Ok(matches!(latest.ok().as_deref(), Some("vigil:hooks_disable")))
+    Ok(matches!(
+        latest.ok().as_deref(),
+        Some("vigil:hooks_disable")
+    ))
 }

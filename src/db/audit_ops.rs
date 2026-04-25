@@ -1697,8 +1697,13 @@ pub fn insert_doctor_event_entry(
     let timestamp = Utc::now().timestamp();
     let severity = "warning";
 
-    let chain_hash =
-        compute_chain_hash(previous_chain_hash, timestamp, event_path, payload_json, severity);
+    let chain_hash = compute_chain_hash(
+        previous_chain_hash,
+        timestamp,
+        event_path,
+        payload_json,
+        severity,
+    );
 
     let hmac = hmac_key.map(|key| {
         let data = crate::hmac::build_audit_hmac_data(

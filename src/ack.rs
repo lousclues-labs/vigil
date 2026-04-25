@@ -95,7 +95,7 @@ impl DoctorEventKind {
             Self::BaselineRefreshFailure => None, // baseline refresh is core
             Self::AuditChainBreak => None,        // audit chain is core
             Self::RetentionSweepFailure => None, // configurable via retention_check_interval = "never" but not a command
-            Self::DaemonDegraded => None,         // degradation is recovered, not disabled
+            Self::DaemonDegraded => None,        // degradation is recovered, not disabled
         }
     }
 }
@@ -281,9 +281,7 @@ fn effective_uid() -> u32 {
 /// Scans the audit log for all `vigil:operator_acknowledgment` records
 /// and builds the cache. If the scan fails, returns an empty cache
 /// (fail-open per Principle X).
-pub fn build_cache_from_audit_log(
-    conn: &rusqlite::Connection,
-) -> AcknowledgmentCache {
+pub fn build_cache_from_audit_log(conn: &rusqlite::Connection) -> AcknowledgmentCache {
     let mut cache = AcknowledgmentCache::new();
 
     let result = conn.prepare(
@@ -400,7 +398,10 @@ pub fn find_unacknowledged_events(
             // Extract a human-readable description from the payload
             let desc = serde_json::from_str::<serde_json::Value>(&json)
                 .ok()
-                .and_then(|v| v.get("description").and_then(|d| d.as_str().map(String::from)))
+                .and_then(|v| {
+                    v.get("description")
+                        .and_then(|d| d.as_str().map(String::from))
+                })
                 .unwrap_or_else(|| kind.description().to_string());
             unacked.push((seq, ts, desc));
         }
@@ -415,7 +416,9 @@ pub fn find_most_recent_unacknowledged(
     kind: DoctorEventKind,
     cache: &AcknowledgmentCache,
 ) -> Option<(i64, i64, String)> {
-    find_unacknowledged_events(conn, kind, cache).into_iter().next()
+    find_unacknowledged_events(conn, kind, cache)
+        .into_iter()
+        .next()
 }
 
 /// List recent acknowledgment records.

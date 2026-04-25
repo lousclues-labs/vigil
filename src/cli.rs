@@ -1197,7 +1197,7 @@ mod tests {
 
     #[test]
     fn no_cli_flag_exists_to_blanket_suppress_a_category() {
-        let bad_flags = ["--suppress", "--silence", "--ignore", "--blanket"]; 
+        let bad_flags = ["--suppress", "--silence", "--ignore", "--blanket"];
         for flag in bad_flags {
             let result = Cli::try_parse_from(["vigil", "ack", "hooks", flag]);
             assert!(

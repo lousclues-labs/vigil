@@ -23,7 +23,10 @@ pub enum RecoveryHint {
     /// A real, executable command.
     Command { verb: &'static str, command: String },
     /// Manual guidance that is not a single command.
-    Manual { verb: &'static str, instruction: String },
+    Manual {
+        verb: &'static str,
+        instruction: String,
+    },
     /// A reference to documentation.
     Documentation { reference: String },
 }
@@ -1237,9 +1240,7 @@ fn check_package_hooks(config: &Config) -> DiagnosticCheck {
                         Recovery::None,
                     ),
                     HookTriggerResult::Failure(ts, _tag) => {
-                        if let Some(ack_state) =
-                            hook_failure_ack_state(config, "pacman", &ts)
-                        {
+                        if let Some(ack_state) = hook_failure_ack_state(config, "pacman", &ts) {
                             (
                                 CheckStatus::Unknown,
                                 format!("installed (pacman pre/post); last trigger {} failed", ts,),
@@ -1396,11 +1397,7 @@ fn baseline_refresh_unacked_recovery() -> Recovery {
     ])
 }
 
-fn baseline_refresh_acknowledged_recovery(
-    ack_ts: i64,
-    uid: u32,
-    note: Option<String>,
-) -> Recovery {
+fn baseline_refresh_acknowledged_recovery(ack_ts: i64, uid: u32, note: Option<String>) -> Recovery {
     let mut hints = acknowledgment_metadata_hints(ack_ts, uid, note);
     hints.push(RecoveryHint::Command {
         verb: "recover",
@@ -1434,11 +1431,7 @@ fn chain_break_unacked_recovery() -> Recovery {
     ])
 }
 
-fn chain_break_acknowledged_recovery(
-    ack_ts: i64,
-    uid: u32,
-    note: Option<String>,
-) -> Recovery {
+fn chain_break_acknowledged_recovery(ack_ts: i64, uid: u32, note: Option<String>) -> Recovery {
     let mut hints = acknowledgment_metadata_hints(ack_ts, uid, note);
     hints.push(RecoveryHint::Command {
         verb: "recover",
@@ -1530,11 +1523,7 @@ fn daemon_degraded_acknowledged_recovery(
     Recovery::Multi(hints)
 }
 
-fn acknowledgment_metadata_hints(
-    ack_ts: i64,
-    uid: u32,
-    note: Option<String>,
-) -> Vec<RecoveryHint> {
+fn acknowledgment_metadata_hints(ack_ts: i64, uid: u32, note: Option<String>) -> Vec<RecoveryHint> {
     let mut hints = vec![RecoveryHint::Manual {
         verb: "acknowledged",
         instruction: format!("{} by uid {}", format_ack_timestamp(ack_ts), uid),
@@ -1635,11 +1624,7 @@ fn baseline_refresh_ack_state(
         DoctorEventKind::BaselineRefreshFailure,
         "vigil:baseline_refresh_failure",
         payload,
-        |v| {
-            v.get("last_refresh_timestamp")
-                .and_then(|x| x.as_i64())
-                == Some(last_refresh_ts)
-        },
+        |v| v.get("last_refresh_timestamp").and_then(|x| x.as_i64()) == Some(last_refresh_ts),
     )
 }
 
@@ -1750,13 +1735,14 @@ where
         s
     } else {
         let payload_json = serde_json::to_string(&payload).ok()?;
-        let previous_chain_hash = audit_ops::get_last_chain_hash(&conn)
-            .ok()?
-            .unwrap_or_else(|| {
-                blake3::hash(b"vigil-audit-chain-genesis")
-                    .to_hex()
-                    .to_string()
-            });
+        let previous_chain_hash =
+            audit_ops::get_last_chain_hash(&conn)
+                .ok()?
+                .unwrap_or_else(|| {
+                    blake3::hash(b"vigil-audit-chain-genesis")
+                        .to_hex()
+                        .to_string()
+                });
         let hmac_key = if config.security.hmac_signing {
             std::fs::read(&config.security.hmac_key_path).ok()
         } else {
@@ -3287,8 +3273,7 @@ mod tests {
         let check = DiagnosticCheck {
             name: "Hooks".to_string(),
             status: CheckStatus::Unknown,
-            detail: "installed (pacman pre/post); last trigger 2026-04-24T10:00 failed"
-                .to_string(),
+            detail: "installed (pacman pre/post); last trigger 2026-04-24T10:00 failed".to_string(),
             recovery: acknowledged_hook_recovery(
                 ack_state.ack_timestamp,
                 ack_state.operator_uid,
@@ -3317,15 +3302,17 @@ mod tests {
         let mut cfg = crate::config::default_config();
         cfg.daemon.db_path = dir.path().join("baseline.db");
 
-        let old_event =
-            insert_hook_failure_event_for_test(&cfg, "pacman", "2026-04-24T09:00");
+        let old_event = insert_hook_failure_event_for_test(&cfg, "pacman", "2026-04-24T09:00");
         insert_hook_ack_for_test(&cfg, old_event, None);
 
         let old_state = hook_failure_ack_state(&cfg, "pacman", "2026-04-24T09:00");
         assert!(old_state.is_some(), "old event should be acknowledged");
 
         let fresh_state = hook_failure_ack_state(&cfg, "pacman", "2026-04-24T10:00");
-        assert!(fresh_state.is_none(), "fresh event must not inherit prior ack");
+        assert!(
+            fresh_state.is_none(),
+            "fresh event must not inherit prior ack"
+        );
 
         let status = if fresh_state.is_some() {
             CheckStatus::Unknown
@@ -3343,7 +3330,10 @@ mod tests {
         cfg.daemon.db_path = dir.path().join("baseline.db");
 
         let old_state = baseline_refresh_ack_state(&cfg, 1000);
-        assert!(old_state.is_none(), "new stale-refresh event starts unacked");
+        assert!(
+            old_state.is_none(),
+            "new stale-refresh event starts unacked"
+        );
 
         let old_seq = latest_event_seq_for_path(&cfg, "vigil:baseline_refresh_failure");
         insert_ack_for_test(
@@ -3416,17 +3406,11 @@ mod tests {
         cfg.daemon.db_path = dir.path().join("baseline.db");
 
         assert!(
-            daemon_degraded_ack_state(&cfg, "baseline_db_replaced", "2026-04-24T10:00")
-                .is_none(),
+            daemon_degraded_ack_state(&cfg, "baseline_db_replaced", "2026-04-24T10:00").is_none(),
             "new degraded event starts unacked"
         );
         let seq = latest_event_seq_for_path(&cfg, "vigil:daemon_degraded");
-        insert_ack_for_test(
-            &cfg,
-            crate::ack::DoctorEventKind::DaemonDegraded,
-            seq,
-            None,
-        );
+        insert_ack_for_test(&cfg, crate::ack::DoctorEventKind::DaemonDegraded, seq, None);
 
         let ack_state = daemon_degraded_ack_state(&cfg, "baseline_db_replaced", "2026-04-24T10:00")
             .expect("ack state for degraded event");

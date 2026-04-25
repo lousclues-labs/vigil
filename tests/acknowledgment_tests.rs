@@ -75,13 +75,9 @@ fn ack_records_appear_in_chain_with_correct_previous_hash() {
     let payload_json = serde_json::to_string(&payload).unwrap();
     let prev = genesis_hash();
 
-    let (chain_hash, seq) = vigil::db::audit_ops::insert_acknowledgment_entry(
-        &conn,
-        &payload_json,
-        &prev,
-        None,
-    )
-    .unwrap();
+    let (chain_hash, seq) =
+        vigil::db::audit_ops::insert_acknowledgment_entry(&conn, &payload_json, &prev, None)
+            .unwrap();
 
     let ts = conn
         .query_row(
@@ -157,11 +153,9 @@ fn ack_does_not_silence_future_events_of_same_kind() {
         },
     );
 
-    assert!(
-        cache
-            .is_event_acknowledged(DoctorEventKind::RetentionSweepFailure, 51)
-            .is_none()
-    );
+    assert!(cache
+        .is_event_acknowledged(DoctorEventKind::RetentionSweepFailure, 51)
+        .is_none());
 }
 
 #[test]
@@ -180,11 +174,9 @@ fn event_at_t1_acked_event_at_t0_does_not_silence_t1() {
         },
     );
 
-    assert!(
-        cache
-            .is_event_acknowledged(DoctorEventKind::DaemonDegraded, 201)
-            .is_none()
-    );
+    assert!(cache
+        .is_event_acknowledged(DoctorEventKind::DaemonDegraded, 201)
+        .is_none());
 }
 
 #[test]

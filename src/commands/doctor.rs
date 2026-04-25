@@ -266,7 +266,11 @@ fn render_recovery_compact(recovery: &doctor::Recovery) {
 
 /// Render a list of recovery hints with appropriate verb prefixes.
 fn render_multi_hints(hints: &[doctor::RecoveryHint], compact: bool) {
-    let (pad, label_width) = if compact { ("  ", 14usize) } else { ("    ", 14usize) };
+    let (pad, label_width) = if compact {
+        ("  ", 14usize)
+    } else {
+        ("    ", 14usize)
+    };
     for hint in hints {
         match hint {
             doctor::RecoveryHint::Command { verb, command } => {

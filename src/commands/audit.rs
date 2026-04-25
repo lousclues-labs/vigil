@@ -53,8 +53,10 @@ pub(crate) fn cmd_audit(
             let entries = vigil::db::audit_ops::query(&conn, &q)?;
             let total = vigil::db::audit_ops::count(&conn)?;
 
-            let mut ack_by_event: std::collections::HashMap<i64, Vec<vigil::ack::AcknowledgmentPayload>> =
-                std::collections::HashMap::new();
+            let mut ack_by_event: std::collections::HashMap<
+                i64,
+                Vec<vigil::ack::AcknowledgmentPayload>,
+            > = std::collections::HashMap::new();
             if with_acknowledgments {
                 let aq = vigil::db::audit_ops::AuditQuery {
                     path: Some("vigil:operator_acknowledgment".to_string()),
@@ -68,7 +70,9 @@ pub(crate) fn cmd_audit(
                 };
                 let ack_entries = vigil::db::audit_ops::query(&conn, &aq)?;
                 for a in ack_entries {
-                    if let Ok(payload) = serde_json::from_str::<vigil::ack::AcknowledgmentPayload>(&a.changes_json) {
+                    if let Ok(payload) =
+                        serde_json::from_str::<vigil::ack::AcknowledgmentPayload>(&a.changes_json)
+                    {
                         ack_by_event
                             .entry(payload.event_sequence)
                             .or_default()

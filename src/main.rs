@@ -8,10 +8,10 @@ use vigil::cli::{Cli, Command};
 
 mod commands;
 use commands::{
-    cmd_ack, cmd_alerts, cmd_attest, cmd_audit, cmd_baseline, cmd_check, cmd_check_live, cmd_config,
-    cmd_diff, cmd_doctor, cmd_explain, cmd_hooks, cmd_init, cmd_inspect, cmd_log, cmd_maintenance,
-    cmd_recover, cmd_selftest, cmd_setup, cmd_status, cmd_test_alert, cmd_update, cmd_watch,
-    cmd_welcome, cmd_why, cmd_why_silent, CheckOpts,
+    cmd_ack, cmd_alerts, cmd_attest, cmd_audit, cmd_baseline, cmd_check, cmd_check_live,
+    cmd_config, cmd_diff, cmd_doctor, cmd_explain, cmd_hooks, cmd_init, cmd_inspect, cmd_log,
+    cmd_maintenance, cmd_recover, cmd_selftest, cmd_setup, cmd_status, cmd_test_alert, cmd_update,
+    cmd_watch, cmd_welcome, cmd_why, cmd_why_silent, CheckOpts,
 };
 
 fn main() {
