@@ -250,6 +250,30 @@ delivery partially failed.
 
 ---
 
+## Acknowledgments and No-Suppression Rule
+
+Acknowledgments are scoped to doctor presentation and operator context.
+They do not alter detection classification, alert dispatch, or audit chain
+verification.
+
+Security properties:
+
+- `vigil ack` writes chain-extending audit records with operator context.
+- `vigil ack revoke` is also chain-audited, so accidental or malicious
+  acknowledgment state changes are visible and reversible.
+- Acknowledging one event does not silence future events of the same kind
+  (recurrence remains actionable).
+- Blanket diagnostic suppression flags are intentionally absent. There is
+  no `--suppress-future` equivalent that could silently reduce doctor signal.
+
+Threat-model consequence:
+
+- An attacker with command execution cannot covertly downgrade doctor by
+  setting hidden suppressors; any acknowledgment is explicit, audited,
+  and tied to a specific event reference.
+
+---
+
 ## Audit Log Retention
 
 Vigil's audit log is bounded by configuration. By default, entries older

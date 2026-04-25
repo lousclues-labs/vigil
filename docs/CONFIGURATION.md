@@ -252,7 +252,7 @@ Severity-aware delivery policies. Each severity level has its own sub-table.
 | `deliver` | enum | `immediate` | `immediate`, `coalesce`, or `digest`. Critical always uses `immediate`. |
 | `coalesce_within_secs` | integer | `0` | window for grouping events by (group, parent, kind). 0 disables. |
 | `digest_interval_secs` | integer | `0` | periodic digest interval. 0 disables. |
-| `escalate_at_secs` | integer[] | `[300, 3600]` | escalation schedule for unacknowledged alerts. Empty disables. Critical: twice then stop. |
+| `escalate_at_secs` | integer[] | `[300, 3600]` | escalation schedule for pending critical alerts. Empty disables. Distinct from `vigil ack`, which records doctor-event context. Critical: twice then stop. |
 | `channels` | string[] | `["desktop", "journald", "socket"]` | delivery channels. No webhook or MQTT -- the signal socket is the extension point. |
 
 ### `[monitor]`

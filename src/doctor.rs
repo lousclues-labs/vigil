@@ -9,17 +9,34 @@ use std::process::Stdio;
 use chrono::{Local, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::ack::DoctorEventKind;
 use crate::config::Config;
 use crate::db::{self, audit_ops, baseline_ops};
 use crate::types::PackageBackend;
 
 const HEALTH_SNAPSHOT_MAX_AGE_SECS: i64 = 300;
 
+/// A single recovery hint: a command, manual guidance, or documentation reference.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum RecoveryHint {
+    /// A real, executable command.
+    Command { verb: &'static str, command: String },
+    /// Manual guidance that is not a single command.
+    Manual { verb: &'static str, instruction: String },
+    /// A reference to documentation.
+    Documentation { reference: String },
+}
+
 /// What the operator should do to resolve a doctor row's warning or failure.
 ///
 /// The renderer formats each variant differently; rows must select the
 /// variant that honestly describes the recovery, never wrapping prose
 /// as a fake command.
+///
+/// For rows needing multiple hints, use `Recovery::Multi` with a list
+/// of `RecoveryHint` values. The renderer composes them with appropriate
+/// connectors (`recover with:`, `acknowledge with:`, `or investigate:`).
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "value")]
 pub enum Recovery {
@@ -46,6 +63,11 @@ pub enum Recovery {
 
     /// No recovery action. Rendered as nothing.
     None,
+
+    /// Multiple recovery hints with explicit connectors.
+    /// Rendered with appropriate visual separation and `or`/`also`
+    /// connectors based on the count and relationship between hints.
+    Multi(Vec<RecoveryHint>),
 }
 
 impl Recovery {
@@ -57,6 +79,11 @@ impl Recovery {
             Recovery::Manual(s) => Some(s),
             Recovery::Documentation(s) => Some(s),
             Recovery::None => None,
+            Recovery::Multi(hints) => hints.first().map(|h| match h {
+                RecoveryHint::Command { command, .. } => command.as_str(),
+                RecoveryHint::Manual { instruction, .. } => instruction.as_str(),
+                RecoveryHint::Documentation { reference } => reference.as_str(),
+            }),
         }
     }
 }
@@ -444,7 +471,7 @@ pub fn run_diagnostics(config: &Config) -> Vec<DiagnosticCheck> {
     checks.push(check_scan_timer(config));
     checks.push(check_hmac_key(config));
     checks.push(check_attest_key());
-    checks.push(check_package_hooks());
+    checks.push(check_package_hooks(config));
     checks.push(check_notify_send());
     checks.push(check_signal_socket(config));
 
@@ -590,6 +617,23 @@ fn check_baseline(config: &Config) -> DiagnosticCheck {
         Some(ts) => {
             let age = (Utc::now().timestamp() - ts).max(0);
             if age > 86_400 {
+                if let Some(ack_state) = baseline_refresh_ack_state(config, ts) {
+                    return DiagnosticCheck {
+                        name: "Baseline".to_string(),
+                        status: CheckStatus::Unknown,
+                        detail: format!(
+                            "{} entries (last refresh: {})",
+                            count_label,
+                            format_age(age)
+                        ),
+                        recovery: baseline_refresh_acknowledged_recovery(
+                            ack_state.ack_timestamp,
+                            ack_state.operator_uid,
+                            ack_state.note,
+                        ),
+                    };
+                }
+
                 DiagnosticCheck {
                     name: "Baseline".to_string(),
                     status: CheckStatus::Warning,
@@ -598,7 +642,7 @@ fn check_baseline(config: &Config) -> DiagnosticCheck {
                         count_label,
                         format_age(age)
                     ),
-                    recovery: Recovery::Command("vigil baseline refresh".into()),
+                    recovery: baseline_refresh_unacked_recovery(),
                 }
             } else {
                 DiagnosticCheck {
@@ -795,15 +839,24 @@ fn check_audit_log(config: &Config) -> DiagnosticCheck {
     match audit_ops::verify_chain(&conn) {
         Ok((_t, _valid, breaks, missing)) => {
             if !breaks.is_empty() {
+                let first_break = breaks.first().map(|b| b.0).unwrap_or(0);
+                let ack_state = audit_chain_break_ack_state(config, first_break);
                 DiagnosticCheck {
                     name: "Audit log".to_string(),
                     status: CheckStatus::Warning,
                     detail: format!(
                         "tampered at entry {}; {} entries total. Save a copy of the audit DB, then run `vigil audit verify -v`.",
-                        breaks.first().map(|b| b.0).unwrap_or(0),
+                        first_break,
                         format_count(total),
                     ),
-                    recovery: Recovery::Command("vigil audit verify -v".into()),
+                    recovery: match ack_state {
+                        Some(ack) => chain_break_acknowledged_recovery(
+                            ack.ack_timestamp,
+                            ack.operator_uid,
+                            ack.note,
+                        ),
+                        None => chain_break_unacked_recovery(),
+                    },
                 }
             } else if missing > 0 {
                 DiagnosticCheck {
@@ -862,6 +915,7 @@ fn check_audit_retention(config: &Config) -> DiagnosticCheck {
     let retention_days = config.audit.retention_days;
 
     if pct >= 100 {
+        let ack_state = retention_failure_ack_state(config, config.audit.max_size_mb as u64);
         DiagnosticCheck {
             name: "Audit retention".to_string(),
             status: CheckStatus::Failed,
@@ -871,9 +925,13 @@ fn check_audit_retention(config: &Config) -> DiagnosticCheck {
                 pct,
                 config.audit.max_size_mb
             ),
-            recovery: Recovery::CommandWithContext {
-                command: "vigil audit prune --before <date> --confirm".into(),
-                context: "or: vigil daemon recover --reason audit_log_full".into(),
+            recovery: match ack_state {
+                Some(ack) => retention_failure_acknowledged_recovery(
+                    ack.ack_timestamp,
+                    ack.operator_uid,
+                    ack.note,
+                ),
+                None => retention_failure_unacked_recovery(),
             },
         }
     } else if pct >= 90 {
@@ -1159,7 +1217,8 @@ fn check_attest_key() -> DiagnosticCheck {
     }
 }
 
-fn check_package_hooks() -> DiagnosticCheck {
+fn check_package_hooks(config: &Config) -> DiagnosticCheck {
+    let hooks_disabled = hooks_disabled_by_operator(config);
     match crate::package::detect_backend() {
         PackageBackend::Pacman => {
             let pre = Path::new("/etc/pacman.d/hooks/vigil-pre.hook").exists();
@@ -1177,14 +1236,28 @@ fn check_package_hooks() -> DiagnosticCheck {
                         format!("installed (pacman pre/post); last trigger {} ok", ts),
                         Recovery::None,
                     ),
-                    HookTriggerResult::Failure(ts, _tag) => (
-                        CheckStatus::Warning,
-                        format!("installed (pacman pre/post); last trigger {} failed", ts,),
-                        Recovery::CommandWithContext {
-                            command: "vigil hooks verify".into(),
-                            context: "investigate further: journalctl -t vigil-pacman".into(),
-                        },
-                    ),
+                    HookTriggerResult::Failure(ts, _tag) => {
+                        if let Some(ack_state) =
+                            hook_failure_ack_state(config, "pacman", &ts)
+                        {
+                            (
+                                CheckStatus::Unknown,
+                                format!("installed (pacman pre/post); last trigger {} failed", ts,),
+                                acknowledged_hook_recovery(
+                                    ack_state.ack_timestamp,
+                                    ack_state.operator_uid,
+                                    ack_state.note,
+                                    "journalctl -t vigil-pacman",
+                                ),
+                            )
+                        } else {
+                            (
+                                CheckStatus::Warning,
+                                format!("installed (pacman pre/post); last trigger {} failed", ts,),
+                                unacked_hook_recovery("journalctl -t vigil-pacman"),
+                            )
+                        }
+                    }
                     HookTriggerResult::Unknown => (
                         CheckStatus::Ok,
                         "installed (pacman pre/post)".to_string(),
@@ -1200,9 +1273,17 @@ fn check_package_hooks() -> DiagnosticCheck {
             } else {
                 DiagnosticCheck {
                     name: "Hooks".to_string(),
-                    status: CheckStatus::Warning,
-                    detail: "pacman detected but hooks not installed".to_string(),
-                    recovery: Recovery::Command("vigil hooks repair".into()),
+                    status: CheckStatus::Unknown,
+                    detail: if hooks_disabled {
+                        "disabled (no hooks installed)".to_string()
+                    } else {
+                        "not installed".to_string()
+                    },
+                    recovery: if hooks_disabled {
+                        Recovery::Command("vigil hooks enable".into())
+                    } else {
+                        Recovery::Command("vigil hooks repair".into())
+                    },
                 }
             }
         }
@@ -1221,14 +1302,26 @@ fn check_package_hooks() -> DiagnosticCheck {
                         format!("installed (apt hook); last trigger {} ok", ts),
                         Recovery::None,
                     ),
-                    HookTriggerResult::Failure(ts, _tag) => (
-                        CheckStatus::Warning,
-                        format!("installed (apt hook); last trigger {} failed", ts,),
-                        Recovery::CommandWithContext {
-                            command: "vigil hooks verify".into(),
-                            context: "investigate further: journalctl -t vigil-apt".into(),
-                        },
-                    ),
+                    HookTriggerResult::Failure(ts, _tag) => {
+                        if let Some(ack_state) = hook_failure_ack_state(config, "apt", &ts) {
+                            (
+                                CheckStatus::Unknown,
+                                format!("installed (apt hook); last trigger {} failed", ts,),
+                                acknowledged_hook_recovery(
+                                    ack_state.ack_timestamp,
+                                    ack_state.operator_uid,
+                                    ack_state.note,
+                                    "journalctl -t vigil-apt",
+                                ),
+                            )
+                        } else {
+                            (
+                                CheckStatus::Warning,
+                                format!("installed (apt hook); last trigger {} failed", ts,),
+                                unacked_hook_recovery("journalctl -t vigil-apt"),
+                            )
+                        }
+                    }
                     HookTriggerResult::Unknown => (
                         CheckStatus::Ok,
                         "installed (apt hook)".to_string(),
@@ -1244,9 +1337,17 @@ fn check_package_hooks() -> DiagnosticCheck {
             } else {
                 DiagnosticCheck {
                     name: "Hooks".to_string(),
-                    status: CheckStatus::Warning,
-                    detail: "apt detected but hook not installed".to_string(),
-                    recovery: Recovery::Command("vigil hooks repair".into()),
+                    status: CheckStatus::Unknown,
+                    detail: if hooks_disabled {
+                        "disabled (no hooks installed)".to_string()
+                    } else {
+                        "not installed".to_string()
+                    },
+                    recovery: if hooks_disabled {
+                        Recovery::Command("vigil hooks enable".into())
+                    } else {
+                        Recovery::Command("vigil hooks repair".into())
+                    },
                 }
             }
         }
@@ -1263,6 +1364,417 @@ fn check_package_hooks() -> DiagnosticCheck {
             recovery: Recovery::None,
         },
     }
+}
+
+fn hooks_disabled_by_operator(config: &Config) -> bool {
+    let conn = match db::open_audit_db(config) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let latest: std::result::Result<String, _> = conn.query_row(
+        "SELECT path FROM audit_log \
+         WHERE path IN ('vigil:hooks_disable', 'vigil:hooks_enable') \
+         ORDER BY id DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    );
+
+    matches!(latest.ok().as_deref(), Some("vigil:hooks_disable"))
+}
+
+fn baseline_refresh_unacked_recovery() -> Recovery {
+    Recovery::Multi(vec![
+        RecoveryHint::Command {
+            verb: "recover",
+            command: "vigil baseline refresh".into(),
+        },
+        RecoveryHint::Command {
+            verb: "acknowledge",
+            command: "vigil ack baseline-refresh".into(),
+        },
+    ])
+}
+
+fn baseline_refresh_acknowledged_recovery(
+    ack_ts: i64,
+    uid: u32,
+    note: Option<String>,
+) -> Recovery {
+    let mut hints = acknowledgment_metadata_hints(ack_ts, uid, note);
+    hints.push(RecoveryHint::Command {
+        verb: "recover",
+        command: "vigil baseline refresh".into(),
+    });
+    hints.push(RecoveryHint::Manual {
+        verb: "",
+        instruction: "future stale-refresh episodes will warn afresh".into(),
+    });
+    hints.push(RecoveryHint::Command {
+        verb: "acknowledge again on recurrence",
+        command: "vigil ack baseline-refresh".into(),
+    });
+    Recovery::Multi(hints)
+}
+
+fn chain_break_unacked_recovery() -> Recovery {
+    Recovery::Multi(vec![
+        RecoveryHint::Command {
+            verb: "recover",
+            command: "vigil audit verify -v".into(),
+        },
+        RecoveryHint::Command {
+            verb: "acknowledge",
+            command: "vigil ack chain-break".into(),
+        },
+        RecoveryHint::Manual {
+            verb: "or investigate",
+            instruction: "save a copy of audit.db before remediation".into(),
+        },
+    ])
+}
+
+fn chain_break_acknowledged_recovery(
+    ack_ts: i64,
+    uid: u32,
+    note: Option<String>,
+) -> Recovery {
+    let mut hints = acknowledgment_metadata_hints(ack_ts, uid, note);
+    hints.push(RecoveryHint::Command {
+        verb: "recover",
+        command: "vigil audit verify -v".into(),
+    });
+    hints.push(RecoveryHint::Command {
+        verb: "acknowledge again on recurrence",
+        command: "vigil ack chain-break".into(),
+    });
+    hints.push(RecoveryHint::Manual {
+        verb: "or investigate",
+        instruction: "save a copy of audit.db before remediation".into(),
+    });
+    Recovery::Multi(hints)
+}
+
+fn retention_failure_unacked_recovery() -> Recovery {
+    Recovery::Multi(vec![
+        RecoveryHint::Command {
+            verb: "recover",
+            command: "vigil audit prune --before <date> --confirm".into(),
+        },
+        RecoveryHint::Command {
+            verb: "or recover",
+            command: "vigil daemon recover --reason audit_log_full".into(),
+        },
+        RecoveryHint::Command {
+            verb: "acknowledge",
+            command: "vigil ack retention".into(),
+        },
+    ])
+}
+
+fn retention_failure_acknowledged_recovery(
+    ack_ts: i64,
+    uid: u32,
+    note: Option<String>,
+) -> Recovery {
+    let mut hints = acknowledgment_metadata_hints(ack_ts, uid, note);
+    hints.push(RecoveryHint::Command {
+        verb: "recover",
+        command: "vigil audit prune --before <date> --confirm".into(),
+    });
+    hints.push(RecoveryHint::Command {
+        verb: "or recover",
+        command: "vigil daemon recover --reason audit_log_full".into(),
+    });
+    hints.push(RecoveryHint::Command {
+        verb: "acknowledge again on recurrence",
+        command: "vigil ack retention".into(),
+    });
+    Recovery::Multi(hints)
+}
+
+fn daemon_degraded_unacked_recovery(reason: &str) -> Recovery {
+    Recovery::Multi(vec![
+        RecoveryHint::Command {
+            verb: "recover",
+            command: format!(
+                "vigil recover --reason {}",
+                reason.split_whitespace().next().unwrap_or(reason)
+            ),
+        },
+        RecoveryHint::Command {
+            verb: "acknowledge",
+            command: "vigil ack degraded".into(),
+        },
+    ])
+}
+
+fn daemon_degraded_acknowledged_recovery(
+    reason: &str,
+    ack_ts: i64,
+    uid: u32,
+    note: Option<String>,
+) -> Recovery {
+    let mut hints = acknowledgment_metadata_hints(ack_ts, uid, note);
+    hints.push(RecoveryHint::Command {
+        verb: "recover",
+        command: format!(
+            "vigil recover --reason {}",
+            reason.split_whitespace().next().unwrap_or(reason)
+        ),
+    });
+    hints.push(RecoveryHint::Command {
+        verb: "acknowledge again on recurrence",
+        command: "vigil ack degraded".into(),
+    });
+    Recovery::Multi(hints)
+}
+
+fn acknowledgment_metadata_hints(
+    ack_ts: i64,
+    uid: u32,
+    note: Option<String>,
+) -> Vec<RecoveryHint> {
+    let mut hints = vec![RecoveryHint::Manual {
+        verb: "acknowledged",
+        instruction: format!("{} by uid {}", format_ack_timestamp(ack_ts), uid),
+    }];
+    if let Some(n) = note {
+        hints.push(RecoveryHint::Manual {
+            verb: "note",
+            instruction: format!("\"{}\"", n),
+        });
+    }
+    hints
+}
+
+fn unacked_hook_recovery(investigate_cmd: &str) -> Recovery {
+    Recovery::Multi(vec![
+        RecoveryHint::Command {
+            verb: "recover",
+            command: "vigil hooks verify".into(),
+        },
+        RecoveryHint::Command {
+            verb: "acknowledge",
+            command: "vigil ack hooks".into(),
+        },
+        RecoveryHint::Manual {
+            verb: "or investigate",
+            instruction: investigate_cmd.to_string(),
+        },
+    ])
+}
+
+fn acknowledged_hook_recovery(
+    ack_ts: i64,
+    uid: u32,
+    note: Option<String>,
+    investigate_cmd: &str,
+) -> Recovery {
+    let mut hints = acknowledgment_metadata_hints(ack_ts, uid, note);
+    hints.push(RecoveryHint::Manual {
+        verb: "",
+        instruction: "fresh failures will appear as new actionable events".into(),
+    });
+    hints.push(RecoveryHint::Command {
+        verb: "acknowledge again on recurrence",
+        command: "vigil ack hooks".into(),
+    });
+    hints.push(RecoveryHint::Manual {
+        verb: "or investigate",
+        instruction: investigate_cmd.to_string(),
+    });
+    Recovery::Multi(hints)
+}
+
+fn format_ack_timestamp(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|dt| {
+            dt.with_timezone(&chrono::Local)
+                .format("%Y-%m-%dT%H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|| ts.to_string())
+}
+
+fn hook_failure_ack_state(
+    config: &Config,
+    backend: &str,
+    trigger_ts: &str,
+) -> Option<crate::ack::AcknowledgmentState> {
+    let payload = serde_json::json!({
+        "event_kind": "hook_invocation_failure",
+        "backend": backend,
+        "trigger_timestamp": trigger_ts,
+        "description": "hook invocation failure",
+    });
+    doctor_event_ack_state(
+        config,
+        DoctorEventKind::HookInvocationFailure,
+        "vigil:hook_failure",
+        payload,
+        |v| {
+            let b = v.get("backend").and_then(|x| x.as_str());
+            let t = v.get("trigger_timestamp").and_then(|x| x.as_str());
+            b == Some(backend) && t == Some(trigger_ts)
+        },
+    )
+}
+
+fn baseline_refresh_ack_state(
+    config: &Config,
+    last_refresh_ts: i64,
+) -> Option<crate::ack::AcknowledgmentState> {
+    let payload = serde_json::json!({
+        "event_kind": "baseline_refresh_failure",
+        "last_refresh_timestamp": last_refresh_ts,
+        "description": "baseline refresh is stale",
+    });
+    doctor_event_ack_state(
+        config,
+        DoctorEventKind::BaselineRefreshFailure,
+        "vigil:baseline_refresh_failure",
+        payload,
+        |v| {
+            v.get("last_refresh_timestamp")
+                .and_then(|x| x.as_i64())
+                == Some(last_refresh_ts)
+        },
+    )
+}
+
+fn audit_chain_break_ack_state(
+    config: &Config,
+    first_break_id: i64,
+) -> Option<crate::ack::AcknowledgmentState> {
+    let payload = serde_json::json!({
+        "event_kind": "audit_chain_break",
+        "first_break_id": first_break_id,
+        "description": "audit chain break detected",
+    });
+    doctor_event_ack_state(
+        config,
+        DoctorEventKind::AuditChainBreak,
+        "vigil:audit_chain_break",
+        payload,
+        |v| v.get("first_break_id").and_then(|x| x.as_i64()) == Some(first_break_id),
+    )
+}
+
+fn retention_failure_ack_state(
+    config: &Config,
+    cap_mb: u64,
+) -> Option<crate::ack::AcknowledgmentState> {
+    let payload = serde_json::json!({
+        "event_kind": "retention_sweep_failure",
+        "cap_mb": cap_mb,
+        "condition": "audit_cap_reached",
+        "description": "audit retention capacity reached",
+    });
+    doctor_event_ack_state(
+        config,
+        DoctorEventKind::RetentionSweepFailure,
+        "vigil:retention_sweep_failure",
+        payload,
+        |v| {
+            v.get("condition").and_then(|x| x.as_str()) == Some("audit_cap_reached")
+                && v.get("cap_mb").and_then(|x| x.as_u64()) == Some(cap_mb)
+        },
+    )
+}
+
+fn daemon_degraded_ack_state(
+    config: &Config,
+    reason: &str,
+    since: &str,
+) -> Option<crate::ack::AcknowledgmentState> {
+    let payload = serde_json::json!({
+        "event_kind": "daemon_degraded",
+        "reason": reason,
+        "since": since,
+        "description": "daemon entered degraded state",
+    });
+    doctor_event_ack_state(
+        config,
+        DoctorEventKind::DaemonDegraded,
+        "vigil:daemon_degraded",
+        payload,
+        |v| {
+            v.get("reason").and_then(|x| x.as_str()) == Some(reason)
+                && v.get("since").and_then(|x| x.as_str()) == Some(since)
+        },
+    )
+}
+
+fn doctor_event_ack_state<F>(
+    config: &Config,
+    event_kind: DoctorEventKind,
+    event_path: &str,
+    payload: serde_json::Value,
+    matcher: F,
+) -> Option<crate::ack::AcknowledgmentState>
+where
+    F: Fn(&serde_json::Value) -> bool,
+{
+    let conn = db::open_audit_db(config).ok()?;
+
+    let mut event_seq: Option<i64> = None;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, changes_json FROM audit_log \
+             WHERE path = ?1 \
+             ORDER BY id DESC LIMIT 200",
+        )
+        .ok()?;
+    let rows = stmt
+        .query_map(rusqlite::params![event_path], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .ok()?;
+    for row in rows {
+        let (id, json) = match row {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let value = match serde_json::from_str::<serde_json::Value>(&json) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if matcher(&value) {
+            event_seq = Some(id);
+            break;
+        }
+    }
+
+    let seq = if let Some(s) = event_seq {
+        s
+    } else {
+        let payload_json = serde_json::to_string(&payload).ok()?;
+        let previous_chain_hash = audit_ops::get_last_chain_hash(&conn)
+            .ok()?
+            .unwrap_or_else(|| {
+                blake3::hash(b"vigil-audit-chain-genesis")
+                    .to_hex()
+                    .to_string()
+            });
+        let hmac_key = if config.security.hmac_signing {
+            std::fs::read(&config.security.hmac_key_path).ok()
+        } else {
+            None
+        };
+        let (_, new_seq) = audit_ops::insert_doctor_event_entry(
+            &conn,
+            event_path,
+            &payload_json,
+            &previous_chain_hash,
+            hmac_key.as_deref(),
+        )
+        .ok()?;
+        new_seq
+    };
+
+    let cache = crate::ack::build_cache_from_audit_log(&conn);
+    cache.is_event_acknowledged(event_kind, seq).cloned()
 }
 
 /// Parsed result of the last hook trigger query.
@@ -1361,10 +1873,16 @@ fn check_signal_socket(config: &Config) -> DiagnosticCheck {
             name: "Socket".to_string(),
             status: CheckStatus::Failed,
             detail: "configured but no listener; alerts to this sink are dropped".to_string(),
-            recovery: Recovery::CommandWithContext {
-                command: "vigil alerts socket disable".into(),
-                context: format!("(or attach a listener at {})", socket_path),
-            },
+            recovery: Recovery::Multi(vec![
+                RecoveryHint::Command {
+                    verb: "recover",
+                    command: "vigil alerts socket disable".into(),
+                },
+                RecoveryHint::Manual {
+                    verb: "or attach",
+                    instruction: format!("a listener at {}", socket_path),
+                },
+            ]),
         };
     }
 
@@ -1444,19 +1962,29 @@ fn check_daemon_state(config: &Config, daemon_running: bool) -> DiagnosticCheck 
                         .get("reason")
                         .and_then(|v| v.as_str())
                         .unwrap_or("unknown");
+                    let since_raw = state
+                        .get("since")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
                     let since = state
                         .get("since")
                         .and_then(|v| v.as_str())
                         .map(|s| format!(" (since {})", s))
                         .unwrap_or_default();
+                    let ack_state = daemon_degraded_ack_state(config, reason, since_raw);
                     DiagnosticCheck {
                         name: "State".into(),
                         status: CheckStatus::Failed,
                         detail: format!("degraded: {}{}", reason, since),
-                        recovery: Recovery::Command(format!(
-                            "vigil recover --reason {}",
-                            reason.split_whitespace().next().unwrap_or(reason)
-                        )),
+                        recovery: match ack_state {
+                            Some(ack) => daemon_degraded_acknowledged_recovery(
+                                reason,
+                                ack.ack_timestamp,
+                                ack.operator_uid,
+                                ack.note,
+                            ),
+                            None => daemon_degraded_unacked_recovery(reason),
+                        },
                     }
                 }
                 _ => DiagnosticCheck {
@@ -2364,6 +2892,90 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    fn insert_hook_failure_event_for_test(
+        cfg: &crate::config::Config,
+        backend: &str,
+        trigger_ts: &str,
+    ) -> i64 {
+        let conn = crate::db::open_audit_db(cfg).expect("open audit db");
+        let payload = serde_json::json!({
+            "event_kind": "hook_invocation_failure",
+            "backend": backend,
+            "trigger_timestamp": trigger_ts,
+            "description": "hook invocation failure",
+        });
+        let payload_json = serde_json::to_string(&payload).expect("serialize payload");
+        let previous_chain_hash = crate::db::audit_ops::get_last_chain_hash(&conn)
+            .expect("read chain")
+            .unwrap_or_else(|| {
+                blake3::hash(b"vigil-audit-chain-genesis")
+                    .to_hex()
+                    .to_string()
+            });
+        let (_, seq) = crate::db::audit_ops::insert_doctor_event_entry(
+            &conn,
+            "vigil:hook_failure",
+            &payload_json,
+            &previous_chain_hash,
+            None,
+        )
+        .expect("insert event");
+        seq
+    }
+
+    fn insert_hook_ack_for_test(
+        cfg: &crate::config::Config,
+        event_sequence: i64,
+        note: Option<String>,
+    ) {
+        insert_ack_for_test(
+            cfg,
+            crate::ack::DoctorEventKind::HookInvocationFailure,
+            event_sequence,
+            note,
+        );
+    }
+
+    fn insert_ack_for_test(
+        cfg: &crate::config::Config,
+        kind: crate::ack::DoctorEventKind,
+        event_sequence: i64,
+        note: Option<String>,
+    ) {
+        let conn = crate::db::open_audit_db(cfg).expect("open audit db");
+        let payload = crate::ack::build_operator_payload(
+            kind,
+            event_sequence,
+            crate::ack::AcknowledgmentKind::Acknowledge,
+            note,
+        );
+        let payload_json = serde_json::to_string(&payload).expect("serialize ack");
+        let previous_chain_hash = crate::db::audit_ops::get_last_chain_hash(&conn)
+            .expect("read chain")
+            .unwrap_or_else(|| {
+                blake3::hash(b"vigil-audit-chain-genesis")
+                    .to_hex()
+                    .to_string()
+            });
+        let _ = crate::db::audit_ops::insert_acknowledgment_entry(
+            &conn,
+            &payload_json,
+            &previous_chain_hash,
+            None,
+        )
+        .expect("insert ack");
+    }
+
+    fn latest_event_seq_for_path(cfg: &crate::config::Config, path: &str) -> i64 {
+        let conn = crate::db::open_audit_db(cfg).expect("open audit db");
+        conn.query_row(
+            "SELECT id FROM audit_log WHERE path = ?1 ORDER BY id DESC LIMIT 1",
+            rusqlite::params![path],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("event sequence for path")
+    }
+
     #[test]
     fn diagnostics_returns_expected_number_of_checks() {
         let cfg = crate::config::default_config();
@@ -2658,5 +3270,205 @@ mod tests {
                 check.name
             );
         }
+    }
+
+    #[test]
+    fn hooks_row_acknowledged_renders_with_circle_marker_and_metadata() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut cfg = crate::config::default_config();
+        cfg.daemon.db_path = dir.path().join("baseline.db");
+
+        let event_seq = insert_hook_failure_event_for_test(&cfg, "pacman", "2026-04-24T10:00");
+        insert_hook_ack_for_test(&cfg, event_seq, Some("investigated".to_string()));
+
+        let ack_state = hook_failure_ack_state(&cfg, "pacman", "2026-04-24T10:00")
+            .expect("ack state for existing event");
+
+        let check = DiagnosticCheck {
+            name: "Hooks".to_string(),
+            status: CheckStatus::Unknown,
+            detail: "installed (pacman pre/post); last trigger 2026-04-24T10:00 failed"
+                .to_string(),
+            recovery: acknowledged_hook_recovery(
+                ack_state.ack_timestamp,
+                ack_state.operator_uid,
+                ack_state.note,
+                "journalctl -t vigil-pacman",
+            ),
+        };
+
+        assert_eq!(check.status.marker(), "○");
+        match check.recovery {
+            Recovery::Multi(hints) => {
+                assert!(hints.iter().any(|h| {
+                    matches!(h, RecoveryHint::Manual { verb, instruction } if *verb == "acknowledged" && instruction.contains("uid"))
+                }));
+                assert!(hints.iter().any(|h| {
+                    matches!(h, RecoveryHint::Manual { verb, instruction } if *verb == "note" && instruction.contains("investigated"))
+                }));
+            }
+            _ => panic!("expected Recovery::Multi"),
+        }
+    }
+
+    #[test]
+    fn hooks_row_recurrence_after_ack_warns_with_fresh_event_data() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut cfg = crate::config::default_config();
+        cfg.daemon.db_path = dir.path().join("baseline.db");
+
+        let old_event =
+            insert_hook_failure_event_for_test(&cfg, "pacman", "2026-04-24T09:00");
+        insert_hook_ack_for_test(&cfg, old_event, None);
+
+        let old_state = hook_failure_ack_state(&cfg, "pacman", "2026-04-24T09:00");
+        assert!(old_state.is_some(), "old event should be acknowledged");
+
+        let fresh_state = hook_failure_ack_state(&cfg, "pacman", "2026-04-24T10:00");
+        assert!(fresh_state.is_none(), "fresh event must not inherit prior ack");
+
+        let status = if fresh_state.is_some() {
+            CheckStatus::Unknown
+        } else {
+            CheckStatus::Warning
+        };
+        assert_eq!(status, CheckStatus::Warning);
+        assert_eq!(status.marker(), "⚠");
+    }
+
+    #[test]
+    fn baseline_refresh_recurrence_after_ack_warns_with_fresh_last_refresh() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut cfg = crate::config::default_config();
+        cfg.daemon.db_path = dir.path().join("baseline.db");
+
+        let old_state = baseline_refresh_ack_state(&cfg, 1000);
+        assert!(old_state.is_none(), "new stale-refresh event starts unacked");
+
+        let old_seq = latest_event_seq_for_path(&cfg, "vigil:baseline_refresh_failure");
+        insert_ack_for_test(
+            &cfg,
+            crate::ack::DoctorEventKind::BaselineRefreshFailure,
+            old_seq,
+            Some("scheduled refresh window".to_string()),
+        );
+
+        assert!(
+            baseline_refresh_ack_state(&cfg, 1000).is_some(),
+            "same event should be acknowledged"
+        );
+        assert!(
+            baseline_refresh_ack_state(&cfg, 2000).is_none(),
+            "fresh stale-refresh episode must not inherit prior ack"
+        );
+    }
+
+    #[test]
+    fn chain_break_acknowledged_renders_metadata_but_keeps_warning_marker() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut cfg = crate::config::default_config();
+        cfg.daemon.db_path = dir.path().join("baseline.db");
+
+        assert!(
+            audit_chain_break_ack_state(&cfg, 42).is_none(),
+            "new chain-break event starts unacked"
+        );
+        let seq = latest_event_seq_for_path(&cfg, "vigil:audit_chain_break");
+        insert_ack_for_test(
+            &cfg,
+            crate::ack::DoctorEventKind::AuditChainBreak,
+            seq,
+            Some("captured forensic copy".to_string()),
+        );
+
+        let ack_state =
+            audit_chain_break_ack_state(&cfg, 42).expect("ack state for chain-break event");
+        let check = DiagnosticCheck {
+            name: "Audit log".to_string(),
+            status: CheckStatus::Warning,
+            detail: "tampered at entry 42".to_string(),
+            recovery: chain_break_acknowledged_recovery(
+                ack_state.ack_timestamp,
+                ack_state.operator_uid,
+                ack_state.note,
+            ),
+        };
+        assert_eq!(check.status.marker(), "⚠");
+        match check.recovery {
+            Recovery::Multi(hints) => {
+                assert!(hints.iter().any(|h| {
+                    matches!(h, RecoveryHint::Manual { verb, instruction } if *verb == "acknowledged" && instruction.contains("uid"))
+                }));
+            }
+            _ => panic!("expected Recovery::Multi"),
+        }
+
+        assert!(
+            audit_chain_break_ack_state(&cfg, 43).is_none(),
+            "new break id must warn afresh"
+        );
+    }
+
+    #[test]
+    fn degraded_acknowledgment_adds_context_but_keeps_failed_marker() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut cfg = crate::config::default_config();
+        cfg.daemon.db_path = dir.path().join("baseline.db");
+
+        assert!(
+            daemon_degraded_ack_state(&cfg, "baseline_db_replaced", "2026-04-24T10:00")
+                .is_none(),
+            "new degraded event starts unacked"
+        );
+        let seq = latest_event_seq_for_path(&cfg, "vigil:daemon_degraded");
+        insert_ack_for_test(
+            &cfg,
+            crate::ack::DoctorEventKind::DaemonDegraded,
+            seq,
+            None,
+        );
+
+        let ack_state = daemon_degraded_ack_state(&cfg, "baseline_db_replaced", "2026-04-24T10:00")
+            .expect("ack state for degraded event");
+        let check = DiagnosticCheck {
+            name: "State".to_string(),
+            status: CheckStatus::Failed,
+            detail: "degraded: baseline_db_replaced".to_string(),
+            recovery: daemon_degraded_acknowledged_recovery(
+                "baseline_db_replaced",
+                ack_state.ack_timestamp,
+                ack_state.operator_uid,
+                ack_state.note,
+            ),
+        };
+        assert_eq!(check.status.marker(), "✗");
+    }
+
+    #[test]
+    fn retention_failure_recurrence_after_ack_warns_with_fresh_cap() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut cfg = crate::config::default_config();
+        cfg.daemon.db_path = dir.path().join("baseline.db");
+
+        assert!(
+            retention_failure_ack_state(&cfg, 512).is_none(),
+            "new retention event starts unacked"
+        );
+        let seq = latest_event_seq_for_path(&cfg, "vigil:retention_sweep_failure");
+        insert_ack_for_test(
+            &cfg,
+            crate::ack::DoctorEventKind::RetentionSweepFailure,
+            seq,
+            None,
+        );
+
+        assert!(
+            retention_failure_ack_state(&cfg, 512).is_some(),
+            "same retention event should be acknowledged"
+        );
+        assert!(
+            retention_failure_ack_state(&cfg, 1024).is_none(),
+            "fresh cap episode should not inherit prior ack"
+        );
     }
 }

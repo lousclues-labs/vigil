@@ -235,6 +235,9 @@ fn render_recovery(recovery: &doctor::Recovery) {
             eprintln!("    {:<14}   see: {}", "", path);
         }
         doctor::Recovery::None => {}
+        doctor::Recovery::Multi(hints) => {
+            render_multi_hints(hints, false);
+        }
     }
 }
 
@@ -255,5 +258,60 @@ fn render_recovery_compact(recovery: &doctor::Recovery) {
             eprintln!("  {:<14}   see: {}", "", path);
         }
         doctor::Recovery::None => {}
+        doctor::Recovery::Multi(hints) => {
+            render_multi_hints(hints, true);
+        }
+    }
+}
+
+/// Render a list of recovery hints with appropriate verb prefixes.
+fn render_multi_hints(hints: &[doctor::RecoveryHint], compact: bool) {
+    let (pad, label_width) = if compact { ("  ", 14usize) } else { ("    ", 14usize) };
+    for hint in hints {
+        match hint {
+            doctor::RecoveryHint::Command { verb, command } => {
+                if verb.is_empty() {
+                    eprintln!("{}{:width$}   {}", pad, "", command, width = label_width);
+                } else {
+                    eprintln!(
+                        "{}{:width$}   {} with: {}",
+                        pad,
+                        "",
+                        verb,
+                        command,
+                        width = label_width
+                    );
+                }
+            }
+            doctor::RecoveryHint::Manual { verb, instruction } => {
+                if verb.is_empty() {
+                    eprintln!(
+                        "{}{:width$}   {}",
+                        pad,
+                        "",
+                        instruction,
+                        width = label_width
+                    );
+                } else {
+                    eprintln!(
+                        "{}{:width$}   {}: {}",
+                        pad,
+                        "",
+                        verb,
+                        instruction,
+                        width = label_width
+                    );
+                }
+            }
+            doctor::RecoveryHint::Documentation { reference } => {
+                eprintln!(
+                    "{}{:width$}   see: {}",
+                    pad,
+                    "",
+                    reference,
+                    width = label_width
+                );
+            }
+        }
     }
 }

@@ -73,22 +73,29 @@ never coalesces.
 
 ## Escalation (Critical Alerts)
 
-Critical alerts include `event_id` in the notification text. Unacknowledged
-Critical alerts re-fire on configured `escalation_intervals_secs`
-(default: [300, 900, 3600, 86400]).
+Critical alerts include `event_id` in the notification text.
 
-Each escalation includes the original event ID and the count of
-escalations so far. After the final interval expires without ack,
-vigil writes a synthetic record to the WAL.
+Escalation cadence is configured via
+`[notifications.critical].escalate_at_secs` (default: `[300, 3600]`).
+Each elapsed interval re-fires the critical alert with escalation context.
 
 ## Acknowledgment
 
-Operators acknowledge critical alerts via the control socket:
+Operator acknowledgment in 1.4.0 is for historical doctor events, not
+notification `event_id` values.
 
-- `vigil ack <event_id>` -- acknowledge a specific critical alert.
-- `vigil ack --all-criticals` -- acknowledge all pending critical alerts.
+Use:
 
-Acknowledgment cancels further escalations for that event.
+- `vigil ack <kind> [--sequence <N>] [--note "<text>"]`
+- `vigil ack list`
+- `vigil ack revoke <kind> [--sequence <N>]`
+- `vigil ack show <sequence>`
+
+Acknowledgment adds operator context to doctor historical events.
+It does not suppress doctor categories or silence future alerts.
+
+For details, see [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md) and
+[CLI.md](CLI.md).
 
 ## Maintenance Window
 

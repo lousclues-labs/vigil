@@ -521,4 +521,40 @@ If any step before `sd_notify(Ready)` fails, the daemon exits with the error pri
 
 ---
 
+## Doctor Acknowledgment Architecture
+
+Acknowledgments are represented as audit-chain records (`path =
+vigil:operator_acknowledgment`) and interpreted by doctor as
+additive operator context.
+
+Key properties:
+
+- Acknowledgment decisions are auditable state transitions, not UI-only
+  flags.
+- Revoke is also audited, preserving reversibility and provenance.
+- Doctor does not gain category-suppression controls; row visibility is
+  constrained by operational state and aging windows.
+- Recovery rendering supports multi-hint outputs (command +
+  acknowledgment + manual investigation) with explicit connector verbs.
+
+Operator commands:
+
+- `vigil ack <kind>` / `vigil ack list` / `vigil ack revoke` /
+  `vigil ack show`
+- `vigil hooks disable|enable|status` as integration-layer controls
+  rather than diagnostic-layer suppression
+
+Configuration:
+
+- `[doctor].event_warn_window`
+- `[doctor].event_inform_window`
+- `[doctor].event_hide_window`
+- `[doctor].acknowledgment_cache_size`
+
+Validation enforces `warn <= inform <= hide`, `1h..365d` bounds, and
+emits a warning when the warn window is shorter than the conservative
+default.
+
+---
+
 Vigil Baseline architecture is intentionally small. You should be able to trace any alert from event source to audit row.

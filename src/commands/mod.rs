@@ -1,5 +1,6 @@
 //! CLI command implementations.
 
+mod ack;
 mod alerts;
 mod attest;
 mod audit;
@@ -26,6 +27,7 @@ mod welcome;
 mod why;
 mod why_silent;
 
+pub(crate) use ack::cmd_ack;
 pub(crate) use alerts::cmd_alerts;
 pub(crate) use attest::cmd_attest;
 pub(crate) use audit::cmd_audit;

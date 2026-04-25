@@ -27,12 +27,20 @@ pub(crate) fn cmd_audit(
             maintenance,
             suppressed,
             verbose,
+            acknowledgments_only,
+            with_acknowledgments,
         } => {
             let since_ts = since.as_deref().and_then(parse_time_filter);
             let until_ts = until.as_deref().and_then(parse_time_filter);
 
+            let path_filter = if acknowledgments_only {
+                Some("vigil:operator_acknowledgment".to_string())
+            } else {
+                path.clone()
+            };
+
             let q = vigil::db::audit_ops::AuditQuery {
-                path: path.clone(),
+                path: path_filter.clone(),
                 severity: severity.clone(),
                 group: group.clone(),
                 since: since_ts,
@@ -45,6 +53,30 @@ pub(crate) fn cmd_audit(
             let entries = vigil::db::audit_ops::query(&conn, &q)?;
             let total = vigil::db::audit_ops::count(&conn)?;
 
+            let mut ack_by_event: std::collections::HashMap<i64, Vec<vigil::ack::AcknowledgmentPayload>> =
+                std::collections::HashMap::new();
+            if with_acknowledgments {
+                let aq = vigil::db::audit_ops::AuditQuery {
+                    path: Some("vigil:operator_acknowledgment".to_string()),
+                    severity: None,
+                    group: None,
+                    since: None,
+                    until: None,
+                    maintenance_only: false,
+                    suppressed_only: false,
+                    limit: last.saturating_mul(10).max(100),
+                };
+                let ack_entries = vigil::db::audit_ops::query(&conn, &aq)?;
+                for a in ack_entries {
+                    if let Ok(payload) = serde_json::from_str::<vigil::ack::AcknowledgmentPayload>(&a.changes_json) {
+                        ack_by_event
+                            .entry(payload.event_sequence)
+                            .or_default()
+                            .push(payload);
+                    }
+                }
+            }
+
             if format == OutputFormat::Json {
                 println!(
                     "{}",
@@ -55,7 +87,7 @@ pub(crate) fn cmd_audit(
 
             // Build header with active filters
             let mut filter_parts = Vec::new();
-            if let Some(ref p) = path {
+            if let Some(ref p) = path_filter {
                 filter_parts.push(format!("path={}", p));
             }
             if let Some(ref s) = severity {
@@ -75,6 +107,12 @@ pub(crate) fn cmd_audit(
             }
             if suppressed {
                 filter_parts.push("suppressed".to_string());
+            }
+            if acknowledgments_only {
+                filter_parts.push("acknowledgments_only".to_string());
+            }
+            if with_acknowledgments {
+                filter_parts.push("with_acknowledgments".to_string());
             }
 
             if filter_parts.is_empty() {
@@ -129,6 +167,22 @@ pub(crate) fn cmd_audit(
                         }
                         if e.suppressed {
                             println!("    ○ alert suppressed");
+                        }
+
+                        if with_acknowledgments && e.path != "vigil:operator_acknowledgment" {
+                            if let Some(acks) = ack_by_event.get(&e.id) {
+                                for ack in acks {
+                                    let note = ack
+                                        .note
+                                        .as_deref()
+                                        .map(|n| format!(" (note: \"{}\")", n))
+                                        .unwrap_or_default();
+                                    println!(
+                                        "    acknowledgment: {:?} by uid {}{}",
+                                        ack.acknowledgment_kind, ack.operator_uid, note
+                                    );
+                                }
+                            }
                         }
                         println!();
                     }

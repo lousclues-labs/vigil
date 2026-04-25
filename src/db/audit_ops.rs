@@ -1625,3 +1625,172 @@ pub fn db_file_size(conn: &Connection) -> Result<u64> {
     let page_size: u64 = conn.query_row("PRAGMA page_size", [], |row| row.get(0))?;
     Ok(page_count * page_size)
 }
+
+/// Insert an operator acknowledgment record into the audit chain.
+///
+/// Returns `(new_chain_hash, new_sequence)`.
+pub fn insert_acknowledgment_entry(
+    conn: &Connection,
+    payload_json: &str,
+    previous_chain_hash: &str,
+    hmac_key: Option<&[u8]>,
+) -> Result<(String, i64)> {
+    let timestamp = Utc::now().timestamp();
+    let path = "vigil:operator_acknowledgment";
+    let severity = "info";
+
+    let chain_hash =
+        compute_chain_hash(previous_chain_hash, timestamp, path, payload_json, severity);
+
+    let hmac = hmac_key.map(|key| {
+        let data = crate::hmac::build_audit_hmac_data(
+            timestamp,
+            path,
+            "operator_acknowledgment",
+            severity,
+            None,
+            None,
+            previous_chain_hash,
+        );
+        crate::hmac::compute_hmac(key, &data).unwrap_or_default()
+    });
+
+    conn.prepare_cached(
+        "INSERT INTO audit_log (
+            timestamp, path, changes_json, severity, monitored_group,
+            process_json, package, maintenance, suppressed, hmac, chain_hash
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5,
+            ?6, ?7, ?8, ?9, ?10, ?11
+        )",
+    )?
+    .execute(params![
+        timestamp,
+        path,
+        payload_json,
+        severity,
+        Option::<String>::None,
+        Option::<String>::None,
+        Option::<String>::None,
+        0,
+        0,
+        hmac,
+        chain_hash,
+    ])?;
+
+    let seq = conn.last_insert_rowid();
+    Ok((chain_hash, seq))
+}
+
+/// Insert a doctor event record into the audit chain.
+///
+/// Used to record historical events (hook failures, chain breaks, etc.)
+/// so they can be referenced by acknowledgments.
+/// Returns `(new_chain_hash, new_sequence)`.
+pub fn insert_doctor_event_entry(
+    conn: &Connection,
+    event_path: &str,
+    payload_json: &str,
+    previous_chain_hash: &str,
+    hmac_key: Option<&[u8]>,
+) -> Result<(String, i64)> {
+    let timestamp = Utc::now().timestamp();
+    let severity = "warning";
+
+    let chain_hash =
+        compute_chain_hash(previous_chain_hash, timestamp, event_path, payload_json, severity);
+
+    let hmac = hmac_key.map(|key| {
+        let data = crate::hmac::build_audit_hmac_data(
+            timestamp,
+            event_path,
+            "doctor_event",
+            severity,
+            None,
+            None,
+            previous_chain_hash,
+        );
+        crate::hmac::compute_hmac(key, &data).unwrap_or_default()
+    });
+
+    conn.prepare_cached(
+        "INSERT INTO audit_log (
+            timestamp, path, changes_json, severity, monitored_group,
+            process_json, package, maintenance, suppressed, hmac, chain_hash
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5,
+            ?6, ?7, ?8, ?9, ?10, ?11
+        )",
+    )?
+    .execute(params![
+        timestamp,
+        event_path,
+        payload_json,
+        severity,
+        Option::<String>::None,
+        Option::<String>::None,
+        Option::<String>::None,
+        0,
+        0,
+        hmac,
+        chain_hash,
+    ])?;
+
+    let seq = conn.last_insert_rowid();
+    Ok((chain_hash, seq))
+}
+
+/// Insert a hooks-disable/enable operational record into the audit chain.
+pub fn insert_hooks_operation_entry(
+    conn: &Connection,
+    operation: &str,
+    payload_json: &str,
+    previous_chain_hash: &str,
+    hmac_key: Option<&[u8]>,
+) -> Result<(String, i64)> {
+    let timestamp = Utc::now().timestamp();
+    let path = &format!("vigil:hooks_{}", operation);
+    let severity = "info";
+
+    let chain_hash =
+        compute_chain_hash(previous_chain_hash, timestamp, path, payload_json, severity);
+
+    let hmac = hmac_key.map(|key| {
+        let data = crate::hmac::build_audit_hmac_data(
+            timestamp,
+            path,
+            &format!("hooks_{}", operation),
+            severity,
+            None,
+            None,
+            previous_chain_hash,
+        );
+        crate::hmac::compute_hmac(key, &data).unwrap_or_default()
+    });
+
+    conn.prepare_cached(
+        "INSERT INTO audit_log (
+            timestamp, path, changes_json, severity, monitored_group,
+            process_json, package, maintenance, suppressed, hmac, chain_hash
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5,
+            ?6, ?7, ?8, ?9, ?10, ?11
+        )",
+    )?
+    .execute(params![
+        timestamp,
+        path,
+        payload_json,
+        severity,
+        Option::<String>::None,
+        Option::<String>::None,
+        Option::<String>::None,
+        0,
+        0,
+        hmac,
+        chain_hash,
+    ])?;
+
+    let seq = conn.last_insert_rowid();
+    Ok((chain_hash, seq))
+}

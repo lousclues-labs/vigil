@@ -6,6 +6,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod ack;
 pub mod alert;
 pub mod attest;
 pub mod baseline_diff;

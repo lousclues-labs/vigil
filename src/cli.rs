@@ -252,6 +252,24 @@ pub enum Command {
         action: HooksAction,
     },
 
+    /// Acknowledge historical events in doctor output
+    Ack {
+        /// Event kind to acknowledge: hooks, baseline-refresh, chain-break, retention, degraded
+        kind: Option<String>,
+
+        /// Acknowledge a specific audit record by sequence number
+        #[arg(long)]
+        sequence: Option<i64>,
+
+        /// Attach an operator note to the acknowledgment
+        #[arg(long)]
+        note: Option<String>,
+
+        /// Additional ack operations
+        #[command(subcommand)]
+        action: Option<AckAction>,
+    },
+
     /// Print version
     Version,
 }
@@ -305,6 +323,14 @@ pub enum AuditAction {
         /// Show full change details for each entry (what specifically changed)
         #[arg(long, short = 'v')]
         verbose: bool,
+
+        /// Show only acknowledgment records
+        #[arg(long)]
+        acknowledgments_only: bool,
+
+        /// Show associated acknowledgments alongside event records
+        #[arg(long)]
+        with_acknowledgments: bool,
     },
 
     /// Show audit log statistics
@@ -575,6 +601,37 @@ pub enum HooksAction {
 
     /// Reinstall canonical hook scripts
     Repair,
+
+    /// Disable package manager hook integration
+    Disable,
+
+    /// Enable package manager hook integration (alias for repair)
+    Enable,
+
+    /// Show hook installation and enablement status
+    Status,
+}
+
+#[derive(Subcommand)]
+pub enum AckAction {
+    /// List pending unacknowledged events and recent acknowledgments
+    List,
+
+    /// Revoke a previous acknowledgment
+    Revoke {
+        /// Event kind: hooks, baseline-refresh, chain-break, retention, degraded
+        kind: String,
+
+        /// Sequence number of the acknowledgment to revoke
+        #[arg(long)]
+        sequence: Option<i64>,
+    },
+
+    /// Show full details of a specific acknowledgment record
+    Show {
+        /// Audit record sequence number
+        sequence: i64,
+    },
 }
 
 #[cfg(test)]
@@ -910,6 +967,8 @@ mod tests {
                         maintenance,
                         suppressed,
                         verbose,
+                        acknowledgments_only,
+                        with_acknowledgments,
                     },
             }) => {
                 assert_eq!(last, 50);
@@ -921,6 +980,8 @@ mod tests {
                 assert!(!maintenance);
                 assert!(!suppressed);
                 assert!(!verbose);
+                assert!(!acknowledgments_only);
+                assert!(!with_acknowledgments);
             }
             _ => panic!("expected audit show"),
         }
@@ -1097,6 +1158,80 @@ mod tests {
                 assert_eq!(dir, PathBuf::from("."));
             }
             _ => panic!("expected attest list"),
+        }
+    }
+
+    #[test]
+    fn ack_kind_short_form_parses() {
+        let cli = Cli::try_parse_from(["vigil", "ack", "hooks"]).expect("parse ack hooks");
+        match cli.command {
+            Some(Command::Ack {
+                kind,
+                sequence,
+                note,
+                action,
+            }) => {
+                assert_eq!(kind.as_deref(), Some("hooks"));
+                assert!(sequence.is_none());
+                assert!(note.is_none());
+                assert!(action.is_none());
+            }
+            _ => panic!("expected ack command"),
+        }
+    }
+
+    #[test]
+    fn ack_list_subcommand_parses() {
+        let cli = Cli::try_parse_from(["vigil", "ack", "list"]).expect("parse ack list");
+        match cli.command {
+            Some(Command::Ack {
+                kind,
+                action: Some(AckAction::List),
+                ..
+            }) => {
+                assert!(kind.is_none());
+            }
+            _ => panic!("expected ack list"),
+        }
+    }
+
+    #[test]
+    fn no_cli_flag_exists_to_blanket_suppress_a_category() {
+        let bad_flags = ["--suppress", "--silence", "--ignore", "--blanket"]; 
+        for flag in bad_flags {
+            let result = Cli::try_parse_from(["vigil", "ack", "hooks", flag]);
+            assert!(
+                result.is_err(),
+                "unexpectedly accepted forbidden ack flag: {}",
+                flag
+            );
+        }
+    }
+
+    #[test]
+    fn hooks_disable_enable_status_parse() {
+        let d = Cli::try_parse_from(["vigil", "hooks", "disable"]).expect("parse hooks disable");
+        match d.command {
+            Some(Command::Hooks {
+                action: HooksAction::Disable,
+            }) => {}
+            _ => panic!("expected hooks disable"),
+        }
+
+        let e = Cli::try_parse_from(["vigil", "hooks", "enable"]).expect("parse hooks enable");
+        match e.command {
+            Some(Command::Hooks {
+                action: HooksAction::Enable,
+            }) => {}
+            _ => panic!("expected hooks enable"),
+        }
+
+        let s = Cli::try_parse_from(["vigil", "hooks", "status"]).expect("parse hooks status");
+        match s.command {
+            Some(Command::Hooks {
+                action: HooksAction::Status,
+            }) => {}
+            _ => panic!("expected hooks status"),
         }
     }
 }

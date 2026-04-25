@@ -91,17 +91,24 @@ fn data_dir_row_categorizes_by_component() {
 
 #[test]
 fn data_dir_row_handles_walk_failure_gracefully() {
-    // Point at a non-existent directory.
-    let result = vigil::doctor::walk_data_dir_usage(std::path::Path::new(
-        "/tmp/vigil-nonexistent-test-dir-8675309",
+    // Point at a guaranteed non-existent directory.
+    let missing = std::env::temp_dir().join(format!(
+        "vigil-nonexistent-test-dir-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time monotonic")
+            .as_nanos()
     ));
+    let _ = std::fs::remove_dir_all(&missing);
+
+    let result = vigil::doctor::walk_data_dir_usage(&missing);
     assert!(result.is_err(), "walk of non-existent dir must fail");
 
     // Run full diagnostics with an unreachable data dir to confirm doctor
     // does not crash and still produces a Data dir row.
     let mut cfg = vigil::config::default_config();
-    cfg.daemon.db_path =
-        std::path::PathBuf::from("/tmp/vigil-nonexistent-test-dir-8675309/baseline.db");
+    cfg.daemon.db_path = missing.join("baseline.db");
 
     let checks = vigil::doctor::run_diagnostics(&cfg);
     let storage = checks
@@ -407,10 +414,10 @@ fn recovery_none_is_none_variant() {
 }
 
 #[test]
-fn socket_row_uses_command_with_context_recovery() {
+fn socket_row_uses_multi_hint_recovery() {
     // When the socket is configured but has no listener, the recovery
-    // must be CommandWithContext: a real disable command plus a hint
-    // about the listener alternative.
+    // uses Multi hints: a real disable command plus an alternative
+    // about the listener.
     let mut cfg = vigil::config::default_config();
     cfg.hooks.signal_socket = "/tmp/vigil-test-nonexistent-socket".to_string();
 
@@ -422,15 +429,28 @@ fn socket_row_uses_command_with_context_recovery() {
 
     assert_eq!(socket.status, vigil::doctor::CheckStatus::Failed);
     match &socket.recovery {
-        vigil::doctor::Recovery::CommandWithContext { command, context } => {
-            assert_eq!(command, "vigil alerts socket disable");
-            assert!(
-                context.contains("attach a listener"),
-                "context should mention listener alternative: {}",
-                context
-            );
+        vigil::doctor::Recovery::Multi(hints) => {
+            assert!(hints.len() >= 2, "expected at least 2 hints");
+            // First hint should be the disable command
+            match &hints[0] {
+                vigil::doctor::RecoveryHint::Command { command, .. } => {
+                    assert_eq!(command, "vigil alerts socket disable");
+                }
+                other => panic!("expected Command hint first, got: {:?}", other),
+            }
+            // Second hint should mention "listener"
+            match &hints[1] {
+                vigil::doctor::RecoveryHint::Manual { instruction, .. } => {
+                    assert!(
+                        instruction.contains("listener"),
+                        "second hint should mention listener: {}",
+                        instruction
+                    );
+                }
+                other => panic!("expected Manual hint second, got: {:?}", other),
+            }
         }
-        other => panic!("expected CommandWithContext, got: {:?}", other),
+        other => panic!("expected Multi recovery, got: {:?}", other),
     }
 }
 
@@ -483,6 +503,13 @@ fn every_row_recovery_variant_is_explicit() {
             }
             vigil::doctor::Recovery::None => {
                 // OK: no recovery needed.
+            }
+            vigil::doctor::Recovery::Multi(hints) => {
+                assert!(
+                    !hints.is_empty(),
+                    "Multi recovery has no hints (row: {})",
+                    check.name
+                );
             }
         }
     }

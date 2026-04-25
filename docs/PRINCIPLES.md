@@ -133,15 +133,44 @@ follows from this rule:
   attach to a socket, what paths to add to a watch group, what
   external archival schedule to set up.
 
-- **Use `Recovery::CommandWithContext`** when the recovery is a
-  command but the operator needs to know about an alternative
-  they could pursue manually (e.g., disable the socket OR attach
-  a listener).
+- **Use multi-hint recovery (`Recovery::Multi`)** when a row has
+  multiple explicit alternatives (for example, recover with a
+  command, acknowledge as understood, or investigate manually).
 
 A row that suggests manual prose for an action vigil could
 perform is a bug. Reviewers reject doctor rows that violate this
 rule. New CLI commands are added to satisfy the rule when
 existing commands are insufficient.
+
+### V.b -- Historical Events Are Acknowledgeable
+
+Doctor rows that report historical events ("last X happened at T")
+respect the operator's authority to add context to events.
+Acknowledged events render with operator metadata (ack timestamp,
+operator identity, optional note) alongside the event details.
+
+Acknowledgment is operator context, never suppression. A fresh
+occurrence of the same event kind warns afresh regardless of prior
+acknowledgments. The mechanism is operator-controlled (`vigil ack`),
+fully audited (chain-extending records with operator invocation
+context), and reversible (`vigil ack revoke`).
+
+A doctor row that surfaces a historical event without any
+acknowledgment path is a design bug.
+
+### V.c -- Doctor Shows Operational Truth Without Filtering
+
+Doctor output reflects current operational state. Operators can act
+on what doctor reports; they cannot configure doctor to omit
+categories of operational data.
+
+Acknowledgments add context to specific events. They do not hide
+events. Rows that depend on prior operator preference to become
+invisible violate this principle.
+
+Operators who want to stop seeing a class of events must stop those
+events at their source (disable integration, fix root cause), not at
+the diagnostic layer.
 
 ## VI. The Filesystem Is the Source of Truth
 

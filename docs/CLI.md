@@ -43,6 +43,9 @@ vigil [GLOBAL_OPTIONS] <COMMAND> [COMMAND_OPTIONS]
 | `maintenance` | maintenance window operations (for package manager hooks) |
 | `baseline` | baseline operations (refresh) |
 | `attest` | create, verify, diff, show, and list attestation files |
+| `alerts` | alert sink operations |
+| `hooks` | package manager hook operations |
+| `ack` | acknowledge historical doctor events |
 | `version` | print version string |
 
 ---
@@ -724,6 +727,8 @@ vigil audit show [OPTIONS]
 | `--maintenance` | false | show only changes during maintenance windows |
 | `--suppressed` | false | show only suppressed changes |
 | `-v`, `--verbose` | false | show full change details for each entry |
+| `--acknowledgments-only` | false | show only acknowledgment records |
+| `--with-acknowledgments` | false | show acknowledgments associated with listed events |
 
 Examples:
 
@@ -735,6 +740,8 @@ vigil audit show --path '/etc/passwd'
 vigil audit show --since 2026-04-01 --until 2026-04-07
 vigil audit show --group system_critical -v
 vigil audit show --maintenance
+vigil audit show --acknowledgments-only
+vigil audit show --with-acknowledgments -v
 ```
 
 ### `audit stats`
@@ -1459,15 +1466,30 @@ Example:
 
 ## `vigil ack`
 
-Acknowledge a critical alert, canceling further escalation notifications.
+Acknowledge historical doctor events. Acknowledgment adds operator context;
+it does not remove events from doctor output.
 
 ```bash
-vigil ack <event_id>           # acknowledge a specific critical alert
-vigil ack --all-criticals      # acknowledge all pending critical alerts
+vigil ack <kind> [--sequence <N>] [--note "<text>"]
+vigil ack list
+vigil ack revoke <kind> [--sequence <N>]
+vigil ack show <sequence>
 ```
 
-Acknowledged alerts stop re-firing on the configured escalation schedule.
-The acknowledgment is recorded in the audit log.
+Kinds: `hooks`, `baseline-refresh`, `chain-break`, `retention`, `degraded`.
+
+- `vigil ack <kind>` acknowledges the most recent unacknowledged event
+  of that kind.
+- `--sequence` targets a specific event/ack sequence.
+- `--note` stores operator context in the acknowledgment record.
+- `list` shows unacknowledged events and recent acknowledgments.
+- `revoke` writes a revocation record and unmasks the underlying event.
+- `show` prints full details of one acknowledgment record.
+
+Every ack/revoke writes a chain-extending audit record and prints the
+new sequence ID.
+
+There is no `--suppress`, `--ignore`, or blanket category silence flag.
 
 ---
 
@@ -1489,17 +1511,27 @@ vigil alerts socket disable    # disable socket sink
 
 ## `vigil hooks`
 
-Verify and repair package manager hook scripts.
+Verify, install, disable, and inspect package-manager hook integration.
 
 ```bash
 vigil hooks verify             # compare installed hooks against canonical versions
 vigil hooks repair             # reinstall canonical hooks atomically
+vigil hooks disable            # remove installed hooks (integration-level opt-out)
+vigil hooks enable             # install hooks (alias of repair path)
+vigil hooks status             # enabled/disabled/not-installed + last invocation
 ```
 
 - `verify` compares installed hooks in `/etc/pacman.d/hooks/` and `/etc/apt/apt.conf.d/` against canonical versions embedded in the vigil binary. Exit code: `0` if all match, `2` if drift detected.
 - `repair` writes canonical hook scripts for detected package managers. Idempotent; skips hooks that already match. Must run as root.
+- `disable` removes installed hooks for detected managers. Idempotent when hooks are absent.
+- `enable` reinstalls canonical hooks and records an integration-enable operation.
+- `status` distinguishes `enabled`, `disabled`, and `not installed` states.
 
-Both commands auto-detect the package manager (pacman, apt) and skip hooks for managers not present on the system.
+All state-modifying hook operations emit audit sequence IDs for immediate
+forensic lookup via `vigil audit show`.
+
+All hook commands auto-detect the package manager (pacman, apt) and skip
+hook files for managers not present on the system.
 
 ---
 

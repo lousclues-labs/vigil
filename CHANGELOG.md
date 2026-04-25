@@ -2,6 +2,95 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.4.0] - 2026-04-24
+
+### Added
+
+- **Doctor remains the operational truth surface; acknowledgments add
+  context instead of hiding categories.** The new `vigil ack` workflow
+  records operator acknowledgment decisions in the audit chain as
+  `vigil:operator_acknowledgment` records. There are no blanket
+  suppression flags.
+
+- **`vigil ack <kind>`** acknowledges the most recent unacknowledged
+  event of a kind (`hooks`, `baseline-refresh`, `chain-break`,
+  `retention`, `degraded`).
+
+- **`vigil ack list`**, **`vigil ack revoke <kind>`**, and
+  **`vigil ack show <sequence>`** for queue visibility, reversible
+  acknowledgment, and record inspection.
+
+- **`vigil hooks disable`**, **`vigil hooks enable`**, and
+  **`vigil hooks status`** at the integration layer. Disable/enable
+  operations are written to the audit chain and print audit sequence IDs.
+
+- **Doctor event-aging configuration** via `[doctor]`:
+  `event_warn_window`, `event_inform_window`, `event_hide_window`,
+  and `acknowledgment_cache_size`.
+
+- **`vigil audit show` acknowledgment filters:**
+  `--acknowledgments-only` and `--with-acknowledgments`.
+
+- **Event-linked historical doctor records for sequence-accurate ack
+  targeting.** Doctor now emits/consumes explicit event records for
+  historical contexts so `vigil ack` binds to concrete event sequences:
+  `vigil:hook_failure`, `vigil:baseline_refresh_failure`,
+  `vigil:audit_chain_break`, `vigil:retention_sweep_failure`, and
+  `vigil:daemon_degraded`.
+
+- **Acknowledgment metadata rendering in doctor recoveries.** When an
+  event is acknowledged, doctor surfaces operator context (ack timestamp,
+  operator UID, optional note) while keeping the row visible.
+
+### Changed
+
+- Hooks and Socket doctor recoveries now use explicit multi-hint recovery
+  rendering with connector verbs (`recover with:`, `acknowledge with:`,
+  `or investigate:` / `or attach:`) instead of implied continuation.
+
+- Hooks rows distinguish disabled vs not-installed states by consulting
+  integration-operation audit history.
+
+- Historical-event acknowledgment semantics are now implemented end to
+  end across doctor rows, not only hooks. Baseline staleness, chain
+  breaks, retention-cap failure states, and degraded daemon states all
+  support sequence-linked acknowledgment context.
+
+- Recurrence behavior is per-event and per-sequence. Acknowledging one
+  event never suppresses future events of the same kind; fresh
+  occurrences remain actionable and can be acknowledged separately.
+
+- Marker semantics remain truthful to operational risk:
+  acknowledged hooks/baseline stale events render as informational
+  context (`○`) while still visible;
+  chain-break rows remain warning (`⚠`) after acknowledgment;
+  degraded-state and retention-cap failure rows remain failed (`✗`)
+  until recovered.
+
+### Security / Threat Model Notes
+
+- Acknowledgments are additive metadata only. They do not change
+  detection, alert dispatch, or chain verification semantics.
+
+- Operator state changes (`hooks disable/enable`, `ack`/`ack revoke`)
+  are auditable with sequence IDs for immediate forensic follow-up.
+
+- Because all acknowledge/revoke actions and integration toggles are
+  chain-extending records, acknowledgment state transitions are both
+  attributable and reversible without hidden mutable suppressor state.
+
+### Verification
+
+- Added and expanded acknowledgment-focused tests for no-suppression,
+  recurrence-after-ack, and marker/rendering invariants across hooks,
+  baseline-refresh, chain-break, retention, and degraded contexts.
+
+- Validation passed under strict gates:
+  `cargo check`,
+  `cargo clippy --all-targets --all-features -- -D warnings`,
+  targeted acknowledgment/doctor suites,
+  and full `cargo test --all-features`.
+
 ## [1.3.2] - 2026-04-24
 
 ### Added

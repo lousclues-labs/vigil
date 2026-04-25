@@ -195,6 +195,8 @@ pub struct Config {
     #[serde(default)]
     pub notifications: NotificationsConfig,
     #[serde(default)]
+    pub doctor: DoctorConfig,
+    #[serde(default)]
     pub watch: HashMap<String, WatchGroup>,
 }
 
@@ -963,6 +965,87 @@ pub enum DeliverMode {
     Digest,
 }
 
+/// Doctor diagnostic configuration.
+///
+/// Controls aging thresholds for historical events. The defaults are
+/// conservative (long windows) because aging is the only mechanism for
+/// events to leave doctor. See Principle V.c.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DoctorConfig {
+    /// Events younger than this render at natural severity.
+    /// Format: duration string (e.g. "7d", "24h"). Default: "7d".
+    #[serde(default = "default_event_warn_window")]
+    pub event_warn_window: String,
+
+    /// Events older than warn_window but younger than hide_window
+    /// render as informational (○). Default: "30d".
+    #[serde(default = "default_event_inform_window")]
+    pub event_inform_window: String,
+
+    /// Events older than this are hidden from doctor (still in audit log).
+    /// Default: "90d".
+    #[serde(default = "default_event_hide_window")]
+    pub event_hide_window: String,
+
+    /// Maximum number of acknowledgment states to cache in memory.
+    /// Cache is rebuildable from the audit log.
+    #[serde(default = "default_acknowledgment_cache_size")]
+    pub acknowledgment_cache_size: usize,
+}
+
+impl Default for DoctorConfig {
+    fn default() -> Self {
+        Self {
+            event_warn_window: default_event_warn_window(),
+            event_inform_window: default_event_inform_window(),
+            event_hide_window: default_event_hide_window(),
+            acknowledgment_cache_size: default_acknowledgment_cache_size(),
+        }
+    }
+}
+
+fn default_event_warn_window() -> String {
+    "7d".to_string()
+}
+fn default_event_inform_window() -> String {
+    "30d".to_string()
+}
+fn default_event_hide_window() -> String {
+    "90d".to_string()
+}
+fn default_acknowledgment_cache_size() -> usize {
+    1000
+}
+
+impl DoctorConfig {
+    /// Parse event_warn_window into seconds.
+    pub fn warn_window_secs(&self) -> i64 {
+        parse_duration_secs(&self.event_warn_window).unwrap_or(7 * 86400)
+    }
+
+    /// Parse event_inform_window into seconds.
+    pub fn inform_window_secs(&self) -> i64 {
+        parse_duration_secs(&self.event_inform_window).unwrap_or(30 * 86400)
+    }
+
+    /// Parse event_hide_window into seconds.
+    pub fn hide_window_secs(&self) -> i64 {
+        parse_duration_secs(&self.event_hide_window).unwrap_or(90 * 86400)
+    }
+}
+
+/// Parse a duration string like "7d", "24h", "1h" into seconds.
+fn parse_duration_secs(input: &str) -> Option<i64> {
+    let input = input.trim();
+    if let Some(days) = input.strip_suffix('d').and_then(|n| n.parse::<i64>().ok()) {
+        return Some(days * 86400);
+    }
+    if let Some(hours) = input.strip_suffix('h').and_then(|n| n.parse::<i64>().ok()) {
+        return Some(hours * 3600);
+    }
+    None
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WatchGroup {
     pub severity: Severity,
@@ -1127,6 +1210,42 @@ pub fn validate_config(config: &Config) -> Result<()> {
         ));
     }
 
+    // Doctor historical-event aging validation
+    let warn = parse_duration_string(&config.doctor.event_warn_window).ok_or_else(|| {
+        VigilError::Config("doctor.event_warn_window must be a duration like 7d or 24h".into())
+    })?;
+    let inform = parse_duration_string(&config.doctor.event_inform_window).ok_or_else(|| {
+        VigilError::Config(
+            "doctor.event_inform_window must be a duration like 30d or 24h".into(),
+        )
+    })?;
+    let hide = parse_duration_string(&config.doctor.event_hide_window).ok_or_else(|| {
+        VigilError::Config("doctor.event_hide_window must be a duration like 90d or 24h".into())
+    })?;
+
+    let min = std::time::Duration::from_secs(3600);
+    let max = std::time::Duration::from_secs(365 * 86400);
+    if warn < min || warn > max {
+        return Err(VigilError::Config(
+            "doctor.event_warn_window must be between 1h and 365d".into(),
+        ));
+    }
+    if inform < min || inform > max {
+        return Err(VigilError::Config(
+            "doctor.event_inform_window must be between 1h and 365d".into(),
+        ));
+    }
+    if hide < min || hide > max {
+        return Err(VigilError::Config(
+            "doctor.event_hide_window must be between 1h and 365d".into(),
+        ));
+    }
+    if !(warn <= inform && inform <= hide) {
+        return Err(VigilError::Config(
+            "doctor windows must satisfy warn_window <= inform_window <= hide_window".into(),
+        ));
+    }
+
     Ok(())
 }
 
@@ -1207,6 +1326,15 @@ pub fn validate_config_deep(config: &Config) -> Result<Vec<String>> {
              Fix: `sudo vigil config set daemon.detection_wal_persistent true`"
                 .into(),
         );
+    }
+
+    if let Some(warn) = parse_duration_string(&config.doctor.event_warn_window) {
+        if warn < std::time::Duration::from_secs(7 * 86400) {
+            warnings.push(
+                "doctor.event_warn_window is shorter than the recommended default (7d); events will leave doctor more quickly"
+                    .into(),
+            );
+        }
     }
 
     Ok(warnings)
@@ -1344,6 +1472,7 @@ pub fn default_config() -> Config {
         maintenance: MaintenanceConfig::default(),
         update: UpdateConfig::default(),
         notifications: NotificationsConfig::default(),
+        doctor: DoctorConfig::default(),
         watch,
     }
 }
