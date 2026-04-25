@@ -257,12 +257,8 @@ pub fn render_human(
     out.push('\n');
 
     if report.scan.changes.is_empty() {
-        out.push_str(&format!("  ╭{}╮\n", "─".repeat(46)));
-        out.push_str(&format!(
-            "  │  {}  │\n",
-            styled.paint(Style::BoldGreen, "● Boundaries intact")
-        ));
-        out.push_str(&format!("  ╰{}╯\n", "─".repeat(46)));
+        out.push_str(&super::widgets::render_clean_box(term));
+        out.push('\n');
     } else {
         out.push_str(&render_histogram(&report.severity_counts, term));
         out.push_str("\n\n");

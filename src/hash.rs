@@ -4,11 +4,18 @@
 //! buffered I/O for special files where mmap fails. `hash_buffered` provides
 //! a path-based entry point for CLI commands.
 
+use std::cell::RefCell;
 use std::fs::File;
-use std::io::{BufReader, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::io::AsRawFd;
 
 use crate::error::{Result, VigilError};
+
+// Thread-local 128KB read buffer reused across hash operations to avoid
+// per-file heap allocation churn.
+thread_local! {
+    static HASH_BUF: RefCell<Vec<u8>> = RefCell::new(vec![0u8; 131_072]);
+}
 
 /// RAII guard for memory-mapped regions. Calls munmap on drop.
 #[allow(unsafe_code)]
@@ -89,19 +96,28 @@ pub fn blake3_hash_fd(file: &File, size: u64, mmap_threshold: u64) -> Result<Str
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-/// Hash a file using a buffered reader with a 128KB buffer.
+/// Hash a file using a thread-local reusable buffer. Reads via `&File`
+/// (which implements `Read` on Unix) to avoid a `dup(2)` syscall from
+/// `try_clone()`. The 128KB buffer is allocated once per thread.
 fn hash_buffered(file: &File, hasher: &mut blake3::Hasher) -> Result<()> {
-    let mut reader = file
-        .try_clone()
-        .map_err(|e| VigilError::Hash(format!("cannot clone file handle: {}", e)))?;
-    reader
+    (&*file)
         .seek(SeekFrom::Start(0))
         .map_err(|e| VigilError::Hash(format!("seek error: {}", e)))?;
-    let buf_reader = BufReader::with_capacity(131_072, &mut reader);
-    hasher
-        .update_reader(buf_reader)
-        .map_err(|e| VigilError::Hash(format!("read hash error: {}", e)))?;
-    Ok(())
+    HASH_BUF.with(|buf| {
+        let mut buf = buf.borrow_mut();
+        let mut reader: &File = file;
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    hasher.update(&buf[..n]);
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(VigilError::Hash(format!("read hash error: {}", e))),
+            }
+        }
+        Ok(())
+    })
 }
 
 /// Compute BLAKE3 hash of raw bytes.

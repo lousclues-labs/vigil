@@ -79,6 +79,7 @@ impl AlertDispatcher {
         metrics: Arc<Metrics>,
         startup_hmac_key: Option<Zeroizing<Vec<u8>>>,
         wal_active: bool,
+        hostname: String,
     ) -> Result<Self> {
         if let Some(parent) = audit_db_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -139,12 +140,6 @@ impl AlertDispatcher {
 
         let hmac_key = startup_hmac_key;
 
-        let hostname = std::fs::read_to_string("/etc/hostname")
-            .ok()
-            .map(|h| h.trim().to_string())
-            .filter(|h| !h.is_empty())
-            .unwrap_or_else(|| "localhost".to_string());
-
         Ok(Self {
             sinks,
             audit_conn,
@@ -188,6 +183,11 @@ impl AlertDispatcher {
                     self.metrics
                         .alerts_dispatched
                         .fetch_add(1, Ordering::Relaxed);
+                    if alert.severity == crate::types::Severity::Critical {
+                        self.metrics
+                            .critical_alerts_dispatched
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
                 }
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -452,7 +452,9 @@ mod tests {
 
         let cfg = crate::config::default_config();
         let metrics = Arc::new(crate::metrics::Metrics::new());
-        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, None, false).unwrap();
+        let dispatcher =
+            AlertDispatcher::new(&cfg, &audit_path, metrics, None, false, "test".to_string())
+                .unwrap();
 
         let payload = AlertPayload {
             change: ChangeResult {
@@ -481,7 +483,9 @@ mod tests {
         cfg.alerts.cooldown_seconds = 10; // 10 second cooldown
 
         let metrics = Arc::new(crate::metrics::Metrics::new());
-        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, None, false).unwrap();
+        let dispatcher =
+            AlertDispatcher::new(&cfg, &audit_path, metrics, None, false, "test".to_string())
+                .unwrap();
 
         let change = ChangeResult {
             path: std::sync::Arc::new(std::path::PathBuf::from("/tmp/cooldown_test")),
@@ -522,7 +526,9 @@ mod tests {
         cfg.alerts.cooldown_seconds = 0; // disable cooldown for this test
 
         let metrics = Arc::new(crate::metrics::Metrics::new());
-        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, None, false).unwrap();
+        let dispatcher =
+            AlertDispatcher::new(&cfg, &audit_path, metrics, None, false, "test".to_string())
+                .unwrap();
 
         for i in 0..5 {
             let change = ChangeResult {
@@ -560,7 +566,15 @@ mod tests {
 
         let hmac_key = crate::hmac::load_hmac_key(&key_path).ok();
         let metrics = Arc::new(crate::metrics::Metrics::new());
-        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, hmac_key, false).unwrap();
+        let dispatcher = AlertDispatcher::new(
+            &cfg,
+            &audit_path,
+            metrics,
+            hmac_key,
+            false,
+            "test".to_string(),
+        )
+        .unwrap();
 
         let payload = AlertPayload {
             change: ChangeResult {
@@ -592,7 +606,9 @@ mod tests {
 
         let cfg = crate::config::default_config();
         let metrics = Arc::new(crate::metrics::Metrics::new());
-        let dispatcher = AlertDispatcher::new(&cfg, &audit_path, metrics, None, false).unwrap();
+        let dispatcher =
+            AlertDispatcher::new(&cfg, &audit_path, metrics, None, false, "test".to_string())
+                .unwrap();
 
         let critical_change = ChangeResult {
             path: std::sync::Arc::new(std::path::PathBuf::from("/usr/bin/sudo")),

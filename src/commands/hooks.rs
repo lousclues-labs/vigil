@@ -25,6 +25,9 @@ fn register_file_expectation(config_path: Option<&Path>, path: &Path) {
         "window_secs": 30,
     });
     let _ = query_control_socket(socket, &request.to_string());
+    // Best-effort daemon notification; if the daemon is unreachable the
+    // expect-file-change will simply not register and the change may
+    // trigger a detection alert. The hook operation itself still proceeds.
 }
 
 /// Canonical hook contents embedded at compile time.
@@ -209,7 +212,11 @@ fn cmd_hooks_repair(config_path: Option<&Path>, audit_operation: &str) -> vigil:
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644));
+                    if let Err(e) =
+                        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))
+                    {
+                        tracing::warn!(path = %path.display(), error = %e, "failed to set hook file permissions");
+                    }
                 }
                 println!(
                     "  {:<18} ● repaired (was: drift; now: canonical)",

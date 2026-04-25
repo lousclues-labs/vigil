@@ -61,6 +61,12 @@ pub struct Metrics {
     pub worker_db_reopen_attempts: AtomicU64,
     /// Worker DB reopen failures (reopen itself failed).
     pub worker_db_reopen_failures: AtomicU64,
+    /// Bloom filter checks performed.
+    pub bloom_checks_total: AtomicU64,
+    /// Bloom filter rejections (path not in any watch prefix).
+    pub bloom_rejects_total: AtomicU64,
+    /// Alerts dispatched with Critical severity.
+    pub critical_alerts_dispatched: AtomicU64,
     /// Auto-rebaseline entries rejected due to empty hash or zero mtime.
     pub auto_rebaseline_rejected: AtomicU64,
     /// Unattributed changes recorded during baseline refresh.
@@ -114,6 +120,9 @@ impl Metrics {
             fanotify_thread_restarts: AtomicU64::new(0),
             worker_db_reopen_attempts: AtomicU64::new(0),
             worker_db_reopen_failures: AtomicU64::new(0),
+            bloom_checks_total: AtomicU64::new(0),
+            bloom_rejects_total: AtomicU64::new(0),
+            critical_alerts_dispatched: AtomicU64::new(0),
             auto_rebaseline_rejected: AtomicU64::new(0),
             baseline_refresh_unattributed_changes: AtomicU64::new(0),
             uptime_start: chrono::Utc::now().timestamp(),
@@ -179,6 +188,9 @@ impl Metrics {
             fanotify_thread_restarts: self.fanotify_thread_restarts.load(Ordering::Relaxed),
             worker_db_reopen_attempts: self.worker_db_reopen_attempts.load(Ordering::Relaxed),
             worker_db_reopen_failures: self.worker_db_reopen_failures.load(Ordering::Relaxed),
+            bloom_checks_total: self.bloom_checks_total.load(Ordering::Relaxed),
+            bloom_rejects_total: self.bloom_rejects_total.load(Ordering::Relaxed),
+            critical_alerts_dispatched: self.critical_alerts_dispatched.load(Ordering::Relaxed),
             auto_rebaseline_rejected: self.auto_rebaseline_rejected.load(Ordering::Relaxed),
             baseline_refresh_unattributed_changes: self
                 .baseline_refresh_unattributed_changes
@@ -239,6 +251,9 @@ pub struct MetricsSnapshot {
     pub fanotify_thread_restarts: u64,
     pub worker_db_reopen_attempts: u64,
     pub worker_db_reopen_failures: u64,
+    pub bloom_checks_total: u64,
+    pub bloom_rejects_total: u64,
+    pub critical_alerts_dispatched: u64,
     pub auto_rebaseline_rejected: u64,
     pub baseline_refresh_unattributed_changes: u64,
     pub uptime_start: i64,
@@ -303,6 +318,12 @@ impl MetricsSnapshot {
             "vigil_alerts_dispatched_total",
             "Alerts sent to sinks",
             self.alerts_dispatched,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_critical_alerts_dispatched_total",
+            "Critical-severity alerts sent to sinks",
+            self.critical_alerts_dispatched,
         );
         write_prom_counter(
             &mut out,
@@ -495,6 +516,18 @@ impl MetricsSnapshot {
             "vigil_worker_db_reopen_failures_total",
             "Worker DB reopen failures",
             self.worker_db_reopen_failures,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_bloom_checks_total",
+            "Bloom filter checks performed",
+            self.bloom_checks_total,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_bloom_rejects_total",
+            "Bloom filter rejections (event path not in any watched prefix)",
+            self.bloom_rejects_total,
         );
         write_prom_counter(
             &mut out,

@@ -103,7 +103,6 @@ This list matches direct dependencies in `Cargo.toml`.
 | `arc-swap` | lock-free config pointer swap on reload |
 | `lru` | baseline lookup cache in workers |
 | `croner` | cron expression parsing for scheduled scans |
-| `rayon` | optional parallel scanning feature |
 
 ### Utility
 

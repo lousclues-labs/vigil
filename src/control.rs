@@ -101,7 +101,11 @@ pub fn spawn(
     // Set socket permissions to 0600
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600));
+        if let Err(e) =
+            std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
+        {
+            tracing::warn!(path = %socket_path.display(), error = %e, "failed to set control socket permissions to 0600");
+        }
     }
 
     // Set non-blocking so we can check shutdown
@@ -121,8 +125,12 @@ pub fn spawn(
             while !shutdown.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((stream, _addr)) => {
-                        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                        let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+                        if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(5))) {
+                            tracing::warn!(error = %e, "failed to set control socket read timeout");
+                        }
+                        if let Err(e) = stream.set_write_timeout(Some(Duration::from_secs(5))) {
+                            tracing::warn!(error = %e, "failed to set control socket write timeout");
+                        }
 
                         // Bound concurrent connections so a slow/hung peer
                         // cannot starve health-check traffic from `vigil
@@ -399,8 +407,8 @@ impl ControlHandler {
             let conn = self.baseline_conn.lock();
             baseline_ops::count(&conn).unwrap_or(0)
         };
-        let alerts_24h = snap.alerts_dispatched;
-        let critical_24h = 0u64; // TODO: track critical-specific counter
+        let alerts_total = snap.alerts_dispatched;
+        let critical_alerts_total = snap.critical_alerts_dispatched;
         serde_json::json!({
             "ok": true,
             "daemon": {
@@ -409,8 +417,8 @@ impl ControlHandler {
                 "version": env!("CARGO_PKG_VERSION"),
                 "maintenance_window": self.maintenance_active.load(Ordering::Acquire),
                 "baseline_count": baseline_count,
-                "alerts_24h": alerts_24h,
-                "critical_24h": critical_24h,
+                "alerts_total": alerts_total,
+                "critical_alerts_total": critical_alerts_total,
             },
             "metrics": snap.status_view(),
         })

@@ -108,8 +108,6 @@ impl std::str::FromStr for Scope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SignatureScheme {
     HmacBlake3,
-    // Ed25519 -- future. Stub kept for forward-compat.
-    // Ed25519,
 }
 
 impl std::fmt::Display for SignatureScheme {

@@ -334,8 +334,6 @@ pub struct ScannerConfig {
     /// Users with very large baselines can set this to `incremental` in their config.
     #[serde(default = "default_scheduled_mode")]
     pub scheduled_mode: ScanMode,
-    #[serde(default)]
-    pub parallel: bool,
     /// Average baseline changes per coordinator tick (60s) that triggers
     /// a high-drift-velocity warning. `None` uses the default of 50.
     #[serde(default)]
@@ -351,7 +349,6 @@ impl Default for ScannerConfig {
             max_file_size: default_max_file_size(),
             mmap_threshold: default_mmap_threshold(),
             scheduled_mode: ScanMode::Full,
-            parallel: false,
             drift_velocity_threshold: None,
         }
     }

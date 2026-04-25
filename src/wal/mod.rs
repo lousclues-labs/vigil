@@ -126,6 +126,10 @@ pub struct DetectionWal {
     instance_nonce: [u8; 32],
     max_size_bytes: u64,
     sync_mode: crate::config::DetectionWalSync,
+    /// Minimum offset of an unconsumed entry. Updated after mark operations
+    /// to skip over contiguous runs of fully-consumed entries at the head.
+    /// Resets to WAL_HEADER_SIZE after truncation.
+    min_unconsumed_offset: AtomicU64,
 }
 
 #[derive(Debug, Clone)]
@@ -292,6 +296,7 @@ impl DetectionWal {
             instance_nonce,
             max_size_bytes: max_size,
             sync_mode,
+            min_unconsumed_offset: AtomicU64::new(WAL_HEADER_SIZE),
         })
     }
 
@@ -388,14 +393,16 @@ impl DetectionWal {
     //   4. This turns the hot path from O(total_entries) to O(pending_entries).
     pub fn iter_unconsumed(&self) -> Result<Vec<WalEntry>> {
         let file_len = self.file_len.load(Ordering::Acquire);
+        let start = self.min_unconsumed_offset.load(Ordering::Acquire);
         let file = self.file.lock();
-        let mut scanned = scan_entries(
+        let mut scanned = scan_entries_from(
             &file,
             file_len,
             self.hmac_key.as_ref().map(|k| k.as_slice()),
             &self.instance_nonce,
             false,
             false,
+            start,
         )?;
 
         scanned.sort_by_key(|e| e.sequence);
@@ -446,6 +453,8 @@ impl DetectionWal {
             file.sync_data()?;
             self.file_len.store(WAL_HEADER_SIZE, Ordering::Release);
             self.sequence.store(0, Ordering::Release);
+            self.min_unconsumed_offset
+                .store(WAL_HEADER_SIZE, Ordering::Release);
             return Ok(purged);
         }
 
@@ -492,6 +501,8 @@ impl DetectionWal {
             .map(|m| m + 1)
             .unwrap_or(0);
         self.sequence.store(next_seq, Ordering::Release);
+        self.min_unconsumed_offset
+            .store(WAL_HEADER_SIZE, Ordering::Release);
 
         Ok(purged)
     }
@@ -555,6 +566,16 @@ impl DetectionWal {
         entry[entry_size - 4..entry_size].copy_from_slice(&crc.to_le_bytes());
 
         write_all_at(&file, &entry, offset)?;
+
+        // Advance cursor if this entry is now fully consumed and is at the cursor position
+        if is_fully_consumed(flags) {
+            let cursor = self.min_unconsumed_offset.load(Ordering::Acquire);
+            if offset == cursor {
+                self.min_unconsumed_offset
+                    .store(offset + entry_size as u64, Ordering::Release);
+            }
+        }
+
         Ok(())
     }
 }
@@ -650,6 +671,26 @@ fn scan_entries(
     include_consumed: bool,
     keep_bytes: bool,
 ) -> Result<Vec<ScannedEntry>> {
+    scan_entries_from(
+        file,
+        file_len,
+        hmac_key,
+        instance_nonce,
+        include_consumed,
+        keep_bytes,
+        WAL_HEADER_SIZE,
+    )
+}
+
+fn scan_entries_from(
+    file: &File,
+    file_len: u64,
+    hmac_key: Option<&[u8]>,
+    instance_nonce: &[u8; 32],
+    include_consumed: bool,
+    keep_bytes: bool,
+    start_offset: u64,
+) -> Result<Vec<ScannedEntry>> {
     // VIGIL-VULN-067: determine if HMAC is mandatory from the cached
     // fingerprint (passed via instance_nonce context, not re-read from disk).
     // Re-reading from disk on every scan would allow an attacker with WAL
@@ -657,7 +698,7 @@ fn scan_entries(
     // the HMAC policy.
     let hmac_required = hmac_key.is_some();
 
-    let mut offset = WAL_HEADER_SIZE;
+    let mut offset = start_offset;
     let mut out = Vec::new();
     let mut gap_start: Option<u64> = None;
     let mut gap_bytes: u64 = 0;

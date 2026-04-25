@@ -142,11 +142,11 @@ impl Daemon {
                     hash = %binary_hash,
                     "vigil binary hash recorded"
                 );
-                let _ = baseline_ops::set_config_state(
-                    &self.baseline_conn,
-                    "binary_hash",
-                    &binary_hash,
-                );
+                if let Err(e) =
+                    baseline_ops::set_config_state(&self.baseline_conn, "binary_hash", &binary_hash)
+                {
+                    tracing::warn!(error = %e, "failed to store binary hash in baseline DB");
+                }
             }
         }
     }
@@ -232,7 +232,11 @@ impl Daemon {
             send_watchdog_heartbeat();
             let result = scanner::build_initial_baseline(&fresh_conn, config)?;
             send_watchdog_heartbeat();
-            let _ = baseline_ops::set_config_state(&fresh_conn, "baseline_initialized", "true");
+            if let Err(e) =
+                baseline_ops::set_config_state(&fresh_conn, "baseline_initialized", "true")
+            {
+                tracing::error!(error = %e, "failed to set baseline_initialized flag after reinitialization");
+            }
 
             tracing::error!(
                 backup = %backup_path.display(),
@@ -421,6 +425,12 @@ impl DaemonRuntime {
     fn start(daemon: &Daemon) -> Result<Self> {
         let cfg = daemon.config.load();
 
+        let hostname = std::fs::read_to_string("/etc/hostname")
+            .ok()
+            .map(|h| h.trim().to_string())
+            .filter(|h| !h.is_empty())
+            .unwrap_or_else(|| "localhost".to_string());
+
         let pid_file = cfg.daemon.pid_file.clone();
         let baseline_db_path = cfg.daemon.db_path.clone();
         let audit_db_path = db::audit_db_path(&cfg);
@@ -530,12 +540,14 @@ impl DaemonRuntime {
                 aw_baseline_conn,
                 daemon.startup_hmac_key.clone(),
                 daemon.metrics.clone(),
+                hostname.clone(),
             )?;
             audit_writer.recover()?;
             send_watchdog_heartbeat();
             let aw_handle = audit_writer.spawn(daemon.shutdown.clone())?;
 
-            let sink_runner = SinkRunner::new(wal.clone(), &cfg, daemon.metrics.clone())?;
+            let sink_runner =
+                SinkRunner::new(wal.clone(), &cfg, daemon.metrics.clone(), hostname.clone())?;
             let sr_handle = sink_runner.spawn(daemon.shutdown.clone())?;
             (Some(aw_handle), Some(sr_handle))
         } else {
@@ -584,6 +596,7 @@ impl DaemonRuntime {
             daemon.metrics.clone(),
             daemon.startup_hmac_key.clone(),
             wal.is_some(),
+            hostname,
         )?;
 
         // Open startup connections for coordinator (avoids TOCTOU by never re-opening by path)
@@ -742,7 +755,9 @@ impl DaemonRuntime {
         }
 
         if let Some(wal) = self.wal {
-            let _ = wal.truncate_consumed();
+            if let Err(e) = wal.truncate_consumed() {
+                tracing::warn!(error = %e, "WAL truncation failed during shutdown");
+            }
         }
 
         cleanup_pid_file(&self.pid_file);
@@ -757,6 +772,7 @@ pub fn daemon_run(config: &Config) -> Result<()> {
     Daemon::from_config(config.clone())?.run()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_alert_thread(
     config: Arc<ArcSwap<Config>>,
     alert_rx: crossbeam_channel::Receiver<AlertPayload>,
@@ -765,10 +781,17 @@ fn spawn_alert_thread(
     metrics: Arc<Metrics>,
     startup_hmac_key: Option<zeroize::Zeroizing<Vec<u8>>>,
     wal_active: bool,
+    hostname: String,
 ) -> Result<JoinHandle<()>> {
     let cfg = config.load();
-    let dispatcher =
-        AlertDispatcher::new(&cfg, audit_db_path, metrics, startup_hmac_key, wal_active)?;
+    let dispatcher = AlertDispatcher::new(
+        &cfg,
+        audit_db_path,
+        metrics,
+        startup_hmac_key,
+        wal_active,
+        hostname,
+    )?;
 
     std::thread::Builder::new()
         .name("vigil-alert".into())
@@ -842,6 +865,11 @@ fn spawn_baseline_writer(
                                     "baseline auto-update failed"
                                 );
                             } else {
+                                tracing::info!(
+                                    path = %update.entry.path.display(),
+                                    reason = %update.reason,
+                                    "baseline auto-updated"
+                                );
                                 written += 1;
                             }
                         }
@@ -868,11 +896,13 @@ fn spawn_baseline_writer(
                                 if let Some(ref key) = startup_hmac_key {
                                     match baseline_ops::compute_baseline_hmac(&conn, key) {
                                         Ok(hmac) => {
-                                            let _ = baseline_ops::set_config_state(
+                                            if let Err(e) = baseline_ops::set_config_state(
                                                 &conn,
                                                 "baseline_hmac",
                                                 &hmac,
-                                            );
+                                            ) {
+                                                tracing::warn!(error = %e, "failed to store baseline HMAC in baseline writer");
+                                            }
                                         }
                                         Err(e) => {
                                             tracing::debug!(

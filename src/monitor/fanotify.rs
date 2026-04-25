@@ -490,7 +490,9 @@ fn run_event_loop(
                     // Bloom filter fast-reject: check if any prefix of the
                     // event path is in the filter (not the full path, which
                     // was never inserted)
+                    metrics.bloom_checks_total.fetch_add(1, Ordering::Relaxed);
                     if !current_bloom.might_contain_prefix_of(&path) {
+                        metrics.bloom_rejects_total.fetch_add(1, Ordering::Relaxed);
                         // fd_guard drops and closes the fd automatically
                         offset += len;
                         continue;

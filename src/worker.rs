@@ -34,7 +34,7 @@ use crate::watch_index::WatchGroupIndex;
 
 /// Number of consecutive DB errors before the worker attempts to reopen the
 /// baseline connection. Prevents permanent degradation from transient SQLite errors.
-const WORKER_DB_REOPEN_THRESHOLD: u32 = 5;
+const WORKER_DB_REOPEN_THRESHOLD: u32 = 10;
 
 /// Maximum consecutive reopen failures before the worker gives up.
 const WORKER_DB_MAX_REOPEN_FAILURES: u32 = 5;
@@ -48,9 +48,16 @@ pub struct BaselineUpdate {
     pub reason: UpdateReason,
 }
 
-#[allow(dead_code)] // reason field reserved for future logging in baseline writer
 pub enum UpdateReason {
     PackageUpdate,
+}
+
+impl std::fmt::Display for UpdateReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UpdateReason::PackageUpdate => write!(f, "package_update"),
+        }
+    }
 }
 
 #[allow(unsafe_code)]
@@ -94,7 +101,7 @@ pub struct WorkerContext {
     watch_index: Arc<ArcSwap<WatchGroupIndex>>,
     metrics: Arc<Metrics>,
     filter: EventFilter,
-    cache: LruCache<String, BaselineEntry>,
+    cache: LruCache<String, Arc<BaselineEntry>>,
     local_generation: u64,
     generation: Arc<AtomicU64>,
     drain_counter: u32,
@@ -147,14 +154,16 @@ impl WorkerContext {
 
         let baseline = if let Some(cached) = self.cache.get(path_cow.as_ref()) {
             self.metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
-            cached.clone()
+            Arc::clone(cached)
         } else {
             self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
             match baseline_ops::get_by_path(&self.conn, path_cow.as_ref()) {
                 Ok(Some(b)) => {
                     self.consecutive_db_errors = 0;
-                    self.cache.put(path_cow.clone().into_owned(), b.clone());
-                    b
+                    let arc = Arc::new(b);
+                    self.cache
+                        .put(path_cow.clone().into_owned(), Arc::clone(&arc));
+                    arc
                 }
                 Ok(None) => {
                     self.consecutive_db_errors = 0;
@@ -245,7 +254,7 @@ impl WorkerContext {
             }
         };
 
-        let result = process_event_inner(event, &cfg, &idx, &self.metrics, baseline)?;
+        let result = process_event_inner(event, &cfg, &idx, &self.metrics, &baseline)?;
         if result.is_some() {
             self.cache.pop(path_cow.as_ref());
         }
@@ -399,7 +408,7 @@ impl WorkerContext {
                         return;
                     }
 
-                    let _ = tx.try_send(BaselineUpdate {
+                    if let Err(e) = tx.try_send(BaselineUpdate {
                         entry: BaselineEntry {
                             id: None,
                             path: change_result.path.as_ref().clone(),
@@ -414,7 +423,13 @@ impl WorkerContext {
                             updated_at: now_ts,
                         },
                         reason: UpdateReason::PackageUpdate,
-                    });
+                    }) {
+                        tracing::warn!(
+                            path = %change_result.path.display(),
+                            error = %e,
+                            "auto-rebaseline update dropped (baseline writer channel full or disconnected)"
+                        );
+                    }
                 }
             }
         }
@@ -524,7 +539,7 @@ fn process_event_inner(
     cfg: &Config,
     idx: &WatchGroupIndex,
     metrics: &Metrics,
-    baseline: BaselineEntry,
+    baseline: &BaselineEntry,
 ) -> Result<Option<ChangeResult>> {
     // Self-protection: log at error level if config or HMAC key is modified
     let path_str_ref = event.path.to_string_lossy();
@@ -573,7 +588,7 @@ fn process_event_inner(
             SnapshotOrDeleted::Deleted => {
                 return Ok(Some(ChangeResult::deletion(
                     &event.path,
-                    &baseline,
+                    baseline,
                     severity,
                     group_name,
                 )));
@@ -583,7 +598,7 @@ fn process_event_inner(
 
     metrics.hashes_computed.fetch_add(1, Ordering::Relaxed);
 
-    let changes = snapshot.diff(&baseline);
+    let changes = snapshot.diff(baseline);
     if changes.is_empty() {
         return Ok(None);
     }

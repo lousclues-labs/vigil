@@ -1,6 +1,6 @@
 [package]
 name = "vigil-baseline"
-version = "1.5.0"
+version = "1.6.0"
 edition = "2021"
 rust-version = "1.85"
 description = "Linux file integrity monitor. Kernel-level filesystem watching, BLAKE3 hashing, HMAC-chained audit trail. Silent by default, local by design, deeply paranoid."
@@ -9,7 +9,8 @@ description = "Linux file integrity monitor. Kernel-level filesystem watching, B
 license = "GPL-3.0-only"
 authors = ["loujr"]
 repository = "https://github.com/lousclues-labs/vigil"
-homepage = "https://github.com/lousclues-labs/vigil"
+homepage = "https://vigilbaseline.com"
+documentation = "https://docs.rs/vigil-baseline"
 readme = "README.md"
 keywords = ["security", "filesystem", "integrity", "audit", "fim"]
 categories = ["command-line-utilities", "filesystem"]
@@ -37,8 +38,7 @@ exclude = [
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin)'] }
 
 [features]
-default = ["parallel"]
-parallel = ["rayon"]
+default = []
 
 [[bin]]
 name = "vigil"
@@ -115,8 +115,6 @@ thiserror = "1"
 # systemd watchdog
 sd-notify = "0.4"
 
-# Parallel scanning (optional)
-rayon = { version = "1", optional = true }
 
 # LRU cache for baseline lookups
 lru = "0.16.3"

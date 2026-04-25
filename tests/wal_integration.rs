@@ -75,6 +75,7 @@ fn wal_disabled_uses_current_path() {
         metrics.clone(),
         None,
         false, // wal_active = false
+        "test".to_string(),
     )
     .unwrap();
 

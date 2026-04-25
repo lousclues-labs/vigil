@@ -207,12 +207,12 @@ pub(crate) fn cmd_status(config_path: Option<&Path>, format: OutputFormat) -> vi
                 .get("baseline_count")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
-            let alerts_24h = daemon
-                .get("alerts_24h")
+            let alerts_total = daemon
+                .get("alerts_total")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            let critical_24h = daemon
-                .get("critical_24h")
+            let critical_alerts_total = daemon
+                .get("critical_alerts_total")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
 
@@ -227,8 +227,8 @@ pub(crate) fn cmd_status(config_path: Option<&Path>, format: OutputFormat) -> vi
                 format_count(baseline_count.max(0) as u64)
             );
             eprintln!(
-                "last scan: {} ({}). {} alerts in 24h ({} critical).",
-                last_scan_str, last_changes, alerts_24h, critical_24h
+                "last scan: {} ({}). {} alerts total ({} critical).",
+                last_scan_str, last_changes, alerts_total, critical_alerts_total
             );
             return Ok(());
         }

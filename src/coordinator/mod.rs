@@ -306,7 +306,9 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
 
                 // Write state snapshot on every guardian tick for operator visibility.
                 let drift_velocity = Some(serde_json::Value::Null); // guardian doesn't track drift
-                let _ = write_state_snapshot(&g_runtime_dir, &g_state, drift_velocity);
+                if let Err(e) = write_state_snapshot(&g_runtime_dir, &g_state, drift_velocity) {
+                    tracing::debug!(error = %e, "failed to write state snapshot");
+                }
 
                 std::thread::sleep(Duration::from_millis(1000));
             }
@@ -900,10 +902,12 @@ impl Coordinator {
                 if let Some(ref tx) = self.mount_mark_tx {
                     for mount in removed {
                         use crate::monitor::fanotify::{MountMarkOp, MountMarkRequest};
-                        let _ = tx.send(MountMarkRequest {
+                        if let Err(e) = tx.send(MountMarkRequest {
                             mount: mount.to_path_buf(),
                             op: MountMarkOp::Remove,
-                        });
+                        }) {
+                            tracing::warn!(mount = %mount.display(), error = %e, "failed to send mount mark removal request");
+                        }
                     }
                 }
             }

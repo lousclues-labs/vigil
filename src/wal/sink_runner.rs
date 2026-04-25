@@ -38,7 +38,12 @@ pub struct SinkRunner {
 }
 
 impl SinkRunner {
-    pub fn new(wal: Arc<DetectionWal>, config: &Config, metrics: Arc<Metrics>) -> Result<Self> {
+    pub fn new(
+        wal: Arc<DetectionWal>,
+        config: &Config,
+        metrics: Arc<Metrics>,
+        hostname: String,
+    ) -> Result<Self> {
         let mut sinks: Vec<Box<dyn AlertSink>> = Vec::new();
 
         if config.alerts.syslog {
@@ -71,12 +76,6 @@ impl SinkRunner {
                 sinks.push(Box::new(sink));
             }
         }
-
-        let hostname = std::fs::read_to_string("/etc/hostname")
-            .ok()
-            .map(|h| h.trim().to_string())
-            .filter(|h| !h.is_empty())
-            .unwrap_or_else(|| "localhost".to_string());
 
         Ok(Self {
             wal,
@@ -128,7 +127,9 @@ impl SinkRunner {
             let mut processed = 0usize;
             for entry in pending {
                 if entry.record.source == DetectionSource::Sentinel {
-                    let _ = self.wal.mark_sink_done(entry.offset);
+                    if let Err(e) = self.wal.mark_sink_done(entry.offset) {
+                        tracing::error!(offset = entry.offset, error = %e, "failed to mark sentinel WAL entry as sink-done");
+                    }
                     continue;
                 }
 
@@ -144,12 +145,19 @@ impl SinkRunner {
                     self.metrics
                         .alerts_dispatched
                         .fetch_add(1, Ordering::Relaxed);
+                    if alert.severity == crate::types::Severity::Critical {
+                        self.metrics
+                            .critical_alerts_dispatched
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
                     self.metrics
                         .detections_wal_sink_dispatched
                         .fetch_add(1, Ordering::Relaxed);
                 }
 
-                let _ = self.wal.mark_sink_done(entry.offset);
+                if let Err(e) = self.wal.mark_sink_done(entry.offset) {
+                    tracing::error!(offset = entry.offset, error = %e, "failed to mark WAL entry as sink-done");
+                }
                 processed += 1;
             }
 
@@ -301,7 +309,7 @@ mod tests {
         cfg.alerts.cooldown_seconds = 10;
         let metrics = Arc::new(Metrics::new());
 
-        let mut runner = SinkRunner::new(wal, &cfg, metrics).unwrap();
+        let mut runner = SinkRunner::new(wal, &cfg, metrics, "test".to_string()).unwrap();
         for i in 0..20_000usize {
             let change = ChangeResult {
                 path: Arc::new(std::path::PathBuf::from(format!("/tmp/sink-{}", i))),
@@ -364,7 +372,8 @@ mod tests {
         cfg.alerts.max_alerts_per_minute = 100_000;
         let metrics = Arc::new(Metrics::new());
 
-        let mut runner = SinkRunner::new(wal.clone(), &cfg, metrics.clone()).unwrap();
+        let mut runner =
+            SinkRunner::new(wal.clone(), &cfg, metrics.clone(), "test".to_string()).unwrap();
 
         // Simulate one iteration of run() loop
         let mut pending: Vec<_> = wal
@@ -431,7 +440,8 @@ mod tests {
         cfg.alerts.max_alerts_per_minute = 100_000;
         let metrics = Arc::new(Metrics::new());
 
-        let mut runner = SinkRunner::new(wal.clone(), &cfg, metrics.clone()).unwrap();
+        let mut runner =
+            SinkRunner::new(wal.clone(), &cfg, metrics.clone(), "test".to_string()).unwrap();
 
         // Simulate one iteration of run() loop
         let mut pending: Vec<_> = wal

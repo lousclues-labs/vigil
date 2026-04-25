@@ -71,8 +71,20 @@ fn run_sink_determinism(seed: u64) {
     let metrics1 = Arc::new(Metrics::new());
     let metrics2 = Arc::new(Metrics::new());
 
-    let runner1 = SinkRunner::new(Arc::clone(&wal1), &cfg1, metrics1.clone()).unwrap();
-    let runner2 = SinkRunner::new(Arc::clone(&wal2), &cfg2, metrics2.clone()).unwrap();
+    let runner1 = SinkRunner::new(
+        Arc::clone(&wal1),
+        &cfg1,
+        metrics1.clone(),
+        "test".to_string(),
+    )
+    .unwrap();
+    let runner2 = SinkRunner::new(
+        Arc::clone(&wal2),
+        &cfg2,
+        metrics2.clone(),
+        "test".to_string(),
+    )
+    .unwrap();
 
     // Run each SinkRunner briefly.
     let shutdown1 = Arc::new(AtomicBool::new(false));

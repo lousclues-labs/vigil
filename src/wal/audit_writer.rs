@@ -43,18 +43,13 @@ impl AuditWriter {
         baseline_conn: Connection,
         hmac_key: Option<Zeroizing<Vec<u8>>>,
         metrics: Arc<Metrics>,
+        hostname: String,
     ) -> Result<Self> {
         let last_chain_hash = audit_ops::get_last_chain_hash(&audit_conn)?.unwrap_or_else(|| {
             blake3::hash(b"vigil-audit-chain-genesis")
                 .to_hex()
                 .to_string()
         });
-
-        let hostname = std::fs::read_to_string("/etc/hostname")
-            .ok()
-            .map(|h| h.trim().to_string())
-            .filter(|h| !h.is_empty())
-            .unwrap_or_else(|| "localhost".to_string());
 
         Ok(Self {
             wal,
@@ -183,7 +178,9 @@ impl AuditWriter {
             let mut processed_any = false;
             for entry in pending {
                 if entry.record.source == DetectionSource::Sentinel {
-                    let _ = self.wal.mark_audit_done(entry.offset);
+                    if let Err(e) = self.wal.mark_audit_done(entry.offset) {
+                        tracing::error!(offset = entry.offset, error = %e, "failed to mark sentinel WAL entry as audit-done");
+                    }
                     self.expected_next_sequence = entry.sequence + 1;
                     processed_any = true;
                     continue;
@@ -438,6 +435,7 @@ mod tests {
             baseline_conn,
             None,
             metrics,
+            "test".to_string(),
         )
         .unwrap();
 
@@ -485,6 +483,7 @@ mod tests {
                 baseline_conn,
                 None,
                 metrics,
+                "test".to_string(),
             )
             .unwrap();
             writer.recover().unwrap();
@@ -545,6 +544,7 @@ mod tests {
                 baseline_conn,
                 None,
                 metrics.clone(),
+                "test".to_string(),
             )
             .unwrap();
             let replayed = writer.recover().unwrap();
@@ -635,6 +635,7 @@ mod tests {
             baseline_conn,
             None,
             metrics.clone(),
+            "test".to_string(),
         )
         .unwrap();
 
@@ -702,6 +703,7 @@ mod tests {
             baseline_conn,
             None,
             metrics,
+            "test".to_string(),
         )
         .unwrap();
 
@@ -791,6 +793,7 @@ mod tests {
             baseline_conn,
             None,
             metrics,
+            "test".to_string(),
         )
         .unwrap();
 

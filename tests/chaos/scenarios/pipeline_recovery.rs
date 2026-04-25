@@ -85,6 +85,7 @@ fn run_pipeline_recovery(seed: u64) {
             baseline_conn,
             None,
             metrics.clone(),
+            "test".to_string(),
         )
         .unwrap();
 
@@ -123,6 +124,7 @@ fn run_pipeline_recovery(seed: u64) {
         baseline_conn,
         None,
         metrics.clone(),
+        "test".to_string(),
     )
     .unwrap();
 

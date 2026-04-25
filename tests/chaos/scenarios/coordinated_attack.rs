@@ -151,18 +151,27 @@ fn run_coordinated_attack(seed: u64) {
         baseline_conn_writer,
         None,
         metrics.clone(),
+        "test".to_string(),
     )
     .unwrap();
     let _ = audit_writer.recover();
     let audit_handle = audit_writer.spawn(shutdown.clone()).unwrap();
 
     // --- Spawn SinkRunner ---
-    let sink_runner = SinkRunner::new(wal.clone(), &cfg, metrics.clone()).unwrap();
+    let sink_runner =
+        SinkRunner::new(wal.clone(), &cfg, metrics.clone(), "test".to_string()).unwrap();
     let sink_handle = sink_runner.spawn(shutdown.clone()).unwrap();
 
     // --- Spawn AlertDispatcher ---
-    let alert_dispatcher =
-        AlertDispatcher::new(&cfg, &audit_path, metrics.clone(), None, true).unwrap();
+    let alert_dispatcher = AlertDispatcher::new(
+        &cfg,
+        &audit_path,
+        metrics.clone(),
+        None,
+        true,
+        "test".to_string(),
+    )
+    .unwrap();
     let alert_shutdown = shutdown.clone();
     let alert_handle = std::thread::spawn(move || {
         alert_dispatcher.run(alert_rx, alert_shutdown);

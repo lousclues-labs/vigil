@@ -91,8 +91,6 @@ pub struct StormDetector {
     threshold: u64,
     timestamps: Mutex<Vec<Instant>>,
     in_storm: AtomicBool,
-    #[allow(dead_code)]
-    storm_notification_sent: AtomicBool,
 }
 
 impl StormDetector {
@@ -102,7 +100,6 @@ impl StormDetector {
             threshold,
             timestamps: Mutex::new(Vec::new()),
             in_storm: AtomicBool::new(false),
-            storm_notification_sent: AtomicBool::new(false),
         }
     }
 
@@ -117,7 +114,6 @@ impl StormDetector {
 
         if count >= self.threshold && !self.in_storm.load(Ordering::Relaxed) {
             self.in_storm.store(true, Ordering::Relaxed);
-            self.storm_notification_sent.store(false, Ordering::Relaxed);
             return true;
         }
         false
@@ -159,8 +155,6 @@ pub struct EscalationTracker {
 
 struct EscalationState {
     event_id: String,
-    #[allow(dead_code)]
-    first_fired: Instant,
     escalation_count: u32,
     last_escalation: Instant,
     intervals: Vec<u64>,
@@ -187,7 +181,6 @@ impl EscalationTracker {
             event_id.to_string(),
             EscalationState {
                 event_id: event_id.to_string(),
-                first_fired: Instant::now(),
                 escalation_count: 0,
                 last_escalation: Instant::now(),
                 intervals: intervals.to_vec(),

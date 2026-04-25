@@ -163,11 +163,13 @@ fn cmd_setup_attest(key_path: &Path, force: bool) -> vigil::Result<()> {
 
     // Set ownership to root:root if we're root
     if nix::unistd::geteuid().is_root() {
-        let _ = nix::unistd::chown(
+        if let Err(e) = nix::unistd::chown(
             key_path,
             Some(nix::unistd::Uid::from_raw(0)),
             Some(nix::unistd::Gid::from_raw(0)),
-        );
+        ) {
+            tracing::warn!(path = %key_path.display(), error = %e, "failed to chown attestation key to root");
+        }
     }
 
     println!();

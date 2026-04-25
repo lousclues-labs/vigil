@@ -2,6 +2,147 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.6.0] - 2026-04-25
+
+### The Honesty & Performance Pass
+
+This release fixes two correctness lies that prior releases shipped, removes
+dead code that was carried forward speculatively, and makes the hot path
+measurably faster. No new operator-facing features. No audit chain or
+baseline schema changes.
+
+The framing: vigil's value is exactly proportional to whether it does what
+it claims. Two things it claimed to do — parallel scanning and critical-alert
+counting — it did not do. This release corrects both.
+
+### Fixed
+
+- **Parallel scanning was never active.** The 0.x changelog announced "Full
+  scans now utilize all available CPU cores via rayon." That statement was
+  false. `run_scan_parallel()` existed in the source, the `parallel` Cargo
+  feature was in the default set, and a `scanner.parallel` config field was
+  defined — but nothing called the function. All scans ran sequentially.
+  The `parallel` feature flag, the `rayon` dependency, the `scanner.parallel`
+  config field, and `run_scan_parallel()` have been removed. The build and
+  the documentation now agree with the actual behavior: scans are sequential.
+
+- **`critical_24h` always reported zero.** The `vigil status` JSON output
+  included a `critical_24h` field that was hardcoded to `0` with a TODO
+  comment. Operators and dashboards consuming this field were told there were
+  zero critical alerts regardless of reality. The field has been replaced:
+  `alerts_24h` → `alerts_total` (was already a lifetime counter, not 24h),
+  `critical_24h` → `critical_alerts_total` (now tracks actual
+  Critical-severity dispatches via a new `critical_alerts_dispatched` atomic
+  counter in Metrics). Dashboards scraping the JSON status output must update
+  field names.
+
+- **Silent error swallowing audit.** Every `let _ =` in `src/` was reviewed.
+  ~20 sites promoted to logged warnings or errors: control socket permission
+  and timeout failures, WAL mark failures, HMAC store failures, baseline
+  writer update drops, attestation key ownership failures, hook file
+  permission failures, state snapshot write failures, and mount mark removal
+  failures. Justified ignores (sd_notify, stderr flush, rollback-in-error-
+  path, test code) retained.
+
+- **`vigil check` severity histogram was visually dishonest.** The bar
+  length was proportional to `count / max_count * terminal_width` — four
+  alerts and four hundred alerts produced identical bars. The clean-state
+  box had a hardcoded 46-char border that didn't match the histogram's
+  width, leaving the right border visually detached. Both replaced:
+
+  **Before (broken):**
+  ```
+  ╭──────────────────────────────────────────────╮
+  │  ● Boundaries intact  │        ← border misaligned
+  ╰──────────────────────────────────────────────╯
+
+  ╭──────────────────────────────────────────────────────────────────╮
+  │  CRITICAL   4   ████████████████████████████████████████████████  │  ← proportional bar (misleading)
+  ╰──────────────────────────────────────────────────────────────────╯
+  ```
+
+  **After (count-faithful):**
+  ```
+  ╭──────────────────────────────────────────────────────────────────────────╮
+  │  ● Boundaries intact                                                    │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+
+  ╭──────────────────────────────────────────────────────────────────────────╮
+  │  CRITICAL    4   ████                                                   │  ← one █ per alert
+  │  MEDIUM     12   ████████████                                           │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+  ```
+
+  Each `█` represents exactly one alert. Overflow (count > capacity) shows
+  `█…█+`. Both box shapes share a single `check_box_width()` helper,
+  capped at `min(term.width - 4, 80)`, so borders are always aligned.
+
+### Changed
+
+- **Status JSON field names.** `alerts_24h` → `alerts_total`,
+  `critical_24h` → `critical_alerts_total`. The old names were dishonest
+  (neither was windowed to 24 hours). External dashboards must update.
+
+- **Worker DB-error reopen threshold** raised from 5 to 10 consecutive
+  failures. With multiple workers, the per-worker threshold was too
+  sensitive; the higher threshold reduces spurious reopen churn.
+
+- **`UpdateReason` is now logged.** The baseline writer logs each
+  auto-rebaseline with path and reason (`package_update`), making package
+  manager updates visible in the journal without grepping the audit DB.
+
+### Removed
+
+- **`run_scan_parallel()`**, the `parallel` Cargo feature, and the `rayon`
+  dependency. See Fixed section above.
+
+- **`scanner.parallel` config field.** Had no effect; removed.
+
+- **`StormDetector::storm_notification_sent` field.** An `AtomicBool` that
+  was written but never read. The storm-entry semantics are already
+  guaranteed by `record()` returning `true` exactly once per storm onset.
+
+- **`EscalationState::first_fired` field.** Set but never read; dead
+  metadata.
+
+- **`SignatureScheme::Ed25519` comment stub.** A commented-out enum variant
+  with a "future" note is speculation, not code. If Ed25519 attestation is
+  added in a future release, that release adds the variant.
+
+- **Duplicated `build_initial_baseline` / `build_initial_baseline_with_progress`.** Two ~190-line near-identical functions collapsed into one
+  via a `BaselineProgress` trait. The silent path uses a no-op
+  `SilentProgress` impl; the progress path wraps the caller's closure.
+  The 5000-file progress log line and watchdog heartbeat are now shared.
+
+### Performance
+
+- **Bloom filter now instrumented.** `bloom_checks_total` and
+  `bloom_rejects_total` counters added to Metrics and Prometheus output.
+  Operators can measure the bloom filter's rejection rate after running the
+  daemon for ≥1 hour and decide whether it earns its complexity.
+
+- **Worker cache uses `Arc<BaselineEntry>`.** Cache hits now clone an `Arc`
+  (refcount bump) instead of deep-cloning `PathBuf`, `String`s, `BTreeMap`,
+  and `Option<PathBuf>` fields. `process_event_inner` accepts
+  `&BaselineEntry` instead of owned.
+
+- **`hash_buffered` eliminates `dup(2)` and per-file 128KB allocation.**
+  Reads via `&File` (Unix `Read` impl) instead of `try_clone()`, removing
+  one syscall per buffered hash. A thread-local 128KB buffer replaces the
+  per-call `BufReader::with_capacity(131_072, ...)` allocation, eliminating
+  ~1.25GB of allocator churn on a 10K-file baseline scan.
+
+- **WAL `iter_unconsumed` uses cursor.** A `min_unconsumed_offset` atomic
+  tracks the lowest offset of an unconsumed entry. `iter_unconsumed` starts
+  scanning from the cursor instead of `WAL_HEADER_SIZE`. The cursor advances
+  when `mark_flag` fully consumes an entry at the cursor position, and
+  resets on truncation. On a WAL with 10K entries and 9999 consumed, this
+  reduces scan cost from O(10K) to O(1).
+
+- **Hostname read once at startup.** `/etc/hostname` was read independently
+  in `AuditWriter::new`, `SinkRunner::new`, and `AlertDispatcher::new`.
+  Now read once in `DaemonRuntime::start()` and passed to all three.
+
 ## [1.5.0] - 2026-04-25
 
 ### Principle XI: Complexity Reduction Release

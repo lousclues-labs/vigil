@@ -47,7 +47,6 @@ hash_algorithm = "blake3"
 max_file_size = 2147483648
 mmap_threshold = 1048576
 scheduled_mode = "full"          # incremental, full (full protects against mtime-reset attacks)
-parallel = false
 # drift_velocity_threshold = 50  # average changes per tick (60s) before high-drift warning
 
 [alerts]
@@ -159,7 +158,6 @@ paths = [
 | `max_file_size` | integer | `2147483648` | bytes |
 | `mmap_threshold` | integer | `1048576` | bytes |
 | `scheduled_mode` | enum | `full` | mode used by scheduler. `full` rehashes every file regardless of mtime for protection against mtime-reset attacks |
-| `parallel` | bool | `false` | enables optional parallel scanning paths |
 | `drift_velocity_threshold` | integer (optional) | `50` | average baseline changes per coordinator tick (60s) before a high-drift-velocity warning. Set to `null` or omit to use the default. |
 
 ### `[alerts]`
