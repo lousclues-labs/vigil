@@ -2,6 +2,127 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.5.0] - 2026-04-25
+
+### Principle XI: Complexity Reduction Release
+
+This release contains no new features. It is the structural work that
+makes future features land cleanly, that brings vigil into compliance
+with Principle XI ("Can you explain Vigil Baseline's entire architecture
+in a single ASCII diagram that fits on one terminal screen?"), and that
+fixes one latent bug that the existing structure was hiding.
+
+### Fixed
+
+- **`vigil hooks disable` and `vigil hooks repair` no longer trigger
+  false tamper alerts on their own modifications.** Both commands
+  previously called `std::fs::remove_file` and `std::fs::rename`
+  directly on `/etc/pacman.d/hooks/` paths without coordinating with
+  the guardian thread, producing the same self-poisoning cycle that
+  1.1.x's `SharedBaselineIdentity` fixed for `baseline.db`. This
+  release generalizes that primitive to `FileChangeExpectation` and
+  wires it into the hook commands. Hook commands now call
+  `register_file_expectation()` via the control socket before
+  modifying any watched path.
+
+### Refactored (Principle XI compliance)
+
+- **`src/doctor.rs` (3458 lines) converted to `src/doctor/`
+  directory module.** Three files:
+  - `mod.rs` (1373 lines): types, public API, snapshot helpers, tests.
+  - `checks.rs` (1379 lines): all `check_*` diagnostic functions.
+  - `recovery.rs` (417 lines): ack state lookups and recovery
+    action builders.
+  - `acknowledgment/`: acknowledgment domain types (from prior split).
+
+- **`src/db/audit_ops.rs` (1900+ lines) split.** Retention,
+  checkpoint, segment, and specialized insert operations extracted
+  to `src/db/audit_retention.rs` (623 lines). Core audit operations
+  remain in `audit_ops.rs` (1312 lines). Backward-compatible
+  re-exports ensure no call-site changes needed.
+
+- **`src/commands/update.rs` (1337 lines) converted to
+  `src/commands/update/` directory module.**
+
+- **`src/lib.rs` (1173 lines) shrunk to ~40 lines.** The `Daemon`
+  struct and orchestration moved to `src/daemon/`, where the
+  previously near-empty `src/daemon.rs` was misleading future
+  contributors about where daemon logic lives.
+
+- **`src/ack.rs` relocated.** Domain types now live in
+  `src/doctor/acknowledgment/types.rs`; SQL queries in
+  `src/db/audit_ack.rs`. The crate-root `src/ack.rs` is now a
+  backward-compatibility re-export shim (<20 lines).
+
+- **Generic helpers extracted from `doctor.rs` to `util/` and
+  `display/`.** `command_exists`, `systemctl_*`, `is_pid_alive`,
+  `walk_data_dir_usage`, time formatters, journald trigger parser,
+  and SQLite access checks are now reusable by any consumer.
+
+### Added (structural)
+
+- **`AuditEventPath` typed enum** (`src/db/audit_path.rs`) replaces
+  bare-string discriminators across the audit log. Typos in any one
+  location can no longer silently break the corresponding feature.
+  All `"vigil:"` discriminator strings now route through this enum:
+  - Added `AuditEventPath::checkpoint_path(first, last)` for
+    dynamic checkpoint range paths.
+  - Added `AuditEventPath::Attestation` variant for attestation
+    audit records.
+  - Zero bare `"vigil:"` strings remain in `src/` outside
+    `audit_path.rs` (enforced by test).
+
+- **`audit_ops::record_operator_action()`** consolidates
+  audit-chain-extension boilerplate that was previously duplicated
+  across `vigil ack`, `vigil hooks disable`/`enable`, and any
+  future operator command.
+
+- **`FileChangeExpectation` primitive**
+  (`src/coordinator/expectation.rs`) generalized from
+  `SharedBaselineIdentity`. Any vigil-internal command that modifies
+  a watched file declares the modification in advance; the guardian
+  suppresses the resulting tamper alert.
+
+- **`tests/architecture_invariants_test.rs`** enforces structural
+  rules as part of the test suite (5 tests):
+  - No source file exceeds 1500 lines of code.
+  - No bare `"vigil:"` discriminator strings outside `audit_path.rs`.
+  - Cross-module import restrictions (util/display are leaves).
+  - `src/lib.rs` remains module-declarations-only (<200 lines).
+  - `src/ack.rs` remains a re-export shim (<50 lines, no definitions).
+  All tests pass with zero exceptions.
+
+- **`docs/ARCHITECTURE.md` updated** with structural invariants:
+  file-size limits, helper-placement rules, typed-discriminator
+  discipline, cross-module import rules. ASCII diagram condensed
+  to 22 lines (fits a 24-line terminal per Principle XI).
+
+### File size compliance
+
+Every source file in `src/` is now under the 1500-line limit:
+
+| File | Before | After |
+|---|---|---|
+| `src/doctor/mod.rs` | 3458 (as `doctor.rs`) | 1373 |
+| `src/db/audit_ops.rs` | 1900+ | 1312 |
+| `src/coordinator/mod.rs` | — | 1423 (largest, under limit) |
+| `src/lib.rs` | 1173 | 41 |
+| `src/ack.rs` | 200+ | 20 |
+
+### Threat model
+
+No threat-model changes. The refactor preserves all detection,
+alerting, and chain-integrity semantics. The hooks TOCTOU fix
+strengthens vigil's threat posture by eliminating false positives.
+
+### Verification
+
+- 527 tests pass (debug), 521 pass + 1 ignored (release).
+- Pre/post CLI output diffed for 13 commands: all identical.
+- Pre/post exit codes verified for 13 commands: all match.
+- 43 audit chain integrity tests pass (chain, HMAC, checkpoint,
+  acknowledgment, refresh, retention).
+
 ## [1.4.0] - 2026-04-24
 
 ### Added

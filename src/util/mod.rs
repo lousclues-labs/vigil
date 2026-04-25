@@ -1,7 +1,12 @@
-//! Shared utilities: owned file descriptors, random bytes, and mount set diffs.
+//! Shared utilities: owned file descriptors, random bytes, system probes,
+//! process helpers, filesystem walking, and journald queries.
 
+pub mod fs_walk;
+pub mod journald;
 pub mod owned_fd;
+pub mod process;
 pub mod random;
+pub mod system;
 
 /// Return the correct singular or plural form based on count.
 pub fn pluralize(n: u64, singular: &str, plural: &str) -> String {

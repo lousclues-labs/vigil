@@ -6,9 +6,15 @@
 //! and event-drop rates, checkpoints the WAL, and enforces maintenance
 //! window timeouts.
 
+pub mod expectation;
+
+pub use expectation::{ExpectationRegistry, FileChangeExpectation};
+
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+
+use crate::db::audit_path::AuditEventPath;
 
 use arc_swap::ArcSwap;
 use parking_lot::RwLock;
@@ -1144,7 +1150,7 @@ impl Coordinator {
                 rusqlite::params![
                     last_id,
                     now_ts,
-                    format!("vigil:checkpoint:{}-{}", first_id, last_id),
+                    AuditEventPath::checkpoint_path(first_id, last_id),
                     format!("{{\"previous_chain_hash\":\"{}\"}}", prev_chain),
                     "info",
                     hmac_val,

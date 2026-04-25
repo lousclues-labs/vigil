@@ -1118,9 +1118,7 @@ fn update_hooks_if_changed(repo_path: &Path) -> vigil::Result<Vec<String>> {
 }
 
 fn command_exists(cmd: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(cmd).is_file()))
-        .unwrap_or(false)
+    vigil::util::system::command_exists(cmd)
 }
 
 #[cfg(test)]

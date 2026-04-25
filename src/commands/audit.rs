@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use vigil::db::audit_path::AuditEventPath;
 use vigil::types::{Change, OutputFormat};
 
 use super::common::{
@@ -34,7 +35,11 @@ pub(crate) fn cmd_audit(
             let until_ts = until.as_deref().and_then(parse_time_filter);
 
             let path_filter = if acknowledgments_only {
-                Some("vigil:operator_acknowledgment".to_string())
+                Some(
+                    vigil::db::audit_path::AuditEventPath::OperatorAcknowledgment
+                        .as_str()
+                        .to_string(),
+                )
             } else {
                 path.clone()
             };
@@ -59,7 +64,11 @@ pub(crate) fn cmd_audit(
             > = std::collections::HashMap::new();
             if with_acknowledgments {
                 let aq = vigil::db::audit_ops::AuditQuery {
-                    path: Some("vigil:operator_acknowledgment".to_string()),
+                    path: Some(
+                        vigil::db::audit_path::AuditEventPath::OperatorAcknowledgment
+                            .as_str()
+                            .to_string(),
+                    ),
                     severity: None,
                     group: None,
                     since: None,
@@ -173,7 +182,11 @@ pub(crate) fn cmd_audit(
                             println!("    ○ alert suppressed");
                         }
 
-                        if with_acknowledgments && e.path != "vigil:operator_acknowledgment" {
+                        if with_acknowledgments
+                            && e.path
+                                != vigil::db::audit_path::AuditEventPath::OperatorAcknowledgment
+                                    .as_str()
+                        {
                             if let Some(acks) = ack_by_event.get(&e.id) {
                                 for ack in acks {
                                     let note = ack
@@ -592,7 +605,7 @@ pub(crate) fn cmd_audit(
                             rusqlite::params![
                                 last_id,
                                 now_ts,
-                                format!("vigil:checkpoint:{}-{}", first_id, last_id),
+                                AuditEventPath::checkpoint_path(first_id, last_id),
                                 format!(
                                     "{{\"previous_chain_hash\":\"{}\",\"operator_prune\":true}}",
                                     prev_chain

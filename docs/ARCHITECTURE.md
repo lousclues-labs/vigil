@@ -7,58 +7,28 @@ Vigil Baseline has one job. Detect filesystem boundary changes and record them.
 ## Big Picture
 
 ```
-+------------------------------------------------------------------------------------+
-|                                      VIGIL BASELINE                                |
-|                                                                                    |
-|  +-----------------------------+            +----------------------------------+   |
-|  | CLI process: vigil          |            | Daemon process: vigild           |   |
-|  | init, check, diff, status,  |            | long-running monitor             |   |
-|  | doctor, audit, log, config  |            |                                  |   |
-|  +-------------+---------------+            +----------------+-----------------+   |
-|                |                                           |                      |
-|                | one-shot commands                         | event loop            |
-|                v                                           v                      |
-|      +----------------------+                   +----------------------------+     |
-|      | scanner.rs           |                   | monitor backend            |     |
-|      | baseline scans       |                   | fanotify or inotify        |     |
-|      +----------+-----------+                   +-------------+--------------+     |
-|                 |                                             |                    |
-|                 |                                             v                    |
-|                 |                                +----------------------------+     |
-|                 |                                | worker pool                |     |
-|                 |                                | filter + compare + classify|     |
-|                 |                                +-------------+--------------+     |
-|                 |                                              |                    |
-|                 |                                              v                    |
-|                 |                                +----------------------------+     |
-|                 |                                | Detection WAL              |     |
-|                 |                                | detections.wal             |     |
-|                 |                                | crash-safe binary log      |     |
-|                 |                                +------+----------+----------+     |
-|                 |                                       |          |                |
-|                 |                              +--------+--+  +---+----------+     |
-|                 |                              | AuditWriter|  | SinkRunner   |     |
-|                 |                              | -> audit DB |  | -> sinks     |     |
-|                 v                              +------+------+  +--+--+--+----+     |
-|      +----------------------+                        |             |  |  |          |
-|      | baseline.db          |                        |             |  |  +--> socket |
-|      | trusted file state   |                        |             |  +-----> JSON   |
-|      +----------+-----------+                        |             +-------> journal |
-|                 |                                    |                        + DBus |
-|                 v                                    v                              |
-|      +----------------------+              +----------------------+                 |
-|      | audit.db             |              | (fallback: alert_tx  |                 |
-|      | append-only changes  |              |  when WAL disabled   |                 |
-|      +----------------------+              |  or append fails)    |                 |
-|                                            +----------------------+                 |
-|                                                                                    |
-|  +------------------------------- control plane ----------------------------------+ |
-|  | control.rs listens on daemon.control_socket (default /run/vigil/control.sock)  | |
-|  | methods: status, baseline_count, reload, scan, metrics_prometheus              | |
-|  | authentication: challenge-response with HMAC key when hmac_signing = true      | |
-|  | audit: logs peer PID/UID/GID via SO_PEERCRED; counts control_commands metric   | |
-|  +--------------------------------------------------------------------------------+ |
-+------------------------------------------------------------------------------------+
++--------------------------------------------------------------------------+
+| VIGIL BASELINE                                                           |
+|                                                                          |
+|  vigil (CLI)                      vigild (daemon)                        |
+|  init, check, diff, status,      long-running monitor                    |
+|  doctor, audit, config            |                                     |
+|       |                           v                                     |
+|    scanner.rs               monitor (fanotify/inotify)                  |
+|    baseline scans                  |                                    |
+|       |                        worker pool (filter + compare + classify) |
+|       |                           |                                     |
+|       v                        Detection WAL ----+-----> SinkRunner     |
+|  baseline.db                      |              |    -> journal, dbus,  |
+|  (trusted state)              AuditWriter        |       JSON, socket   |
+|       |                      -> audit.db         |                      |
+|       v                         (HMAC chain)     +---> (fallback:       |
+|  audit.db                                              alert_tx)        |
+|  (append-only)                                                          |
+|                                                                          |
+|  control plane: /run/vigil/control.sock (challenge-response auth)       |
+|  methods: status, baseline_count, reload, scan, metrics_prometheus      |
++--------------------------------------------------------------------------+
 ```
 
 ---
@@ -138,7 +108,11 @@ src/
 |   |-- mod.rs              # SQLite open, pragma setup, integrity, checkpoint.
 |   |-- schema.rs           # Schema creation: baseline, audit_log, config_state.
 |   |-- baseline_ops.rs     # Baseline CRUD operations.
-|   |-- audit_ops.rs        # Audit queries, chain verification, statistics.
+|   |-- audit_ops.rs        # Audit queries, chain verification, record_operator_action.
+|   |-- audit_retention.rs  # Checkpoints, segments, pruning, specialized inserts.
+|   |-- audit_path.rs       # Typed audit discriminators (AuditEventPath).
+|   |-- audit_ack.rs        # Acknowledgment SQL queries.
+|   |-- access.rs           # Read-only open + permission checks.
 |   `-- migrate.rs          # Baseline migration v1 JSON blobs to v2 flat columns.
 |
 |-- display/
@@ -147,6 +121,7 @@ src/
 |   |-- explain.rs          # Structural change explanations ("why" lines).
 |   |-- format.rs           # ANSI colors, number/size/age/hash/path formatting.
 |   |-- term.rs             # Terminal capability detection (TermInfo).
+|   |-- time.rs             # Time formatting helpers.
 |   `-- widgets.rs          # Severity histogram, change comparison tables.
 |
 |-- filter/
@@ -183,14 +158,22 @@ src/
 |-- bloom.rs                # Bloom filter for fast path membership reject.
 |-- cli.rs                  # clap command tree and flags.
 |-- control.rs              # Unix control socket. ControlHandler struct dispatches methods.
-|-- coordinator.rs          # Coordinator guardian/maintenance loops and named housekeeping methods.
-|-- daemon.rs               # vigild binary entrypoint.
+|-- coordinator/
+|   |-- mod.rs              # Guardian/maintenance loops and housekeeping.
+|   `-- expectation.rs      # FileChangeExpectation + registry.
+|-- daemon/
+|   `-- mod.rs              # Daemon struct, startup, shutdown, runtime.
+|-- vigild.rs               # vigild binary entrypoint.
 |-- detection.rs            # Shared WAL-or-alert dispatch helper (dispatch_detection).
-|-- doctor.rs               # System health diagnostics and health snapshot.
+|-- doctor/
+|   |-- mod.rs              # Types, public API, snapshot helpers, tests.
+|   |-- checks.rs           # Individual check_* functions.
+|   |-- recovery.rs         # Ack state lookups and recovery builders.
+|   `-- acknowledgment/     # Acknowledgment domain types.
 |-- error.rs                # Central error type.
 |-- hash.rs                 # BLAKE3 hashing helpers.
 |-- hmac.rs                 # HMAC signing and verification helpers.
-|-- lib.rs                  # Daemon struct + DaemonRuntime (start/wait/drain lifecycle).
+|-- lib.rs                  # Module declarations + re-exports (~40 lines).
 |-- main.rs                 # CLI entrypoint (~120 lines): tracing init + command dispatch into commands::*.
 |-- metrics.rs              # Runtime counters, snapshot serialization, and record_scan helper.
 |-- package.rs              # Package manager detection and ownership query.
@@ -558,3 +541,98 @@ default.
 ---
 
 Vigil Baseline architecture is intentionally small. You should be able to trace any alert from event source to audit row.
+
+---
+
+## Structural Invariants (1.5.0)
+
+These rules were established in the 1.5.0 Principle XI compliance
+release. Reviewers reject PRs that violate them.
+
+### File size limits
+
+No source file exceeds 1500 lines of code (excluding tests and
+comments). Files approaching the limit must be split before they
+reach it.
+
+### Helper placement
+
+Generic helpers live in `util/` or `display/`, never inside feature
+modules. If a feature module needs a helper with plausible reuse, the
+helper goes in `util/`. Single-consumer helpers stay inline.
+
+### Typed audit discriminators
+
+Audit-log path discriminators are typed via `AuditEventPath` in
+`src/db/audit_path.rs`. Bare strings matching `"vigil:.*"` are
+forbidden outside that file. Enforced by test.
+
+### Operator action audit path
+
+All operator-initiated audit records are written via
+`audit_ops::record_operator_action()`. Custom chain-extension paths
+are forbidden.
+
+### File change coordination
+
+Vigil-internal commands that modify potentially-watched files
+coordinate with the guardian thread via `FileChangeExpectation`
+(in `src/coordinator/expectation.rs`). Direct `std::fs::remove_file`
+or `std::fs::rename` on watched paths without expectation
+registration is forbidden.
+
+### Cross-module import rules
+
+- `util/`, `display/`, `db/access` are leaves; nothing outside
+  them imports from feature modules.
+- `commands/*` may import from `util/`, `display/`, `db/`,
+  `doctor/`, `coordinator/`, `wal/`, `config/`, `error`.
+- `commands/X.rs` may NOT import from `commands/Y.rs`. Shared
+  command logic goes in `commands/common.rs` or moves to `util/`.
+- `doctor/` may import from `util/`, `display/`, `db/`, `config/`,
+  `error`. Doctor may NOT import from `commands/`.
+- `coordinator/` may import from `util/`, `db/`, `config/`,
+  `error`, `metrics`. Coordinator may NOT import from `commands/`
+  or `doctor/`.
+
+### Module map
+
+```
+src/
+  lib.rs           Module declarations + re-exports (<100 lines)
+  daemon/          Daemon struct, startup, shutdown, runtime
+  doctor/          Diagnostic checks, recovery, acknowledgment
+    acknowledgment/  Ack types + rendering
+  db/              SQLite operations
+    access.rs        Read-only open + permission checks
+    audit_ops.rs     Audit chain operations + record_operator_action
+    audit_retention.rs Checkpoints, segments, pruning, specialized inserts
+    audit_path.rs    Typed audit discriminators (AuditEventPath)
+    audit_ack.rs     Acknowledgment SQL queries
+  util/            Shared system-level helpers
+    system.rs        command_exists, systemctl_*
+    process.rs       PID file, liveness checks
+    fs_walk.rs       Data directory usage analysis
+    journald.rs      Journald query helpers
+  display/         Terminal rendering
+    time.rs          Time formatting helpers
+  coordinator/     Maintenance thread
+    expectation.rs   FileChangeExpectation + registry
+  commands/        CLI command implementations
+    update/          vigil update (directory module)
+  config/          Configuration loading + validation
+  alert/           Alert sinks
+  monitor/         fanotify/inotify backends
+  filter/          Exclusion + debounce filtering
+  types/           Domain model (snapshot, change, event)
+  wal/             Write-ahead log for detections
+```
+
+### The Compass Question (structural)
+
+> Does this change make vigil's architecture more or less
+> explainable on a single screen?
+
+Same question as the user-facing Compass Question, applied to
+code organization. If adding a feature requires touching more
+than three modules, the feature's structural home is wrong.

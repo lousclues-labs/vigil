@@ -158,7 +158,7 @@ fn record_attest_audit(config: &vigil::config::Config, content_hash: &[u8; 32]) 
         });
 
     let timestamp = chrono::Utc::now().timestamp();
-    let path = "vigil://attestation";
+    let path = vigil::db::audit_path::AuditEventPath::Attestation.as_str();
     let changes_json = serde_json::json!([{
         "type": "attestation_created",
         "content_hash": hex::encode(content_hash),

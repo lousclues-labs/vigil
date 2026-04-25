@@ -220,7 +220,7 @@ fn test_json_log(log_file: &Path, severity: &Severity) -> ChannelResult {
     let entry = serde_json::json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
         "severity": severity.to_string(),
-        "path": "vigil:test-alert",
+        "path": vigil::db::audit_path::AuditEventPath::TestAlert.as_str(),
         "test": true,
         "message": "Test alert from `vigil test alert`",
     });

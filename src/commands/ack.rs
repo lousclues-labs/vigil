@@ -319,7 +319,7 @@ fn cmd_ack_show(config_path: Option<&Path>, sequence: i64) -> vigil::Result<i32>
     println!("  severity:   {}", severity);
     println!("  chain_hash: {}", &chain_hash[..16]);
 
-    if path == "vigil:operator_acknowledgment" {
+    if path == vigil::db::audit_path::AuditEventPath::OperatorAcknowledgment.as_str() {
         if let Ok(payload) = serde_json::from_str::<AcknowledgmentPayload>(&changes_json) {
             println!();
             println!("Acknowledgment details:");

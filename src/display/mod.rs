@@ -7,11 +7,13 @@
 //! - `format.rs` -- shared formatting: colors, numbers, paths, hashes
 //! - `explain.rs`-- structural change explanations ("why" lines)
 //! - `widgets.rs`-- histogram, comparison tables
+//! - `time.rs`   -- time formatting helpers
 
 mod check;
 pub mod explain;
 pub mod format;
 pub mod term;
+pub mod time;
 pub mod widgets;
 
 use std::collections::BTreeMap;

@@ -6,6 +6,27 @@ use vigil::cli::HooksAction;
 use vigil::db::audit_ops;
 use vigil::types::PackageBackend;
 
+use super::common::query_control_socket;
+
+/// Best-effort: tell the daemon to expect a file change so the guardian
+/// thread does not treat our own modification as tampering.
+fn register_file_expectation(config_path: Option<&Path>, path: &Path) {
+    let cfg = match vigil::config::load_config(config_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let socket = &cfg.daemon.control_socket;
+    if !socket.exists() {
+        return; // daemon not running
+    }
+    let request = serde_json::json!({
+        "method": "expect_file_change",
+        "path": path.to_string_lossy(),
+        "window_secs": 30,
+    });
+    let _ = query_control_socket(socket, &request.to_string());
+}
+
 /// Canonical hook contents embedded at compile time.
 const CANONICAL_PACMAN_PRE: &str = include_str!("../../hooks/pacman/vigil-pre.hook");
 const CANONICAL_PACMAN_POST: &str = include_str!("../../hooks/pacman/vigil-post.hook");
@@ -177,6 +198,8 @@ fn cmd_hooks_repair(config_path: Option<&Path>, audit_operation: &str) -> vigil:
         }
 
         // Write atomically: temp file, fsync, rename
+        // Register expectation first so the guardian does not flag the change
+        register_file_expectation(config_path, path);
         let tmp_path = path.with_extension("hook.new");
         let tmp_display = tmp_path.display().to_string();
 
@@ -253,6 +276,8 @@ fn cmd_hooks_disable(config_path: Option<&Path>) -> vigil::Result<i32> {
 
         let path = Path::new(spec.installed_path);
         if path.exists() {
+            // Register expectation before removing so guardian doesn't flag it
+            register_file_expectation(config_path, path);
             match std::fs::remove_file(path) {
                 Ok(()) => {
                     removed.push(spec.label);
@@ -297,35 +322,18 @@ fn record_hooks_operation(
     count: u64,
 ) -> vigil::Result<Option<i64>> {
     let cfg = vigil::config::load_config(config_path)?;
-    let conn = vigil::db::open_audit_db(&cfg)?;
-    let previous_chain_hash = audit_ops::get_last_chain_hash(&conn)?.unwrap_or_else(|| {
-        blake3::hash(b"vigil-audit-chain-genesis")
-            .to_hex()
-            .to_string()
-    });
-    let hmac_key = if cfg.security.hmac_signing {
-        std::fs::read(&cfg.security.hmac_key_path).ok()
-    } else {
-        None
+
+    let event_path = match operation {
+        "disable" => vigil::db::audit_path::AuditEventPath::HooksDisable,
+        _ => vigil::db::audit_path::AuditEventPath::HooksEnable,
     };
 
     let payload = serde_json::json!({
         "operation": operation,
         "count": count,
-        "operator_uid": nix::unistd::geteuid().as_raw(),
-        "operator_pid": std::process::id(),
-        "operator_exe": std::env::current_exe().ok().map(|p| p.to_string_lossy().to_string()),
-        "operator_argv": std::env::args().collect::<Vec<_>>(),
     });
-    let payload_json = serde_json::to_string(&payload)?;
 
-    let (_hash, seq) = audit_ops::insert_hooks_operation_entry(
-        &conn,
-        operation,
-        &payload_json,
-        &previous_chain_hash,
-        hmac_key.as_deref(),
-    )?;
+    let seq = audit_ops::record_operator_action(&cfg, event_path, payload)?;
     Ok(Some(seq))
 }
 
@@ -435,6 +443,6 @@ fn hooks_disabled_from_audit(config_path: Option<&Path>) -> vigil::Result<bool> 
     );
     Ok(matches!(
         latest.ok().as_deref(),
-        Some("vigil:hooks_disable")
+        Some(s) if s == vigil::db::audit_path::AuditEventPath::HooksDisable.as_str()
     ))
 }

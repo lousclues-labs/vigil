@@ -68,6 +68,7 @@ pub struct ControlHandler {
     pub wal: Option<Arc<DetectionWal>>,
     pub shared_baseline_identity: Option<Arc<crate::coordinator::SharedBaselineIdentity>>,
     pub baseline_generation: Arc<AtomicU64>,
+    pub expectation_registry: Option<Arc<crate::coordinator::ExpectationRegistry>>,
 }
 
 pub fn spawn(
@@ -382,6 +383,7 @@ impl ControlHandler {
             "maintenance_enter" => self.handle_maintenance_enter(),
             "maintenance_exit" => self.handle_maintenance_exit(),
             "baseline_refresh" => self.handle_baseline_refresh(),
+            "expect_file_change" => self.handle_expect_file_change(request),
             _ => serde_json::json!({"ok": false, "error": format!("unknown method: {}", method)}),
         }
     }
@@ -487,6 +489,27 @@ impl ControlHandler {
             "ok": false,
             "error": "baseline_refresh requires a streaming connection"
         })
+    }
+
+    fn handle_expect_file_change(&self, request: &serde_json::Value) -> serde_json::Value {
+        let Some(registry) = &self.expectation_registry else {
+            return serde_json::json!({"ok": false, "error": "expectation registry not available"});
+        };
+
+        let Some(path_str) = request.get("path").and_then(|v| v.as_str()) else {
+            return serde_json::json!({"ok": false, "error": "missing 'path' parameter"});
+        };
+
+        let window_secs = request
+            .get("window_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(30);
+
+        let path = std::path::PathBuf::from(path_str);
+        let expectation = registry.register(path);
+        expectation.expect_change_within(std::time::Duration::from_secs(window_secs));
+
+        serde_json::json!({"ok": true, "window_secs": window_secs})
     }
 
     /// Streaming baseline refresh: builds a new baseline in a temp DB,
@@ -1056,6 +1079,7 @@ mod tests {
             wal: None,
             shared_baseline_identity: None,
             baseline_generation: Arc::new(AtomicU64::new(0)),
+            expectation_registry: None,
         };
         let handle = spawn(socket_path.clone(), handler, shutdown.clone()).unwrap();
 
@@ -1181,6 +1205,7 @@ mod tests {
             wal: None,
             shared_baseline_identity: None,
             baseline_generation: Arc::new(AtomicU64::new(0)),
+            expectation_registry: None,
         };
 
         let result = handler.dispatch("status", &serde_json::json!({"method": "status"}));
@@ -1221,6 +1246,7 @@ mod tests {
             wal: None,
             shared_baseline_identity: None,
             baseline_generation: Arc::new(AtomicU64::new(0)),
+            expectation_registry: None,
         };
 
         handler.dispatch("reload", &serde_json::json!({"method": "reload"}));
@@ -1292,6 +1318,7 @@ mod tests {
             wal: None,
             shared_baseline_identity: None,
             baseline_generation: Arc::new(AtomicU64::new(0)),
+            expectation_registry: None,
         };
 
         // Use a Unix socket pair to capture the streaming response

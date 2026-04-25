@@ -4,7 +4,11 @@
 //! HMAC-chained detection log. Connections are opened per-thread (never
 //! shared via Arc). WAL mode + FULL sync for crash safety.
 
+pub mod access;
+pub mod audit_ack;
 pub mod audit_ops;
+pub mod audit_path;
+pub mod audit_retention;
 pub mod baseline_ops;
 pub mod migrate;
 pub mod schema;
