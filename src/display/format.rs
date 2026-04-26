@@ -76,10 +76,10 @@ pub fn severity_style(severity: &Severity) -> Style {
 /// Map severity to its display marker and label.
 pub fn severity_marker(severity: &Severity) -> (&'static str, &'static str) {
     match severity {
-        Severity::Critical => ("✗", "CRITICAL"),
-        Severity::High => ("✗", "HIGH"),
-        Severity::Medium => ("⚠", "MEDIUM"),
-        Severity::Low => ("○", "LOW"),
+        Severity::Critical => ("●", "CRITICAL"),
+        Severity::High => ("●", "HIGH"),
+        Severity::Medium => ("●", "MEDIUM"),
+        Severity::Low => ("●", "LOW"),
     }
 }
 

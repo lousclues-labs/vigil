@@ -26,7 +26,10 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Initialize baseline database
+    /// Initialize baseline database.
+    #[command(
+        long_about = "Initialize baseline database.\n\nWHEN TO USE THIS:\n  Run once on a clean, known-good system to establish the baseline.\n  Use --force to overwrite an existing baseline after a system rebuild.\n  For first-time setup, `vigil welcome` is easier."
+    )]
     Init {
         /// Skip confirmation when overwriting existing baseline
         #[arg(long)]
@@ -36,7 +39,10 @@ pub enum Command {
     /// Run daemon in foreground
     Watch,
 
-    /// Run one-shot integrity check
+    /// Run one-shot integrity check.
+    #[command(
+        long_about = "Run one-shot integrity check.\n\nWHEN TO USE THIS:\n  After package updates, configuration changes, or to verify your system\n  is still in the expected state. Use --accept to update the baseline\n  after reviewing changes. Use --now to trigger on a running daemon."
+    )]
     Check {
         /// Run full scan instead of incremental
         #[arg(long)]
@@ -93,10 +99,16 @@ pub enum Command {
         path: PathBuf,
     },
 
-    /// Show daemon status
+    /// Show daemon status.
+    #[command(
+        long_about = "Show daemon status.\n\nWHEN TO USE THIS:\n  To see if the daemon is running, what it's monitoring, and whether\n  the audit chain is intact. This is the default when you run `vigil`\n  with no arguments."
+    )]
     Status,
 
-    /// First-run configuration flow
+    /// First-run configuration flow.
+    #[command(
+        long_about = "First-run configuration flow.\n\nWHEN TO USE THIS:\n  On a fresh install. Walks you through watch path selection, builds\n  the baseline, starts the daemon, and runs selftest. Idempotent.\n  Re-run to reconfigure."
+    )]
     Welcome,
 
     /// Explain a change to a path
@@ -272,6 +284,13 @@ pub enum Command {
 
     /// Print version
     Version,
+
+    /// Generate shell completions for bash, zsh, or fish.
+    #[command(hide = true)]
+    Completions {
+        /// Shell to generate completions for
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(Subcommand)]

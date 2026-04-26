@@ -79,11 +79,7 @@ pub(crate) fn build_status_summary(cfg: &vigil::config::Config) -> StatusSummary
     let watching_groups = Some(cfg.watch.len());
     let watching_paths: Option<u64> = baseline_entries.map(|c| c.max(0) as u64);
 
-    let last_check = last_scan_at.map(|ts| {
-        chrono::DateTime::from_timestamp(ts, 0)
-            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-            .unwrap_or_else(|| ts.to_string())
-    });
+    let last_check = last_scan_at.map(vigil::display::time::format_absolute);
 
     let last_check_result = recent_changes.map(|c| {
         if c == 0 {
@@ -328,5 +324,5 @@ pub(crate) fn cmd_status(config_path: Option<&Path>, format: OutputFormat) -> vi
 }
 
 fn format_utc_now() -> String {
-    Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string()
+    vigil::display::time::format_absolute(chrono::Utc::now().timestamp())
 }

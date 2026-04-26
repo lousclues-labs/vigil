@@ -59,7 +59,21 @@ fn run(cli: Cli) -> vigil::Result<i32> {
     let command = match cli.command {
         Some(cmd) => cmd,
         None => {
-            // `vigil` with no args defaults to `vigil status`
+            // Context-aware default: detect state and suggest next step.
+            let cfg = vigil::config::load_config(config_path.as_deref())
+                .unwrap_or_else(|_| vigil::config::default_config());
+            let initialized =
+                cfg.daemon.db_path.exists() && vigil::doctor::baseline_count(&cfg).unwrap_or(0) > 0;
+
+            if !initialized {
+                eprintln!("Vigil Baseline is installed but not configured.\n");
+                eprintln!("To get started:");
+                eprintln!("  vigil welcome      interactive setup (recommended)");
+                eprintln!("  vigil init         accept all defaults");
+                eprintln!("  vigil --help       see all commands");
+                return Ok(0);
+            }
+
             cmd_status(config_path.as_deref(), format)?;
             return Ok(0);
         }
@@ -221,6 +235,15 @@ fn run(cli: Cli) -> vigil::Result<i32> {
         } => cmd_ack(config_path.as_deref(), kind, sequence, note, action),
         Command::Version => {
             println!("vigil {}", env!("CARGO_PKG_VERSION"));
+            Ok(0)
+        }
+        Command::Completions { shell } => {
+            clap_complete::generate(
+                shell,
+                &mut <Cli as clap::CommandFactory>::command(),
+                "vigil",
+                &mut std::io::stdout(),
+            );
             Ok(0)
         }
     }

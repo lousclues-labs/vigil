@@ -136,7 +136,7 @@ detail; ≤20: expanded investigate/attention; >20: grouped benign), structural
 "why" explanations, scan issues with guidance, and next-step commands.
 
 **Brief (`--brief`):** Single-line summary: `● ok (N files, Xs)` or
-`✗ N critical · M high (N files, Xs)`.
+`● N critical · M high (N files, Xs)`.
 
 **JSON (`--format json`):** Backward-compatible with original `ScanResult` shape.
 
@@ -207,7 +207,7 @@ Example output (with audit history):
 Vigil Baseline -- Diff: /etc/passwd
 ══════════════════════════════════
 
-  ⚠ 1 change detected:
+  ● 1 change detected:
 
     content: 9c7ae3f182bd04a6 → a1b2c3d4e5f6a7b8
 
@@ -1401,10 +1401,21 @@ Print CLI version.
 vigil version
 ```
 
-Output:
+---
 
-```text
-vigil 0.41.0
+## `completions`
+
+Generate shell completion scripts. Hidden from main help output.
+
+```bash
+# bash
+vigil completions bash | sudo tee /etc/bash_completion.d/vigil
+
+# zsh
+vigil completions zsh > ~/.zsh/completions/_vigil
+
+# fish
+vigil completions fish > ~/.config/fish/completions/vigil.fish
 ```
 
 ---

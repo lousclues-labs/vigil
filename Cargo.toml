@@ -1,6 +1,6 @@
 [package]
 name = "vigil-baseline"
-version = "1.7.0"
+version = "1.7.1"
 edition = "2021"
 rust-version = "1.85"
 description = "Linux file integrity monitor. Kernel-level filesystem watching, BLAKE3 hashing, HMAC-chained audit trail. Silent by default, local by design, deeply paranoid."
@@ -68,6 +68,7 @@ toml_edit = "0.22"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 
 # Linux syscalls
 nix = { version = "0.28", features = [

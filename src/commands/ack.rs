@@ -339,13 +339,7 @@ fn cmd_ack_show(config_path: Option<&Path>, sequence: i64) -> vigil::Result<i32>
 }
 
 fn format_timestamp(ts: i64) -> String {
-    chrono::DateTime::from_timestamp(ts, 0)
-        .map(|dt| {
-            dt.with_timezone(&chrono::Local)
-                .format("%Y-%m-%dT%H:%M:%S")
-                .to_string()
-        })
-        .unwrap_or_else(|| ts.to_string())
+    vigil::display::time::format_local(ts)
 }
 
 fn load_hmac_key_if_configured(cfg: &vigil::config::Config) -> Option<Vec<u8>> {

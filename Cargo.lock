@@ -265,6 +265,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap_complete"
+version = "4.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ff7a1dccbdd8b078c2bdebff47e404615151534d5043da397ec50286816f9cb"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "clap_derive"
 version = "4.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1539,13 +1548,14 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vigil-baseline"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "arc-swap",
  "blake3",
  "chrono",
  "ciborium",
  "clap",
+ "clap_complete",
  "constant_time_eq",
  "crc32fast",
  "criterion",

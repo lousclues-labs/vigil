@@ -159,8 +159,7 @@ pub(crate) fn cmd_welcome(config_path: Option<&Path>) -> vigil::Result<i32> {
         }
     }
 
-    eprintln!("Configure which files vigil should watch.");
-    eprintln!();
+    eprintln!("Step 1 of 3: Configure watch paths\n");
 
     let pm_label = sys.package_manager.unwrap_or("none");
     eprintln!(
@@ -285,7 +284,16 @@ pub(crate) fn cmd_welcome(config_path: Option<&Path>) -> vigil::Result<i32> {
 
     // Write config
     write_welcome_config(&config_file, &groups)?;
-    eprintln!();
+
+    let path_count: usize = groups.iter().map(|g| g.paths.len()).sum();
+    eprintln!(
+        "\nWrote {} ({} groups, {} paths)",
+        config_file.display(),
+        groups.iter().filter(|g| !g.paths.is_empty()).count(),
+        path_count
+    );
+
+    eprintln!("\nStep 2 of 3: Build baseline\n");
 
     // Load the config we wrote
     let cfg = config::load_config(Some(&config_file))?;
@@ -308,6 +316,7 @@ pub(crate) fn cmd_welcome(config_path: Option<&Path>) -> vigil::Result<i32> {
     );
 
     // Start vigild via systemd
+    eprintln!("\nStep 3 of 3: Start the daemon\n");
     let daemon_pid = start_daemon();
 
     if let Some(pid) = daemon_pid {
@@ -317,11 +326,7 @@ pub(crate) fn cmd_welcome(config_path: Option<&Path>) -> vigil::Result<i32> {
     }
 
     eprintln!();
-    eprintln!("Common commands:");
-    eprintln!("  vigil status                    daemon health");
-    eprintln!("  vigil why <path>                explain a change");
-    eprintln!("  vigil maintenance enter          pause monitoring during package work");
-    eprintln!("  vigil welcome                   re-run this configuration");
+    eprintln!("Vigil is ready. Next: run `vigil check` to verify your baseline.");
     eprintln!();
     eprintln!("Verifying installation:");
 

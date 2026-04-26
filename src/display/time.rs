@@ -1,4 +1,8 @@
 //! Time formatting helpers for CLI output.
+//!
+//! All operator-facing timestamps should use one of these helpers.
+//! Internal/log timestamps (e.g. progress `[HH:MM:SS]` in baseline refresh)
+//! may format inline.
 
 use chrono::{Local, TimeZone, Utc};
 
@@ -18,6 +22,31 @@ pub fn format_compact_duration(seconds: i64) -> String {
     }
 }
 
+/// Format a Unix timestamp as "2026-04-25 18:52:31 UTC" for display.
+pub fn format_absolute(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| ts.to_string())
+}
+
+/// Format a Unix timestamp as "2026-04-25T18:52:31Z" for JSON and logs.
+pub fn format_iso(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_else(|| ts.to_string())
+}
+
+/// Format a Unix timestamp in local time as "2026-04-25T18:52:31".
+pub fn format_local(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|dt| {
+            dt.with_timezone(&Local)
+                .format("%Y-%m-%dT%H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|| ts.to_string())
+}
+
 /// Render timestamps as "HH:MM today", "HH:MM yesterday", or ISO-like date.
 pub fn format_relative_timestamp(ts: i64) -> String {
     let Some(dt) = Local.timestamp_opt(ts, 0).single() else {
@@ -34,27 +63,6 @@ pub fn format_relative_timestamp(ts: i64) -> String {
     } else {
         dt.format("%Y-%m-%d %H:%M").to_string()
     }
-}
-
-/// Format a past duration in seconds as a human-readable relative label.
-pub fn format_age(age_secs: i64) -> String {
-    let secs = age_secs.max(0);
-    let days = secs / 86_400;
-    if days > 0 {
-        return format!("{}d ago", days);
-    }
-
-    let hours = secs / 3_600;
-    if hours > 0 {
-        return format!("{}h ago", hours);
-    }
-
-    let mins = secs / 60;
-    if mins > 0 {
-        return format!("{}m ago", mins);
-    }
-
-    "just now".to_string()
 }
 
 /// Parse systemd timer timestamp and return a relative duration like "in 1h 34m".

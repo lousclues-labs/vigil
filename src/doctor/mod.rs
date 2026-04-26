@@ -16,8 +16,9 @@ use crate::db::{self, baseline_ops};
 
 // --- Re-exports: moved helpers remain available at their original paths ---
 pub use crate::db::access::{has_sqlite_read_access, open_existing_db as open_existing_db_pub};
+pub use crate::display::format::format_age;
 pub use crate::display::time::{
-    format_age, format_compact_duration, format_next_timer_relative,
+    format_absolute, format_compact_duration, format_iso, format_local, format_next_timer_relative,
     format_relative_duration_from_timestamp, format_relative_timestamp, shorten_next_timer,
 };
 pub use crate::util::fs_walk::{walk_data_dir_usage, DataDirUsage};

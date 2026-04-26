@@ -145,14 +145,16 @@ pub(crate) fn cmd_audit(
             }
 
             if entries.is_empty() {
-                println!("  No entries found.");
+                println!("  The audit log is empty.");
+                println!();
+                println!("  This is normal for a fresh install. The audit log records every");
+                println!("  change vigil detects. Run `vigil status` to verify monitoring.");
             } else {
                 for e in &entries {
                     let sev_marker = match e.severity.as_str() {
-                        "critical" => "✗",
-                        "high" => "✗",
-                        "medium" => "⚠",
-                        _ => "○",
+                        "critical" | "high" => "●",
+                        "medium" => "●",
+                        _ => "●",
                     };
 
                     println!(
@@ -282,9 +284,7 @@ pub(crate) fn cmd_audit(
 
             if let Some(ts) = oldest_live {
                 let age_days = (chrono::Utc::now().timestamp() - ts) / 86400;
-                let oldest_str = chrono::DateTime::from_timestamp(ts, 0)
-                    .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
-                    .unwrap_or_else(|| "unknown".to_string());
+                let oldest_str = vigil::display::time::format_iso(ts);
                 println!(
                     "  oldest live entry: {} ({} days ago)",
                     oldest_str, age_days

@@ -8,6 +8,8 @@ Use this index when you need answers fast.
 
 | Document | What's Inside |
 |----------|---------------|
+| [Quickstart](QUICKSTART.md) | From install to monitoring in 5 minutes |
+| [Cookbook](COOKBOOK.md) | Common scenarios with exact commands |
 | [Installation](INSTALL.md) | Build from source, systemd setup, package manager hooks |
 | [CLI Reference](CLI.md) | Every command, every flag, every exit code |
 | [Configuration](CONFIGURATION.md) | Config file format, watch groups, exclusions |

@@ -2,6 +2,69 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.7.1] - 2026-04-25
+
+### The Polish Pass
+
+> **The operator never feels friction, never feels confused,
+> never has to guess what comes next.**
+
+### Consistency
+
+- **Time formatting consolidated.** Removed the duplicate single-unit
+  `format_age` from `display/time.rs`. The two-unit version in
+  `display/format.rs` ("2h 15m ago", "1 day ago") is the single
+  canonical implementation. Added `format_absolute`, `format_iso`, and
+  `format_local` helpers to `display/time.rs`. Inline chrono format
+  strings in `explain.rs`, `ack.rs`, `status.rs`, and `audit.rs`
+  replaced with centralized helpers. (`src/display/time.rs`,
+  `src/display/format.rs`, `src/doctor/mod.rs`)
+
+- **Severity markers unified.** All severity levels now use `●` (filled
+  circle) instead of mixed glyphs (`✗`/`⚠`/`○`). Color carries the
+  severity; shape is consistent. (`src/display/format.rs`,
+  `src/commands/audit.rs`)
+
+### Discoverability
+
+- **`vigil` with no arguments is context-aware.** Detects whether vigil
+  has been initialized. If not, prints setup instructions (`vigil
+  welcome` / `vigil init` / `vigil --help`). If initialized, shows
+  `vigil status` as before. (`src/main.rs`)
+
+- **Help text includes "WHEN TO USE THIS".** The `init`, `check`,
+  `status`, and `welcome` subcommands now include `long_about` text
+  explaining when to use the command and what alternatives exist.
+  (`src/cli.rs`)
+
+- **Shell completions.** `vigil completions <shell>` generates
+  completion scripts for bash, zsh, and fish. Hidden from main help
+  to avoid clutter. Added `clap_complete` dependency. (`src/cli.rs`,
+  `src/main.rs`, `Cargo.toml`)
+
+- **Welcome flow polished.** Steps are numbered ("Step 1 of 3:
+  Configure watch paths"). Config write confirms what was written and
+  where. Final output is a single next-action ("run `vigil check`")
+  instead of a wall of commands. (`src/commands/welcome.rs`)
+
+### Empty States
+
+- **Audit log empty state.** `vigil audit show` against a fresh install
+  explains why the log is empty and suggests `vigil status` to verify
+  monitoring. (`src/commands/audit.rs`)
+
+### Documentation
+
+- **New `docs/QUICKSTART.md`.** Install to monitoring in 5 minutes.
+  Step-by-step with expected output.
+
+- **New `docs/COOKBOOK.md`.** Operator-shaped questions: "I got an
+  alert", "package update coming", "vigil says Degraded", "how do I
+  rotate the HMAC key", "how do I integrate with my SIEM."
+
+- **Docs index updated.** Quickstart and Cookbook added to both
+  `docs/README.md` and `README.md` documentation tables.
+
 ## [1.7.0] - 2026-04-25
 
 ### The Heuristic Purge

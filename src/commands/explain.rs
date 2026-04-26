@@ -118,9 +118,10 @@ pub(crate) fn cmd_explain(
                 entry.identity.inode
             );
 
-            if let Some(ts) = chrono::DateTime::from_timestamp(entry.updated_at, 0) {
-                println!("  last verified:  {}", ts.format("%Y-%m-%d %H:%M:%S UTC"));
-            }
+            println!(
+                "  last verified:  {}",
+                vigil::display::time::format_absolute(entry.updated_at)
+            );
         } else {
             println!("  baseline:       no entry (run `vigil init` or `vigil check --accept`)");
         }
@@ -130,9 +131,7 @@ pub(crate) fn cmd_explain(
             println!("  audit history:  {} {} events", audit_entries.len(), label);
             if verbose {
                 for entry in &audit_entries {
-                    let ts = chrono::DateTime::from_timestamp(entry.timestamp, 0)
-                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                        .unwrap_or_else(|| entry.timestamp.to_string());
+                    let ts = vigil::display::time::format_absolute(entry.timestamp);
                     let suppressed = if entry.suppressed {
                         " (suppressed)"
                     } else {
