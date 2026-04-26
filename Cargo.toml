@@ -12,7 +12,7 @@ repository = "https://github.com/lousclues-labs/vigil"
 homepage = "https://vigilbaseline.com"
 documentation = "https://github.com/lousclues-labs/vigil#documentation"
 readme = "README.md"
-keywords = ["security", "filesystem", "integrity", "audit", "fim"]
+keywords = ["filesystem-hashing", "file-integrity", "filesystem-integrity", "file-hashing", "folder-hashing"]
 categories = ["command-line-utilities", "filesystem"]
 exclude = [
     "aur/",
