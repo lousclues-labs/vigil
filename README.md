@@ -90,15 +90,37 @@ where to start.
 
 ## Documentation
 
-Full index at [docs/](docs/README.md). The most-asked-for pages:
-
-- [Installation](docs/INSTALL.md) — building, systemd, hooks
-- [CLI Reference](docs/CLI.md) — every command, every flag
-- [Configuration](docs/CONFIGURATION.md) — the config file
-- [Architecture](docs/ARCHITECTURE.md) — how it's built
-- [Principles](docs/PRINCIPLES.md) — why it's built that way
-- [Troubleshooting](docs/TROUBLESHOOTING.md) — when things go wrong
-- [FAQ](docs/FAQ.md) — common questions
+| Document | What's Inside |
+|----------|---------------|
+| [Docs Index](docs/README.md) | Documentation map by topic |
+| [Quickstart](docs/QUICKSTART.md) | From install to monitoring in 5 minutes |
+| [Cookbook](docs/COOKBOOK.md) | Common scenarios with exact commands |
+| [Installation](docs/INSTALL.md) | Building, dependencies, systemd setup |
+| [CLI Reference](docs/CLI.md) | Every command, every flag |
+| [Configuration](docs/CONFIGURATION.md) | The config file explained |
+| [Notifications](docs/NOTIFICATIONS.md) | Routing policy, coalescing, storm suppression, webhook |
+| [Architecture](docs/ARCHITECTURE.md) | How it's built |
+| [Security](docs/SECURITY.md) | Security model, dependency justification |
+| [Vulnerabilities](docs/VULNERABILITIES.md) | All remediated vulnerabilities with tracking IDs |
+| [Attestation](docs/ATTEST.md) | Portable signed attestations and offline verification |
+| [Threat Model](docs/THREAT_MODEL.md) | What Vigil Baseline detects and what it doesn't |
+| [Testing](docs/TESTING.md) | Test suite, fuzz targets, coverage |
+| [Development](docs/DEVELOPMENT.md) | Dev setup, building, debugging |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | When things go wrong |
+| [FAQ](docs/FAQ.md) | Common questions answered |
+| [Resilience](docs/RESILIENCE.md) | Failure modes and recovery |
+| [Minimum Viable Trust](docs/MINIMUM_VIABLE.md) | Smallest deployment, what it provides |
+| [Forensics](docs/FORENSICS.md) | Offline comparison workflows |
+| [Principles](docs/PRINCIPLES.md) | Why it's built this way |
+| [Releasing](docs/RELEASING.md) | Release process and versioning |
+| [Licensing Guide](licenses/LICENSING.md) | File-level license coverage and policy |
+| [Dependency Audit](licenses/DEPENDENCY-AUDIT.md) | Dependency license compatibility framework |
+| [Third-Party Licenses](licenses/THIRD-PARTY-LICENSES) | Direct dependency attributions |
+| [Documentation License](licenses/LICENSE-DOCS.md) | License terms for project docs |
+| [Commercial Licensing](licenses/LICENSE-COMMERCIAL.md) | Commercial license terms |
+| [NOTICE](NOTICE) | Project identity and attribution |
+| [Trademarks](TRADEMARKS.md) | Trademark usage policy |
+| [Contributing](CONTRIBUTING.md) | How to help |
 
 ## Requirements
 
