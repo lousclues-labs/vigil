@@ -1,10 +1,11 @@
 //! Fanotify-based filesystem monitor.
 //!
-//! Marks mount points with FAN_MARK_MOUNT, reads events from the fanotify fd,
-//! resolves /proc/self/fd/N to a path, bloom-filter rejects unwatched paths,
-//! and forwards watched events to workers via a bounded channel. Handles
-//! dynamic mark add/remove for overlapping mounts (VIGIL-VULN-069) and
-//! kernel queue overflows (FAN_Q_OVERFLOW triggers a compensating full scan).
+//! Marks mount points with FAN_MARK_MOUNT, uses poll(2) on the fanotify fd
+//! to block until events arrive, resolves /proc/self/fd/N to a path,
+//! bloom-filter rejects unwatched paths, and forwards watched events to
+//! workers via a bounded channel. Handles dynamic mark add/remove for
+//! overlapping mounts (VIGIL-VULN-069) and kernel queue overflows
+//! (FAN_Q_OVERFLOW triggers a compensating full scan).
 
 #![allow(unsafe_code)]
 
@@ -188,16 +189,49 @@ pub fn start(
     let restart_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let restart_counter_for_thread = restart_counter.clone();
 
+    // Eventfd for waking the poll loop on shutdown.
+    // SAFETY: eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK) returns a new fd or -1.
+    let shutdown_efd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+    if shutdown_efd < 0 {
+        return Err(VigilError::Fanotify(format!(
+            "eventfd creation failed: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    let shutdown_efd_write = shutdown_efd; // both ends are the same fd for eventfd
+
     std::thread::Builder::new()
         .name("vigil-fanotify".into())
         .spawn(move || {
             let _fan_guard = fan_fd_owned;
             let fan_fd = _fan_guard.0;
 
+            // Shutdown-waker thread: signals the eventfd when shutdown fires.
+            let shutdown_for_waker = shutdown.clone();
+            let waker_handle = std::thread::Builder::new()
+                .name("vigil-fan-waker".into())
+                .spawn(move || {
+                    while !shutdown_for_waker.load(Ordering::Acquire) {
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                    // Wake the poll loop.
+                    let val: u64 = 1;
+                    // SAFETY: writing 8 bytes to a valid eventfd.
+                    unsafe {
+                        libc::write(
+                            shutdown_efd_write,
+                            &val as *const u64 as *const _,
+                            std::mem::size_of::<u64>(),
+                        );
+                    }
+                })
+                .ok();
+
             let result = crate::supervised_thread::run_supervised(
                 || {
                     run_event_loop(
                         fan_fd,
+                        shutdown_efd,
                         &shutdown,
                         &control_rx,
                         &mount_mark_rx,
@@ -239,6 +273,15 @@ pub fn start(
                 }
             }
 
+            // Close the eventfd and join the waker thread.
+            // SAFETY: shutdown_efd is a valid fd owned by this scope.
+            unsafe {
+                libc::close(shutdown_efd);
+            }
+            if let Some(h) = waker_handle {
+                let _ = h.join();
+            }
+
             tracing::info!("fanotify monitor stopped");
         })
         .map_err(|e| VigilError::Fanotify(format!("cannot spawn thread: {}", e)))?;
@@ -250,6 +293,7 @@ pub fn start(
 #[allow(clippy::too_many_arguments)]
 fn run_event_loop(
     fan_fd: RawFd,
+    shutdown_efd: RawFd,
     shutdown: &Arc<AtomicBool>,
     control_rx: &crossbeam_channel::Receiver<Vec<PathBuf>>,
     mount_mark_rx: &Option<crossbeam_channel::Receiver<MountMarkRequest>>,
@@ -347,213 +391,259 @@ fn run_event_loop(
             }
         }
 
-        // SAFETY: valid fd + valid buffer pointer + length. The kernel
-        // writes at most buf.len() bytes. Return checked for errors.
-        let n = unsafe { libc::read(fan_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
-        if n < 0 {
+        // poll(2) on fanotify fd + shutdown eventfd. Timeout allows
+        // periodic re-check of control and mount-mark channels.
+        let mut pollfds = [
+            libc::pollfd {
+                fd: fan_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: shutdown_efd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+
+        // SAFETY: valid pollfd array, valid fds. Timeout 1000ms to
+        // periodically re-check control channels even without events.
+        let poll_ret =
+            unsafe { libc::poll(pollfds.as_mut_ptr(), pollfds.len() as libc::nfds_t, 1000) };
+
+        if poll_ret < 0 {
             let err = std::io::Error::last_os_error();
-            let raw = err.raw_os_error();
-            if raw == Some(libc::EAGAIN) || raw == Some(libc::EWOULDBLOCK) {
-                std::thread::sleep(Duration::from_millis(50));
+            if err.raw_os_error() == Some(libc::EINTR) {
                 continue;
             }
-            if raw == Some(libc::EINTR) {
-                continue;
-            }
-            tracing::error!(
-                error = %err,
-                errno = ?raw,
-                "fanotify read() failed; supervisor will attempt restart"
-            );
+            tracing::error!(error = %err, "poll() failed");
             metrics.fanotify_read_errors.fetch_add(1, Ordering::Relaxed);
             return crate::supervised_thread::ExitReason::Recoverable(format!(
-                "fanotify read failed: {}",
+                "poll failed: {}",
                 err
             ));
         }
-        if n == 0 {
-            std::thread::sleep(Duration::from_millis(50));
+
+        // Shutdown eventfd signaled.
+        if pollfds[1].revents & libc::POLLIN != 0 {
+            break;
+        }
+
+        // No fanotify events ready (timeout or only shutdown check).
+        if pollfds[0].revents & libc::POLLIN == 0 {
             continue;
         }
 
-        let n_usize = n as usize;
-        let mut offset = 0usize;
-        while offset + FAN_EVENT_METADATA_LEN <= n_usize {
-            // SAFETY: offset bounds-checked above and the kernel produced
-            // this buffer. Using read_unaligned because the buffer offset
-            // may not satisfy FanotifyEventMetadata alignment requirements.
-            let event: FanotifyEventMetadata = unsafe {
-                std::ptr::read_unaligned(buf.as_ptr().add(offset) as *const FanotifyEventMetadata)
-            };
-
-            // Validate event_len BEFORE using it: the kernel may report a
-            // malformed value that would otherwise cause an infinite loop
-            // (event_len == 0) or buffer over-read (event_len > remaining).
-            let len = event.event_len as usize;
-            if len < FAN_EVENT_METADATA_LEN || offset + len > n_usize {
+        // Read all available events (loop until EAGAIN), then poll again.
+        loop {
+            // SAFETY: valid fd + valid buffer pointer + length. The kernel
+            // writes at most buf.len() bytes. Return checked for errors.
+            let n = unsafe { libc::read(fan_fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+            if n < 0 {
+                let err = std::io::Error::last_os_error();
+                let raw = err.raw_os_error();
+                if raw == Some(libc::EAGAIN) || raw == Some(libc::EWOULDBLOCK) {
+                    break; // all available events consumed; back to poll
+                }
+                if raw == Some(libc::EINTR) {
+                    break;
+                }
                 tracing::error!(
-                    event_len = len,
-                    offset,
-                    buf_len = n_usize,
-                    "malformed fanotify event_len; dropping remaining buffer and resyncing"
+                    error = %err,
+                    errno = ?raw,
+                    "fanotify read() failed; supervisor will attempt restart"
                 );
                 metrics.fanotify_read_errors.fetch_add(1, Ordering::Relaxed);
+                return crate::supervised_thread::ExitReason::Recoverable(format!(
+                    "fanotify read failed: {}",
+                    err
+                ));
+            }
+            if n == 0 {
                 break;
             }
 
-            // Handle kernel queue overflow: fanotify dropped events
-            if event.mask & FAN_Q_OVERFLOW != 0 {
-                tracing::error!(
-                    "fanotify kernel queue overflow (FAN_Q_OVERFLOW). \
-                             Events were dropped by the kernel. Triggering compensating full scan."
-                );
-                metrics
-                    .kernel_queue_overflows
-                    .fetch_add(1, Ordering::Relaxed);
-                // Mark the daemon Degraded so operators see this in `vigil status`
-                if let Some(s) = &state {
-                    let mut guard = s.write();
-                    if matches!(*guard, DaemonState::Healthy) {
-                        *guard = DaemonState::Degraded {
-                            reason: DegradedReason::FanotifyQueueOverflow,
-                            since: Utc::now(),
-                        };
-                    }
-                }
-                // Trigger a full scan so the missed events are caught by the
-                // next baseline diff. The scan response is discarded; the
-                // scheduler will attribute changes through normal channels.
-                if let Some(tx) = &scan_trigger {
-                    let (resp_tx, _resp_rx) = crossbeam_channel::bounded(1);
-                    if tx
-                        .try_send(crate::control::ScanRequest {
-                            mode: ScanMode::Full,
-                            response_tx: resp_tx,
-                        })
-                        .is_ok()
-                    {
-                        metrics
-                            .fanotify_overflow_scans_triggered
-                            .fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-                offset += len;
-                continue;
-            }
-
-            if event.fd >= 0 {
-                // Wrap event fd in a guard to prevent leaks on any code path
-                let fd_guard = EventFdGuard(event.fd);
-
-                // Resolve process attribution immediately to minimize the
-                // PID recycling window. The fd is still open and valid here.
-                // NOTE: FAN_REPORT_PIDFD (Linux 6.2+) would eliminate this
-                // race by providing a stable pidfd reference.
-                let process = if event.pid > 0 {
-                    let exe = std::fs::read_link(format!("/proc/{}/exe", event.pid))
-                        .ok()
-                        .map(|p| p.to_string_lossy().to_string());
-                    if exe.is_some() {
-                        Some(ProcessAttribution {
-                            pid: event.pid as u32,
-                            exe,
-                        })
-                    } else {
-                        // Process already exited.  PID may have been recycled.
-                        tracing::debug!(
-                            pid = event.pid,
-                            "process exited before attribution; PID may be stale"
-                        );
-                        Some(ProcessAttribution {
-                            pid: event.pid as u32,
-                            exe: None,
-                        })
-                    }
-                } else {
-                    None
+            let n_usize = n as usize;
+            let mut offset = 0usize;
+            while offset + FAN_EVENT_METADATA_LEN <= n_usize {
+                // SAFETY: offset bounds-checked above and the kernel produced
+                // this buffer. Using read_unaligned because the buffer offset
+                // may not satisfy FanotifyEventMetadata alignment requirements.
+                let event: FanotifyEventMetadata = unsafe {
+                    std::ptr::read_unaligned(
+                        buf.as_ptr().add(offset) as *const FanotifyEventMetadata
+                    )
                 };
 
-                let fd_link = format!("/proc/self/fd/{}", event.fd);
-                if let Ok(raw_path) = std::fs::read_link(&fd_link) {
-                    // VIGIL-VULN-068: strip " (deleted)" suffix appended
-                    // by the kernel when a file is unlinked between event
-                    // production and fd→path resolution.
-                    let (path, was_deleted) = strip_deleted_suffix(&raw_path);
-                    if was_deleted {
-                        tracing::info!(
-                            raw = %raw_path.display(),
-                            stripped = %path.display(),
-                            "resolved deleted-file path from fanotify event"
-                        );
-                    }
+                // Validate event_len BEFORE using it: the kernel may report a
+                // malformed value that would otherwise cause an infinite loop
+                // (event_len == 0) or buffer over-read (event_len > remaining).
+                let len = event.event_len as usize;
+                if len < FAN_EVENT_METADATA_LEN || offset + len > n_usize {
+                    tracing::error!(
+                        event_len = len,
+                        offset,
+                        buf_len = n_usize,
+                        "malformed fanotify event_len; dropping remaining buffer and resyncing"
+                    );
+                    metrics.fanotify_read_errors.fetch_add(1, Ordering::Relaxed);
+                    break;
+                }
 
-                    // Bloom filter fast-reject: check if any prefix of the
-                    // event path is in the filter (not the full path, which
-                    // was never inserted)
-                    metrics.bloom_checks_total.fetch_add(1, Ordering::Relaxed);
-                    if !current_bloom.might_contain_prefix_of(&path) {
-                        metrics.bloom_rejects_total.fetch_add(1, Ordering::Relaxed);
-                        // fd_guard drops and closes the fd automatically
-                        offset += len;
-                        continue;
-                    }
-
-                    let idx = watch_index.load();
-                    let is_watched = idx.is_watched(&path);
-
-                    if is_watched {
-                        // Force Delete event type if file was unlinked
-                        let event_type_resolved = if was_deleted {
-                            Some(FsEventType::Delete)
-                        } else {
-                            mask_to_event_type(event.mask)
-                        };
-                        if let Some(event_type) = event_type_resolved {
-                            metrics.events_received.fetch_add(1, Ordering::Relaxed);
-
-                            // Transfer fd ownership into OwnedFd; prevent guard from closing it
-                            let raw = fd_guard.take();
-                            // SAFETY: raw fd is uniquely owned (take() consumed
-                            // the guard) and has not been closed.
-                            let owned_fd = unsafe { OwnedFd::from_raw_fd(raw) };
-
-                            let fs_event = FsEvent {
-                                path: Arc::new(path.clone()),
-                                event_type,
-                                timestamp: Utc::now(),
-                                event_fd: Some(owned_fd),
-                                process,
-                                bloom_generation: 0,
+                // Handle kernel queue overflow: fanotify dropped events
+                if event.mask & FAN_Q_OVERFLOW != 0 {
+                    tracing::error!(
+                        "fanotify kernel queue overflow (FAN_Q_OVERFLOW). \
+                             Events were dropped by the kernel. Triggering compensating full scan."
+                    );
+                    metrics
+                        .kernel_queue_overflows
+                        .fetch_add(1, Ordering::Relaxed);
+                    // Mark the daemon Degraded so operators see this in `vigil status`
+                    if let Some(s) = &state {
+                        let mut guard = s.write();
+                        if matches!(*guard, DaemonState::Healthy) {
+                            *guard = DaemonState::Degraded {
+                                reason: DegradedReason::FanotifyQueueOverflow,
+                                since: Utc::now(),
                             };
+                        }
+                    }
+                    // Trigger a full scan so the missed events are caught by the
+                    // next baseline diff. The scan response is discarded; the
+                    // scheduler will attribute changes through normal channels.
+                    if let Some(tx) = &scan_trigger {
+                        let (resp_tx, _resp_rx) = crossbeam_channel::bounded(1);
+                        if tx
+                            .try_send(crate::control::ScanRequest {
+                                mode: ScanMode::Full,
+                                response_tx: resp_tx,
+                            })
+                            .is_ok()
+                        {
+                            metrics
+                                .fanotify_overflow_scans_triggered
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    offset += len;
+                    continue;
+                }
 
-                            match event_tx.send_timeout(fs_event, Duration::from_secs(1)) {
-                                Ok(()) => {}
-                                Err(crossbeam_channel::SendTimeoutError::Timeout(_dropped)) => {
-                                    metrics.events_dropped.fetch_add(1, Ordering::Relaxed);
-                                    tracing::warn!(
-                                        path = %path.display(),
-                                        "fanotify event channel full for 1s; dropping event fd"
-                                    );
-                                }
-                                Err(crossbeam_channel::SendTimeoutError::Disconnected(
-                                    _dropped,
-                                )) => {
-                                    tracing::error!("event channel disconnected");
-                                    return crate::supervised_thread::ExitReason::Fatal(
-                                        "event channel disconnected".into(),
-                                    );
+                if event.fd >= 0 {
+                    // Wrap event fd in a guard to prevent leaks on any code path
+                    let fd_guard = EventFdGuard(event.fd);
+
+                    // Resolve process attribution immediately to minimize the
+                    // PID recycling window. The fd is still open and valid here.
+                    // NOTE: FAN_REPORT_PIDFD (Linux 6.2+) would eliminate this
+                    // race by providing a stable pidfd reference.
+                    let process = if event.pid > 0 {
+                        let exe = std::fs::read_link(format!("/proc/{}/exe", event.pid))
+                            .ok()
+                            .map(|p| p.to_string_lossy().to_string());
+                        if exe.is_some() {
+                            Some(ProcessAttribution {
+                                pid: event.pid as u32,
+                                exe,
+                            })
+                        } else {
+                            // Process already exited.  PID may have been recycled.
+                            tracing::debug!(
+                                pid = event.pid,
+                                "process exited before attribution; PID may be stale"
+                            );
+                            Some(ProcessAttribution {
+                                pid: event.pid as u32,
+                                exe: None,
+                            })
+                        }
+                    } else {
+                        None
+                    };
+
+                    let fd_link = format!("/proc/self/fd/{}", event.fd);
+                    if let Ok(raw_path) = std::fs::read_link(&fd_link) {
+                        // VIGIL-VULN-068: strip " (deleted)" suffix appended
+                        // by the kernel when a file is unlinked between event
+                        // production and fd→path resolution.
+                        let (path, was_deleted) = strip_deleted_suffix(&raw_path);
+                        if was_deleted {
+                            tracing::info!(
+                                raw = %raw_path.display(),
+                                stripped = %path.display(),
+                                "resolved deleted-file path from fanotify event"
+                            );
+                        }
+
+                        // Bloom filter fast-reject: check if any prefix of the
+                        // event path is in the filter (not the full path, which
+                        // was never inserted)
+                        metrics.bloom_checks_total.fetch_add(1, Ordering::Relaxed);
+                        if !current_bloom.might_contain_prefix_of(&path) {
+                            metrics.bloom_rejects_total.fetch_add(1, Ordering::Relaxed);
+                            // fd_guard drops and closes the fd automatically
+                            offset += len;
+                            continue;
+                        }
+
+                        let idx = watch_index.load();
+                        let is_watched = idx.is_watched(&path);
+
+                        if is_watched {
+                            // Force Delete event type if file was unlinked
+                            let event_type_resolved = if was_deleted {
+                                Some(FsEventType::Delete)
+                            } else {
+                                mask_to_event_type(event.mask)
+                            };
+                            if let Some(event_type) = event_type_resolved {
+                                metrics.events_received.fetch_add(1, Ordering::Relaxed);
+
+                                // Transfer fd ownership into OwnedFd; prevent guard from closing it
+                                let raw = fd_guard.take();
+                                // SAFETY: raw fd is uniquely owned (take() consumed
+                                // the guard) and has not been closed.
+                                let owned_fd = unsafe { OwnedFd::from_raw_fd(raw) };
+
+                                let fs_event = FsEvent {
+                                    path: Arc::new(path.clone()),
+                                    event_type,
+                                    timestamp: Utc::now(),
+                                    event_fd: Some(owned_fd),
+                                    process,
+                                    bloom_generation: 0,
+                                };
+
+                                match event_tx.send_timeout(fs_event, Duration::from_secs(1)) {
+                                    Ok(()) => {}
+                                    Err(crossbeam_channel::SendTimeoutError::Timeout(_dropped)) => {
+                                        metrics.events_dropped.fetch_add(1, Ordering::Relaxed);
+                                        tracing::warn!(
+                                            path = %path.display(),
+                                            "fanotify event channel full for 1s; dropping event fd"
+                                        );
+                                    }
+                                    Err(crossbeam_channel::SendTimeoutError::Disconnected(
+                                        _dropped,
+                                    )) => {
+                                        tracing::error!("event channel disconnected");
+                                        return crate::supervised_thread::ExitReason::Fatal(
+                                            "event channel disconnected".into(),
+                                        );
+                                    }
                                 }
                             }
+                            // else: unrecognized mask. fd_guard drops and closes.
                         }
-                        // else: unrecognized mask. fd_guard drops and closes.
+                        // else: not watched. fd_guard drops and closes.
                     }
-                    // else: not watched. fd_guard drops and closes.
+                    // else: read_link failed. fd_guard drops and closes.
                 }
-                // else: read_link failed. fd_guard drops and closes.
-            }
 
-            offset += len;
-        }
+                offset += len;
+            }
+        } // end inner read-all loop
     }
 
     crate::supervised_thread::ExitReason::Shutdown

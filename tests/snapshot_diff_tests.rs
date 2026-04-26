@@ -96,5 +96,4 @@ fn diff_detects_multiple_dimensions() {
     assert!(changes
         .iter()
         .any(|c| matches!(c, Change::SecurityContextChanged { .. })));
-    assert!(snapshot.has_dangerous_capabilities());
 }

@@ -334,10 +334,6 @@ pub struct ScannerConfig {
     /// Users with very large baselines can set this to `incremental` in their config.
     #[serde(default = "default_scheduled_mode")]
     pub scheduled_mode: ScanMode,
-    /// Average baseline changes per coordinator tick (60s) that triggers
-    /// a high-drift-velocity warning. `None` uses the default of 50.
-    #[serde(default)]
-    pub drift_velocity_threshold: Option<u64>,
 }
 
 impl Default for ScannerConfig {
@@ -349,7 +345,6 @@ impl Default for ScannerConfig {
             max_file_size: default_max_file_size(),
             mmap_threshold: default_mmap_threshold(),
             scheduled_mode: ScanMode::Full,
-            drift_velocity_threshold: None,
         }
     }
 }
@@ -587,6 +582,16 @@ pub struct SecurityConfig {
     /// passes. When false (default), inode changes always enter Degraded.
     #[serde(default)]
     pub auto_recover_inode_changes: bool,
+    /// Clock skew threshold in seconds. Skew above this value prevents audit
+    /// rotation (safety). Daemon degradation requires skew above 2x this value.
+    /// Default: 60 seconds. Tighter values catch manipulation faster but cause
+    /// false positives during normal NTP correction.
+    #[serde(default = "default_clock_skew_threshold")]
+    pub clock_skew_threshold_seconds: i64,
+    /// Seconds of no further skew before a clock-skew Degraded state self-clears.
+    /// Default: 300 (5 minutes).
+    #[serde(default = "default_clock_skew_recovery_window")]
+    pub clock_skew_recovery_window: u64,
 }
 
 impl Default for SecurityConfig {
@@ -598,8 +603,18 @@ impl Default for SecurityConfig {
             control_socket_auth: true,
             trust_baseline_on_hmac_mismatch: false,
             auto_recover_inode_changes: false,
+            clock_skew_threshold_seconds: 60,
+            clock_skew_recovery_window: 300,
         }
     }
+}
+
+fn default_clock_skew_threshold() -> i64 {
+    60
+}
+
+fn default_clock_skew_recovery_window() -> u64 {
+    300
 }
 
 fn default_hmac_key_path() -> PathBuf {

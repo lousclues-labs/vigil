@@ -217,6 +217,42 @@ When HMAC is enabled, signatures add a second integrity layer. The HMAC data inc
 
 ---
 
+## Chain Integrity vs Authenticity
+
+The audit chain provides two distinct protections. Operators should understand
+which applies to their deployment.
+
+**Chain integrity** (always active, HMAC not required):
+Each audit entry's `chain_hash` is a BLAKE3 hash of
+`previous_chain_hash | timestamp | path | changes_json | severity`.
+Modifying any entry breaks the chain for all subsequent entries. This is
+verifiable by anyone with read access to the audit database.
+
+**Chain authenticity** (requires HMAC signing):
+When `security.hmac_signing = true`, each entry also carries an HMAC-SHA256
+signature computed with the operator's secret key. An attacker with write
+access to `audit.db` but without the HMAC key cannot forge entries that
+pass HMAC verification. The HMAC data includes the previous chain hash,
+making mid-chain deletion detectable even if the attacker recomputes
+BLAKE3 hashes.
+
+**When HMAC signing is disabled**, an attacker with write access to the
+audit database can recompute `chain_hash` values for every affected row
+using the public BLAKE3 algorithm, producing a self-consistent forged
+chain. The chain still detects accidental corruption and unsophisticated
+tampering, but it does not provide cryptographic authenticity.
+
+`vigil audit verify` displays a prominent warning when HMAC is disabled.
+`vigil doctor` surfaces HMAC-disabled status as a Warning with a recovery
+command (`sudo vigil setup hmac`).
+
+**Recommendation:** Enable HMAC signing for any deployment where the audit
+database could be reached by an adversary you want protection from. The
+cost is key management; the benefit is cryptographic proof that every
+audit entry was produced by the vigil daemon holding the key.
+
+---
+
 ## HMAC Key Lifecycle
 
 If `security.hmac_signing = true`, key management quality defines integrity quality.

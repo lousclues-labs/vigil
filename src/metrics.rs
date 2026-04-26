@@ -71,6 +71,8 @@ pub struct Metrics {
     pub auto_rebaseline_rejected: AtomicU64,
     /// Unattributed changes recorded during baseline refresh.
     pub baseline_refresh_unattributed_changes: AtomicU64,
+    /// Number of times audit retention safety check skipped deletion.
+    pub audit_retention_skipped_total: AtomicU64,
     /// Unix timestamp set once at daemon startup.
     pub uptime_start: i64,
 }
@@ -125,6 +127,7 @@ impl Metrics {
             critical_alerts_dispatched: AtomicU64::new(0),
             auto_rebaseline_rejected: AtomicU64::new(0),
             baseline_refresh_unattributed_changes: AtomicU64::new(0),
+            audit_retention_skipped_total: AtomicU64::new(0),
             uptime_start: chrono::Utc::now().timestamp(),
         }
     }
@@ -195,6 +198,9 @@ impl Metrics {
             baseline_refresh_unattributed_changes: self
                 .baseline_refresh_unattributed_changes
                 .load(Ordering::Relaxed),
+            audit_retention_skipped_total: self
+                .audit_retention_skipped_total
+                .load(Ordering::Relaxed),
             uptime_start: self.uptime_start,
         }
     }
@@ -256,6 +262,7 @@ pub struct MetricsSnapshot {
     pub critical_alerts_dispatched: u64,
     pub auto_rebaseline_rejected: u64,
     pub baseline_refresh_unattributed_changes: u64,
+    pub audit_retention_skipped_total: u64,
     pub uptime_start: i64,
 }
 

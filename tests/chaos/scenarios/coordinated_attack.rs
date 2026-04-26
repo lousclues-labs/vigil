@@ -135,6 +135,7 @@ fn run_coordinated_attack(seed: u64) {
         wal: Some(wal.clone()),
         maintenance_active: Arc::new(AtomicBool::new(false)),
         state: None,
+        self_protection_paths: Arc::new(std::collections::HashSet::new()),
     };
     let worker_handles = worker::spawn_workers(worker_args);
 

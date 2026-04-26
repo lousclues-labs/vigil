@@ -47,7 +47,6 @@ hash_algorithm = "blake3"
 max_file_size = 2147483648
 mmap_threshold = 1048576
 scheduled_mode = "full"          # incremental, full (full protects against mtime-reset attacks)
-# drift_velocity_threshold = 50  # average changes per tick (60s) before high-drift warning
 
 [alerts]
 desktop_notifications = true
@@ -95,6 +94,8 @@ verify_config_integrity = true
 control_socket_auth = true        # challenge-response auth on control socket
 # trust_baseline_on_hmac_mismatch = false  # set true temporarily after version upgrades
 # auto_recover_inode_changes = false        # accept inode changes if content verification passes
+clock_skew_threshold_seconds = 60           # skew above this prevents audit rotation
+clock_skew_recovery_window = 300            # seconds before clock-skew degradation self-clears
 
 [update]
 backup_retention_count = 5                 # binary backup archives to keep
@@ -158,7 +159,6 @@ paths = [
 | `max_file_size` | integer | `2147483648` | bytes |
 | `mmap_threshold` | integer | `1048576` | bytes |
 | `scheduled_mode` | enum | `full` | mode used by scheduler. `full` rehashes every file regardless of mtime for protection against mtime-reset attacks |
-| `drift_velocity_threshold` | integer (optional) | `50` | average baseline changes per coordinator tick (60s) before a high-drift-velocity warning. Set to `null` or omit to use the default. |
 
 ### `[alerts]`
 
@@ -227,6 +227,8 @@ and critical escalation semantics), see `docs/NOTIFICATIONS.md`.
 | `control_socket_auth` | bool | `true` | enables challenge-response authentication on the control socket (requires `hmac_signing = true`) |
 | `trust_baseline_on_hmac_mismatch` | bool | `false` | when true, HMAC mismatch on startup recomputes and stores rather than entering Degraded state. Use temporarily after version upgrades that change HMAC field coverage, then disable. |
 | `auto_recover_inode_changes` | bool | `false` | when true, automatically accept inode changes if content verification passes (re-stat, verify schema sentinel or HMAC fingerprint). When false (default), inode changes always enter Degraded and require operator restart. |
+| `clock_skew_threshold_seconds` | integer | `60` | Clock skew above this value prevents audit rotation (safety). Daemon degradation requires skew above 2× this value. Tighter values catch manipulation faster but cause false positives during normal NTP correction. |
+| `clock_skew_recovery_window` | integer | `300` | Seconds of no further skew before a clock-skew Degraded state self-clears without daemon restart. |
 
 ### `[update]`
 

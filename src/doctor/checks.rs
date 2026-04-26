@@ -600,10 +600,13 @@ pub(super) fn check_scan_timer(config: &Config) -> DiagnosticCheck {
 pub(super) fn check_hmac_key(config: &Config) -> DiagnosticCheck {
     if !config.security.hmac_signing {
         return DiagnosticCheck {
-            name: "HMAC key".to_string(),
-            status: CheckStatus::Unknown,
-            detail: "not configured".to_string(),
-            recovery: Recovery::None,
+            name: "HMAC signing".to_string(),
+            status: CheckStatus::Warning,
+            detail: "disabled — chain integrity verifiable but authenticity is not. \
+                     An attacker with write access to audit.db could forge a \
+                     self-consistent chain."
+                .to_string(),
+            recovery: Recovery::Command("sudo vigil setup hmac".to_string()),
         };
     }
 

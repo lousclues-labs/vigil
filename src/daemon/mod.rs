@@ -560,6 +560,14 @@ impl DaemonRuntime {
         // Generation counter for cache invalidation across workers and baseline writer
         let baseline_generation = Arc::new(AtomicU64::new(0));
 
+        // Pre-compute self-protection paths once at startup for all workers.
+        let mut self_protection_paths = std::collections::HashSet::new();
+        for p in crate::config::config_search_paths(None) {
+            self_protection_paths.insert(p);
+        }
+        self_protection_paths.insert(cfg.security.hmac_key_path.clone());
+        let self_protection_paths = Arc::new(self_protection_paths);
+
         let workers = worker::spawn_workers(worker::WorkerSpawnArgs {
             count: cfg.daemon.worker_threads,
             config: daemon.config.clone(),
@@ -575,6 +583,7 @@ impl DaemonRuntime {
             wal: wal.clone(),
             maintenance_active: daemon.maintenance_active.clone(),
             state: Some(daemon.state.clone()),
+            self_protection_paths,
         });
         send_watchdog_heartbeat();
 

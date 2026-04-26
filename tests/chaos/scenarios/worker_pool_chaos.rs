@@ -95,6 +95,7 @@ fn run_worker_pool_chaos(seed: u64) {
         wal: Some(wal.clone()),
         maintenance_active: Arc::new(AtomicBool::new(false)),
         state: None,
+        self_protection_paths: Arc::new(std::collections::HashSet::new()),
     };
 
     // Spawn workers.

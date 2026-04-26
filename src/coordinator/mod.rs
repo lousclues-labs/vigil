@@ -1,10 +1,11 @@
 //! Coordinator thread -- periodic maintenance for a running daemon.
 //!
-//! Ticks once per minute. Checks baseline/audit DB file identity (TOCTOU),
-//! detects mount evasion and clock anomalies, rotates the audit log,
-//! writes runtime snapshots (metrics, state, health), monitors backpressure
-//! and event-drop rates, checkpoints the WAL, and enforces maintenance
-//! window timeouts.
+//! Two loops: `vigil-guardian` (1s cadence) writes `guardian.json` and
+//! handles watchdog, backpressure, and identity checks. `vigil-maintenance`
+//! (60s cadence) writes `state.json`/`metrics.json`/`health.json`, checks
+//! baseline/audit DB file identity (TOCTOU), detects mount evasion and
+//! clock anomalies, rotates the audit log, tracks drift velocity as a
+//! metric, checkpoints the WAL, and enforces maintenance window timeouts.
 
 pub mod expectation;
 
@@ -41,9 +42,14 @@ pub const BASELINE_REPLACEMENT_WINDOW: Duration = Duration::from_secs(30);
 pub struct SharedBaselineIdentity {
     inode: AtomicU64,
     device: AtomicU64,
-    /// Epoch nanos of the authorized-replacement deadline. 0 means no
-    /// replacement is expected.
-    replacement_deadline_nanos: AtomicI64,
+    /// Monotonic offset (nanos since `startup`) of the authorized-replacement
+    /// deadline. 0 means no replacement is expected. Using monotonic time
+    /// ensures an attacker who manipulates the system clock cannot shift
+    /// the authorization window.
+    replacement_deadline_offset: AtomicU64,
+    /// Monotonic reference point captured at construction. All deadlines
+    /// are encoded as nanos-since-startup for wall-clock independence.
+    startup: std::time::Instant,
 }
 
 impl SharedBaselineIdentity {
@@ -52,7 +58,8 @@ impl SharedBaselineIdentity {
         Self {
             inode: AtomicU64::new(identity.inode),
             device: AtomicU64::new(identity.device),
-            replacement_deadline_nanos: AtomicI64::new(0),
+            replacement_deadline_offset: AtomicU64::new(0),
+            startup: std::time::Instant::now(),
         }
     }
 
@@ -60,15 +67,9 @@ impl SharedBaselineIdentity {
     /// The guardian thread will accept the next inode change if it occurs
     /// before `deadline`.
     pub fn expect_baseline_replacement(&self, deadline: std::time::Instant) {
-        // Convert Instant-based deadline to epoch nanos for cross-thread
-        // comparison. We use wall-clock nanos because Instant is opaque
-        // and not shareable as an integer.
-        let now_instant = std::time::Instant::now();
-        let remaining = deadline.saturating_duration_since(now_instant);
-        let wall_deadline =
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0) + remaining.as_nanos() as i64;
-        self.replacement_deadline_nanos
-            .store(wall_deadline, Ordering::Release);
+        let offset = deadline.saturating_duration_since(self.startup).as_nanos() as u64;
+        self.replacement_deadline_offset
+            .store(offset, Ordering::Release);
     }
 
     /// Check whether the file at `path` has a different inode/device than
@@ -82,12 +83,14 @@ impl SharedBaselineIdentity {
 
     /// Check whether we are inside an authorized replacement window.
     pub fn is_replacement_authorized(&self) -> bool {
-        let deadline = self.replacement_deadline_nanos.load(Ordering::Acquire);
-        if deadline == 0 {
+        let deadline_offset = self.replacement_deadline_offset.load(Ordering::Acquire);
+        if deadline_offset == 0 {
             return false;
         }
-        let now = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
-        now < deadline
+        let now_offset = std::time::Instant::now()
+            .saturating_duration_since(self.startup)
+            .as_nanos() as u64;
+        now_offset < deadline_offset
     }
 
     /// Accept the new identity after an authorized replacement and reset
@@ -96,13 +99,13 @@ impl SharedBaselineIdentity {
         let current = crate::db::DbFileIdentity::from_path(path)?;
         self.inode.store(current.inode, Ordering::Release);
         self.device.store(current.device, Ordering::Release);
-        self.replacement_deadline_nanos.store(0, Ordering::Release);
+        self.replacement_deadline_offset.store(0, Ordering::Release);
         Ok(())
     }
 
-    /// Read the current deadline (epoch nanos). 0 means no window active.
-    pub fn replacement_deadline_nanos(&self) -> i64 {
-        self.replacement_deadline_nanos.load(Ordering::Acquire)
+    /// Read the current deadline offset (nanos since startup). 0 means no window active.
+    pub fn replacement_deadline_nanos(&self) -> u64 {
+        self.replacement_deadline_offset.load(Ordering::Acquire)
     }
 }
 
@@ -172,6 +175,8 @@ struct Coordinator {
     clean_ticks_since_event_loss: u32,
     drop_rate_log_counter: u32,
     last_retention_sweep: std::time::Instant,
+    audit_retention_skipped_count: u32,
+    clean_ticks_since_clock_skew: u32,
 }
 
 pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()>> {
@@ -237,6 +242,8 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
         clean_ticks_since_event_loss: 0,
         drop_rate_log_counter: 0,
         last_retention_sweep: std::time::Instant::now(),
+        audit_retention_skipped_count: 0,
+        clean_ticks_since_clock_skew: 0,
     };
 
     // Clone identity data for guardian before coordinator is moved.
@@ -304,10 +311,9 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
                     }
                 }
 
-                // Write state snapshot on every guardian tick for operator visibility.
-                let drift_velocity = Some(serde_json::Value::Null); // guardian doesn't track drift
-                if let Err(e) = write_state_snapshot(&g_runtime_dir, &g_state, drift_velocity) {
-                    tracing::debug!(error = %e, "failed to write state snapshot");
+                // Guardian owns guardian.json; maintenance owns state.json.
+                if let Err(e) = write_guardian_snapshot(&g_runtime_dir, &g_state) {
+                    tracing::debug!(error = %e, "failed to write guardian snapshot");
                 }
 
                 std::thread::sleep(Duration::from_millis(1000));
@@ -336,13 +342,15 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
 }
 
 /// Time a tick phase and record its name + duration.
-macro_rules! time_phase {
-    ($phases:expr, $name:expr, $body:expr) => {{
-        let _t = std::time::Instant::now();
-        let _result = $body;
-        $phases.push(($name, _t.elapsed().as_millis()));
-        _result
-    }};
+fn time_phase<T>(
+    phases: &mut Vec<(&'static str, u128)>,
+    name: &'static str,
+    f: impl FnOnce() -> T,
+) -> T {
+    let start = std::time::Instant::now();
+    let result = f();
+    phases.push((name, start.elapsed().as_millis()));
+    result
 }
 
 impl Coordinator {
@@ -353,43 +361,49 @@ impl Coordinator {
         let mut failed_phases: Vec<&str> = Vec::new();
         let mut phase_timings: Vec<(&str, u128)> = Vec::new();
 
-        if !time_phase!(
-            phase_timings,
-            "baseline_check",
+        if !time_phase(&mut phase_timings, "baseline_check", || {
             self.check_baseline_db_identity()
-        ) {
+        }) {
             failed_phases.push("baseline_check");
         }
-        if !time_phase!(phase_timings, "audit_check", self.check_audit_db_identity()) {
+        if !time_phase(&mut phase_timings, "audit_check", || {
+            self.check_audit_db_identity()
+        }) {
             failed_phases.push("audit_check");
         }
-        if !time_phase!(phase_timings, "wal_check", self.check_wal_identity()) {
+        if !time_phase(&mut phase_timings, "wal_check", || {
+            self.check_wal_identity()
+        }) {
             failed_phases.push("wal_check");
         }
-        time_phase!(phase_timings, "mount_check", self.check_mount_evasion());
+        time_phase(&mut phase_timings, "mount_check", || {
+            self.check_mount_evasion()
+        });
 
-        let clock_anomaly = time_phase!(phase_timings, "clock_check", self.detect_clock_anomaly());
-        time_phase!(phase_timings, "rotation", {
+        let clock_anomaly = time_phase(&mut phase_timings, "clock_check", || {
+            self.detect_clock_anomaly()
+        });
+        time_phase(&mut phase_timings, "rotation", || {
             if !clock_anomaly {
                 self.rotate_audit_log();
             }
         });
-        time_phase!(phase_timings, "retention", {
+        time_phase(&mut phase_timings, "retention", || {
             if !clock_anomaly {
                 self.retention_sweep();
             }
         });
 
-        time_phase!(phase_timings, "snapshots", self.write_snapshots());
+        time_phase(&mut phase_timings, "snapshots", || self.write_snapshots());
 
-        time_phase!(phase_timings, "drops", self.check_event_drops());
-        time_phase!(phase_timings, "checkpoint", self.maybe_checkpoint_wal());
-        time_phase!(
-            phase_timings,
-            "maintenance",
+        time_phase(&mut phase_timings, "drops", || self.check_event_drops());
+        time_phase(&mut phase_timings, "checkpoint", || {
+            self.maybe_checkpoint_wal()
+        });
+        time_phase(&mut phase_timings, "maintenance", || {
             self.check_maintenance_timeout()
-        );
-        time_phase!(phase_timings, "drift", self.check_drift_velocity());
+        });
+        time_phase(&mut phase_timings, "drift", || self.check_drift_velocity());
 
         let total_ms = tick_start.elapsed().as_millis();
 
@@ -920,24 +934,60 @@ impl Coordinator {
         let mono_delta = self.last_tick_monotonic.elapsed().as_secs() as i64;
         let clock_skew = wall_delta - mono_delta;
 
-        // VIGIL-VULN-070: compare wall-clock delta against monotonic delta.
-        // A 5-second tolerance handles normal NTP adjustments; anything larger
-        // indicates active clock manipulation.
-        if clock_skew.abs() > 5 {
+        let cfg = self.config.load();
+        let threshold = cfg.security.clock_skew_threshold_seconds;
+        let recovery_window = cfg.security.clock_skew_recovery_window;
+
+        // Clock skew recovery: if we're degraded due to clock skew and have
+        // seen enough clean ticks, self-clear the degraded state.
+        if clock_skew.abs() <= threshold {
+            let s = self.state.read();
+            if let DaemonState::Degraded { reason, .. } = &*s {
+                if matches!(reason, DegradedReason::ClockSkewDetected { .. }) {
+                    drop(s);
+                    self.clean_ticks_since_clock_skew += 1;
+                    // Each tick is ~60s; recovery_window / 60 ticks.
+                    let ticks_needed = (recovery_window / 60).max(1) as u32;
+                    if self.clean_ticks_since_clock_skew >= ticks_needed {
+                        let mut s = self.state.write();
+                        if let DaemonState::Degraded { reason, .. } = &*s {
+                            if matches!(reason, DegradedReason::ClockSkewDetected { .. }) {
+                                tracing::info!(
+                                    clean_ticks = self.clean_ticks_since_clock_skew,
+                                    "clock skew resolved; returning to Healthy"
+                                );
+                                *s = DaemonState::Healthy;
+                                self.clean_ticks_since_clock_skew = 0;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            self.clean_ticks_since_clock_skew = 0;
+        }
+
+        // Rotation safety: refuse audit rotation when skew exceeds threshold.
+        if clock_skew.abs() > threshold {
             tracing::error!(
                 wall_delta,
                 mono_delta,
                 clock_skew,
+                threshold,
                 "clock skew detected (wall vs monotonic); skipping audit rotation"
             );
-            let mut s = self.state.write();
-            if matches!(*s, DaemonState::Healthy) {
-                *s = DaemonState::Degraded {
-                    reason: DegradedReason::ClockSkewDetected {
-                        skew_secs: clock_skew,
-                    },
-                    since: Utc::now(),
-                };
+            // Daemon degradation fires only for skew larger than 2x threshold,
+            // so normal NTP corrections don't page operators.
+            if clock_skew.abs() > threshold * 2 {
+                let mut s = self.state.write();
+                if matches!(*s, DaemonState::Healthy) {
+                    *s = DaemonState::Degraded {
+                        reason: DegradedReason::ClockSkewDetected {
+                            skew_secs: clock_skew,
+                        },
+                        since: Utc::now(),
+                    };
+                }
             }
             self.last_rotation_timestamp = now_ts;
             self.last_tick_monotonic = std::time::Instant::now();
@@ -1014,12 +1064,42 @@ impl Coordinator {
             .unwrap_or(0);
 
         if total > 0 && would_delete * 2 > total {
+            let percent = (would_delete * 100 / total) as u8;
+            self.audit_retention_skipped_count += 1;
+            self.metrics
+                .audit_retention_skipped_total
+                .fetch_add(1, Ordering::Relaxed);
+
             tracing::error!(
                 total = total,
                 would_delete = would_delete,
-                "audit rotation would delete >50% of entries; skipping (possible clock manipulation)"
+                percent = percent,
+                skipped_count = self.audit_retention_skipped_count,
+                retention_days = cfg.database.audit_retention_days,
+                "audit retention skipped: {} of {} entries ({}%) exceeds 50% safety \
+                 threshold (retention={} days). Run `vigil doctor` for recovery options.",
+                would_delete,
+                total,
+                percent,
+                cfg.database.audit_retention_days,
             );
+
+            // After 2 consecutive skips, transition to Degraded.
+            if self.audit_retention_skipped_count >= 2 {
+                let mut s = self.state.write();
+                if matches!(*s, DaemonState::Healthy) {
+                    *s = DaemonState::Degraded {
+                        reason: DegradedReason::RetentionPolicyMismatch {
+                            skipped_count: self.audit_retention_skipped_count,
+                            retention_days: cfg.database.audit_retention_days,
+                            would_delete_pct: percent,
+                        },
+                        since: Utc::now(),
+                    };
+                }
+            }
         } else {
+            self.audit_retention_skipped_count = 0;
             match crate::db::audit_ops::rotate_audit_log(conn, cfg.database.audit_retention_days) {
                 Ok(0) => {}
                 Ok(n) => tracing::info!(deleted = n, "rotated old audit entries"),
@@ -1347,21 +1427,7 @@ impl Coordinator {
         self.drift_samples[self.drift_sample_idx % 5] = delta;
         self.drift_sample_idx += 1;
 
-        // Only check after 5 samples (5 minutes of data)
-        if self.drift_sample_idx >= 5 {
-            let avg: u64 = self.drift_samples.iter().sum::<u64>() / 5;
-            let cfg = self.config.load();
-            let threshold = cfg.scanner.drift_velocity_threshold.unwrap_or(50);
-            let in_maintenance = self.maintenance_active.load(Ordering::Acquire);
-
-            if avg > threshold && !in_maintenance {
-                tracing::error!(
-                    avg_changes_per_tick = avg,
-                    threshold = threshold,
-                    "high baseline drift velocity; possible active compromise"
-                );
-            }
-        }
+        // Drift velocity is a metric, not a detection (Principle III).
     }
 }
 
@@ -1401,6 +1467,32 @@ fn write_state_snapshot(
     Ok(())
 }
 
+/// Write guardian.json (1Hz cadence, guardian thread only).
+/// Fast-changing fields: daemon state, watchdog timestamp.
+fn write_guardian_snapshot(
+    runtime_dir: &std::path::Path,
+    state: &RwLock<DaemonState>,
+) -> crate::Result<()> {
+    std::fs::create_dir_all(runtime_dir)?;
+    let path = runtime_dir.join("guardian.json");
+
+    let value = match &*state.read() {
+        DaemonState::Healthy => serde_json::json!({
+            "status": "healthy",
+            "watchdog_timestamp": chrono::Utc::now().to_rfc3339(),
+        }),
+        DaemonState::Degraded { reason, since } => serde_json::json!({
+            "status": "degraded",
+            "reason": reason.to_string(),
+            "since": since,
+            "watchdog_timestamp": chrono::Utc::now().to_rfc3339(),
+        }),
+    };
+
+    atomic_write(&path, &serde_json::to_vec_pretty(&value)?)?;
+    Ok(())
+}
+
 /// rename() on the same filesystem is atomic on Linux.
 pub(crate) fn atomic_write(path: &std::path::Path, data: &[u8]) -> crate::Result<()> {
     use std::io::Write;
@@ -1409,20 +1501,14 @@ pub(crate) fn atomic_write(path: &std::path::Path, data: &[u8]) -> crate::Result
         .parent()
         .unwrap_or_else(|| std::path::Path::new("/tmp"));
 
-    // Build temp file name from target filename + PID + counter for uniqueness
-    let file_name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "vigil".to_string());
-    let tmp_name = format!(".{}.{}.tmp", file_name, std::process::id());
-    let tmp_path = dir.join(&tmp_name);
-
-    let mut f = std::fs::File::create(&tmp_path)?;
+    // NamedTempFile guarantees a unique temp name per call.
+    let mut f = tempfile::NamedTempFile::new_in(dir).map_err(|e| {
+        crate::VigilError::Daemon(format!("atomic_write: temp file creation failed: {}", e))
+    })?;
     f.write_all(data)?;
-    f.sync_all()?;
-    drop(f);
-
-    std::fs::rename(&tmp_path, path)?;
+    f.as_file().sync_all()?;
+    f.persist(path)
+        .map_err(|e| crate::VigilError::Daemon(format!("atomic_write: persist failed: {}", e)))?;
     Ok(())
 }
 
@@ -1471,72 +1557,110 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    /// Test fixture builder for `Coordinator` with sane defaults.
     #[allow(dead_code)]
-    fn test_coordinator(dir: &std::path::Path) -> Coordinator {
-        let baseline_path = dir.join("baseline.db");
-        let audit_path = dir.join("audit.db");
+    struct CoordinatorBuilder {
+        baseline_path: std::path::PathBuf,
+        baseline_conn: Option<rusqlite::Connection>,
+        baseline_identity: Option<crate::db::DbFileIdentity>,
+        audit_conn: Option<rusqlite::Connection>,
+        config: crate::config::Config,
+        state: DaemonState,
+    }
 
-        let baseline_conn = rusqlite::Connection::open(&baseline_path).unwrap();
-        crate::db::schema::create_baseline_tables(&baseline_conn).unwrap();
-        // Insert the sentinel row that recovery checks for.
-        baseline_conn
-            .execute(
+    #[allow(dead_code)]
+    impl CoordinatorBuilder {
+        fn new(dir: &std::path::Path) -> Self {
+            let baseline_path = dir.join("baseline.db");
+            let cfg = crate::config::default_config();
+            Self {
+                baseline_path,
+                baseline_conn: None,
+                baseline_identity: None,
+                audit_conn: None,
+                config: cfg,
+                state: DaemonState::Healthy,
+            }
+        }
+
+        fn with_baseline_db(mut self) -> Self {
+            let conn = rusqlite::Connection::open(&self.baseline_path).unwrap();
+            crate::db::schema::create_baseline_tables(&conn).unwrap();
+            conn.execute(
                 "INSERT OR REPLACE INTO config_state (key, value, updated_at) VALUES ('baseline_initialized', '1', 0)",
                 [],
             )
             .unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                &self.baseline_path,
+                std::fs::Permissions::from_mode(0o600),
+            );
+            self.baseline_conn = Some(conn);
+            self
+        }
 
-        let audit_conn = rusqlite::Connection::open(&audit_path).unwrap();
-        crate::db::schema::create_audit_tables(&audit_conn).unwrap();
+        fn with_baseline_identity(mut self) -> Self {
+            self.baseline_identity = crate::db::DbFileIdentity::from_path(&self.baseline_path).ok();
+            self
+        }
 
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&baseline_path, std::fs::Permissions::from_mode(0o600));
-        let _ = std::fs::set_permissions(&audit_path, std::fs::Permissions::from_mode(0o600));
+        fn with_audit_db(mut self, dir: &std::path::Path) -> Self {
+            let audit_path = dir.join("audit.db");
+            let conn = rusqlite::Connection::open(&audit_path).unwrap();
+            crate::db::schema::create_audit_tables(&conn).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&audit_path, std::fs::Permissions::from_mode(0o600));
+            self.audit_conn = Some(conn);
+            self
+        }
 
-        let cfg = crate::config::default_config();
-        let mut full_cfg = cfg.clone();
-        full_cfg.daemon.db_path = baseline_path;
+        fn with_state(mut self, state: DaemonState) -> Self {
+            self.state = state;
+            self
+        }
 
-        Coordinator {
-            config: Arc::new(ArcSwap::from_pointee(full_cfg)),
-            metrics: Arc::new(Metrics::new()),
-            state: Arc::new(RwLock::new(DaemonState::Healthy)),
-            watch_index: Arc::new(ArcSwap::from_pointee(WatchGroupIndex::from_config(&cfg))),
-            shutdown: Arc::new(AtomicBool::new(false)),
-            reload_flag: Arc::new(AtomicBool::new(false)),
-            baseline_db_identity: crate::db::DbFileIdentity::from_path(
-                &Arc::new(ArcSwap::from_pointee(crate::config::default_config()))
-                    .load()
-                    .daemon
-                    .db_path,
-            )
-            .ok(),
-            audit_db_identity: None,
-            wal_hmac_fingerprint: [0u8; 16],
-            startup_hmac_key: None,
-            startup_baseline_conn: Some(baseline_conn),
-            startup_audit_conn: Some(audit_conn),
-            reconfigure_tx: None,
-            mount_mark_tx: None,
-            wal_identity: None,
-            wal_path: None,
-            maintenance_active: Arc::new(AtomicBool::new(false)),
-            maintenance_entered_at: Arc::new(AtomicI64::new(0)),
-            last_config_hash: None,
-            last_accepted_config_hash: None,
-            initial_mounts: std::collections::HashSet::new(),
-            last_tick: std::time::Instant::now() - Duration::from_secs(60),
-            checkpoint_counter: 0,
-            last_dropped: 0,
-            last_rotation_timestamp: Utc::now().timestamp(),
-            drift_samples: [0; 5],
-            drift_sample_idx: 0,
-            last_changes_seen: 0,
-            last_tick_monotonic: std::time::Instant::now(),
-            last_kernel_overflows: 0,
-            clean_ticks_since_event_loss: 0,
-            drop_rate_log_counter: 0,
-            last_retention_sweep: std::time::Instant::now(),
+        fn build(mut self) -> Coordinator {
+            self.config.daemon.db_path = self.baseline_path;
+            Coordinator {
+                config: Arc::new(ArcSwap::from_pointee(self.config.clone())),
+                metrics: Arc::new(Metrics::new()),
+                state: Arc::new(RwLock::new(self.state)),
+                watch_index: Arc::new(ArcSwap::from_pointee(WatchGroupIndex::from_config(
+                    &self.config,
+                ))),
+                shutdown: Arc::new(AtomicBool::new(false)),
+                reload_flag: Arc::new(AtomicBool::new(false)),
+                baseline_db_identity: self.baseline_identity,
+                audit_db_identity: None,
+                wal_hmac_fingerprint: [0u8; 16],
+                startup_hmac_key: None,
+                startup_baseline_conn: self.baseline_conn,
+                startup_audit_conn: self.audit_conn,
+                reconfigure_tx: None,
+                mount_mark_tx: None,
+                wal_identity: None,
+                wal_path: None,
+                maintenance_active: Arc::new(AtomicBool::new(false)),
+                maintenance_entered_at: Arc::new(AtomicI64::new(0)),
+                last_config_hash: None,
+                last_accepted_config_hash: None,
+                initial_mounts: std::collections::HashSet::new(),
+                last_tick: std::time::Instant::now() - Duration::from_secs(60),
+                checkpoint_counter: 0,
+                last_dropped: 0,
+                last_rotation_timestamp: Utc::now().timestamp(),
+                drift_samples: [0; 5],
+                drift_sample_idx: 0,
+                last_changes_seen: 0,
+                last_tick_monotonic: std::time::Instant::now(),
+                last_kernel_overflows: 0,
+                clean_ticks_since_event_loss: 0,
+                drop_rate_log_counter: 0,
+                last_retention_sweep: std::time::Instant::now(),
+                audit_retention_skipped_count: 0,
+                clean_ticks_since_clock_skew: 0,
+            }
         }
     }
 
@@ -1545,71 +1669,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let baseline_path = dir.path().join("baseline.db");
 
-        // Create baseline DB with sentinel row.
-        let conn = rusqlite::Connection::open(&baseline_path).unwrap();
-        crate::db::schema::create_baseline_tables(&conn).unwrap();
-        conn.execute(
-            "INSERT OR REPLACE INTO config_state (key, value, updated_at) VALUES ('baseline_initialized', '1', 0)",
-            [],
-        )
-        .unwrap();
-        drop(conn);
-
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&baseline_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-        let identity = crate::db::DbFileIdentity::from_path(&baseline_path).unwrap();
-
-        let cfg = crate::config::default_config();
-        let mut full_cfg = cfg.clone();
-        full_cfg.daemon.db_path = baseline_path.clone();
-
-        let baseline_conn = rusqlite::Connection::open(&baseline_path).unwrap();
-        crate::db::schema::create_baseline_tables(&baseline_conn).unwrap();
-
-        let mut coordinator = Coordinator {
-            config: Arc::new(ArcSwap::from_pointee(full_cfg)),
-            metrics: Arc::new(Metrics::new()),
-            state: Arc::new(RwLock::new(DaemonState::Healthy)),
-            watch_index: Arc::new(ArcSwap::from_pointee(WatchGroupIndex::from_config(&cfg))),
-            shutdown: Arc::new(AtomicBool::new(false)),
-            reload_flag: Arc::new(AtomicBool::new(false)),
-            baseline_db_identity: Some(identity),
-            audit_db_identity: None,
-            wal_hmac_fingerprint: [0u8; 16],
-            startup_hmac_key: None,
-            startup_baseline_conn: Some(baseline_conn),
-            startup_audit_conn: None,
-            reconfigure_tx: None,
-            mount_mark_tx: None,
-            wal_identity: None,
-            wal_path: None,
-            maintenance_active: Arc::new(AtomicBool::new(false)),
-            maintenance_entered_at: Arc::new(AtomicI64::new(0)),
-            last_config_hash: None,
-            last_accepted_config_hash: None,
-            initial_mounts: std::collections::HashSet::new(),
-            last_tick: std::time::Instant::now() - Duration::from_secs(60),
-            checkpoint_counter: 0,
-            last_dropped: 0,
-            last_rotation_timestamp: Utc::now().timestamp(),
-            drift_samples: [0; 5],
-            drift_sample_idx: 0,
-            last_changes_seen: 0,
-            last_tick_monotonic: std::time::Instant::now(),
-            last_kernel_overflows: 0,
-            clean_ticks_since_event_loss: 0,
-            drop_rate_log_counter: 0,
-            last_retention_sweep: std::time::Instant::now(),
-        };
+        let mut coordinator = CoordinatorBuilder::new(dir.path())
+            .with_baseline_db()
+            .with_baseline_identity()
+            .build();
 
         // Simulate inode change by copying the file to a new one and replacing.
         let tmp_path = dir.path().join("baseline.db.tmp");
         std::fs::copy(&baseline_path, &tmp_path).unwrap();
         std::fs::rename(&tmp_path, &baseline_path).unwrap();
+        use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&baseline_path, std::fs::Permissions::from_mode(0o600)).unwrap();
 
-        // The identity check should recover without degrading.
         let result = coordinator.check_baseline_db_identity();
         assert!(result, "check should pass after recovery");
         assert!(
@@ -1631,71 +1702,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let baseline_path = dir.path().join("baseline.db");
 
-        // Create baseline DB with sentinel.
-        let conn = rusqlite::Connection::open(&baseline_path).unwrap();
-        crate::db::schema::create_baseline_tables(&conn).unwrap();
-        conn.execute(
-            "INSERT OR REPLACE INTO config_state (key, value, updated_at) VALUES ('baseline_initialized', '1', 0)",
-            [],
-        )
-        .unwrap();
-        drop(conn);
-
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&baseline_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-        let identity = crate::db::DbFileIdentity::from_path(&baseline_path).unwrap();
-
-        let cfg = crate::config::default_config();
-        let mut full_cfg = cfg.clone();
-        full_cfg.daemon.db_path = baseline_path.clone();
-
-        let baseline_conn = rusqlite::Connection::open(&baseline_path).unwrap();
-
-        let mut coordinator = Coordinator {
-            config: Arc::new(ArcSwap::from_pointee(full_cfg)),
-            metrics: Arc::new(Metrics::new()),
-            state: Arc::new(RwLock::new(DaemonState::Healthy)),
-            watch_index: Arc::new(ArcSwap::from_pointee(WatchGroupIndex::from_config(&cfg))),
-            shutdown: Arc::new(AtomicBool::new(false)),
-            reload_flag: Arc::new(AtomicBool::new(false)),
-            baseline_db_identity: Some(identity),
-            audit_db_identity: None,
-            wal_hmac_fingerprint: [0u8; 16],
-            startup_hmac_key: None,
-            startup_baseline_conn: Some(baseline_conn),
-            startup_audit_conn: None,
-            reconfigure_tx: None,
-            mount_mark_tx: None,
-            wal_identity: None,
-            wal_path: None,
-            maintenance_active: Arc::new(AtomicBool::new(false)),
-            maintenance_entered_at: Arc::new(AtomicI64::new(0)),
-            last_config_hash: None,
-            last_accepted_config_hash: None,
-            initial_mounts: std::collections::HashSet::new(),
-            last_tick: std::time::Instant::now() - Duration::from_secs(60),
-            checkpoint_counter: 0,
-            last_dropped: 0,
-            last_rotation_timestamp: Utc::now().timestamp(),
-            drift_samples: [0; 5],
-            drift_sample_idx: 0,
-            last_changes_seen: 0,
-            last_tick_monotonic: std::time::Instant::now(),
-            last_kernel_overflows: 0,
-            clean_ticks_since_event_loss: 0,
-            drop_rate_log_counter: 0,
-            last_retention_sweep: std::time::Instant::now(),
-        };
+        let mut coordinator = CoordinatorBuilder::new(dir.path())
+            .with_baseline_db()
+            .with_baseline_identity()
+            .build();
 
         // Replace with an empty (no schema) SQLite database.
         let tmp_path = dir.path().join("baseline.db.tmp");
         let bad_conn = rusqlite::Connection::open(&tmp_path).unwrap();
         drop(bad_conn);
         std::fs::rename(&tmp_path, &baseline_path).unwrap();
+        use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&baseline_path, std::fs::Permissions::from_mode(0o600)).unwrap();
 
-        // The identity check should fail and degrade.
         let result = coordinator.check_baseline_db_identity();
         assert!(!result, "check should fail for tampered DB");
         assert!(

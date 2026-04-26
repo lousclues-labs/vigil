@@ -768,6 +768,8 @@ vigil audit stats --period all
 
 Verify BLAKE3 hash chain integrity of the audit log. If HMAC signing is enabled, also verifies HMAC signatures. Reports checkpoint presence and coverage.
 
+When HMAC signing is disabled, a prominent warning is displayed explaining the distinction between chain integrity (verifiable — each entry links to its predecessor) and chain authenticity (not verifiable without HMAC — an attacker with write access to `audit.db` could forge a self-consistent chain). See `docs/SECURITY.md` for details.
+
 ```bash
 vigil audit verify
 ```

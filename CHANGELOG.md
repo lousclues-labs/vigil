@@ -2,6 +2,128 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.7.0] - 2026-04-25
+
+### The Heuristic Purge
+
+> **Vigil compares. Vigil does not judge.**
+
+Every heuristic, hardcoded threshold, and silent degradation removed or
+made operator-controlled. Net diff is negative on lines of code and
+positive on trustworthiness.
+
+### Removed (Principle III — no inference)
+
+- **Drift velocity heuristic.** `check_drift_velocity()` no longer logs
+  "high baseline drift velocity; possible active compromise" based on a
+  rate threshold. `drift_velocity_avg` remains as a metric in
+  `state.json` and `vigil status --verbose`; the operator decides
+  whether to alert on it via their own monitoring stack. The
+  `scanner.drift_velocity_threshold` config field is removed; delete it
+  from your config if present. (`src/coordinator/mod.rs`,
+  `src/config/mod.rs`)
+
+- **`has_dangerous_capabilities` heuristic.** Vigil no longer
+  auto-escalates severity to Critical based on a hardcoded list of three
+  capability bits (CAP_DAC_OVERRIDE, CAP_SETUID, CAP_SYS_ADMIN).
+  Severity is determined by the watch group alone. A content modification
+  on a binary with CAP_SETUID now fires at the watch group's configured
+  severity, not auto-escalated to Critical. If you want automatic
+  escalation for capability-bearing files, place them in a higher-severity
+  watch group. The `has_dangerous_capabilities()`, `has_dangerous_caps_from_hex()`,
+  and associated capability constants are deleted from
+  `src/types/snapshot.rs`. (`src/worker.rs`)
+
+### Fixed (Principle XIII — the audit trail never lies)
+
+- **`state.json` write race.** After 1.6.0's coordinator split, the
+  guardian (1Hz) and maintenance (60s) threads both called
+  `atomic_write()` with the same PID-based temp filename. Concurrent
+  writes could produce corrupt JSON, inconsistent fields, or
+  `drift_velocity` flickering between meaningful and null. Fixed:
+  `atomic_write()` now uses `tempfile::NamedTempFile` for a unique temp
+  name per call. Additionally, the guardian thread now writes
+  `guardian.json` (fast-changing fields: daemon state, watchdog
+  timestamp), while `state.json` is written only by the maintenance
+  thread (slow-changing fields: drift velocity, rotation status). Each
+  file has exactly one writer. External dashboards scraping `state.json`
+  should re-verify. (`src/coordinator/mod.rs`, `Cargo.toml`)
+
+- **Audit retention silent skip.** The 50%-safety check in
+  `rotate_audit_log()` could silently skip every cycle when retention
+  settings did not match accumulated data, causing the audit DB to grow
+  unbounded with no operator-visible signal. Fixed: after 2 consecutive
+  skips, the daemon transitions to Degraded with reason
+  `RetentionPolicyMismatch`, and the error log message now explains the
+  two available fixes (increase `audit_retention_days` or run
+  `vigil audit prune --confirm-large-deletion`). New metric:
+  `audit_retention_skipped_total`. (`src/coordinator/mod.rs`,
+  `src/types/config_types.rs`, `src/metrics.rs`)
+
+### Changed (Principle V — clarity)
+
+- **Clock skew threshold is now configurable.** New config field
+  `security.clock_skew_threshold_seconds` (default 60) replaces the
+  hardcoded 5-second tolerance. The previous value caused false
+  degradations on every NTP step and laptop wake. Daemon degradation now
+  requires skew greater than `2 * threshold` (default >120s); the
+  audit rotation safety check fires at `threshold`. New config field
+  `security.clock_skew_recovery_window` (default 300s): after this
+  period of no further skew, the degraded state self-clears without
+  requiring a daemon restart. (`src/coordinator/mod.rs`,
+  `src/config/mod.rs`)
+
+- **`time_phase!` macro replaced with function.** The coordinator's tick
+  timing macro injected `_t` and `_result` into caller scope. Replaced
+  with a generic `time_phase()` function: same behavior, no hygiene
+  risk. (`src/coordinator/mod.rs`)
+
+- **`SharedBaselineIdentity` deadlines use monotonic time.** The
+  authorized-replacement deadline was previously stored as wall-clock
+  epoch nanos. An attacker who manipulated the system clock during a
+  baseline refresh could shift the deadline. Now stored as nanos-since-
+  startup using `Instant`, making the safety mechanism wall-clock-
+  independent. (`src/coordinator/mod.rs`)
+
+### Performance
+
+- **Per-event self-protection check no longer allocates.** `config_search_paths()`
+  and the HMAC key path are computed once at startup and stored as
+  `Arc<HashSet<PathBuf>>` on `WorkerSpawnArgs`. The per-event check is a
+  single `HashSet::contains` instead of a per-event `Vec<PathBuf>`
+  allocation + linear scan. (`src/worker.rs`, `src/daemon/mod.rs`)
+
+- **Worker baseline cache no longer evicted on every detection.** The
+  `cache.pop()` after each detection forced a DB round-trip on the next
+  event for the same path. The generation-based invalidation via
+  `refresh_cache_if_stale()` already handles the auto-rebaseline case.
+  Cache stays warm. (`src/worker.rs`)
+
+- **Fanotify monitor uses `poll(2)` instead of read + 50ms sleep.**
+  The previous non-blocking read + sleep pattern added 50ms latency
+  to every quiet period and increased kernel queue overflow risk during
+  bursts. Now uses `poll()` with an eventfd for shutdown signaling:
+  blocks until events are available, reads all available events in a
+  tight loop, then polls again. Reduces detection latency under quiet
+  load and kernel queue overflows under burst load.
+  (`src/monitor/fanotify.rs`)
+
+### Internal
+
+- **`CoordinatorBuilder` for tests.** The two ~80-line test fixtures
+  hand-constructing `Coordinator` are replaced by a builder pattern.
+  Each test collapses to ~5 lines. (`src/coordinator/mod.rs`)
+
+- **`DegradedReason::RetentionPolicyMismatch` variant added** with
+  fields `skipped_count`, `retention_days`, `would_delete_pct`. Schema
+  stability test updated. (`src/types/config_types.rs`)
+
+**Bloom filter outcome:** The bloom filter is retained pending
+measurement. A 24-hour measurement run should be performed against a
+real workstation before the next release to determine if the rejection
+rate justifies the complexity. If rejects/checks <= 10%, the bloom
+filter should be deleted per Principle XI.
+
 ## [1.6.0] - 2026-04-25
 
 ### The Honesty & Performance Pass

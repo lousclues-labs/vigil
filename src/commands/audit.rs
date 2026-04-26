@@ -381,6 +381,21 @@ pub(crate) fn cmd_audit(
 
             print_header("Vigil Baseline -- Audit Chain Verification");
 
+            // HMAC-disabled warning (Principle V: unambiguous).
+            let cfg = vigil::config::load_config(None)
+                .unwrap_or_else(|_| vigil::config::default_config());
+            if !cfg.security.hmac_signing {
+                eprintln!();
+                eprintln!("  \x1b[1;31mWARNING: HMAC signing is disabled.\x1b[0m");
+                eprintln!("  Chain integrity is verifiable: each entry links to its");
+                eprintln!("  predecessor and content tampering breaks the link.");
+                eprintln!("  Chain authenticity is NOT verifiable: an attacker with");
+                eprintln!("  write access to audit.db could forge a self-consistent");
+                eprintln!("  chain. To enable cryptographic authenticity protection,");
+                eprintln!("  run: sudo vigil setup hmac");
+                eprintln!();
+            }
+
             if detail.breaks.is_empty() && detail.missing == 0 {
                 println!(
                     "  audit log: {} entries verified, chain intact",

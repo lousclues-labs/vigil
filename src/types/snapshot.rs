@@ -250,57 +250,6 @@ impl FileSnapshot {
 
         changes
     }
-
-    /// Returns true if this snapshot has security-sensitive capabilities.
-    ///
-    /// The capabilities field is hex-encoded raw `security.capability` xattr bytes
-    /// (a VFS `vfs_cap_data` struct). We decode the hex and check the permitted
-    /// capability bitmask for dangerous bits:
-    ///   - CAP_DAC_OVERRIDE  (bit 1)
-    ///   - CAP_SETUID        (bit 7)
-    ///   - CAP_SYS_ADMIN     (bit 21)
-    pub fn has_dangerous_capabilities(&self) -> bool {
-        self.permissions
-            .capabilities
-            .as_ref()
-            .map(|hex_str| has_dangerous_caps_from_hex(hex_str))
-            .unwrap_or(false)
-    }
-}
-
-/// Dangerous capability bit positions in the permitted bitmask.
-const CAP_DAC_OVERRIDE: u32 = 1;
-const CAP_SETUID: u32 = 7;
-const CAP_SYS_ADMIN: u32 = 21;
-
-/// Parse hex-encoded VFS capability xattr bytes and check for dangerous capabilities.
-///
-/// Linux `security.capability` xattr layout (`vfs_cap_data`):
-///   - bytes 0..3:  magic/version (LE u32). Version 1 = 0x01000001, Version 2 = 0x01000002,
-///     Version 2 + effective = 0x02000002, Version 3 = 0x01000003, Version 3 + eff = 0x02000003.
-///   - bytes 4..7:  permitted[0] (LE u32) -- capabilities 0..31
-///   - bytes 8..11: inheritable[0] (LE u32)
-///   - (v2/v3) bytes 12..15: permitted[1] (LE u32) -- capabilities 32..63
-///   - (v2/v3) bytes 16..19: inheritable[1] (LE u32)
-///   - (v3 only) bytes 20..23: rootid (LE u32)
-fn has_dangerous_caps_from_hex(hex_str: &str) -> bool {
-    let bytes = match hex::decode(hex_str) {
-        Ok(b) => b,
-        Err(_) => return false,
-    };
-
-    // Minimum valid size is 12 bytes (v1: magic + permitted[0] + inheritable[0])
-    if bytes.len() < 12 {
-        return false;
-    }
-
-    // permitted[0] at offset 4..8 (little-endian u32)
-    let permitted_low = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-
-    let dangerous_mask =
-        (1u32 << CAP_DAC_OVERRIDE) | (1u32 << CAP_SETUID) | (1u32 << CAP_SYS_ADMIN);
-
-    (permitted_low & dangerous_mask) != 0
 }
 
 /// Read SELinux or AppArmor security context via /proc/self/fd/{fd}.
@@ -479,56 +428,6 @@ mod tests {
             "expected DeviceChanged in {:?}",
             changes
         );
-    }
-
-    #[test]
-    fn has_dangerous_capabilities_detects_setuid() {
-        let mut snapshot = make_snapshot(&make_baseline());
-        // Real VFS v2 capability blob: magic=0x02000002, permitted[0] has CAP_SETUID (bit 7) set.
-        // \x02\x00\x00\x02 = magic (VFS_CAP_REVISION_2 with effective flag)
-        // \x80\x00\x00\x00 = permitted[0] = 0x80 = bit 7 (CAP_SETUID)
-        // \x80\x00\x00\x00 = inheritable[0]
-        // \x00\x00\x00\x00 = permitted[1]
-        // \x00\x00\x00\x00 = inheritable[1]
-        let cap_bytes: Vec<u8> = vec![
-            0x02, 0x00, 0x00, 0x02, // magic: VFS_CAP_REVISION_2 + effective
-            0x80, 0x00, 0x00, 0x00, // permitted[0]: bit 7 = CAP_SETUID
-            0x80, 0x00, 0x00, 0x00, // inheritable[0]
-            0x00, 0x00, 0x00, 0x00, // permitted[1]
-            0x00, 0x00, 0x00, 0x00, // inheritable[1]
-        ];
-        snapshot.permissions.capabilities = Some(hex::encode(&cap_bytes));
-        assert!(snapshot.has_dangerous_capabilities());
-    }
-
-    #[test]
-    fn has_dangerous_capabilities_detects_sys_admin() {
-        let mut snapshot = make_snapshot(&make_baseline());
-        let cap_bytes: Vec<u8> = vec![
-            0x02, 0x00, 0x00, 0x02, 0x00, 0x00, 0x20,
-            0x00, // permitted[0]: bit 21 = CAP_SYS_ADMIN
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        ];
-        snapshot.permissions.capabilities = Some(hex::encode(&cap_bytes));
-        assert!(snapshot.has_dangerous_capabilities());
-    }
-
-    #[test]
-    fn has_dangerous_capabilities_safe_cap_not_flagged() {
-        let mut snapshot = make_snapshot(&make_baseline());
-        // CAP_NET_BIND_SERVICE = bit 10; not dangerous
-        let cap_bytes: Vec<u8> = vec![
-            0x02, 0x00, 0x00, 0x02, 0x00, 0x04, 0x00, 0x00, // permitted[0]: bit 10
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        ];
-        snapshot.permissions.capabilities = Some(hex::encode(&cap_bytes));
-        assert!(!snapshot.has_dangerous_capabilities());
-    }
-
-    #[test]
-    fn has_dangerous_capabilities_none_is_safe() {
-        let snapshot = make_snapshot(&make_baseline());
-        assert!(!snapshot.has_dangerous_capabilities());
     }
 
     #[test]

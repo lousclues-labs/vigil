@@ -228,6 +228,8 @@ Config file modifications between daemon restarts were not detected. An attacker
 
 **Remediation:** Capability detection now decodes `security.capability` bytes and checks dangerous bits directly in the permitted mask (`CAP_DAC_OVERRIDE` bit 1, `CAP_SETUID` bit 7, `CAP_SYS_ADMIN` bit 21).
 
+**Note (1.7.0):** The entire `has_dangerous_capabilities()` function and severity auto-escalation were removed in 1.7.0 per Principle III (no inference). The function only checked 3 of 40+ capability bits, producing partial coverage that appeared complete. Severity is now determined by the watch group alone. See CHANGELOG 1.7.0 "Removed."
+
 ---
 
 ### VIGIL-VULN-014 -- Critical/High alerts suppressed during maintenance (High)
@@ -801,6 +803,8 @@ When a file is unlinked between fanotify event production and `read_link("/proc/
 `detect_clock_anomaly` only caught forward jumps > 3600s between 60s ticks. An attacker advancing the wall clock by < 3600s per tick would never trip the gate, gradually erasing audit history through the retention cutoff.
 
 **Remediation:** Each tick compares wall-clock delta against monotonic (`Instant`) delta; skew > 5s triggers Degraded state and skips rotation. Rotation also refused when `MAX(timestamp)` in audit_log exceeds current time (clock rollback past existing entries). Code path: `src/coordinator.rs`.
+
+**Note (1.7.0):** The hardcoded 5-second threshold was replaced with the configurable `security.clock_skew_threshold_seconds` field (default 60s). Daemon degradation now requires skew above 2× the threshold (default 120s), eliminating false positives from normal NTP corrections and laptop wake. Transient skew auto-clears after `clock_skew_recovery_window` seconds.
 
 ---
 

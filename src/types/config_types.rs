@@ -14,14 +14,26 @@ pub enum DegradedReason {
     AuditDbReplaced,
     WalFileReplaced,
     EventBackpressure,
-    EventLossDetected { drop_delta: u64, threshold: u64 },
-    ClockSkewDetected { skew_secs: i64 },
-    FanotifyMarkFailed { mount: std::path::PathBuf },
+    EventLossDetected {
+        drop_delta: u64,
+        threshold: u64,
+    },
+    ClockSkewDetected {
+        skew_secs: i64,
+    },
+    FanotifyMarkFailed {
+        mount: std::path::PathBuf,
+    },
     FanotifyReadFailed,
     WorkerDbUnrecoverable,
     BaselineHmacMismatch,
     FanotifyQueueOverflow,
     AuditLogFull,
+    RetentionPolicyMismatch {
+        skipped_count: u32,
+        retention_days: u32,
+        would_delete_pct: u8,
+    },
 }
 
 impl std::fmt::Display for DegradedReason {
@@ -50,6 +62,15 @@ impl std::fmt::Display for DegradedReason {
             DegradedReason::BaselineHmacMismatch => write!(f, "baseline_hmac_mismatch"),
             DegradedReason::FanotifyQueueOverflow => write!(f, "fanotify_queue_overflow"),
             DegradedReason::AuditLogFull => write!(f, "audit_log_full"),
+            DegradedReason::RetentionPolicyMismatch {
+                skipped_count,
+                retention_days,
+                would_delete_pct,
+            } => write!(
+                f,
+                "retention_policy_mismatch (skipped={}, retention={}d, would_delete={}%)",
+                skipped_count, retention_days, would_delete_pct
+            ),
         }
     }
 }
@@ -350,6 +371,14 @@ mod tests {
                 "fanotify_queue_overflow",
             ),
             (DegradedReason::AuditLogFull, "audit_log_full"),
+            (
+                DegradedReason::RetentionPolicyMismatch {
+                    skipped_count: 3,
+                    retention_days: 7,
+                    would_delete_pct: 80,
+                },
+                "retention_policy_mismatch (skipped=3, retention=7d, would_delete=80%)",
+            ),
         ];
         for (reason, expected) in cases {
             assert_eq!(

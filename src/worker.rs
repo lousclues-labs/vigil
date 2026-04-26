@@ -6,6 +6,7 @@
 //! hardened), and deviations dispatch to the WAL or alert channel.
 //! Panics are caught per-event; the worker stays alive.
 
+use std::collections::HashSet;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -91,6 +92,9 @@ pub struct WorkerSpawnArgs {
     pub wal: Option<Arc<DetectionWal>>,
     pub maintenance_active: Arc<AtomicBool>,
     pub state: Option<Arc<parking_lot::RwLock<crate::types::DaemonState>>>,
+    /// Pre-computed self-protection paths (config files + HMAC key).
+    /// Shared across all workers via Arc. Computed once at startup.
+    pub self_protection_paths: Arc<HashSet<PathBuf>>,
 }
 
 /// Per-worker processing context holding connection, cache, and filter state.
@@ -112,12 +116,19 @@ pub struct WorkerContext {
     consecutive_reopen_failures: u32,
     last_reopen_attempt: Option<std::time::Instant>,
     state: Option<Arc<parking_lot::RwLock<crate::types::DaemonState>>>,
+    /// Pre-computed self-protection paths (config files + HMAC key).
+    self_protection_paths: Arc<HashSet<PathBuf>>,
 }
 
 impl WorkerContext {
     /// Construct a minimal WorkerContext for tests.
     pub fn for_test(conn: Connection, config: &Config) -> Self {
         let metrics = Arc::new(Metrics::new());
+        let mut self_protection = HashSet::new();
+        for p in crate::config::config_search_paths(None) {
+            self_protection.insert(p);
+        }
+        self_protection.insert(config.security.hmac_key_path.clone());
         Self {
             conn,
             db_path: PathBuf::from("/dev/null"),
@@ -136,6 +147,7 @@ impl WorkerContext {
             consecutive_reopen_failures: 0,
             last_reopen_attempt: None,
             state: None,
+            self_protection_paths: Arc::new(self_protection),
         }
     }
 
@@ -254,10 +266,17 @@ impl WorkerContext {
             }
         };
 
-        let result = process_event_inner(event, &cfg, &idx, &self.metrics, &baseline)?;
-        if result.is_some() {
-            self.cache.pop(path_cow.as_ref());
-        }
+        let result = process_event_inner(
+            event,
+            &cfg,
+            &idx,
+            &self.metrics,
+            &baseline,
+            &self.self_protection_paths,
+        )?;
+        // Cache stays warm after detections. The generation-based
+        // invalidation in refresh_cache_if_stale() handles the
+        // auto-rebaseline case when the baseline writer commits.
         Ok(result)
     }
 
@@ -453,6 +472,7 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
         let wal = args.wal.clone();
         let maintenance_active = args.maintenance_active.clone();
         let state = args.state.clone();
+        let self_protection_paths = args.self_protection_paths.clone();
 
         let handle_result = std::thread::Builder::new()
             .name(format!("vigil-worker-{}", i))
@@ -485,6 +505,7 @@ pub fn spawn_workers(args: WorkerSpawnArgs) -> Vec<JoinHandle<()>> {
                     consecutive_reopen_failures: 0,
                     last_reopen_attempt: None,
                     state,
+                    self_protection_paths,
                 };
 
                 while !shutdown.load(Ordering::Acquire) {
@@ -540,22 +561,13 @@ fn process_event_inner(
     idx: &WatchGroupIndex,
     metrics: &Metrics,
     baseline: &BaselineEntry,
+    self_protection_paths: &HashSet<PathBuf>,
 ) -> Result<Option<ChangeResult>> {
-    // Self-protection: log at error level if config or HMAC key is modified
-    let path_str_ref = event.path.to_string_lossy();
-    let hmac_key_path = cfg.security.hmac_key_path.to_string_lossy();
-    let is_config_file = crate::config::config_search_paths(None)
-        .iter()
-        .any(|p| p.to_string_lossy() == path_str_ref);
-    if is_config_file {
+    // Self-protection: reject events targeting config or HMAC key paths.
+    if self_protection_paths.contains(event.path.as_ref()) {
         tracing::error!(
             path = %event.path.display(),
-            "vigil self-protection: config file modified"
-        );
-    } else if path_str_ref.as_ref() == hmac_key_path.as_ref() {
-        tracing::error!(
-            path = %event.path.display(),
-            "vigil self-protection: HMAC key file modified"
+            "vigil self-protection: watched self-path modified"
         );
     }
 
@@ -603,15 +615,7 @@ fn process_event_inner(
         return Ok(None);
     }
 
-    let final_severity = if snapshot.has_dangerous_capabilities()
-        && changes
-            .iter()
-            .any(|c| matches!(c, Change::ContentModified { .. }))
-    {
-        severity.max(Severity::Critical)
-    } else {
-        severity
-    };
+    // Severity from watch group only (Principle III).
 
     // Detect package-owned file changes for auto-rebaseline
     let is_package_update = baseline.package.is_some()
@@ -622,7 +626,7 @@ fn process_event_inner(
     Ok(Some(ChangeResult {
         path: event.path.clone(),
         changes,
-        severity: final_severity,
+        severity,
         monitored_group: group_name,
         process: event.process.clone(),
         package: baseline.package.clone(),
