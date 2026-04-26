@@ -97,7 +97,8 @@ pub fn create_audit_tables(conn: &Connection) -> Result<()> {
             maintenance     INTEGER NOT NULL DEFAULT 0,
             suppressed      INTEGER NOT NULL DEFAULT 0,
             hmac            TEXT,
-            chain_hash      TEXT NOT NULL
+            chain_hash      TEXT NOT NULL,
+            encoding_version INTEGER NOT NULL DEFAULT 1
         );
 
         CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(timestamp);
@@ -122,6 +123,8 @@ pub fn create_audit_tables(conn: &Connection) -> Result<()> {
     )?;
     // v1.3.0: add checkpoint columns for bounded audit retention.
     migrate_audit_checkpoint_columns(conn)?;
+    // VIGIL-VULN-076: add encoding_version for CBOR HMAC (v2).
+    migrate_audit_encoding_version(conn)?;
     Ok(())
 }
 
@@ -144,6 +147,21 @@ fn migrate_audit_checkpoint_columns(conn: &Connection) -> Result<()> {
         ALTER TABLE audit_log ADD COLUMN entry_count INTEGER;
         ALTER TABLE audit_log ADD COLUMN pruned_range_hmac TEXT;
         ",
+    )?;
+    Ok(())
+}
+
+/// VIGIL-VULN-076: Add encoding_version column for CBOR HMAC (v2).
+/// Existing rows default to 1 (legacy pipe-delimited format).
+fn migrate_audit_encoding_version(conn: &Connection) -> Result<()> {
+    let has_col: bool = conn
+        .prepare("SELECT encoding_version FROM audit_log LIMIT 0")
+        .is_ok();
+    if has_col {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "ALTER TABLE audit_log ADD COLUMN encoding_version INTEGER NOT NULL DEFAULT 1;",
     )?;
     Ok(())
 }

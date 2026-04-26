@@ -1,6 +1,7 @@
 //! Shared utilities: owned file descriptors, random bytes, system probes,
 //! process helpers, filesystem walking, and journald queries.
 
+pub mod canonical_cbor;
 pub mod fs_walk;
 pub mod journald;
 pub mod owned_fd;

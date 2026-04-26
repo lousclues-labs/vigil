@@ -139,6 +139,9 @@ pub struct CoordinatorConfig {
     pub maintenance_active: Arc<AtomicBool>,
     pub maintenance_entered_at: Arc<AtomicI64>,
     pub shared_baseline_identity: Option<Arc<SharedBaselineIdentity>>,
+    /// VIGIL-VULN-075: scan trigger channel for compensating full scans
+    /// when user-space event drops exceed threshold.
+    pub scan_trigger: Option<crossbeam_channel::Sender<crate::control::ScanRequest>>,
 }
 
 struct Coordinator {
@@ -177,6 +180,13 @@ struct Coordinator {
     last_retention_sweep: std::time::Instant,
     audit_retention_skipped_count: u32,
     clean_ticks_since_clock_skew: u32,
+    /// VIGIL-VULN-075: scan trigger for compensating full scans on drop threshold breach.
+    scan_trigger: Option<crossbeam_channel::Sender<crate::control::ScanRequest>>,
+    /// VIGIL-VULN-075: sliding-window start and baseline for user-space drops.
+    userspace_drop_window_start: std::time::Instant,
+    userspace_drop_window_baseline: u64,
+    /// VIGIL-VULN-075: ticks since last user-space drop compensating scan.
+    clean_ticks_since_userspace_drops: u32,
 }
 
 pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()>> {
@@ -244,6 +254,10 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
         last_retention_sweep: std::time::Instant::now(),
         audit_retention_skipped_count: 0,
         clean_ticks_since_clock_skew: 0,
+        scan_trigger: cfg.scan_trigger,
+        userspace_drop_window_start: std::time::Instant::now(),
+        userspace_drop_window_baseline: 0,
+        clean_ticks_since_userspace_drops: 0,
     };
 
     // Clone identity data for guardian before coordinator is moved.
@@ -1192,12 +1206,12 @@ impl Coordinator {
                     id, timestamp, path, changes_json, severity, monitored_group,
                     process_json, package, maintenance, suppressed, hmac, chain_hash,
                     record_type, first_sequence, last_sequence, first_timestamp,
-                    last_timestamp, entry_count, pruned_range_hmac
+                    last_timestamp, entry_count, pruned_range_hmac, encoding_version
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, NULL,
                     NULL, NULL, 0, 0, ?6, ?7,
                     'checkpoint', ?8, ?9, ?10,
-                    ?11, ?12, ?13
+                    ?11, ?12, ?13, 2
                 )",
                 rusqlite::params![
                     last_id,
@@ -1331,33 +1345,114 @@ impl Coordinator {
             }
         }
 
+        // VIGIL-VULN-075: sliding-window user-space drop detector.
+        // When user-space drops exceed the configured threshold within the
+        // sliding window, trigger a compensating full scan (mirroring the
+        // FAN_Q_OVERFLOW pattern) and enter Degraded state.
+        self.check_userspace_drop_window(current_dropped, &cfg);
+
         self.last_dropped = current_dropped;
         self.last_kernel_overflows = current_overflows;
+    }
+
+    /// VIGIL-VULN-075: Sliding-window user-space drop-rate detector.
+    /// Triggers compensating full scan on threshold breach, mirrors FAN_Q_OVERFLOW pattern.
+    fn check_userspace_drop_window(&mut self, current_dropped: u64, cfg: &Config) {
+        let window_secs = cfg.monitor.userspace_drop_window_secs;
+        let drop_threshold = cfg.monitor.userspace_drop_threshold;
+
+        if self.userspace_drop_window_start.elapsed() >= Duration::from_secs(window_secs) {
+            self.reset_userspace_drop_window(current_dropped);
+        }
+
+        let window_drops = current_dropped.saturating_sub(self.userspace_drop_window_baseline);
+
+        if window_drops >= drop_threshold {
+            if let Some(ref tx) = self.scan_trigger {
+                let (resp_tx, _) = crossbeam_channel::bounded(1);
+                if tx
+                    .try_send(crate::control::ScanRequest {
+                        mode: crate::types::ScanMode::Full,
+                        response_tx: resp_tx,
+                    })
+                    .is_ok()
+                {
+                    self.metrics
+                        .userspace_drop_scans_triggered
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            {
+                let mut s = self.state.write();
+                if matches!(*s, DaemonState::Healthy) {
+                    *s = DaemonState::Degraded {
+                        reason: DegradedReason::UserspaceEventDrops {
+                            dropped: window_drops,
+                            window_secs,
+                        },
+                        since: Utc::now(),
+                    };
+                }
+            }
+            tracing::error!(
+                dropped = window_drops,
+                window_secs,
+                threshold = drop_threshold,
+                "User-space event channel saturated: {} events dropped in {} seconds. \
+                 Triggering compensating full scan. Investigate worker thread health: vigil doctor",
+                window_drops,
+                window_secs,
+            );
+            self.reset_userspace_drop_window(current_dropped);
+            self.clean_ticks_since_userspace_drops = 0;
+        } else {
+            let s = self.state.read();
+            if let DaemonState::Degraded { reason, .. } = &*s {
+                if matches!(reason, DegradedReason::UserspaceEventDrops { .. }) {
+                    drop(s);
+                    self.clean_ticks_since_userspace_drops += 1;
+                    let recovery_ticks = ((2 * window_secs) / 60).max(2) as u32;
+                    if self.clean_ticks_since_userspace_drops >= recovery_ticks {
+                        let mut s = self.state.write();
+                        if let DaemonState::Degraded { reason, .. } = &*s {
+                            if matches!(reason, DegradedReason::UserspaceEventDrops { .. }) {
+                                tracing::info!(
+                                    "user-space event drops resolved; returning to Healthy"
+                                );
+                                *s = DaemonState::Healthy;
+                                self.clean_ticks_since_userspace_drops = 0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn reset_userspace_drop_window(&mut self, current_dropped: u64) {
+        self.userspace_drop_window_start = std::time::Instant::now();
+        self.userspace_drop_window_baseline = current_dropped;
     }
 
     fn maybe_checkpoint_wal(&mut self) {
         self.checkpoint_counter += 1;
         if self.checkpoint_counter >= 5 {
             self.checkpoint_counter = 0;
-            if let Some(ref conn) = self.startup_baseline_conn {
-                match conn.pragma_update(None, "wal_checkpoint", "PASSIVE") {
-                    Ok(()) => tracing::debug!("WAL checkpoint (baseline) completed"),
-                    Err(e) => tracing::warn!(error = %e, "WAL checkpoint (baseline) failed"),
+            for (conn, label) in [
+                (&self.startup_baseline_conn, "baseline"),
+                (&self.startup_audit_conn, "audit"),
+            ] {
+                if let Some(ref c) = conn {
+                    match c.pragma_update(None, "wal_checkpoint", "PASSIVE") {
+                        Ok(()) => tracing::debug!("WAL checkpoint ({}) completed", label),
+                        Err(e) => tracing::warn!(error = %e, "WAL checkpoint ({}) failed", label),
+                    }
+                } else {
+                    tracing::warn!(
+                        "skipping WAL checkpoint ({}): DB connection dropped (daemon degraded)",
+                        label,
+                    );
                 }
-            } else {
-                tracing::warn!(
-                    "skipping WAL checkpoint (baseline): DB connection dropped (daemon degraded)"
-                );
-            }
-            if let Some(ref conn) = self.startup_audit_conn {
-                match conn.pragma_update(None, "wal_checkpoint", "PASSIVE") {
-                    Ok(()) => tracing::debug!("WAL checkpoint (audit) completed"),
-                    Err(e) => tracing::warn!(error = %e, "WAL checkpoint (audit) failed"),
-                }
-            } else {
-                tracing::warn!(
-                    "skipping WAL checkpoint (audit): DB connection dropped (daemon degraded)"
-                );
             }
         }
     }
@@ -1628,6 +1723,10 @@ mod tests {
                 last_retention_sweep: std::time::Instant::now(),
                 audit_retention_skipped_count: 0,
                 clean_ticks_since_clock_skew: 0,
+                scan_trigger: None,
+                userspace_drop_window_start: std::time::Instant::now(),
+                userspace_drop_window_baseline: 0,
+                clean_ticks_since_userspace_drops: 0,
             }
         }
     }

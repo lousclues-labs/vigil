@@ -260,6 +260,9 @@ Severity-aware delivery policies. Each severity level has its own sub-table.
 | Option | Type | Default | Notes |
 |--------|------|---------|-------|
 | `event_loss_alert_threshold` | integer (optional) | `10` | user-space `events_dropped` or kernel `kernel_queue_overflows` delta per coordinator tick that triggers Degraded state. Recovery after 5 consecutive zero-delta ticks. |
+| `userspace_drop_threshold` | integer | `100` | VIGIL-VULN-075: number of user-space event drops within the sliding window before a compensating full scan is triggered. |
+| `userspace_drop_window_secs` | integer | `60` | VIGIL-VULN-075: sliding window size in seconds for the user-space drop-rate detector. |
+| `fanotify_tier` | string | `"auto"` | VIGIL-VULN-077: fanotify capability tier. `"auto"` probes the highest tier the kernel supports. Can be pinned to `"fid_dfid_name"`, `"fid"`, `"legacy_fd"`, or `"inotify"` for testing. |
 
 ### `[maintenance]`
 

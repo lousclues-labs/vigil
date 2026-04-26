@@ -351,7 +351,8 @@ impl AlertDispatcher {
                     })
                     .unwrap_or((None, None));
 
-                let data = crate::hmac::build_audit_hmac_data(
+                // VIGIL-VULN-076: use v2 CBOR encoding for new entries.
+                let data = crate::hmac::build_audit_hmac_data_v2(
                     ts,
                     &change.path.to_string_lossy(),
                     primary,

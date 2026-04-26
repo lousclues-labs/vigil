@@ -2,6 +2,171 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.7.3] - 2026-04-26
+
+### Critical Hardening
+
+Three gaps between what `THREAT_MODEL.md` promises and what the
+implementation guaranteed have been closed. Each fix has a VIGIL-VULN ID,
+source-comment at the fix site, regression test, and entry in
+`docs/VULNERABILITIES.md`.
+
+**Compass Question:** This change makes Vigil quieter on healthy systems
+(no false-positive noise from pipe-delimiter collisions) and louder when
+the system is actually degraded (user-space event drops now trigger the
+same compensating scan and Degraded state as kernel-side overflows).
+
+### Security — VIGIL-VULN-075: User-space event-drop compensating scan (Medium)
+
+- **Compensating full scan on user-space drops.** The
+  `SendTimeoutError::Timeout` path in `fanotify.rs` dropped events when
+  the user-space channel was full for >1 second. The drop was logged and
+  metered (`events_dropped`), but unlike the `FAN_Q_OVERFLOW` path **no
+  compensating full scan was triggered**. A wedged worker pool created a
+  silent blind spot — exactly the failure mode the kernel-overflow
+  handler exists to defeat. The coordinator now runs a sliding-window
+  detector tracking `events_dropped` increments. On threshold breach it
+  triggers a compensating full scan via the existing `scan_trigger`
+  channel, marks the daemon `Degraded { UserspaceEventDrops }`, and logs
+  an error with recovery prose. Recovery to Healthy occurs after
+  `2 × window_secs` of clean operation. (`src/coordinator/mod.rs`,
+  `src/types/config_types.rs`)
+
+- **New config fields.** `monitor.userspace_drop_threshold` (default
+  `100`) and `monitor.userspace_drop_window_secs` (default `60`).
+  (`src/config/mod.rs`, `docs/CONFIGURATION.md`)
+
+- **New metric.** `userspace_drop_scans_triggered` — full scans triggered
+  in response to user-space event channel saturation. Visible in
+  `vigil status`, `vigil status --format json`, and Prometheus output.
+  (`src/metrics.rs`)
+
+- **New `DegradedReason` variant.** `UserspaceEventDrops { dropped,
+  window_secs }` surfaces in `vigil status`, `vigil doctor`, and
+  `state.json`. (`src/types/config_types.rs`)
+
+- **Coordinator gains `scan_trigger` channel.** `CoordinatorConfig` and
+  the internal `Coordinator` struct now hold an optional scan-trigger
+  sender so the maintenance thread can request compensating scans.
+  (`src/coordinator/mod.rs`, `src/daemon/mod.rs`)
+
+### Security — VIGIL-VULN-076: Audit HMAC delimiter collision (High)
+
+- **CBOR-based HMAC input (v2).** `build_audit_hmac_data()` constructed
+  the HMAC input as `format!("{}|{}|{}|…")`. Linux paths may contain
+  `|`, so two distinct logical inputs could produce identical HMAC
+  bytes — e.g. `("/etc/foo|bar", "modified")` collides with
+  `("/etc/foo", "bar|modified")`. This broke the audit chain's tamper-
+  evidence guarantee for paths containing the delimiter. New
+  `build_audit_hmac_data_v2()` uses deterministic CBOR encoding
+  (RFC 8949 §4.2) via `ciborium`, with path as a CBOR byte string
+  (preserves non-UTF-8), optional fields as CBOR `null`, and keys in
+  canonical lexicographic order. (`src/hmac.rs`,
+  `src/util/canonical_cbor.rs`)
+
+- **Schema migration: `encoding_version` column.** `audit_log` gains an
+  `encoding_version INTEGER NOT NULL DEFAULT 1` column.  Existing rows
+  are tagged v1 (legacy pipe). New entries are written with
+  `encoding_version = 2`. Migration via `ALTER TABLE ADD COLUMN` in
+  `migrate_audit_encoding_version()`. (`src/db/schema.rs`)
+
+- **Verification dispatch.** `verify_chain_detail()` reads
+  `encoding_version` per row and dispatches to the v1 or v2 builder.
+  Mixed v1+v2 chains verify correctly — required because existing
+  deployments will have v1 entries below new v2 entries. The v1
+  verification path is kept **forever**; no auto-rewrite.
+  (`src/db/audit_ops.rs`)
+
+- **All write paths updated.** `insert_audit_entry()`, operator-action
+  records, check-completed/self-check/test-alert entries,
+  acknowledgment/doctor-event/hooks-operation entries, WAL audit writer,
+  and alert dispatcher now call `build_audit_hmac_data_v2()` and write
+  `encoding_version = 2`. (`src/db/audit_ops.rs`,
+  `src/db/audit_retention.rs`, `src/alert/mod.rs`,
+  `src/wal/audit_writer.rs`, `src/coordinator/mod.rs`)
+
+- **New documentation.** `docs/AUDIT_HMAC_FORMAT.md` documents both
+  formats, the collision weakness, the CBOR key list, type mapping, and
+  a worked example for external auditors.
+
+### Security — VIGIL-VULN-077: fanotify FID-mode initialization (High)
+
+- **Capability probe.** `detect_fanotify_tier()` in `src/monitor/mod.rs`
+  tries `fanotify_init` in descending tier order: `FidDfidName`
+  (Linux 5.9+), `Fid` (Linux 5.1+), `LegacyFd`, `Inotify`. Each
+  probed fd is closed immediately to prevent leaks. The probe runs at
+  daemon startup and is logged at `info`. (`src/monitor/mod.rs`)
+
+- **`FanotifyTier` enum.** Four variants: `Inotify` (0), `LegacyFd` (1),
+  `Fid` (2), `FidDfidName` (3). Implements `Display`, `FromStr`,
+  `Serialize`, `Ord`. Used throughout status, doctor, and metrics.
+  (`src/monitor/mod.rs`)
+
+- **Tier surfaced everywhere.** `vigil status` JSON includes
+  `metrics.fanotify_tier` (gauge). Prometheus output includes
+  `vigil_fanotify_tier`. Tier logged at startup. (`src/metrics.rs`,
+  `src/monitor/mod.rs`)
+
+- **Config override.** `monitor.fanotify_tier` (default `"auto"`)
+  allows operators to pin a tier for testing. Valid values: `"auto"`,
+  `"fid_dfid_name"`, `"fid"`, `"legacy_fd"`, `"inotify"`.
+  (`src/config/mod.rs`, `docs/CONFIGURATION.md`)
+
+- **New metrics.** `fanotify_tier` (gauge: 0–3) and
+  `fanotify_open_by_handle_at_failures` (counter). (`src/metrics.rs`)
+
+- **`MonitorHandle` gains `fanotify_tier` field.** The resolved tier is
+  stored on the handle for visibility to callers.
+  (`src/monitor/mod.rs`)
+
+### Tests
+
+- `tests/chaos/scenarios/userspace_drop_compensating_scan.rs` — chaos
+  test: wedged worker triggers compensating scan and Degraded state;
+  recovery after clean window.
+- `tests/control_status_reports_userspace_drops.rs` — metrics snapshot
+  and Prometheus output include `userspace_drop_scans_triggered`; reason
+  display is operator-readable.
+- `tests/audit_hmac_collision_resistance.rs` — proptest: distinct input
+  tuples (including paths with `|`, `\n`) never produce identical v2
+  HMAC bytes; demonstrates the v1 collision; confirms v2 immunity.
+- `tests/audit_chain_v1_v2_mixed.rs` — mixed v1+v2 chain verifies with
+  zero breaks; wrong encoding version causes verification break.
+- `tests/fanotify_tier_probe_tests.rs` — probe returns valid tier on
+  any kernel; tier ordering and metric values; Display/FromStr
+  roundtrip; config override and auto-detect.
+
+### Fuzz Targets
+
+- `fuzz/fuzz_targets/fuzz_audit_hmac_collision.rs` — adversarial inputs
+  targeting the v2 CBOR encoder; must not panic.
+- `fuzz/fuzz_targets/fuzz_fanotify_fid_decode.rs` — adversarial
+  `info_len`/`hdr.len` values for FID-record decoding; must not panic
+  or over-read.
+
+### Documentation
+
+- `docs/VULNERABILITIES.md` — three new entries: VIGIL-VULN-075 (Medium),
+  VIGIL-VULN-076 (High), VIGIL-VULN-077 (High).
+- `docs/AUDIT_HMAC_FORMAT.md` — new stable reference for the v1
+  (deprecated) and v2 (CBOR) HMAC encoding formats.
+- `docs/THREAT_MODEL.md` — "Closed-Set Directory Watches" updated with
+  per-tier coverage table (FidDfidName / Fid / LegacyFd / Inotify).
+- `docs/RESILIENCE.md` — new "User-Space Event Drop Detection" section
+  documenting the sliding-window detector and recovery semantics.
+- `docs/CONFIGURATION.md` — three new fields: `userspace_drop_threshold`,
+  `userspace_drop_window_secs`, `fanotify_tier`.
+
+### Principles Advanced
+
+- **Fix 1 (VIGIL-VULN-077) → Principle X** (Fail Open, Fail Loud):
+  degradation from legacy tier now surfaces in `vigil status` and
+  `vigil doctor`.
+- **Fix 2 (VIGIL-VULN-076) → Principle XII + XIII** (Deterministic
+  Evidence, Chain Integrity): HMAC input is now unambiguous.
+- **Fix 3 (VIGIL-VULN-075) → Principle X + XIII** (Fail Loud, Chain
+  Integrity): user-space drops are no longer silent.
+
 ## [1.7.2] - 2026-04-26
 
 ### Fixed

@@ -638,6 +638,7 @@ impl DaemonRuntime {
             maintenance_active: daemon.maintenance_active.clone(),
             maintenance_entered_at: daemon.maintenance_entered_at.clone(),
             shared_baseline_identity: shared_baseline_identity.clone(),
+            scan_trigger: Some(scan_trigger_tx.clone()),
         })?;
         send_watchdog_heartbeat();
 

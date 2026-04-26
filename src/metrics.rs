@@ -73,6 +73,12 @@ pub struct Metrics {
     pub baseline_refresh_unattributed_changes: AtomicU64,
     /// Number of times audit retention safety check skipped deletion.
     pub audit_retention_skipped_total: AtomicU64,
+    /// VIGIL-VULN-075: Full scans triggered in response to user-space event drops.
+    pub userspace_drop_scans_triggered: AtomicU64,
+    /// VIGIL-VULN-077: Fanotify tier gauge (0=inotify, 1=legacy, 2=fid, 3=fid_dfid_name).
+    pub fanotify_tier: AtomicU64,
+    /// VIGIL-VULN-077: open_by_handle_at failures during FID-mode event resolution.
+    pub fanotify_open_by_handle_at_failures: AtomicU64,
     /// Unix timestamp set once at daemon startup.
     pub uptime_start: i64,
 }
@@ -128,6 +134,9 @@ impl Metrics {
             auto_rebaseline_rejected: AtomicU64::new(0),
             baseline_refresh_unattributed_changes: AtomicU64::new(0),
             audit_retention_skipped_total: AtomicU64::new(0),
+            userspace_drop_scans_triggered: AtomicU64::new(0),
+            fanotify_tier: AtomicU64::new(0),
+            fanotify_open_by_handle_at_failures: AtomicU64::new(0),
             uptime_start: chrono::Utc::now().timestamp(),
         }
     }
@@ -201,6 +210,13 @@ impl Metrics {
             audit_retention_skipped_total: self
                 .audit_retention_skipped_total
                 .load(Ordering::Relaxed),
+            userspace_drop_scans_triggered: self
+                .userspace_drop_scans_triggered
+                .load(Ordering::Relaxed),
+            fanotify_tier: self.fanotify_tier.load(Ordering::Relaxed),
+            fanotify_open_by_handle_at_failures: self
+                .fanotify_open_by_handle_at_failures
+                .load(Ordering::Relaxed),
             uptime_start: self.uptime_start,
         }
     }
@@ -263,6 +279,9 @@ pub struct MetricsSnapshot {
     pub auto_rebaseline_rejected: u64,
     pub baseline_refresh_unattributed_changes: u64,
     pub audit_retention_skipped_total: u64,
+    pub userspace_drop_scans_triggered: u64,
+    pub fanotify_tier: u64,
+    pub fanotify_open_by_handle_at_failures: u64,
     pub uptime_start: i64,
 }
 
@@ -541,6 +560,24 @@ impl MetricsSnapshot {
             "vigil_baseline_refresh_unattributed_changes_total",
             "Unattributed changes recorded during baseline refresh",
             self.baseline_refresh_unattributed_changes,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_userspace_drop_scans_triggered_total",
+            "Full scans triggered in response to user-space event channel saturation",
+            self.userspace_drop_scans_triggered,
+        );
+        write_prom_gauge(
+            &mut out,
+            "vigil_fanotify_tier",
+            "Fanotify capability tier (0=inotify, 1=legacy_fd, 2=fid, 3=fid_dfid_name)",
+            self.fanotify_tier,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_fanotify_open_by_handle_at_failures_total",
+            "open_by_handle_at failures during FID-mode event resolution",
+            self.fanotify_open_by_handle_at_failures,
         );
 
         let _ = writeln!(out);

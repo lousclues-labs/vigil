@@ -175,6 +175,22 @@ Default closed-set directories: `~/.ssh/`, `/etc/cron.d/`, `/etc/cron.daily/`,
 `/etc/cron.hourly/`, `/etc/cron.weekly/`, `/etc/cron.monthly/`,
 `/etc/sudoers.d/`.
 
+### Per-Tier Coverage (VIGIL-VULN-077)
+
+Real-time detection of closed-set violations depends on the fanotify
+capability tier resolved at daemon startup:
+
+| Tier | Kernel | Coverage |
+|------|--------|----------|
+| `fid_dfid_name` | Linux 5.9+ | Full: `FAN_CREATE`, `FAN_DELETE`, `FAN_MOVED_TO` events deliver directory FID + filename. Ideal for closed-set watches. |
+| `fid` | Linux 5.1+ | Full: FID-mode events deliver file handles resolvable via `open_by_handle_at(2)`. |
+| `legacy_fd` | Linux <5.1 | Partial: directory-modification events may be delivered with `fd == -1` (FAN_NOFD) and silently skipped. Scheduled scans compensate. |
+| `inotify` | any | Partial: inotify backend has no mount-scoped coverage; relies on per-directory watches with limited scalability. |
+
+The detected tier is logged at `info` at startup, exposed in `vigil status`
+JSON as `metrics.fanotify_tier`, and surfaced in `vigil doctor`. Operators
+can pin a tier via `monitor.fanotify_tier` in the config for testing.
+
 ---
 
 ## Absence of Receipts

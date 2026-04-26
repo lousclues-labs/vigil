@@ -210,6 +210,19 @@ Security-related degradation (`baseline_db_replaced`, `audit_db_replaced`, `wal_
 
 ---
 
+## User-Space Event Drop Detection (VIGIL-VULN-075)
+
+When the fanotify event channel saturates (worker pool wedged or slow), events are dropped and metered via `events_dropped`. The coordinator runs a sliding-window detector:
+
+- **Window**: `monitor.userspace_drop_window_secs` (default 60s)
+- **Threshold**: `monitor.userspace_drop_threshold` (default 100 drops)
+- **On breach**: compensating full scan triggered, daemon enters `Degraded { UserspaceEventDrops }`, error logged with recovery prose
+- **Recovery**: after `2 * window_secs` with no further drops above threshold, auto-recovers to Healthy
+
+This mirrors the existing `FAN_Q_OVERFLOW` compensating scan pattern, closing the gap where user-space drops created silent blind spots.
+
+---
+
 ## Baseline HMAC Mismatch Handling
 
 When the daemon starts and detects a baseline HMAC mismatch:

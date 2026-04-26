@@ -29,6 +29,7 @@ Use this index when you need answers fast.
 | [Attestation](ATTEST.md) | Portable signed evidence files (`.vatt`) and offline verification |
 | [Security](SECURITY.md) | Security policy, dependency justification, trust model |
 | [Vulnerabilities](VULNERABILITIES.md) | All remediated vulnerabilities with VIGIL-VULN tracking IDs |
+| [Audit HMAC Format](AUDIT_HMAC_FORMAT.md) | v1 (legacy) and v2 (CBOR) HMAC encoding reference for chain auditors |
 
 ## When Things Go Wrong
 

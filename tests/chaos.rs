@@ -22,6 +22,8 @@ mod coordinator_adversarial_tick;
 mod pipeline_recovery;
 #[path = "chaos/scenarios/sink_determinism.rs"]
 mod sink_determinism;
+#[path = "chaos/scenarios/userspace_drop_compensating_scan.rs"]
+mod userspace_drop_compensating_scan;
 #[path = "chaos/scenarios/wal_concurrency.rs"]
 mod wal_concurrency;
 #[path = "chaos/scenarios/worker_pool_chaos.rs"]

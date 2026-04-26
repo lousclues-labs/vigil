@@ -102,6 +102,31 @@ pub fn build_audit_hmac_data(
     .into_bytes()
 }
 
+/// VIGIL-VULN-076: Build HMAC input using deterministic CBOR encoding (v2).
+///
+/// Replaces the pipe-delimited v1 format which was vulnerable to delimiter
+/// collision on paths containing `|`. Path is encoded as a CBOR byte string
+/// to preserve non-UTF-8 path bytes. Optional fields use CBOR `null`.
+pub fn build_audit_hmac_data_v2(
+    timestamp: i64,
+    path: &str,
+    change_type: &str,
+    severity: &str,
+    old_hash: Option<&str>,
+    new_hash: Option<&str>,
+    previous_chain_hash: &str,
+) -> Vec<u8> {
+    crate::util::canonical_cbor::build_audit_hmac_cbor(
+        timestamp,
+        path.as_bytes(),
+        change_type,
+        severity,
+        old_hash,
+        new_hash,
+        previous_chain_hash,
+    )
+}
+
 /// Check HMAC key file permissions and warn if too permissive.
 ///
 /// In release builds, returns an error if the key file is readable by group

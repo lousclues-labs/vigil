@@ -82,13 +82,16 @@ pub fn insert_audit_entry(
         &severity,
     );
 
+    // VIGIL-VULN-076: all new entries use encoding_version 2 (CBOR HMAC).
     conn.prepare_cached(
         "INSERT INTO audit_log (
             timestamp, path, changes_json, severity, monitored_group,
-            process_json, package, maintenance, suppressed, hmac, chain_hash
+            process_json, package, maintenance, suppressed, hmac, chain_hash,
+            encoding_version
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
-            ?6, ?7, ?8, ?9, ?10, ?11
+            ?6, ?7, ?8, ?9, ?10, ?11,
+            2
         )",
     )?
     .execute(params![
@@ -280,17 +283,25 @@ pub fn verify_chain_detail(
     let has_record_type = conn
         .prepare("SELECT record_type FROM audit_log LIMIT 0")
         .is_ok();
+    let has_encoding_version = conn
+        .prepare("SELECT encoding_version FROM audit_log LIMIT 0")
+        .is_ok();
 
     let mut stmt = if has_record_type {
-        conn.prepare_cached(
+        conn.prepare_cached(&format!(
             "SELECT id, timestamp, path, changes_json, severity, chain_hash, hmac,
-                    record_type, first_sequence, last_sequence, entry_count, pruned_range_hmac
+                    record_type, first_sequence, last_sequence, entry_count, pruned_range_hmac{}
              FROM audit_log ORDER BY id ASC",
-        )?
+            if has_encoding_version {
+                ", encoding_version"
+            } else {
+                ", 1"
+            }
+        ))?
     } else {
         conn.prepare_cached(
             "SELECT id, timestamp, path, changes_json, severity, chain_hash, hmac,
-                    NULL, NULL, NULL, NULL, NULL
+                    NULL, NULL, NULL, NULL, NULL, 1
              FROM audit_log ORDER BY id ASC",
         )?
     };
@@ -309,6 +320,7 @@ pub fn verify_chain_detail(
             row.get::<_, Option<i64>>(9)?,
             row.get::<_, Option<i64>>(10)?,
             row.get::<_, Option<String>>(11)?,
+            row.get::<_, i64>(12)?,
         ))
     })?;
 
@@ -338,6 +350,7 @@ pub fn verify_chain_detail(
             last_seq,
             entry_count,
             pruned_range_hmac,
+            encoding_version,
         ) = row?;
         total += 1;
 
@@ -384,15 +397,29 @@ pub fn verify_chain_detail(
                 if let (Some(key), Some(ref stored_hmac)) = (hmac_key, &entry_hmac) {
                     let primary = changes_json_to_primary_type(&changes_json);
                     let (old_hash, new_hash) = changes_json_extract_hashes(&changes_json);
-                    let data = crate::hmac::build_audit_hmac_data(
-                        ts,
-                        &_path,
-                        &primary,
-                        &severity,
-                        old_hash.as_deref(),
-                        new_hash.as_deref(),
-                        &prev,
-                    );
+                    // VIGIL-VULN-076: dispatch to v1 or v2 HMAC builder based
+                    // on the encoding_version stored with each entry.
+                    let data = if encoding_version >= 2 {
+                        crate::hmac::build_audit_hmac_data_v2(
+                            ts,
+                            &_path,
+                            &primary,
+                            &severity,
+                            old_hash.as_deref(),
+                            new_hash.as_deref(),
+                            &prev,
+                        )
+                    } else {
+                        crate::hmac::build_audit_hmac_data(
+                            ts,
+                            &_path,
+                            &primary,
+                            &severity,
+                            old_hash.as_deref(),
+                            new_hash.as_deref(),
+                            &prev,
+                        )
+                    };
                     if crate::hmac::verify_hmac(key, &data, stored_hmac) {
                         valid += 1;
                     } else {
@@ -791,7 +818,8 @@ pub fn insert_receipt_entry(
         compute_chain_hash(previous_chain_hash, timestamp, path, payload_json, severity);
 
     let hmac = hmac_key.map(|key| {
-        let data = crate::hmac::build_audit_hmac_data(
+        // VIGIL-VULN-076: use v2 CBOR encoding for new entries.
+        let data = crate::hmac::build_audit_hmac_data_v2(
             timestamp,
             path,
             "check_completed",
@@ -806,10 +834,12 @@ pub fn insert_receipt_entry(
     conn.prepare_cached(
         "INSERT INTO audit_log (
             timestamp, path, changes_json, severity, monitored_group,
-            process_json, package, maintenance, suppressed, hmac, chain_hash
+            process_json, package, maintenance, suppressed, hmac, chain_hash,
+            encoding_version
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
-            ?6, ?7, ?8, ?9, ?10, ?11
+            ?6, ?7, ?8, ?9, ?10, ?11,
+            2
         )",
     )?
     .execute(params![
@@ -849,7 +879,8 @@ pub fn insert_self_check_entry(
         compute_chain_hash(previous_chain_hash, timestamp, path, payload_json, severity);
 
     let hmac = hmac_key.map(|key| {
-        let data = crate::hmac::build_audit_hmac_data(
+        // VIGIL-VULN-076: use v2 CBOR encoding for new entries.
+        let data = crate::hmac::build_audit_hmac_data_v2(
             timestamp,
             path,
             "self_check",
@@ -864,10 +895,12 @@ pub fn insert_self_check_entry(
     conn.prepare_cached(
         "INSERT INTO audit_log (
             timestamp, path, changes_json, severity, monitored_group,
-            process_json, package, maintenance, suppressed, hmac, chain_hash
+            process_json, package, maintenance, suppressed, hmac, chain_hash,
+            encoding_version
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
-            ?6, ?7, ?8, ?9, ?10, ?11
+            ?6, ?7, ?8, ?9, ?10, ?11,
+            2
         )",
     )?
     .execute(params![
@@ -902,7 +935,8 @@ pub fn insert_test_alert_entry(
         compute_chain_hash(previous_chain_hash, timestamp, path, payload_json, severity);
 
     let hmac = hmac_key.map(|key| {
-        let data = crate::hmac::build_audit_hmac_data(
+        // VIGIL-VULN-076: use v2 CBOR encoding for new entries.
+        let data = crate::hmac::build_audit_hmac_data_v2(
             timestamp,
             path,
             "test_alert",
@@ -917,10 +951,12 @@ pub fn insert_test_alert_entry(
     conn.prepare_cached(
         "INSERT INTO audit_log (
             timestamp, path, changes_json, severity, monitored_group,
-            process_json, package, maintenance, suppressed, hmac, chain_hash
+            process_json, package, maintenance, suppressed, hmac, chain_hash,
+            encoding_version
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
-            ?6, ?7, ?8, ?9, ?10, ?11
+            ?6, ?7, ?8, ?9, ?10, ?11,
+            2
         )",
     )?
     .execute(params![
@@ -1008,7 +1044,8 @@ pub fn record_operator_action(
     );
 
     let hmac = hmac_key.as_deref().map(|key| {
-        let data = crate::hmac::build_audit_hmac_data(
+        // VIGIL-VULN-076: use v2 CBOR encoding for new entries.
+        let data = crate::hmac::build_audit_hmac_data_v2(
             timestamp,
             path_str,
             &payload_json,
@@ -1023,10 +1060,12 @@ pub fn record_operator_action(
     conn.prepare_cached(
         "INSERT INTO audit_log (
             timestamp, path, changes_json, severity, monitored_group,
-            process_json, package, maintenance, suppressed, hmac, chain_hash
+            process_json, package, maintenance, suppressed, hmac, chain_hash,
+            encoding_version
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
-            ?6, ?7, ?8, ?9, ?10, ?11
+            ?6, ?7, ?8, ?9, ?10, ?11,
+            2
         )",
     )?
     .execute(params![

@@ -34,6 +34,11 @@ pub enum DegradedReason {
         retention_days: u32,
         would_delete_pct: u8,
     },
+    /// VIGIL-VULN-075: User-space event channel saturated, compensating scan triggered.
+    UserspaceEventDrops {
+        dropped: u64,
+        window_secs: u64,
+    },
 }
 
 impl std::fmt::Display for DegradedReason {
@@ -70,6 +75,14 @@ impl std::fmt::Display for DegradedReason {
                 f,
                 "retention_policy_mismatch (skipped={}, retention={}d, would_delete={}%)",
                 skipped_count, retention_days, would_delete_pct
+            ),
+            DegradedReason::UserspaceEventDrops {
+                dropped,
+                window_secs,
+            } => write!(
+                f,
+                "userspace_event_drops (dropped={}, window={}s)",
+                dropped, window_secs
             ),
         }
     }

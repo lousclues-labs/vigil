@@ -95,6 +95,9 @@ Use this as a reference when assessing Vigil Baseline's security posture or audi
 | VIGIL-VULN-072 | Medium | 0.35.0 | User-space event loss not surfaced as Degraded state |
 | VIGIL-VULN-073 | Medium | 0.35.0 | v0.34.0 follow-up bugs (composite) |
 | VIGIL-VULN-074 | Medium | 0.35.0 | Key material in non-zeroizing buffers; fd leak across exec (composite) |
+| VIGIL-VULN-075 | Medium | 1.7.3 | User-space event channel drops created silent blind spots without compensating scan |
+| VIGIL-VULN-076 | High | 1.7.3 | Audit HMAC delimiter collision — pipe-separated input could be forged for paths containing the delimiter |
+| VIGIL-VULN-077 | High | 1.7.3 | Directory-modification events silently dropped under FAN_MARK_MOUNT without FID-mode init |
 
 ---
 
@@ -845,3 +848,35 @@ Six bugs introduced or left open by the v0.34.0 sweep: (1) thread-spawn failure 
 (1) `load_hmac_key` returned `Vec<u8>` -- key material lived in non-zeroizing buffers between read and consumer. (2) `dup_to_file` used `libc::dup` which does not set `FD_CLOEXEC`; if any future code path spawns children, the fd would leak across exec.
 
 **Remediation:** (1) `load_hmac_key` returns `Zeroizing<Vec<u8>>`; intermediate content buffer explicitly zeroized. (2) `dup_to_file` uses `libc::fcntl(F_DUPFD_CLOEXEC)`. (3) WAL `random_nonce()` uses `libc::getrandom` syscall instead of per-call `/dev/urandom` open. Code paths: `src/hmac.rs`, `src/worker.rs`, `src/wal/mod.rs`.
+
+---
+
+### VIGIL-VULN-075 -- User-space event channel drops created silent blind spots without compensating scan (Medium)
+
+**Fixed in:** 1.7.3
+
+The `SendTimeoutError::Timeout` path in `fanotify.rs` dropped events when the user-space channel was full for >1 second. The drop was logged and metered (`events_dropped`), but unlike the `FAN_Q_OVERFLOW` path, no compensating full scan was triggered. A wedged worker pool created a silent blind spot — exactly the failure mode the kernel-overflow handler exists to defeat.
+
+**Remediation:** Sliding-window drop-rate detector in `src/coordinator/mod.rs` tracks `events_dropped` increments over a configurable window (`monitor.userspace_drop_threshold = 100`, `monitor.userspace_drop_window_secs = 60`). On threshold breach, a compensating full scan is triggered via the existing `scan_trigger` channel, the daemon enters `Degraded { UserspaceEventDrops }`, and an error is logged with recovery prose. Recovery to Healthy occurs after `2 * window_secs` of clean operation. New metric: `userspace_drop_scans_triggered`. Code paths: `src/coordinator/mod.rs`, `src/config/mod.rs`, `src/types/config_types.rs`, `src/metrics.rs`.
+
+---
+
+### VIGIL-VULN-076 -- Audit HMAC delimiter collision — pipe-separated input could be forged for paths containing the delimiter (High)
+
+**Fixed in:** 1.7.3
+
+`build_audit_hmac_data` constructed the HMAC input as `format!("{}|{}|{}|{}|{}|{}|{}", ...)`. Linux paths may contain `|`, producing collisions: `("/etc/foo|bar", "modified", ...)` collides with `("/etc/foo", "bar|modified", ...)`. This breaks the audit-chain tamper-evidence guarantee for paths containing the delimiter.
+
+**Reproduction:** Compute `build_audit_hmac_data` with path `"/etc/foo|bar"` and change `"modified"`; then with path `"/etc/foo"` and change `"bar|modified"`. Both produce identical bytes.
+
+**Remediation:** (1) New `encoding_version` column added to `audit_log` schema (migration via `ALTER TABLE ADD COLUMN`). Existing rows tagged as v1 (default 1). (2) New `build_audit_hmac_data_v2` uses deterministic CBOR encoding (RFC 8949 §4.2) via `ciborium`. Path is CBOR byte string (preserves non-UTF-8), optional fields use CBOR `null`, keys are lexicographically sorted. (3) `verify_chain_detail` reads `encoding_version` per row and dispatches to v1 or v2 builder. Mixed v1+v2 chains verify correctly. (4) All new entries written with `encoding_version = 2`. The v1 format is kept forever for backward compatibility. Code paths: `src/hmac.rs`, `src/util/canonical_cbor.rs`, `src/db/schema.rs`, `src/db/audit_ops.rs`, `src/alert/mod.rs`, `src/wal/audit_writer.rs`, `src/db/audit_retention.rs`.
+
+---
+
+### VIGIL-VULN-077 -- Directory-modification events silently dropped under FAN_MARK_MOUNT without FID-mode init (High)
+
+**Fixed in:** 1.7.3
+
+`fanotify_init` was called with `FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_NONBLOCK` without FID-mode flags. On Linux 5.1+ kernels, directory-modification events (`FAN_CREATE`, `FAN_DELETE`, `FAN_MOVED_FROM`, `FAN_MOVED_TO`) under `FAN_MARK_MOUNT` deliver `fanotify_event_info_fid` records with `event.fd == FAN_NOFD (-1)`. The code's `if event.fd >= 0` branch silently skipped these events, meaning the threat-model claim that closed-set directory watches detect persistence via unknown filenames was not honored for FID-capable kernels.
+
+**Remediation:** (1) Capability probe `detect_fanotify_tier()` in `src/monitor/mod.rs` tries init flags in order: `FidDfidName` (Linux 5.9+), `Fid` (Linux 5.1+), `LegacyFd`, `Inotify`. Each probe fd is closed immediately. (2) Tier surfaced in `vigil status` JSON (`metrics.fanotify_tier` gauge), `vigil doctor` output, and logged at `info` at startup. (3) Config override `monitor.fanotify_tier` (default `"auto"`) allows operators to pin a tier. (4) New metrics: `fanotify_tier` (gauge), `fanotify_open_by_handle_at_failures` (counter). Code paths: `src/monitor/mod.rs`, `src/monitor/fanotify.rs`, `src/config/mod.rs`, `src/metrics.rs`.

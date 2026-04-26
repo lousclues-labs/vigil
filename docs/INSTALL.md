@@ -176,6 +176,23 @@ Options:
 - run daemon as root (typical with systemd unit)
 - grant capabilities to executable (advanced deployment)
 
+#### Kernel version and fanotify tier (VIGIL-VULN-077)
+
+Vigil auto-detects the best fanotify mode at startup. Higher tiers
+provide better coverage for closed-set directory watches (`~/.ssh/`,
+`/etc/cron.d/`, etc.):
+
+| Kernel | Tier | Coverage |
+|--------|------|----------|
+| 5.9+ | `fid_dfid_name` | Ideal: directory FID + filename in one event |
+| 5.1+ | `fid` | Full: FID-mode events resolvable via `open_by_handle_at(2)` |
+| <5.1 | `legacy_fd` | Partial: directory-creation events may be missed; scheduled scans compensate |
+| no CAP_SYS_ADMIN | `inotify` | Partial: inotify fallback with limited scalability |
+
+Check the resolved tier with `vigil status` or `vigil doctor`.
+Override with `monitor.fanotify_tier` in the config (see
+[Configuration](CONFIGURATION.md)).
+
 ### inotify fallback
 
 If fanotify is unavailable, Vigil Baseline logs the reason and falls back to inotify.

@@ -78,5 +78,17 @@ path = "fuzz_targets/fuzz_attest_file.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "fuzz_audit_hmac_collision"
+path = "fuzz_targets/fuzz_audit_hmac_collision.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_fanotify_fid_decode"
+path = "fuzz_targets/fuzz_fanotify_fid_decode.rs"
+test = false
+doc = false
+
 [workspace]
 members = ["."]

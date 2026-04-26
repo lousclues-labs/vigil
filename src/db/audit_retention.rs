@@ -182,12 +182,12 @@ pub fn insert_checkpoint(
             id, timestamp, path, changes_json, severity, monitored_group,
             process_json, package, maintenance, suppressed, hmac, chain_hash,
             record_type, first_sequence, last_sequence, first_timestamp,
-            last_timestamp, entry_count, pruned_range_hmac
+            last_timestamp, entry_count, pruned_range_hmac, encoding_version
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, NULL,
             NULL, NULL, 0, 0, ?6, ?7,
             'checkpoint', ?8, ?9, ?10,
-            ?11, ?12, ?13
+            ?11, ?12, ?13, 2
         )",
         params![
             replace_id,
@@ -460,7 +460,8 @@ pub fn insert_acknowledgment_entry(
         compute_chain_hash(previous_chain_hash, timestamp, path, payload_json, severity);
 
     let hmac = hmac_key.map(|key| {
-        let data = crate::hmac::build_audit_hmac_data(
+        // VIGIL-VULN-076: use v2 CBOR encoding for new entries.
+        let data = crate::hmac::build_audit_hmac_data_v2(
             timestamp,
             path,
             "operator_acknowledgment",
@@ -475,10 +476,12 @@ pub fn insert_acknowledgment_entry(
     conn.prepare_cached(
         "INSERT INTO audit_log (
             timestamp, path, changes_json, severity, monitored_group,
-            process_json, package, maintenance, suppressed, hmac, chain_hash
+            process_json, package, maintenance, suppressed, hmac, chain_hash,
+            encoding_version
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
-            ?6, ?7, ?8, ?9, ?10, ?11
+            ?6, ?7, ?8, ?9, ?10, ?11,
+            2
         )",
     )?
     .execute(params![
@@ -523,7 +526,8 @@ pub fn insert_doctor_event_entry(
     );
 
     let hmac = hmac_key.map(|key| {
-        let data = crate::hmac::build_audit_hmac_data(
+        // VIGIL-VULN-076: use v2 CBOR encoding for new entries.
+        let data = crate::hmac::build_audit_hmac_data_v2(
             timestamp,
             event_path,
             "doctor_event",
@@ -538,10 +542,12 @@ pub fn insert_doctor_event_entry(
     conn.prepare_cached(
         "INSERT INTO audit_log (
             timestamp, path, changes_json, severity, monitored_group,
-            process_json, package, maintenance, suppressed, hmac, chain_hash
+            process_json, package, maintenance, suppressed, hmac, chain_hash,
+            encoding_version
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
-            ?6, ?7, ?8, ?9, ?10, ?11
+            ?6, ?7, ?8, ?9, ?10, ?11,
+            2
         )",
     )?
     .execute(params![
@@ -583,7 +589,8 @@ pub fn insert_hooks_operation_entry(
         compute_chain_hash(previous_chain_hash, timestamp, path, payload_json, severity);
 
     let hmac = hmac_key.map(|key| {
-        let data = crate::hmac::build_audit_hmac_data(
+        // VIGIL-VULN-076: use v2 CBOR encoding for new entries.
+        let data = crate::hmac::build_audit_hmac_data_v2(
             timestamp,
             path,
             &format!("hooks_{}", operation),
@@ -598,10 +605,12 @@ pub fn insert_hooks_operation_entry(
     conn.prepare_cached(
         "INSERT INTO audit_log (
             timestamp, path, changes_json, severity, monitored_group,
-            process_json, package, maintenance, suppressed, hmac, chain_hash
+            process_json, package, maintenance, suppressed, hmac, chain_hash,
+            encoding_version
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
-            ?6, ?7, ?8, ?9, ?10, ?11
+            ?6, ?7, ?8, ?9, ?10, ?11,
+            2
         )",
     )?
     .execute(params![

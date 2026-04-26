@@ -765,6 +765,21 @@ pub struct MonitorConfig {
     /// as "clean" ticks for recovery. Default 1 (tolerates rare jitter).
     #[serde(default = "default_event_loss_recovery_threshold")]
     pub event_loss_recovery_threshold: u64,
+
+    /// VIGIL-VULN-075: Number of user-space event drops within the sliding
+    /// window before a compensating full scan is triggered.
+    #[serde(default = "default_userspace_drop_threshold")]
+    pub userspace_drop_threshold: u64,
+
+    /// VIGIL-VULN-075: Sliding window size in seconds for the user-space
+    /// drop-rate detector.
+    #[serde(default = "default_userspace_drop_window_secs")]
+    pub userspace_drop_window_secs: u64,
+
+    /// Fanotify tier override. "auto" (default) probes the highest tier the
+    /// kernel supports. Can be pinned for testing.
+    #[serde(default = "default_fanotify_tier")]
+    pub fanotify_tier: String,
 }
 
 impl Default for MonitorConfig {
@@ -772,6 +787,9 @@ impl Default for MonitorConfig {
         Self {
             event_loss_alert_threshold: default_event_loss_alert_threshold(),
             event_loss_recovery_threshold: default_event_loss_recovery_threshold(),
+            userspace_drop_threshold: default_userspace_drop_threshold(),
+            userspace_drop_window_secs: default_userspace_drop_window_secs(),
+            fanotify_tier: default_fanotify_tier(),
         }
     }
 }
@@ -782,6 +800,18 @@ fn default_event_loss_alert_threshold() -> Option<u64> {
 
 fn default_event_loss_recovery_threshold() -> u64 {
     1
+}
+
+fn default_userspace_drop_threshold() -> u64 {
+    100
+}
+
+fn default_userspace_drop_window_secs() -> u64 {
+    60
+}
+
+fn default_fanotify_tier() -> String {
+    "auto".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

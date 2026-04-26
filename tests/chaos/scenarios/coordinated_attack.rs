@@ -116,6 +116,7 @@ fn run_coordinated_attack(seed: u64) {
         maintenance_active: Arc::new(AtomicBool::new(false)),
         maintenance_entered_at: Arc::new(std::sync::atomic::AtomicI64::new(0)),
         shared_baseline_identity: None,
+        scan_trigger: None,
     };
     let coord_handle = coordinator::spawn(coord_cfg).unwrap();
 
