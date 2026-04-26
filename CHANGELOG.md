@@ -2,6 +2,29 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.7.2] - 2026-04-26
+
+### Fixed
+
+- **Audit chain false-positive tampering warning.** `rotate_audit_log()`
+  performed bare `DELETE FROM audit_log` without preserving chain
+  continuity. Every system that had undergone audit rotation reported
+  "tampered at entry N" in `vigil doctor` because the first surviving
+  entry's chain_hash referenced a deleted predecessor. Removed the
+  bare-delete rotation entirely. All audit pruning now goes through
+  `retention_sweep()` which replaces pruned entries with bridge
+  checkpoints preserving the HMAC chain. The 50% safety check and
+  `RetentionPolicyMismatch` degradation logic moved into the retention
+  sweep. (`src/coordinator/mod.rs`)
+
+### Changed
+
+- **Doctor output layout.** Marker glyph (`\u25cf`/`\u26a0`/`\u2717`/`\u25cb`) moved before
+  the check name for faster visual scanning. Name column widened from
+  14 to 16 characters (fits "Audit retention" without overflow).
+  Recovery lines now align under the detail text instead of under the
+  name. (`src/commands/doctor.rs`)
+
 ## [1.7.1] - 2026-04-25
 
 ### The Polish Pass

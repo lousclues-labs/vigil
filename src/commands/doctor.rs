@@ -98,9 +98,9 @@ fn print_compact(
             .filter(|c| c.status == doctor::CheckStatus::Warning)
         {
             eprintln!(
-                "  {:<14} {} {}",
-                check.name,
+                "  {} {:<16} {}",
                 check.status.marker(),
+                check.name,
                 check.detail
             );
             render_recovery_compact(&check.recovery);
@@ -208,9 +208,9 @@ fn print_verbose(checks: &[doctor::DiagnosticCheck], cfg: &vigil::config::Config
 
 fn print_check_verbose(check: &doctor::DiagnosticCheck) {
     eprintln!(
-        "    {:<14} {} {}",
-        check.name,
+        "    {} {:<16} {}",
         check.status.marker(),
+        check.name,
         check.detail
     );
     if check.status == doctor::CheckStatus::Warning || check.status == doctor::CheckStatus::Failed {
@@ -220,19 +220,20 @@ fn print_check_verbose(check: &doctor::DiagnosticCheck) {
 
 /// Render a recovery action. Each variant gets its own honest format.
 fn render_recovery(recovery: &doctor::Recovery) {
+    let pad = "                       "; // align under detail text
     match recovery {
         doctor::Recovery::Command(cmd) => {
-            eprintln!("    {:<14}   recover with: {}", "", cmd);
+            eprintln!("{}recover with: {}", pad, cmd);
         }
         doctor::Recovery::CommandWithContext { command, context } => {
-            eprintln!("    {:<14}   recover with: {}", "", command);
-            eprintln!("    {:<14}                {}", "", context);
+            eprintln!("{}recover with: {}", pad, command);
+            eprintln!("{}{}", pad, context);
         }
         doctor::Recovery::Manual(guidance) => {
-            eprintln!("    {:<14}   {}", "", guidance);
+            eprintln!("{}{}", pad, guidance);
         }
         doctor::Recovery::Documentation(path) => {
-            eprintln!("    {:<14}   see: {}", "", path);
+            eprintln!("{}see: {}", pad, path);
         }
         doctor::Recovery::None => {}
         doctor::Recovery::Multi(hints) => {
@@ -243,19 +244,20 @@ fn render_recovery(recovery: &doctor::Recovery) {
 
 /// Render a recovery action in compact mode.
 fn render_recovery_compact(recovery: &doctor::Recovery) {
+    let pad = "                     "; // align under detail text (compact)
     match recovery {
         doctor::Recovery::Command(cmd) => {
-            eprintln!("  {:<14}   recover with: {}", "", cmd);
+            eprintln!("{}recover with: {}", pad, cmd);
         }
         doctor::Recovery::CommandWithContext { command, context } => {
-            eprintln!("  {:<14}   recover with: {}", "", command);
-            eprintln!("  {:<14}                {}", "", context);
+            eprintln!("{}recover with: {}", pad, command);
+            eprintln!("{}{}", pad, context);
         }
         doctor::Recovery::Manual(guidance) => {
-            eprintln!("  {:<14}   {}", "", guidance);
+            eprintln!("{}{}", pad, guidance);
         }
         doctor::Recovery::Documentation(path) => {
-            eprintln!("  {:<14}   see: {}", "", path);
+            eprintln!("{}see: {}", pad, path);
         }
         doctor::Recovery::None => {}
         doctor::Recovery::Multi(hints) => {
@@ -266,55 +268,29 @@ fn render_recovery_compact(recovery: &doctor::Recovery) {
 
 /// Render a list of recovery hints with appropriate verb prefixes.
 fn render_multi_hints(hints: &[doctor::RecoveryHint], compact: bool) {
-    let (pad, label_width) = if compact {
-        ("  ", 14usize)
+    let pad = if compact {
+        "                     " // compact: 21 chars
     } else {
-        ("    ", 14usize)
+        "                       " // verbose: 23 chars
     };
     for hint in hints {
         match hint {
             doctor::RecoveryHint::Command { verb, command } => {
                 if verb.is_empty() {
-                    eprintln!("{}{:width$}   {}", pad, "", command, width = label_width);
+                    eprintln!("{}{}", pad, command);
                 } else {
-                    eprintln!(
-                        "{}{:width$}   {} with: {}",
-                        pad,
-                        "",
-                        verb,
-                        command,
-                        width = label_width
-                    );
+                    eprintln!("{}{}: {}", pad, verb, command);
                 }
             }
             doctor::RecoveryHint::Manual { verb, instruction } => {
                 if verb.is_empty() {
-                    eprintln!(
-                        "{}{:width$}   {}",
-                        pad,
-                        "",
-                        instruction,
-                        width = label_width
-                    );
+                    eprintln!("{}{}", pad, instruction);
                 } else {
-                    eprintln!(
-                        "{}{:width$}   {}: {}",
-                        pad,
-                        "",
-                        verb,
-                        instruction,
-                        width = label_width
-                    );
+                    eprintln!("{}{}: {}", pad, verb, instruction);
                 }
             }
             doctor::RecoveryHint::Documentation { reference } => {
-                eprintln!(
-                    "{}{:width$}   see: {}",
-                    pad,
-                    "",
-                    reference,
-                    width = label_width
-                );
+                eprintln!("{}see: {}", pad, reference);
             }
         }
     }

@@ -383,11 +383,9 @@ impl Coordinator {
         let clock_anomaly = time_phase(&mut phase_timings, "clock_check", || {
             self.detect_clock_anomaly()
         });
-        time_phase(&mut phase_timings, "rotation", || {
-            if !clock_anomaly {
-                self.rotate_audit_log();
-            }
-        });
+        // Retention sweep handles audit pruning with chain-preserving
+        // checkpoints. The old rotate_audit_log (bare DELETE) is removed
+        // because it breaks chain integrity.
         time_phase(&mut phase_timings, "retention", || {
             if !clock_anomaly {
                 self.retention_sweep();
@@ -1036,79 +1034,6 @@ impl Coordinator {
         false
     }
 
-    fn rotate_audit_log(&mut self) {
-        let conn = match self.startup_audit_conn.as_ref() {
-            Some(c) => c,
-            None => {
-                tracing::warn!(
-                    "skipping audit rotation: audit DB connection dropped (daemon degraded)"
-                );
-                return;
-            }
-        };
-        let cfg = self.config.load();
-        let now_ts = Utc::now().timestamp();
-
-        // Safety check: count total entries and compute how many
-        // would be deleted. Skip if > 50% would be removed.
-        let total: i64 = conn
-            .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
-            .unwrap_or(0);
-        let cutoff = now_ts - (cfg.database.audit_retention_days as i64 * 86400);
-        let would_delete: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM audit_log WHERE timestamp < ?1",
-                rusqlite::params![cutoff],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-
-        if total > 0 && would_delete * 2 > total {
-            let percent = (would_delete * 100 / total) as u8;
-            self.audit_retention_skipped_count += 1;
-            self.metrics
-                .audit_retention_skipped_total
-                .fetch_add(1, Ordering::Relaxed);
-
-            tracing::error!(
-                total = total,
-                would_delete = would_delete,
-                percent = percent,
-                skipped_count = self.audit_retention_skipped_count,
-                retention_days = cfg.database.audit_retention_days,
-                "audit retention skipped: {} of {} entries ({}%) exceeds 50% safety \
-                 threshold (retention={} days). Run `vigil doctor` for recovery options.",
-                would_delete,
-                total,
-                percent,
-                cfg.database.audit_retention_days,
-            );
-
-            // After 2 consecutive skips, transition to Degraded.
-            if self.audit_retention_skipped_count >= 2 {
-                let mut s = self.state.write();
-                if matches!(*s, DaemonState::Healthy) {
-                    *s = DaemonState::Degraded {
-                        reason: DegradedReason::RetentionPolicyMismatch {
-                            skipped_count: self.audit_retention_skipped_count,
-                            retention_days: cfg.database.audit_retention_days,
-                            would_delete_pct: percent,
-                        },
-                        since: Utc::now(),
-                    };
-                }
-            }
-        } else {
-            self.audit_retention_skipped_count = 0;
-            match crate::db::audit_ops::rotate_audit_log(conn, cfg.database.audit_retention_days) {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(deleted = n, "rotated old audit entries"),
-                Err(e) => tracing::warn!(error = %e, "audit rotation failed"),
-            }
-        }
-        self.last_rotation_timestamp = now_ts;
-    }
-
     /// Bounded audit retention sweep. Runs at most once per
     /// `audit.retention_check_interval`. Replaces old detection entries
     /// with a single AuditCheckpoint preserving the HMAC chain.
@@ -1153,6 +1078,49 @@ impl Coordinator {
         };
 
         let (first_id, last_id, entry_count) = range;
+
+        // Safety check: refuse to prune more than 50% of entries in a single
+        // sweep. This catches clock manipulation or mismatched retention settings.
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
+            .unwrap_or(0);
+        if total > 0 && entry_count * 2 > total {
+            let percent = (entry_count * 100 / total) as u8;
+            self.audit_retention_skipped_count += 1;
+            self.metrics
+                .audit_retention_skipped_total
+                .fetch_add(1, Ordering::Relaxed);
+
+            tracing::error!(
+                total = total,
+                would_delete = entry_count,
+                percent = percent,
+                skipped_count = self.audit_retention_skipped_count,
+                retention_days = cfg.audit.retention_days,
+                "audit retention skipped: {} of {} entries ({}%) exceeds 50% safety \
+                 threshold (retention={} days). Run `vigil doctor` for recovery options.",
+                entry_count,
+                total,
+                percent,
+                cfg.audit.retention_days,
+            );
+
+            if self.audit_retention_skipped_count >= 2 {
+                let mut s = self.state.write();
+                if matches!(*s, DaemonState::Healthy) {
+                    *s = DaemonState::Degraded {
+                        reason: DegradedReason::RetentionPolicyMismatch {
+                            skipped_count: self.audit_retention_skipped_count,
+                            retention_days: cfg.audit.retention_days,
+                            would_delete_pct: percent,
+                        },
+                        since: Utc::now(),
+                    };
+                }
+            }
+            return;
+        }
+        self.audit_retention_skipped_count = 0;
 
         // Read entries to compute pruned-range HMAC
         let entries = match crate::db::audit_ops::read_detection_range(conn, first_id, last_id) {
