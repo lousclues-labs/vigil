@@ -125,6 +125,8 @@ pub fn create_audit_tables(conn: &Connection) -> Result<()> {
     migrate_audit_checkpoint_columns(conn)?;
     // VIGIL-VULN-076: add encoding_version for CBOR HMAC (v2).
     migrate_audit_encoding_version(conn)?;
+    // v1.8.1: add forensic disambiguation column.
+    migrate_audit_disambiguation(conn)?;
     Ok(())
 }
 
@@ -163,6 +165,22 @@ fn migrate_audit_encoding_version(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "ALTER TABLE audit_log ADD COLUMN encoding_version INTEGER NOT NULL DEFAULT 1;",
     )?;
+    Ok(())
+}
+
+/// v1.8.1: Add `disambiguation` column for forensic disambiguation results.
+///
+/// Stored as a JSON-encoded `DisambiguationResult` (or NULL when not run).
+/// IMPORTANT: this column is NOT included in chain hash computation, so
+/// adding it does not invalidate any existing chain. Old rows have NULL.
+fn migrate_audit_disambiguation(conn: &Connection) -> Result<()> {
+    let has_col: bool = conn
+        .prepare("SELECT disambiguation FROM audit_log LIMIT 0")
+        .is_ok();
+    if has_col {
+        return Ok(());
+    }
+    conn.execute_batch("ALTER TABLE audit_log ADD COLUMN disambiguation TEXT;")?;
     Ok(())
 }
 

@@ -335,3 +335,60 @@ requirements (encryption-at-rest, off-site replication, write-once media,
 compliance attestation), and bundling it into vigil would expand the
 attack surface and the operator-facing complexity for a need that varies
 widely between deployments.
+
+---
+
+## Page-cache-layer attacks
+
+A class of kernel-side vulnerabilities — exemplified by **CVE-2026-31431
+/ copy.fail** — allows an attacker to mutate file contents *as observed
+by reading processes* without modifying the on-disk inode. The
+modification lives in the kernel's page cache and is invisible to any
+integrity tool that hashes the file via the on-disk view (e.g., raw
+block-device reads, `O_DIRECT`, or any path that bypasses the cache).
+
+### How vigil interacts with this class
+
+Vigil's hash path is a standard buffered read (`std::fs::File` →
+`read`-based BLAKE3) or, for files above `scanner.mmap_threshold`, a
+`mmap`-based BLAKE3. Both paths read **through the page cache**. This
+means:
+
+- A modification visible in the page cache is visible to vigil. Vigil
+  detects it as a content mismatch on the next scan, regardless of
+  whether the mutation has been (or ever will be) written through to the
+  on-disk inode.
+- The forensic disambiguation pass (1.8.1+) classifies the mismatch as
+  `page_cache_only` when the on-disk inode rehashes back to the
+  baseline after `POSIX_FADV_DONTNEED`. This is the operator-facing
+  signal that distinguishes a page-cache-layer attack from an ordinary
+  on-disk modification.
+
+### Honest detection limits
+
+Vigil does **not** claim to defeat page-cache-layer attacks at the
+kernel layer. It claims, and now demonstrates with a reproducible
+harness, the strictly weaker property: **any modification that is
+visible to a normal reading process is also visible to vigil**. If the
+exploit can hide the bytes from `read()` *and* from `mmap`, it can hide
+them from vigil too — but in that case it has also hidden them from the
+process it was supposedly attacking, which is a different problem.
+
+Specific limits worth stating plainly:
+
+- **`mlock` / `MAP_LOCKED` pages.** If the attacker can lock pages such
+  that `POSIX_FADV_DONTNEED` cannot evict them, disambiguation returns
+  `Inconclusive` rather than misclassifying. Detection (the mismatch
+  itself) still works.
+- **Files smaller than one page or with the entire range pinned.**
+  Disambiguation may be `Inconclusive`; detection is unaffected.
+- **Kernel rootkits that hook `read`/`mmap`.** Out of scope; vigil
+  inherits the syscall integrity it is run on top of.
+
+### Evidence
+
+A standalone, in-repo harness at
+[`tests/exploits/copy_fail/`](../tests/exploits/copy_fail/) reproduces a
+Tier-1 (mmap-based, dirty-page) page-cache modification end-to-end and
+generates a markdown report attestable to a specific kernel version.
+This is the evidentiary backing for the claims above.

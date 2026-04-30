@@ -77,6 +77,13 @@ pub struct DetectionRecord {
     pub package_update: bool,
     pub maintenance_window: bool,
     pub source: DetectionSource,
+    /// Forensic disambiguation result. `None` when disambiguation was not
+    /// performed (either disabled or the change was not a content mismatch).
+    ///
+    /// Backward-compatible: `#[serde(default)]` lets older WAL records (without
+    /// this field) deserialize cleanly. NOT included in audit chain hash.
+    #[serde(default)]
+    pub disambiguation: Option<crate::hash::DisambiguationResult>,
 }
 
 impl DetectionRecord {
@@ -96,6 +103,7 @@ impl DetectionRecord {
             package_update: cr.package_update,
             maintenance_window,
             source,
+            disambiguation: cr.disambiguation.clone(),
         }
     }
 
@@ -108,6 +116,7 @@ impl DetectionRecord {
             process: self.process.clone(),
             package: self.package.clone(),
             package_update: self.package_update,
+            disambiguation: self.disambiguation.clone(),
         }
     }
 }
@@ -910,6 +919,7 @@ mod tests {
             package_update: false,
             maintenance_window: false,
             source,
+            disambiguation: None,
         }
     }
 
@@ -1294,6 +1304,7 @@ mod tests {
             package_update: false,
             maintenance_window: false,
             source: DetectionSource::Sentinel,
+            disambiguation: None,
         };
 
         let seq = wal.append(&rec).unwrap();

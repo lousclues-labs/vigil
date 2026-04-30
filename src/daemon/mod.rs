@@ -499,6 +499,7 @@ impl DaemonRuntime {
                 package_update: false,
                 maintenance_window: false,
                 source: DetectionSource::Sentinel,
+                disambiguation: None,
             };
             let sentinel_seq = wal.append(&sentinel)?;
             let entries = wal.iter_unconsumed()?;

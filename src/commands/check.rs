@@ -24,6 +24,9 @@ pub(crate) struct CheckOpts {
     pub no_pager: bool,
     pub since: Option<String>,
     pub reason: bool,
+    /// When true, every detected content mismatch triggers a forensic
+    /// disambiguation re-read after dropping the file's page cache.
+    pub disambiguate_cause: bool,
 }
 
 pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
@@ -165,7 +168,16 @@ pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
         }
     }
 
-    // Record verification receipt if --reason is set (before report consumes result)
+    // Forensic disambiguation pass (--disambiguate-cause).
+    //
+    // For every change that contains a ContentModified, re-open the file,
+    // drop its page cache, and classify the modification. This is opt-in
+    // and adds ~one read per detected mismatch.
+    if opts.disambiguate_cause {
+        run_disambiguation_pass(&mut result.changes, cfg.scanner.mmap_threshold);
+    }
+
+    // Record a verification receipt if --reason is set (before report consumes result)
     let receipt_msg = if opts.reason {
         let receipt = vigil::receipt::CheckReceipt::from_scan(
             scan_finished_at - (result.duration_ms as i64 / 1000).max(1),
@@ -589,4 +601,46 @@ pub(crate) fn cmd_check_live(config_path: Option<&Path>, full: bool) -> vigil::R
     }
 
     Ok(())
+}
+
+/// Runs forensic disambiguation against every change with a `ContentModified`,
+/// attaching the result to `change.disambiguation`. Best-effort: failures
+/// are silently skipped (the file may have been deleted or become unreadable
+/// between the scan and the disambiguation pass).
+fn run_disambiguation_pass(changes: &mut [vigil::types::ChangeResult], mmap_threshold: u64) {
+    for change in changes.iter_mut() {
+        // Find a ContentModified change to extract observed/baseline hashes.
+        let (observed, baseline) = match change.changes.iter().find_map(|c| {
+            if let vigil::types::Change::ContentModified { old_hash, new_hash } = c {
+                Some((new_hash.clone(), old_hash.clone()))
+            } else {
+                None
+            }
+        }) {
+            Some(pair) => pair,
+            None => continue,
+        };
+
+        let path = change.path.as_ref();
+        let file = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        let size = match file.metadata() {
+            Ok(m) => m.len(),
+            Err(_) => continue,
+        };
+
+        if let Ok(result) = vigil::hash::disambiguate_via_cache_drop(
+            &file,
+            size,
+            mmap_threshold,
+            &observed,
+            &baseline,
+        ) {
+            change.disambiguation = Some(result);
+        }
+        // Errors are intentionally swallowed: disambiguation is best-effort
+        // metadata, not detection.
+    }
 }

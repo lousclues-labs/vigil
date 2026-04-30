@@ -101,6 +101,7 @@ fn run(cli: Cli) -> vigil::Result<i32> {
             no_pager,
             since,
             reason,
+            disambiguate_cause,
         } => {
             if now && accept {
                 eprintln!("error: --accept cannot be used with --now (baseline updates require direct database access)");
@@ -130,6 +131,7 @@ fn run(cli: Cli) -> vigil::Result<i32> {
                     no_pager,
                     since,
                     reason,
+                    disambiguate_cause,
                 })
             }
         }

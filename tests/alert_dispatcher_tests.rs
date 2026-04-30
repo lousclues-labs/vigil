@@ -46,6 +46,7 @@ fn dispatcher_writes_and_verifies_audit_chain() {
             process: None,
             package: None,
             package_update: false,
+            disambiguation: None,
         },
         maintenance_window: false,
     })

@@ -197,6 +197,8 @@ pub struct Config {
     #[serde(default)]
     pub doctor: DoctorConfig,
     #[serde(default)]
+    pub detection: DetectionConfig,
+    #[serde(default)]
     pub watch: HashMap<String, WatchGroup>,
 }
 
@@ -1059,6 +1061,21 @@ fn default_acknowledgment_cache_size() -> usize {
     1000
 }
 
+/// Forensic disambiguation behavior for the daemon.
+///
+/// When `disambiguate_on_detection` is true, every detected content mismatch
+/// triggers a second hash comparison after dropping the file's page cache.
+/// Adds ~one extra read per detected mismatch. For a healthy system (zero
+/// mismatches) there is no overhead. See `docs/FORENSICS.md`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct DetectionConfig {
+    /// When a content mismatch is detected, perform a forensic disambiguation
+    /// read to classify the cause as page-cache-only, disk modification, or
+    /// active modification. Default: false (opt-in).
+    #[serde(default)]
+    pub disambiguate_on_detection: bool,
+}
+
 impl DoctorConfig {
     /// Parse event_warn_window into seconds.
     pub fn warn_window_secs(&self) -> i64 {
@@ -1513,6 +1530,7 @@ pub fn default_config() -> Config {
         update: UpdateConfig::default(),
         notifications: NotificationsConfig::default(),
         doctor: DoctorConfig::default(),
+        detection: DetectionConfig::default(),
         watch,
     }
 }

@@ -189,6 +189,7 @@ impl WorkerContext {
                                 process: event.process.clone(),
                                 package: None,
                                 package_update: false,
+                                disambiguation: None,
                             }));
                         }
                         tracing::info!(path = %event.path.display(), "new file detected (not in baseline)");
@@ -311,6 +312,7 @@ impl WorkerContext {
                         package_update: false,
                         maintenance_window: self.maintenance_active.load(Ordering::Acquire),
                         source: DetectionSource::Panic,
+                        disambiguation: None,
                     };
                     if let Err(e) = wal.append(&panic_record) {
                         tracing::error!(
@@ -623,6 +625,24 @@ fn process_event_inner(
             .iter()
             .any(|c| matches!(c, Change::ContentModified { .. }));
 
+    // Forensic disambiguation: if enabled and there is a content mismatch,
+    // re-read the file after dropping its page cache to classify the cause.
+    // Best-effort: failure leaves disambiguation = None.
+    let disambiguation = if cfg.detection.disambiguate_on_detection
+        && changes
+            .iter()
+            .any(|c| matches!(c, Change::ContentModified { .. }))
+    {
+        run_worker_disambiguation(
+            &event.path,
+            cfg.scanner.mmap_threshold,
+            &snapshot.content.hash,
+            &baseline.content.hash,
+        )
+    } else {
+        None
+    };
+
     Ok(Some(ChangeResult {
         path: event.path.clone(),
         changes,
@@ -631,7 +651,30 @@ fn process_event_inner(
         process: event.process.clone(),
         package: baseline.package.clone(),
         package_update: is_package_update,
+        disambiguation,
     }))
+}
+
+/// Attempts forensic disambiguation by re-opening the file at `path` and
+/// invoking [`crate::hash::disambiguate_via_cache_drop`]. Returns `None` on
+/// any failure (file gone, permission denied, fadvise no-op, etc.). Errors
+/// are intentionally swallowed — disambiguation is metadata, not detection.
+fn run_worker_disambiguation(
+    path: &std::path::Path,
+    mmap_threshold: u64,
+    observed_hash: &str,
+    baseline_hash: &str,
+) -> Option<crate::hash::DisambiguationResult> {
+    let file = std::fs::File::open(path).ok()?;
+    let size = file.metadata().ok()?.len();
+    crate::hash::disambiguate_via_cache_drop(
+        &file,
+        size,
+        mmap_threshold,
+        observed_hash,
+        baseline_hash,
+    )
+    .ok()
 }
 
 #[cfg(test)]

@@ -290,6 +290,7 @@ mod tests {
             package_update: false,
             maintenance_window: false,
             source: super::super::DetectionSource::Realtime,
+            disambiguation: None,
         }
     }
 
@@ -319,6 +320,7 @@ mod tests {
                 process: None,
                 package: None,
                 package_update: false,
+                disambiguation: None,
             };
             let _ = runner.is_suppressed(&change, false);
         }

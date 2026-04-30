@@ -300,13 +300,22 @@ fn insert_with_timestamp(
         &severity,
     );
 
+    // Forensic disambiguation result, JSON-encoded. NOT included in chain
+    // hash above (intentional: see docs/AUDIT_HMAC_FORMAT.md).
+    let disambiguation_json = change
+        .disambiguation
+        .as_ref()
+        .and_then(|d| serde_json::to_string(d).ok());
+
     conn.prepare_cached(
         "INSERT INTO audit_log (
             timestamp, path, changes_json, severity, monitored_group,
-            process_json, package, maintenance, suppressed, hmac, chain_hash
+            process_json, package, maintenance, suppressed, hmac, chain_hash,
+            disambiguation
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
-            ?6, ?7, ?8, ?9, ?10, ?11
+            ?6, ?7, ?8, ?9, ?10, ?11,
+            ?12
         )",
     )?
     .execute(params![
@@ -321,6 +330,7 @@ fn insert_with_timestamp(
         suppressed as i32,
         hmac,
         chain_hash,
+        disambiguation_json,
     ])?;
 
     Ok(chain_hash)
@@ -403,6 +413,7 @@ mod tests {
             package_update: false,
             maintenance_window: false,
             source: super::super::DetectionSource::Realtime,
+            disambiguation: None,
         }
     }
 

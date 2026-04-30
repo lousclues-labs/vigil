@@ -2,6 +2,104 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.8.1] - 2026-04-30
+
+### Added — Forensic Disambiguation
+
+Vigil already detected page-cache-layer modifications (it has always
+hashed files via the kernel's page cache). 1.8.1 adds the
+**classification** step that tells an operator *what kind* of mismatch
+they're looking at.
+
+- **`vigil::hash::disambiguate_via_cache_drop`** — given a content
+  mismatch, evicts the file's page cache via `posix_fadvise(DONTNEED)`,
+  verifies eviction with `mincore`, re-hashes, and returns one of:
+  `PageCacheOnly`, `DiskModification`, `ActiveModification`,
+  `Inconclusive`, or `Match`. (`src/hash.rs`)
+
+- **CLI flag `vigil check --disambiguate-cause`** — runs the
+  disambiguation pass on every detected mismatch in a manual check.
+  (`src/cli.rs`, `src/commands/check.rs`, `src/display/check.rs`)
+
+- **Daemon config `[detection].disambiguate_on_detection`** (default
+  `false`) — when set, the worker performs disambiguation in-band on
+  every content-modified event. Off by default because disambiguation
+  evicts page cache for the affected file. (`src/config/mod.rs`,
+  `src/worker.rs`, `config/vigil.toml`)
+
+- **Audit log `disambiguation` column** — JSON-encoded classification
+  result is persisted alongside the audit entry. **The column is NOT
+  included in the chain-hash input**, preserving on-disk compatibility
+  with audit logs from prior versions and keeping forensic enrichment
+  separate from the integrity envelope. (`src/db/schema.rs`,
+  `src/db/audit_ops.rs`, `src/wal/audit_writer.rs`,
+  `docs/AUDIT_HMAC_FORMAT.md`)
+
+- **`vigil why <path>`** now renders the disambiguation result for the
+  most recent event affecting `<path>`, including a hint when the
+  classification is `PageCacheOnly`. (`src/commands/why.rs`)
+
+- **Standalone evidence harness** at
+  [`tests/exploits/copy_fail/`](tests/exploits/copy_fail/) — a
+  reproducible copy.fail verification harness with:
+  - Tier 1 (mmap-based dirty-page behavior)
+  - Tier 2 (optional kernel module clean-page cache injection)
+  - captured real `vigil check --disambiguate-cause` output
+  - in-process disambiguation cross-check
+  - generated markdown evidence reports
+
+- **Tier 2 research module** at
+  [`tests/exploits/copy_fail/kmod/`](tests/exploits/copy_fail/kmod/) —
+  out-of-tree kernel module and userspace ioctl shim for page-cache-only
+  injection without `set_page_dirty()`, enabling reproduction of the
+  `page_cache_only` signature expected for copy.fail-class conditions.
+
+- **Comprehensive operator reports** —
+  [`docs/COPY_FAIL_VERIFICATION_REPORT.md`](docs/COPY_FAIL_VERIFICATION_REPORT.md)
+  and
+  [`docs/COPY_FAIL_EXECUTIVE_SUMMARY.md`](docs/COPY_FAIL_EXECUTIVE_SUMMARY.md)
+  capture evidence manifests, reproducibility commands, and stakeholder
+  summaries for technical and non-technical audiences.
+
+**Why this matters:** Page-cache-layer attacks bypass tools that hash
+through the on-disk inode. Vigil has always read through the cache, so
+it has always *seen* such modifications. Disambiguation makes the
+distinction visible to humans: `page_cache_only` is the gold-standard
+signature of a copy.fail-class attack and warrants a different incident
+response than a routine on-disk modification.
+
+### Compatibility
+
+- Existing baselines, audit logs, and WAL state are read unchanged.
+  The new `disambiguation` column is added by an idempotent
+  `ALTER TABLE ADD COLUMN` migration.
+- Audit chain hashes computed by 1.7.x and earlier remain valid; the
+  chain-hash input format is unchanged.
+
+### Tests
+
+- Nine unit tests in `src/hash.rs` covering all classification paths.
+- Five integration tests in `tests/integration_disambiguation.rs`; two
+  gated behind the `root-tests` feature (require `CAP_SYS_ADMIN` to
+  manipulate `/proc/sys/vm/drop_caches`).
+- Standalone `copy_fail` harness validates both Tier 1 and Tier 2
+  disambiguation behavior and writes run artifacts to
+  `tests/exploits/copy_fail/reports/`.
+
+### Documentation
+
+- Added forensic/reporting docs for copy.fail verification:
+  - `docs/COPY_FAIL_VERIFICATION_REPORT.md`
+  - `docs/COPY_FAIL_EXECUTIVE_SUMMARY.md`
+- README now includes a dedicated
+  `CVE-2026-31431 (copy.fail) detection` section with classification
+  semantics and links to the reproducible harness artifacts.
+
+### Packaging / Version Consistency
+
+- README version badge aligned to `1.8.1`.
+- `aur/PKGBUILD` `pkgver` aligned to `1.8.1`.
+
 ## [1.7.3] - 2026-04-26
 
 ### Critical Hardening

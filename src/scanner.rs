@@ -355,6 +355,7 @@ where
                         process: None,
                         package: entry.package.clone(),
                         package_update: false,
+                        disambiguation: None,
                     });
                     result.changes_found += 1;
                 }

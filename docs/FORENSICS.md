@@ -172,3 +172,76 @@ See [Attestation](ATTEST.md) for the attestation workflow.
 - No audit chain interaction. Inspect is forensic, not operational.
 - The `--root` flag does simple prefix stripping. It does not resolve
   symlinks or handle bind mounts.
+
+---
+
+## Disambiguation: classifying *why* a hash mismatch occurred
+
+When Vigil reports a content mismatch, it has detected that the file's
+**cached view** no longer matches the baseline. That alone does not tell
+the operator *where* the modification lives. Since 1.8.1, Vigil can
+classify the mismatch:
+
+| Classification        | Meaning                                                                                                |
+|-----------------------|--------------------------------------------------------------------------------------------------------|
+| `page_cache_only`     | The page cache held modified bytes; after eviction, the file rehashes to the baseline.                 |
+| `disk_modification`   | The on-disk inode was changed; the cached view matches the on-disk view; both differ from the baseline.|
+| `active_modification` | Cache, post-evict re-read, and baseline all differ — a writer is actively modifying the file.          |
+| `inconclusive`        | The kernel refused to drop the cache pages (e.g. `MAP_LOCKED`, `mlock`).                               |
+| `match`               | The re-hash agreed with the baseline (the original mismatch was transient or already healed).          |
+
+`page_cache_only` is the gold-standard signature of a page-cache-layer
+attack such as **CVE-2026-31431 / copy.fail**: the on-disk inode is
+clean, but a cached page has been mutated. Tools that hash through the
+on-disk inode never see this. Vigil reads through the page cache, so it
+does see it — and disambiguation tells you that's what you're looking at.
+
+### How disambiguation works
+
+`vigil::hash::disambiguate_via_cache_drop` is invoked with the file
+path, the observed (mismatching) hash, and the baseline hash. It:
+
+1. Counts cached pages via `mincore` (before).
+2. Calls `posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED)` to evict.
+3. Counts cached pages again. If the kernel did not evict, returns
+   `Inconclusive` (we refuse to misclassify based on stale cache).
+4. Re-reads and re-hashes the file (which now reflects the on-disk view).
+5. Compares observed/baseline/post-drop hashes to assign a classification.
+
+### When disambiguation runs
+
+| Trigger                                                  | Behaviour                                                                 |
+|----------------------------------------------------------|---------------------------------------------------------------------------|
+| `vigil check --disambiguate-cause`                       | Runs on every detected mismatch in that one-shot check.                   |
+| Daemon, `[detection].disambiguate_on_detection = true`   | Runs in-band on every content-modified event the worker processes.        |
+| Otherwise                                                | Not run; audit log's `disambiguation` column is `NULL`.                   |
+
+### Cost
+
+Disambiguation evicts the affected file's page cache. For a hot binary
+under heavy read load, the next access pays one cold-cache hit. This is
+acceptable for triage; it is why the daemon-side toggle defaults to off.
+
+### Audit chain
+
+The `disambiguation` column is **stored alongside** each audit row but is
+**not** included in the chain-hash input or the HMAC input. See
+[AUDIT_HMAC_FORMAT.md](AUDIT_HMAC_FORMAT.md#out-of-band-columns-not-in-hmac-input)
+for the rationale.
+
+### Reading disambiguation in the field
+
+```sh
+vigil why /etc/ssh/sshd_config
+```
+
+renders the most recent event for the path along with its disambiguation
+classification, including a copy.fail-aware hint when the classification
+is `page_cache_only`.
+
+### Evidence
+
+A standalone reproducible harness lives at
+[`tests/exploits/copy_fail/`](../tests/exploits/copy_fail/). It
+demonstrates Tier 1 (mmap-based) page-cache modification and produces a
+markdown report attestable to a specific kernel version.

@@ -91,6 +91,14 @@ pub enum Command {
         /// Record a verification receipt in the audit chain
         #[arg(long)]
         reason: bool,
+
+        /// Forensically classify each detected content mismatch by re-reading
+        /// the file after dropping its page cache (Linux). Adds ~one read per
+        /// mismatch. For a clean scan there is no overhead. Distinguishes
+        /// page-cache-only attacks (e.g. CVE-2026-31431) from disk-layer
+        /// modifications. See docs/FORENSICS.md.
+        #[arg(long = "disambiguate-cause")]
+        disambiguate_cause: bool,
     },
 
     /// Compare a single file against its baseline entry

@@ -113,3 +113,33 @@ ALTER TABLE audit_log ADD COLUMN encoding_version INTEGER NOT NULL DEFAULT 1;
 ```
 
 Existing rows default to `1`. New rows are written with `2`.
+
+---
+
+## Out-of-band columns (not in HMAC input)
+
+Some columns are persisted alongside an audit row but are **not** part of
+either the chain-hash input or the HMAC input. They are forensic
+enrichment, not integrity envelope.
+
+### `disambiguation` (added in 1.8.1)
+
+JSON-encoded result of `vigil::hash::disambiguate_via_cache_drop`. One of:
+`page_cache_only`, `disk_modification`, `active_modification`,
+`inconclusive`, or `match`. NULL when disambiguation was not run.
+
+This column is **excluded from the chain-hash input** for two reasons:
+
+1. **Backward compatibility.** Audit chains written by 1.7.x and earlier
+   continue to verify byte-for-byte against 1.8.1+ verifiers.
+2. **Separation of concerns.** Disambiguation is a forensic refinement
+   computed *after* the integrity event has already been recorded. The
+   chain hash binds the event itself (path, change type, hashes,
+   severity, timestamp); the classification of *why* the cache and disk
+   disagreed is metadata that an operator may inspect, redact, or
+   recompute without invalidating the chain.
+
+If a deployment requires the disambiguation result to be tamper-evident,
+the recommended path is to enable HMAC signing (which already covers the
+chain hash) and treat the chain hash as the authoritative record of the
+event; the `disambiguation` column then serves as advisory context.

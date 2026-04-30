@@ -10,6 +10,7 @@ fn sample_change(path: &str) -> ChangeResult {
         process: None,
         package: None,
         package_update: false,
+        disambiguation: None,
     }
 }
 

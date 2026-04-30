@@ -1,6 +1,6 @@
 [package]
 name = "vigil-baseline"
-version = "1.7.3"
+version = "1.8.1"
 edition = "2021"
 rust-version = "1.85"
 description = "Linux file integrity monitor. Kernel-level filesystem watching, BLAKE3 hashing, HMAC-chained audit trail. Silent by default, local by design, deeply paranoid."
@@ -22,6 +22,7 @@ exclude = [
     "fuzz/",
     "scripts/",
     "systemd/",
+    "tests/exploits/",
     "deny.toml",
     "setup.sh",
     "CONTRIBUTING.md",
@@ -39,6 +40,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin)'] }
 
 [features]
 default = []
+# Tests that require root for page-cache control (drop_caches, fadvise + mincore).
+# Skipped cleanly when not running as root.
+root-tests = []
 
 [[bin]]
 name = "vigil"

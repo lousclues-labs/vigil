@@ -26,6 +26,7 @@ fn panic_produces_detection_record() {
         package_update: false,
         maintenance_window: false,
         source: DetectionSource::Panic,
+        disambiguation: None,
     };
 
     let seq = wal.append(&panic_record).unwrap();
@@ -96,6 +97,7 @@ fn wal_disabled_uses_current_path() {
         process: None,
         package: None,
         package_update: false,
+        disambiguation: None,
     };
 
     tx.send(vigil::alert::AlertPayload {

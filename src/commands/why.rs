@@ -75,6 +75,10 @@ struct WhyEntry {
     severity: String,
     package_owner: Option<String>,
     history_count: Option<u64>,
+    /// Forensic disambiguation result (v1.8.1+); `None` for older rows or
+    /// when disambiguation was disabled at detection time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disambiguation: Option<vigil::hash::DisambiguationResult>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -120,6 +124,23 @@ fn print_why(entry: &WhyEntry, _cfg: &vigil::config::Config) {
     }
     if let Some(ref pkg) = entry.package_owner {
         eprintln!("  Package owner: {}.", pkg);
+    }
+
+    if let Some(ref disamb) = entry.disambiguation {
+        eprintln!();
+        eprintln!("Disambiguation: {}", disamb.label());
+        eprintln!("  {}", disamb.description());
+        if matches!(disamb, vigil::hash::DisambiguationResult::PageCacheOnly) {
+            eprintln!();
+            eprintln!("  The audit chain has preserved this detection. The live");
+            eprintln!("  filesystem may have since reverted (page cache evicted by");
+            eprintln!("  memory pressure or reboot).");
+            eprintln!();
+            eprintln!("  Suggested next steps:");
+            eprintln!("    - Check kernel version: uname -r");
+            eprintln!("    - Check for known page cache CVEs against your kernel");
+            eprintln!("    - Review process attribution above");
+        }
     }
 
     if let Some(count) = entry.history_count {
@@ -258,7 +279,26 @@ fn audit_row_to_why(conn: &rusqlite::Connection, row: AuditRow) -> vigil::Result
         severity: row.severity,
         package_owner: row.package,
         history_count,
+        disambiguation: get_disambiguation(conn, row._id),
     })
+}
+
+/// Best-effort: fetch the disambiguation column for the given audit row.
+/// Returns None on schema mismatch (column absent in older DBs), parse
+/// failure, or missing row.
+fn get_disambiguation(
+    conn: &rusqlite::Connection,
+    row_id: i64,
+) -> Option<vigil::hash::DisambiguationResult> {
+    let json: Option<String> = conn
+        .query_row(
+            "SELECT disambiguation FROM audit_log WHERE id = ?1",
+            [row_id],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten();
+    json.and_then(|s| serde_json::from_str(&s).ok())
 }
 
 fn parse_changes(change_type: &str, changes_json: Option<&str>) -> Vec<WhyChange> {

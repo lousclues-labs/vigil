@@ -501,6 +501,7 @@ mod tests {
             process: None,
             package: None,
             package_update: false,
+            disambiguation: None,
         }
     }
 

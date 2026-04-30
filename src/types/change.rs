@@ -93,6 +93,14 @@ pub struct ChangeResult {
     pub process: Option<ProcessAttribution>,
     pub package: Option<String>,
     pub package_update: bool,
+    /// Forensic disambiguation result for content mismatches, populated only
+    /// when disambiguation was performed (CLI `--disambiguate-cause` or daemon
+    /// `[detection].disambiguate_on_detection = true`). `None` when not run.
+    ///
+    /// IMPORTANT: this field is metadata about the detection. It is NOT part
+    /// of the audit chain hash; adding it does not change chain semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disambiguation: Option<crate::hash::DisambiguationResult>,
 }
 
 impl ChangeResult {
@@ -111,6 +119,7 @@ impl ChangeResult {
             process: None,
             package: baseline.package.clone(),
             package_update: false,
+            disambiguation: None,
         }
     }
 

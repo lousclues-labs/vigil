@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/badge/CI-GitHub_Actions-success)](.github/workflows/ci.yml)
 [![Security Audit](https://img.shields.io/badge/Security-Audit-success)](.github/workflows/scheduled.yml)
-[![Version](https://img.shields.io/badge/version-1.7.3-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.8.1-blue)](CHANGELOG.md)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange.svg)](https://www.rust-lang.org/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
 
@@ -65,6 +65,25 @@ per-path-cooldowned, and written once.
 The principles that drive every design decision are in
 [PRINCIPLES.md](docs/PRINCIPLES.md). Worth reading before you
 decide whether vigil is the right tool for your situation.
+
+## CVE-2026-31431 (copy.fail) detection
+
+Vigil hashes file content through the kernel page cache. That means it
+observes what readers observe, including page-cache-layer tampering.
+
+In `v1.8.1`, `vigil check --disambiguate-cause` adds mismatch
+classification to help triage copy.fail-class signatures:
+
+- `page_cache_only` — cached view changed, on-disk view re-hashes to baseline
+- `disk_modification` — cached and on-disk views match each other, both differ from baseline
+- `active_modification` — baseline, cached, and post-eviction views all differ
+- `inconclusive` — cache eviction did not complete
+
+For end-to-end reproducible evidence, see:
+
+- `tests/exploits/copy_fail/` (Tier 1 and optional Tier 2 harness)
+- `docs/COPY_FAIL_VERIFICATION_REPORT.md`
+- `docs/COPY_FAIL_EXECUTIVE_SUMMARY.md`
 
 ## What it isn't
 

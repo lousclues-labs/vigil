@@ -83,15 +83,21 @@ pub fn insert_audit_entry(
     );
 
     // VIGIL-VULN-076: all new entries use encoding_version 2 (CBOR HMAC).
+    // v1.8.1: disambiguation is JSON-encoded; NOT in chain hash.
+    let disambiguation_json = change
+        .disambiguation
+        .as_ref()
+        .and_then(|d| serde_json::to_string(d).ok());
+
     conn.prepare_cached(
         "INSERT INTO audit_log (
             timestamp, path, changes_json, severity, monitored_group,
             process_json, package, maintenance, suppressed, hmac, chain_hash,
-            encoding_version
+            encoding_version, disambiguation
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
             ?6, ?7, ?8, ?9, ?10, ?11,
-            2
+            2, ?12
         )",
     )?
     .execute(params![
@@ -106,6 +112,7 @@ pub fn insert_audit_entry(
         suppressed as i32,
         hmac,
         chain_hash,
+        disambiguation_json,
     ])?;
 
     Ok(chain_hash)
@@ -1121,6 +1128,7 @@ mod tests {
             }),
             package: None,
             package_update: false,
+            disambiguation: None,
         }
     }
 

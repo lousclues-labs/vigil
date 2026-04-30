@@ -132,6 +132,7 @@ pub fn record_unattributed_to_wal(
             package_update: false,
             maintenance_window,
             source: DetectionSource::BaselineRefresh,
+            disambiguation: None,
         };
         match wal.append(&record) {
             Ok(_) => {

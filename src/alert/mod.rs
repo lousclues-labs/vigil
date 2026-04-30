@@ -466,6 +466,7 @@ mod tests {
                 process: None,
                 package: None,
                 package_update: false,
+                disambiguation: None,
             },
             maintenance_window: false,
         };
@@ -496,6 +497,7 @@ mod tests {
             process: None,
             package: None,
             package_update: false,
+            disambiguation: None,
         };
 
         // First call should NOT be suppressed
@@ -543,6 +545,7 @@ mod tests {
                 process: None,
                 package: None,
                 package_update: false,
+                disambiguation: None,
             };
             let suppressed = dispatcher.is_suppressed(&change, false);
             if i < 3 {
@@ -589,6 +592,7 @@ mod tests {
                 process: None,
                 package: None,
                 package_update: false,
+                disambiguation: None,
             },
             maintenance_window: false,
         };
@@ -622,6 +626,7 @@ mod tests {
             process: None,
             package: Some("sudo".into()),
             package_update: true,
+            disambiguation: None,
         };
 
         // Critical + package during maintenance should NOT be suppressed
@@ -641,6 +646,7 @@ mod tests {
             process: None,
             package: Some("shadow".into()),
             package_update: true,
+            disambiguation: None,
         };
 
         // High + package during maintenance should NOT be suppressed
@@ -660,6 +666,7 @@ mod tests {
             process: None,
             package: Some("man-pages".into()),
             package_update: true,
+            disambiguation: None,
         };
 
         // Low + package during maintenance SHOULD be suppressed

@@ -480,6 +480,11 @@ fn render_change_entry(
         }
     }
 
+    if let Some(ref disamb) = change.disambiguation {
+        out.push_str(&format!("      disambiguation: {}\n", disamb.label()));
+        out.push_str(&format!("          {}\n", disamb.description()));
+    }
+
     out.push('\n');
 }
 
@@ -790,6 +795,7 @@ mod tests {
             process: None,
             package: package.map(String::from),
             package_update: false,
+            disambiguation: None,
         }
     }
 

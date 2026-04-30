@@ -28,6 +28,7 @@ pub fn make_record(path: &str, severity: Severity, source: DetectionSource) -> D
         package_update: false,
         maintenance_window: false,
         source,
+        disambiguation: None,
     }
 }
 
@@ -56,6 +57,7 @@ pub fn make_sentinel() -> DetectionRecord {
         package_update: false,
         maintenance_window: false,
         source: DetectionSource::Sentinel,
+        disambiguation: None,
     }
 }
 
@@ -72,6 +74,7 @@ pub fn make_panic_record(path: &str) -> DetectionRecord {
         package_update: false,
         maintenance_window: false,
         source: DetectionSource::Panic,
+        disambiguation: None,
     }
 }
 

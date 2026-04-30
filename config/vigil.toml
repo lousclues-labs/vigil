@@ -58,6 +58,27 @@ hmac_signing = false
 hmac_key_path = "/etc/vigil/hmac.key"
 verify_config_integrity = true
 
+# ─── Forensic Disambiguation ───────────────────────────────
+# When a file's content hash differs from its baseline, Vigil can
+# additionally classify the mismatch as one of:
+#   - page_cache_only   — cache was modified; on-disk inode is clean
+#                          (gold-standard signature of a copy.fail-class
+#                          page-cache attack, e.g. CVE-2026-31431)
+#   - disk_modification — on-disk inode was changed
+#   - active_modification — both cache and on-disk view differ from baseline
+#   - inconclusive      — the kernel refused to evict cached pages
+#
+# The classification is stored in the audit log's `disambiguation` column
+# (NOT included in the chain-hash input, for backward compatibility) and
+# rendered by `vigil why <path>`.
+#
+# Off by default because disambiguation evicts the affected file's page
+# cache (POSIX_FADV_DONTNEED) — fine for incident triage, surprising as
+# steady-state behaviour. Enable on hosts where the cost is acceptable
+# and forensic clarity is worth more than cache warmth.
+[detection]
+disambiguate_on_detection = false
+
 [database]
 wal_mode = true
 audit_rotation_size = 104857600
