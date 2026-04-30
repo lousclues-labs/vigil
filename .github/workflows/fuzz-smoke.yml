@@ -18,16 +18,24 @@ jobs:
   fuzz-smoke:
     name: Fuzz smoke test (60s)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fuzz-smoke
+          workspaces: |
+            .
+            fuzz
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
       - name: Build fuzz targets
         run: cargo +nightly fuzz build
       - name: Run fuzz targets (60s each)
         run: |
+          TARGET_COUNT=$(cargo +nightly fuzz list | wc -l)
+          echo "Found ${TARGET_COUNT} fuzz targets"
           for target in $(cargo +nightly fuzz list); do
             echo "=== Fuzzing $target (60s) ==="
             cargo +nightly fuzz run "$target" -- \
