@@ -1,6 +1,7 @@
 name: Fuzz Smoke
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths: ['src/**', 'fuzz/**', 'Cargo.toml', 'Cargo.lock']
