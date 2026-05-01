@@ -2,6 +2,131 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.8.3] - 2026-05-01
+
+### Fixed — Critical: fanotify_mark rejected by current Linux kernels
+
+`src/monitor/fanotify.rs` requested an event mask of
+`FAN_MODIFY | FAN_CLOSE_WRITE | FAN_ATTRIB | FAN_CREATE | FAN_DELETE
+| FAN_MOVED_FROM | FAN_MOVED_TO` under `FAN_MARK_MOUNT` semantics.
+
+Per `fanotify_mark(2)`, `FAN_ATTRIB`, `FAN_CREATE`, `FAN_DELETE`,
+`FAN_MOVED_FROM`, and `FAN_MOVED_TO` are not supported with
+`FAN_MARK_MOUNT` — they require either `FAN_MARK_INODE` or
+`FAN_MARK_FILESYSTEM` together with one of the FID-family report
+flags (`FAN_REPORT_FID`, `FAN_REPORT_DFID_NAME`, etc.) at
+`fanotify_init` time. Older Linux kernels silently dropped the
+unsupported bits; newer kernels (observed on Linux 6.18.x LTS)
+reject the syscall with `EINVAL`.
+
+The result on a system that updated to a strict kernel: any new
+fanotify group fails to mark its mount points, and the daemon
+silently loses real-time coverage on the next restart. Pre-existing
+marks survive (the kernel validates at `fanotify_mark` time, not at
+`fanotify_init` time), so a long-running daemon may appear healthy
+right up to the moment it restarts and then has no real-time
+visibility at all.
+
+`apply_fanotify_mark` now detects `EINVAL` on `FAN_MARK_ADD` calls
+where the requested mask contains bits beyond the
+mount-mark-compatible subset, and retries with
+`FAN_MOUNT_COMPATIBLE_EVENTS` (`FAN_MODIFY | FAN_CLOSE_WRITE`).
+The function returns a new `MarkOutcome::{Full,Reduced}` enum so all
+three call sites (startup, watch-set reload, dynamic mount-add) can
+log clearly when degraded coverage is in effect.
+
+The fallback only triggers when:
+
+1. the kernel returned `EINVAL` (not `EACCES`, `ENOMEM`, `ENOSPC`, etc.),
+2. the requested mask contained bits outside the compatible subset
+   (otherwise the second call would fail identically and obscure the
+   real cause),
+3. the operation is `FAN_MARK_ADD` (removes are not retried).
+
+### Hardened — observable degraded coverage instead of silent loss
+
+When the fallback engages, vigild now:
+
+- emits a `tracing::warn!` line per mount naming the event classes
+  that are no longer covered in real time;
+- increments a new metric `vigil_fanotify_mark_reduced_coverage_total`
+  (per-mount counter, exported via Prometheus);
+- continues operating with reduced coverage rather than degrading
+  to `DaemonState::Degraded`, because scheduled scans backstop the
+  events that mount-mark cannot deliver.
+
+### Tests
+
+Two new unit tests in `src/monitor/fanotify.rs`:
+
+- `mount_compatible_mask_excludes_inode_only_events` asserts that
+  `FAN_MOUNT_COMPATIBLE_EVENTS` does not include any of the five
+  events that require `FAN_MARK_INODE`/`FAN_MARK_FILESYSTEM`. Future
+  contributors who add one of these to the compatible mask break
+  the build.
+- `mount_compatible_mask_retains_modify_and_close_write` asserts the
+  fallback still carries the events mount-mark actually supports,
+  so the fallback isn't equivalent to "no coverage."
+
+### Tests — hook-isolation suite no longer pollutes the system journal
+
+The four hook-isolation tests in `tests/hook_failure_isolation_tests.rs`
+(`pacman_post_hook_exits_zero_when_vigil_missing`,
+`pacman_post_hook_exits_zero_when_refresh_fails`,
+`apt_hook_exits_zero_when_vigil_missing`,
+`pacman_pre_hook_exits_zero_when_vigil_missing`) forked `/bin/sh`
+scripts that invoked real `logger -t vigil-pacman "..." 2>/dev/null`.
+`logger` writes to syslog, **not stderr**, so the redirect was a
+no-op — every `cargo test` run appended fake hook-failure entries to
+the host's system journal under the `vigil-pacman` and `vigil-apt`
+tags. `vigil doctor` correctly surfaced the most recent test
+execution as a real failed pacman trigger ("Hooks installed; last
+trigger ... failed"), which is the principle working as designed but
+created persistent false-positive warnings on developer workstations.
+
+The test contract is exit-code 0; the `logger` invocation was
+incidental noise. Replaced with `:` (the shell no-op builtin)
+preserving the original message text in a comment-style argument so
+test intent stays visible. The real hook source files in
+`hooks/pacman/` and `hooks/apt/` are unchanged — they continue to
+emit `logger` entries on real package transactions.
+
+### Compatibility
+
+No schema changes. No public API breaks beyond the additive
+`MarkOutcome` enum (crate-private; not exported). Operators upgrading
+from 1.8.2 on a strict-validation kernel (Linux 6.18.x LTS observed;
+likely also affects mainline 6.x) will see warn-level log lines
+naming the mounts whose real-time coverage is degraded, plus the new
+`vigil_fanotify_mark_reduced_coverage_total` metric. Coverage of
+`FAN_CREATE`, `FAN_DELETE`, `FAN_MOVED_*`, and `FAN_ATTRIB` continues
+through the scheduled-scan path — no events are silently dropped.
+
+### Known limitation / planned follow-up
+
+The proper fix for full real-time coverage of all event classes is
+to initialize the fanotify group with `FAN_REPORT_DFID_NAME |
+FAN_REPORT_FID` and switch from `FAN_MARK_MOUNT` to
+`FAN_MARK_FILESYSTEM`, then parse FID-style events through
+`open_by_handle_at(2)` instead of resolving fd→path via
+`/proc/self/fd`. The capability probe `monitor::detect_fanotify_tier`
+already detects FID/FidDfidName tier support, so the infrastructure
+exists; the event-loop rewrite is scheduled for a follow-up release.
+The 1.8.3 fallback keeps the daemon functional in the meantime.
+
+### Verification
+
+- `cargo build` clean.
+- `cargo clippy --all-targets --all-features -- -D warnings` clean.
+- `cargo test` 370 lib tests pass (was 368), 0 failures across all
+  integration suites.
+
+### Bumps
+
+- `Cargo.toml` 1.8.2 → 1.8.3.
+- README version badge 1.8.2 → 1.8.3.
+- `aur/PKGBUILD` and `aur/.SRCINFO` 1.8.2 → 1.8.3.
+
 ## [1.8.2] - 2026-04-30
 
 ### Fixed — Critical: baseline refresh corrupted the on-disk database
@@ -173,29 +298,6 @@ regression tests in `tests/doctor_output_tests.rs`:
 
 These tests would have caught the `vigil daemon recover` bug at the
 moment it was introduced.
-
-### Tests — hook-isolation suite no longer pollutes the system journal
-
-The four hook-isolation tests in `tests/hook_failure_isolation_tests.rs`
-(`pacman_post_hook_exits_zero_when_vigil_missing`,
-`pacman_post_hook_exits_zero_when_refresh_fails`,
-`apt_hook_exits_zero_when_vigil_missing`,
-`pacman_pre_hook_exits_zero_when_vigil_missing`) forked `/bin/sh`
-scripts that invoked real `logger -t vigil-pacman "..." 2>/dev/null`.
-`logger` writes to syslog, **not stderr**, so the redirect was a
-no-op — every `cargo test` run appended fake hook-failure entries to
-the host's system journal under the `vigil-pacman` and `vigil-apt`
-tags. `vigil doctor` correctly surfaced the most recent test
-execution as a real failed pacman trigger ("Hooks installed; last
-trigger ... failed"), which is the principle working as designed but
-created persistent false-positive warnings on developer workstations.
-
-The test contract is exit-code 0; the `logger` invocation was
-incidental noise. Replaced with `:` (the shell no-op builtin)
-preserving the original message text in a comment-style argument so
-test intent stays visible. The real hook source files in
-`hooks/pacman/` and `hooks/apt/` are unchanged — they continue to
-emit `logger` entries on real package transactions.
 
 ### Compatibility
 

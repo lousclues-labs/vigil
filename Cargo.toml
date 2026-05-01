@@ -1,6 +1,6 @@
 [package]
 name = "vigil-baseline"
-version = "1.8.2"
+version = "1.8.3"
 edition = "2021"
 rust-version = "1.85"
 description = "Linux file integrity monitor. Kernel-level filesystem watching, BLAKE3 hashing, HMAC-chained audit trail. Silent by default, local by design, deeply paranoid."

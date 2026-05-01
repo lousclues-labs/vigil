@@ -32,6 +32,13 @@ pub struct Metrics {
     pub fanotify_overflow_scans_triggered: AtomicU64,
     /// Fanotify mark add/remove failures (degrades coverage).
     pub fanotify_mark_failures: AtomicU64,
+    /// Fanotify mark calls that succeeded only after the requested event
+    /// mask was reduced to the mount-mark-compatible subset because the
+    /// kernel rejected the full mask with `EINVAL`. Each increment
+    /// represents one mount whose real-time coverage is degraded for the
+    /// `FAN_CREATE`, `FAN_DELETE`, `FAN_MOVED_*`, and `FAN_ATTRIB` event
+    /// classes; scheduled scans backstop those events.
+    pub fanotify_mark_reduced_coverage: AtomicU64,
     /// Fanotify read() syscall failures (other than EAGAIN).
     pub fanotify_read_errors: AtomicU64,
     /// Package manager cache build failures or empty results when a package manager exists.
@@ -108,6 +115,7 @@ impl Metrics {
             kernel_queue_overflows: AtomicU64::new(0),
             fanotify_overflow_scans_triggered: AtomicU64::new(0),
             fanotify_mark_failures: AtomicU64::new(0),
+            fanotify_mark_reduced_coverage: AtomicU64::new(0),
             fanotify_read_errors: AtomicU64::new(0),
             package_cache_failures: AtomicU64::new(0),
             audit_entries_lost: AtomicU64::new(0),
@@ -176,6 +184,9 @@ impl Metrics {
                 .fanotify_overflow_scans_triggered
                 .load(Ordering::Relaxed),
             fanotify_mark_failures: self.fanotify_mark_failures.load(Ordering::Relaxed),
+            fanotify_mark_reduced_coverage: self
+                .fanotify_mark_reduced_coverage
+                .load(Ordering::Relaxed),
             fanotify_read_errors: self.fanotify_read_errors.load(Ordering::Relaxed),
             package_cache_failures: self.package_cache_failures.load(Ordering::Relaxed),
             audit_entries_lost: self.audit_entries_lost.load(Ordering::Relaxed),
@@ -253,6 +264,7 @@ pub struct MetricsSnapshot {
     pub kernel_queue_overflows: u64,
     pub fanotify_overflow_scans_triggered: u64,
     pub fanotify_mark_failures: u64,
+    pub fanotify_mark_reduced_coverage: u64,
     pub fanotify_read_errors: u64,
     pub package_cache_failures: u64,
     pub audit_entries_lost: u64,
@@ -410,6 +422,12 @@ impl MetricsSnapshot {
             "vigil_fanotify_mark_failures_total",
             "Fanotify mark add/remove failures (degrades coverage)",
             self.fanotify_mark_failures,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_fanotify_mark_reduced_coverage_total",
+            "Fanotify marks accepted only with the reduced mount-compatible event mask",
+            self.fanotify_mark_reduced_coverage,
         );
         write_prom_counter(
             &mut out,

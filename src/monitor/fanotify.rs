@@ -66,6 +66,20 @@ const FAN_MOVED_FROM: u64 = 0x0000_0040;
 const FAN_MOVED_TO: u64 = 0x0000_0080;
 const FAN_Q_OVERFLOW: u64 = 0x0000_4000;
 
+/// Subset of the FAN_* event mask that is unconditionally compatible with
+/// `FAN_MARK_MOUNT` semantics on all current Linux kernels.
+///
+/// The events `FAN_ATTRIB`, `FAN_CREATE`, `FAN_DELETE`, `FAN_MOVED_FROM`,
+/// and `FAN_MOVED_TO` are documented as requiring `FAN_MARK_INODE` or
+/// `FAN_MARK_FILESYSTEM` together with one of the FID-family report flags
+/// at `fanotify_init` time. Older kernels silently ignored these bits when
+/// combined with `FAN_MARK_MOUNT`; newer kernels (observed on Linux 6.18.x
+/// LTS) reject the call with `EINVAL`. When that happens we fall back to
+/// this reduced mask so real-time coverage degrades gracefully instead of
+/// disappearing entirely. Scheduled scans backstop the events we can no
+/// longer observe in real time. See `apply_fanotify_mark`.
+const FAN_MOUNT_COMPATIBLE_EVENTS: u64 = FAN_MODIFY | FAN_CLOSE_WRITE;
+
 const FAN_EVENT_METADATA_LEN: usize = std::mem::size_of::<FanotifyEventMetadata>();
 
 #[repr(C)]
@@ -174,15 +188,29 @@ pub fn start(
         | FAN_MOVED_TO;
 
     for mount in &mount_points {
-        if let Err(e) = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD) {
-            tracing::error!(
-                mount = %mount.display(),
-                error = %e,
-                "fanotify_mark FAN_MARK_ADD failed at startup; coverage degraded"
-            );
-            metrics
-                .fanotify_mark_failures
-                .fetch_add(1, Ordering::Relaxed);
+        match apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD) {
+            Ok(MarkOutcome::Full) => {}
+            Ok(MarkOutcome::Reduced) => {
+                tracing::warn!(
+                    mount = %mount.display(),
+                    "fanotify_mark accepted only with reduced mount-compatible mask; \
+                     real-time coverage of FAN_CREATE/FAN_DELETE/FAN_MOVED_*/FAN_ATTRIB \
+                     is degraded for this mount. Scheduled scans will backstop these events."
+                );
+                metrics
+                    .fanotify_mark_reduced_coverage
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            Err(e) => {
+                tracing::error!(
+                    mount = %mount.display(),
+                    error = %e,
+                    "fanotify_mark FAN_MARK_ADD failed at startup; coverage degraded"
+                );
+                metrics
+                    .fanotify_mark_failures
+                    .fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 
@@ -321,24 +349,37 @@ fn run_event_loop(
             current_bloom = Arc::new(BloomFilter::from_watch_paths(&new_paths));
 
             for mount in new_mounts.difference(&current_mounts) {
-                if let Err(e) = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD) {
-                    tracing::error!(
-                        mount = %mount.display(),
-                        error = %e,
-                        "fanotify_mark FAN_MARK_ADD failed during reload; coverage degraded for this mount"
-                    );
-                    metrics
-                        .fanotify_mark_failures
-                        .fetch_add(1, Ordering::Relaxed);
-                    if let Some(s) = &state {
-                        let mut guard = s.write();
-                        if matches!(*guard, DaemonState::Healthy) {
-                            *guard = DaemonState::Degraded {
-                                reason: DegradedReason::FanotifyMarkFailed {
-                                    mount: mount.to_path_buf(),
-                                },
-                                since: Utc::now(),
-                            };
+                match apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD) {
+                    Ok(MarkOutcome::Full) => {}
+                    Ok(MarkOutcome::Reduced) => {
+                        tracing::warn!(
+                            mount = %mount.display(),
+                            "fanotify_mark accepted only with reduced mount-compatible mask during reload; \
+                             real-time coverage of FAN_CREATE/FAN_DELETE/FAN_MOVED_*/FAN_ATTRIB is degraded"
+                        );
+                        metrics
+                            .fanotify_mark_reduced_coverage
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            mount = %mount.display(),
+                            error = %e,
+                            "fanotify_mark FAN_MARK_ADD failed during reload; coverage degraded for this mount"
+                        );
+                        metrics
+                            .fanotify_mark_failures
+                            .fetch_add(1, Ordering::Relaxed);
+                        if let Some(s) = &state {
+                            let mut guard = s.write();
+                            if matches!(*guard, DaemonState::Healthy) {
+                                *guard = DaemonState::Degraded {
+                                    reason: DegradedReason::FanotifyMarkFailed {
+                                        mount: mount.to_path_buf(),
+                                    },
+                                    since: Utc::now(),
+                                };
+                            }
                         }
                     }
                 }
@@ -366,26 +407,41 @@ fn run_event_loop(
                     MountMarkOp::Add => FAN_MARK_ADD,
                     MountMarkOp::Remove => FAN_MARK_REMOVE,
                 };
-                if let Err(e) = apply_fanotify_mark(fan_fd, &req.mount, mask, op_flag) {
-                    tracing::error!(
-                        mount = %req.mount.display(),
-                        op = ?req.op,
-                        error = %e,
-                        "dynamic fanotify_mark failed for overlapping mount"
-                    );
-                    metrics
-                        .fanotify_mark_failures
-                        .fetch_add(1, Ordering::Relaxed);
-                } else {
-                    tracing::info!(
-                        mount = %req.mount.display(),
-                        op = ?req.op,
-                        "dynamic fanotify_mark applied for overlapping mount"
-                    );
-                    if matches!(req.op, MountMarkOp::Add) {
-                        current_mounts.insert(req.mount);
-                    } else {
-                        current_mounts.remove(&req.mount);
+                match apply_fanotify_mark(fan_fd, &req.mount, mask, op_flag) {
+                    Ok(outcome) => {
+                        if matches!(outcome, MarkOutcome::Reduced) {
+                            tracing::warn!(
+                                mount = %req.mount.display(),
+                                op = ?req.op,
+                                "dynamic fanotify_mark accepted only with reduced mount-compatible mask; \
+                                 real-time coverage of FAN_CREATE/FAN_DELETE/FAN_MOVED_*/FAN_ATTRIB is degraded"
+                            );
+                            metrics
+                                .fanotify_mark_reduced_coverage
+                                .fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            tracing::info!(
+                                mount = %req.mount.display(),
+                                op = ?req.op,
+                                "dynamic fanotify_mark applied for overlapping mount"
+                            );
+                        }
+                        if matches!(req.op, MountMarkOp::Add) {
+                            current_mounts.insert(req.mount);
+                        } else {
+                            current_mounts.remove(&req.mount);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            mount = %req.mount.display(),
+                            op = ?req.op,
+                            error = %e,
+                            "dynamic fanotify_mark failed for overlapping mount"
+                        );
+                        metrics
+                            .fanotify_mark_failures
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
@@ -666,7 +722,26 @@ pub fn strip_deleted_suffix(path: &std::path::Path) -> (PathBuf, bool) {
     }
 }
 
-fn apply_fanotify_mark(fan_fd: RawFd, mount: &std::path::Path, mask: u64, op: u32) -> Result<()> {
+/// Outcome of an `apply_fanotify_mark` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MarkOutcome {
+    /// The full requested mask was accepted by the kernel.
+    Full,
+    /// The kernel rejected the full mask with `EINVAL`; the call was
+    /// retried with `FAN_MOUNT_COMPATIBLE_EVENTS` and that mask was
+    /// accepted. Real-time coverage of attribute changes, file creations,
+    /// deletions, and renames is degraded for this mount until the daemon
+    /// is rewritten to use `FAN_MARK_FILESYSTEM` + `FAN_REPORT_DFID_NAME`.
+    /// Scheduled scans remain a backstop for these event classes.
+    Reduced,
+}
+
+fn apply_fanotify_mark(
+    fan_fd: RawFd,
+    mount: &std::path::Path,
+    mask: u64,
+    op: u32,
+) -> Result<MarkOutcome> {
     let c_path = CString::new(mount.as_os_str().as_bytes())
         .map_err(|_| VigilError::Fanotify(format!("invalid path: {}", mount.display())))?;
 
@@ -683,15 +758,57 @@ fn apply_fanotify_mark(fan_fd: RawFd, mount: &std::path::Path, mask: u64, op: u3
         )
     };
 
-    if ret < 0 {
+    if ret >= 0 {
+        return Ok(MarkOutcome::Full);
+    }
+
+    let err = std::io::Error::last_os_error();
+
+    // EINVAL with FAN_MARK_MOUNT typically means the requested event mask
+    // includes bits that newer kernels refuse for mount-mark semantics
+    // (FAN_CREATE, FAN_DELETE, FAN_MOVED_*, FAN_ATTRIB). Older kernels
+    // silently ignored these bits; current kernels enforce. Retry with the
+    // mount-compatible subset so the daemon stays functional with degraded
+    // real-time coverage instead of failing to mark the mount at all.
+    //
+    // Only attempt the fallback when the requested mask actually contains
+    // bits beyond the compatible subset — otherwise the EINVAL came from a
+    // different cause (bad fd, bad path) and retrying would mask the real
+    // error with a confusing second EINVAL.
+    let raw_errno = err.raw_os_error();
+    let is_einval = raw_errno == Some(libc::EINVAL);
+    let has_unsupported_bits = mask & !FAN_MOUNT_COMPATIBLE_EVENTS != 0;
+    let reduced_mask = mask & FAN_MOUNT_COMPATIBLE_EVENTS;
+
+    if !is_einval || !has_unsupported_bits || reduced_mask == 0 || op == FAN_MARK_REMOVE {
         return Err(VigilError::Fanotify(format!(
             "fanotify_mark failed for {}: {}",
+            mount.display(),
+            err
+        )));
+    }
+
+    // SAFETY: same contract as the first call; only the mask differs.
+    let retry = unsafe {
+        libc::syscall(
+            libc::SYS_fanotify_mark,
+            fan_fd,
+            op | FAN_MARK_MOUNT,
+            reduced_mask,
+            libc::AT_FDCWD,
+            c_path.as_ptr(),
+        )
+    };
+
+    if retry < 0 {
+        return Err(VigilError::Fanotify(format!(
+            "fanotify_mark failed for {} (also failed with reduced mask): {}",
             mount.display(),
             std::io::Error::last_os_error()
         )));
     }
 
-    Ok(())
+    Ok(MarkOutcome::Reduced)
 }
 
 fn mask_to_event_type(mask: u64) -> Option<FsEventType> {
@@ -857,5 +974,48 @@ mod tests {
         let (p, deleted) = strip_deleted_suffix(std::path::Path::new("/etc/foo (bar)"));
         assert_eq!(p, PathBuf::from("/etc/foo (bar)"));
         assert!(!deleted);
+    }
+
+    /// Compile-time invariant: the mount-compatible event subset must not
+    /// include any of the events that newer Linux kernels reject when
+    /// combined with `FAN_MARK_MOUNT`. If a future contributor adds one
+    /// of these bits to the compatible mask, this test catches it before
+    /// it lands in production and silently breaks daemon startup on
+    /// strict kernels.
+    #[test]
+    fn mount_compatible_mask_excludes_inode_only_events() {
+        let inode_only = [
+            ("FAN_ATTRIB", FAN_ATTRIB),
+            ("FAN_CREATE", FAN_CREATE),
+            ("FAN_DELETE", FAN_DELETE),
+            ("FAN_MOVED_FROM", FAN_MOVED_FROM),
+            ("FAN_MOVED_TO", FAN_MOVED_TO),
+        ];
+        for (name, bit) in inode_only {
+            assert_eq!(
+                FAN_MOUNT_COMPATIBLE_EVENTS & bit,
+                0,
+                "FAN_MOUNT_COMPATIBLE_EVENTS must not contain {} \
+                 (requires FAN_MARK_INODE/FILESYSTEM + FAN_REPORT_FID)",
+                name
+            );
+        }
+    }
+
+    /// The compatible subset must still carry the events that mount-mark
+    /// semantics actually support, otherwise the fallback would be
+    /// indistinguishable from "no coverage at all."
+    #[test]
+    fn mount_compatible_mask_retains_modify_and_close_write() {
+        assert_ne!(
+            FAN_MOUNT_COMPATIBLE_EVENTS & FAN_MODIFY,
+            0,
+            "FAN_MOUNT_COMPATIBLE_EVENTS must include FAN_MODIFY"
+        );
+        assert_ne!(
+            FAN_MOUNT_COMPATIBLE_EVENTS & FAN_CLOSE_WRITE,
+            0,
+            "FAN_MOUNT_COMPATIBLE_EVENTS must include FAN_CLOSE_WRITE"
+        );
     }
 }
