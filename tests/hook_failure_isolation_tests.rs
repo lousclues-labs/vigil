@@ -193,13 +193,15 @@ fn pacman_post_hook_has_one_logger_per_failure_branch() {
         .find(|l| l.starts_with("Exec"))
         .expect("hook must have an Exec line");
 
-    // Count logger invocations. There should be exactly two:
-    // one for binary-not-found, one for refresh-failed. These are
-    // on mutually exclusive branches.
+    // Count logger invocations. There should be at most three, each on a
+    // mutually-exclusive branch:
+    //   1. binary missing AND vigild active (high priority -- operator alarm)
+    //   2. binary missing AND vigild not active (info -- expected during install)
+    //   3. baseline refresh failed (high priority)
     let logger_count = exec_line.matches("logger ").count();
     assert!(
-        logger_count <= 2,
-        "hook should have at most 2 logger calls (one per failure branch), found {}",
+        logger_count <= 3,
+        "hook should have at most 3 logger calls (one per failure branch), found {}",
         logger_count
     );
 }

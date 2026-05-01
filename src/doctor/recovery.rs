@@ -6,8 +6,26 @@
 use crate::ack::DoctorEventKind;
 use crate::config::Config;
 use crate::db::audit_path::AuditEventPath;
+use crate::types::DegradedReason;
 
 use super::{Recovery, RecoveryHint};
+
+/// Map a `DaemonState::Degraded { reason }` Display string back to the stable
+/// `reason_code()` understood by `vigil recover --reason <code>`.
+///
+/// The previous implementation was `reason.split_whitespace().next()`, which
+/// is correct only as long as every `Display` arm starts with its code. This
+/// helper verifies the extracted token against `DegradedReason::reason_code()`
+/// for every variant. If verification fails, we have a Display drift and
+/// return None so callers can degrade to a generic hint rather than print a
+/// recovery command that `vigil recover` would refuse.
+pub(crate) fn reason_display_to_code(display: &str) -> Option<&'static str> {
+    let token = display.split_whitespace().next()?;
+    DegradedReason::all_variants_for_introspection()
+        .iter()
+        .find(|v| v.reason_code() == token)
+        .map(|v| v.reason_code())
+}
 
 pub(crate) fn hooks_disabled_by_operator(config: &Config) -> bool {
     let conn = match crate::db::open_audit_db(config) {
@@ -106,7 +124,7 @@ pub(crate) fn retention_failure_unacked_recovery() -> Recovery {
         },
         RecoveryHint::Command {
             verb: "or recover",
-            command: "vigil daemon recover --reason audit_log_full".into(),
+            command: "vigil recover --reason audit_log_full".into(),
         },
         RecoveryHint::Command {
             verb: "acknowledge",
@@ -127,7 +145,7 @@ pub(crate) fn retention_failure_acknowledged_recovery(
     });
     hints.push(RecoveryHint::Command {
         verb: "or recover",
-        command: "vigil daemon recover --reason audit_log_full".into(),
+        command: "vigil recover --reason audit_log_full".into(),
     });
     hints.push(RecoveryHint::Command {
         verb: "acknowledge again on recurrence",
@@ -137,19 +155,27 @@ pub(crate) fn retention_failure_acknowledged_recovery(
 }
 
 pub(crate) fn daemon_degraded_unacked_recovery(reason: &str) -> Recovery {
-    Recovery::Multi(vec![
-        RecoveryHint::Command {
+    let code = reason_display_to_code(reason);
+    let mut hints: Vec<RecoveryHint> = Vec::new();
+    if let Some(code) = code {
+        hints.push(RecoveryHint::Command {
             verb: "recover",
-            command: format!(
-                "vigil recover --reason {}",
-                reason.split_whitespace().next().unwrap_or(reason)
+            command: format!("vigil recover --reason {}", code),
+        });
+    } else {
+        hints.push(RecoveryHint::Manual {
+            verb: "recover",
+            instruction: format!(
+                "unknown degraded reason '{}'; run `vigil recover --list` to see options",
+                reason
             ),
-        },
-        RecoveryHint::Command {
-            verb: "acknowledge",
-            command: "vigil ack degraded".into(),
-        },
-    ])
+        });
+    }
+    hints.push(RecoveryHint::Command {
+        verb: "acknowledge",
+        command: "vigil ack degraded".into(),
+    });
+    Recovery::Multi(hints)
 }
 
 pub(crate) fn daemon_degraded_acknowledged_recovery(
@@ -158,14 +184,22 @@ pub(crate) fn daemon_degraded_acknowledged_recovery(
     uid: u32,
     note: Option<String>,
 ) -> Recovery {
+    let code = reason_display_to_code(reason);
     let mut hints = acknowledgment_metadata_hints(ack_ts, uid, note);
-    hints.push(RecoveryHint::Command {
-        verb: "recover",
-        command: format!(
-            "vigil recover --reason {}",
-            reason.split_whitespace().next().unwrap_or(reason)
-        ),
-    });
+    if let Some(code) = code {
+        hints.push(RecoveryHint::Command {
+            verb: "recover",
+            command: format!("vigil recover --reason {}", code),
+        });
+    } else {
+        hints.push(RecoveryHint::Manual {
+            verb: "recover",
+            instruction: format!(
+                "unknown degraded reason '{}'; run `vigil recover --list` to see options",
+                reason
+            ),
+        });
+    }
     hints.push(RecoveryHint::Command {
         verb: "acknowledge again on recurrence",
         command: "vigil ack degraded".into(),

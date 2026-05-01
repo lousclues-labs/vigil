@@ -133,18 +133,24 @@ vigil maintenance status
 - SQLite reports database locked
 - integrity checks fail
 - daemon refuses startup
+- `vigil check` reports `database disk image is malformed`
 
 ### Recovery
 
 ```bash
 sudo systemctl stop vigild.service
 vigil doctor
-cp /var/lib/vigil/baseline.db /var/lib/vigil/baseline.db.bak
-vigil init --force
+sudo cp /var/lib/vigil/baseline.db /var/lib/vigil/baseline.db.bak
+# Remove stale WAL/SHM sidecars left from a previous failed swap.
+sudo rm -f /var/lib/vigil/baseline.db-wal /var/lib/vigil/baseline.db-shm
+sudo vigil init --force
 sudo systemctl start vigild.service
 ```
 
-Rebuild only on known-good host state.
+Rebuild only on known-good host state. As of v1.8.2 the baseline
+refresh path checkpoints, closes, and removes the live WAL/SHM
+sidecars before the atomic rename so this failure mode no longer
+occurs after a successful refresh.
 
 ---
 

@@ -358,7 +358,7 @@ pub(crate) fn cmd_audit(
 
             println!();
         }
-        vigil::cli::AuditAction::Verify => {
+        vigil::cli::AuditAction::Verify { verbose } => {
             let detail = vigil::db::audit_ops::verify_chain_detail(&conn, None)?;
 
             if format == OutputFormat::Json {
@@ -434,7 +434,14 @@ pub(crate) fn cmd_audit(
                     );
                     eprintln!("  the checkpoint's chain_hmac does not match its contents");
                     eprintln!("  this indicates tampering with the checkpoint record");
-                    eprintln!("  recover with: vigil daemon recover --reason audit_chain_broken");
+                    if verbose {
+                        print_break_context(&conn, &detail.breaks);
+                    } else {
+                        eprintln!("  for per-break context: vigil audit verify -v");
+                    }
+                    eprintln!(
+                        "  if not already acknowledged in `vigil doctor`: vigil ack chain-break"
+                    );
                     std::process::exit(2);
                 } else {
                     println!(
@@ -447,7 +454,14 @@ pub(crate) fn cmd_audit(
                     for (id, ts) in &detail.breaks {
                         println!("    id={} timestamp={}", id, ts);
                     }
-                    eprintln!("  recover with: vigil daemon recover --reason audit_chain_broken");
+                    if verbose {
+                        print_break_context(&conn, &detail.breaks);
+                    } else {
+                        eprintln!("  for per-break context: vigil audit verify -v");
+                    }
+                    eprintln!(
+                        "  if not already acknowledged in `vigil doctor`: vigil ack chain-break"
+                    );
                     std::process::exit(2);
                 }
             } else {
@@ -685,6 +699,73 @@ pub(crate) fn cmd_audit(
     }
 
     Ok(())
+}
+
+/// For each chain break, dump a small window of surrounding entries (id,
+/// timestamp, path, severity, recorded chain_hash, hmac present?) to give
+/// the operator something concrete to examine. Read-only; never mutates the
+/// audit log. Errors during display are reported inline and do not abort.
+fn print_break_context(conn: &rusqlite::Connection, breaks: &[(i64, i64)]) {
+    eprintln!();
+    eprintln!("  Per-break context (read-only):");
+    for (break_id, _ts) in breaks {
+        let lo = (*break_id).saturating_sub(2);
+        let hi = (*break_id).saturating_add(2);
+        eprintln!();
+        eprintln!(
+            "  --- break at id={} (showing ids {}..={}) ---",
+            break_id, lo, hi
+        );
+        let stmt = conn.prepare(
+            "SELECT id, timestamp, path, severity, chain_hash, hmac, record_type \
+             FROM audit_log WHERE id BETWEEN ?1 AND ?2 ORDER BY id ASC",
+        );
+        let mut stmt = match stmt {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("    (could not query: {})", e);
+                continue;
+            }
+        };
+        let rows = stmt.query_map(rusqlite::params![lo, hi], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        });
+        let rows = match rows {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("    (could not iterate: {})", e);
+                continue;
+            }
+        };
+        for row in rows.flatten() {
+            let (id, ts, path, severity, chain_hash, hmac, record_type) = row;
+            let marker = if id == *break_id { ">>" } else { "  " };
+            let ts_str = chrono::DateTime::from_timestamp(ts, 0)
+                .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+                .unwrap_or_else(|| ts.to_string());
+            let kind = record_type.as_deref().unwrap_or("detection");
+            let hmac_state = if hmac.is_some() {
+                "hmac=present"
+            } else {
+                "hmac=absent"
+            };
+            let chain_short: String = chain_hash.chars().take(16).collect();
+            eprintln!(
+                "    {} id={} ts={} kind={} sev={} {} chain={}…",
+                marker, id, ts_str, kind, severity, hmac_state, chain_short
+            );
+            eprintln!("       path={}", path);
+        }
+    }
+    eprintln!();
 }
 
 fn entries_to_json(entries: &[vigil::db::audit_ops::AuditEntry]) -> serde_json::Value {

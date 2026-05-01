@@ -88,6 +88,71 @@ impl std::fmt::Display for DegradedReason {
     }
 }
 
+impl DegradedReason {
+    /// Stable, parameter-free reason code used in operator-facing commands
+    /// such as `vigil recover --reason <code>`. The exhaustive `match` is
+    /// load-bearing: adding a new variant without a code is a compile error,
+    /// which prevents the `KNOWN_REASONS` drift class of bug where doctor
+    /// would print a recovery command that `vigil recover` would refuse.
+    ///
+    /// Display strings are NOT used for this purpose because they may carry
+    /// parenthesized parameters (e.g. `clock_skew_detected (skew=42s)`) that
+    /// would never round-trip through clap.
+    pub fn reason_code(&self) -> &'static str {
+        match self {
+            DegradedReason::BaselineDbReplaced => "baseline_db_replaced",
+            DegradedReason::AuditDbReplaced => "audit_db_replaced",
+            DegradedReason::WalFileReplaced => "wal_file_replaced",
+            DegradedReason::EventBackpressure => "event_backpressure",
+            DegradedReason::EventLossDetected { .. } => "event_loss_detected",
+            DegradedReason::ClockSkewDetected { .. } => "clock_skew_detected",
+            DegradedReason::FanotifyMarkFailed { .. } => "fanotify_mark_failed",
+            DegradedReason::FanotifyReadFailed => "fanotify_read_failed",
+            DegradedReason::WorkerDbUnrecoverable => "worker_db_unrecoverable",
+            DegradedReason::BaselineHmacMismatch => "baseline_hmac_mismatch",
+            DegradedReason::FanotifyQueueOverflow => "fanotify_queue_overflow",
+            DegradedReason::AuditLogFull => "audit_log_full",
+            DegradedReason::RetentionPolicyMismatch { .. } => "retention_policy_mismatch",
+            DegradedReason::UserspaceEventDrops { .. } => "userspace_event_drops",
+        }
+    }
+
+    /// Exhaustive sample list of every variant, used by tests and by
+    /// `vigil recover --list` to enumerate every reason the daemon could
+    /// possibly report. Parameter-bearing variants get plausible sample
+    /// values; the test harness only consumes `reason_code()` from these.
+    pub fn all_variants_for_introspection() -> Vec<DegradedReason> {
+        vec![
+            DegradedReason::BaselineDbReplaced,
+            DegradedReason::AuditDbReplaced,
+            DegradedReason::WalFileReplaced,
+            DegradedReason::EventBackpressure,
+            DegradedReason::EventLossDetected {
+                drop_delta: 0,
+                threshold: 0,
+            },
+            DegradedReason::ClockSkewDetected { skew_secs: 0 },
+            DegradedReason::FanotifyMarkFailed {
+                mount: std::path::PathBuf::from("/"),
+            },
+            DegradedReason::FanotifyReadFailed,
+            DegradedReason::WorkerDbUnrecoverable,
+            DegradedReason::BaselineHmacMismatch,
+            DegradedReason::FanotifyQueueOverflow,
+            DegradedReason::AuditLogFull,
+            DegradedReason::RetentionPolicyMismatch {
+                skipped_count: 0,
+                retention_days: 0,
+                would_delete_pct: 0,
+            },
+            DegradedReason::UserspaceEventDrops {
+                dropped: 0,
+                window_secs: 0,
+            },
+        ]
+    }
+}
+
 /// Tracks whether the daemon is operating normally or in a degraded state.
 #[derive(Debug, Clone)]
 pub enum DaemonState {

@@ -2,6 +2,200 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.8.2] - 2026-04-30
+
+### Fixed — Critical: baseline refresh corrupted the on-disk database
+
+`handle_baseline_refresh_streaming` in `src/control.rs` performed
+`fs::rename(tmp, baseline.db)` while:
+
+1. the daemon's live `baseline_conn` was still open against the **old**
+   inode, and
+2. the old inode's `baseline.db-wal` and `baseline.db-shm` sidecars
+   were left on disk.
+
+After the rename, the new `baseline.db` (a different inode) became
+name-associated with the old inode's WAL/SHM sidecars. The next opener
+— the daemon's own reopen, or `vigil check` from the CLI — loaded the
+mismatched WAL pages and SQLite returned **"database disk image is
+malformed"**, leaving the operator with an unreadable baseline after a
+nominally successful refresh.
+
+The refresh path now:
+
+1. runs `PRAGMA wal_checkpoint(TRUNCATE)` on the temp connection so its
+   sidecars are empty before drop;
+2. closes the live `baseline_conn` (replacing it with an in-memory
+   placeholder of identical type) so its file descriptor no longer
+   pins the old inode;
+3. removes the stale `baseline.db-wal` and `baseline.db-shm` belonging
+   to the old inode;
+4. performs the atomic `fs::rename(tmp, baseline.db)`;
+5. cleans up any straggler `baseline.db.refresh-wal` /
+   `baseline.db.refresh-shm`;
+6. reopens the daemon connection against the new file.
+
+A new `sidecar_path()` helper documents the lifecycle. (`src/control.rs`)
+
+### Fixed — `vigil daemon recover` was a nonexistent subcommand
+
+Multiple recovery hints across the code base printed `vigil daemon
+recover --reason <X>`, but there is no `daemon` subcommand. The actual
+command is `vigil recover`. The wrong hint had been in place since the
+introduction of the recover command and was reachable from at least
+five operator-facing surfaces.
+
+Corrected in:
+
+- `src/commands/audit.rs` (chain-break hints — checkpoint and
+  detection variants).
+- `src/commands/baseline.rs` (post-refresh chain-break line).
+- `src/doctor/recovery.rs` (`retention_failure_unacked_recovery`,
+  `retention_failure_acknowledged_recovery`).
+- `docs/RETENTION.md` (cap-behaviour recovery instructions).
+- `tests/doctor_output_tests.rs` (recovery context fixture).
+
+`audit_log_full` was also added to the typed reason table in
+`src/commands/recover.rs` so the corrected `vigil recover --reason
+audit_log_full` command is actually accepted.
+
+### Fixed — `vigil audit verify -v` rejected by clap
+
+Six places in the code base advertised `vigil audit verify -v` —
+including the doctor warning row for chain breaks — but
+`AuditAction::Verify` was a unit variant with no flags, so clap
+rejected the command. `AuditAction::Verify` now takes `--verbose` /
+`-v`. When set, the handler prints a per-break context window (ids
+B-2..=B+2) showing timestamp, kind (`detection` / `checkpoint`),
+severity, HMAC presence, and chain-hash prefix. Read-only; never
+mutates the audit log. (`src/cli.rs`, `src/commands/audit.rs`)
+
+### Fixed — chain-break ack hint suggested re-acknowledging
+
+`vigil ack chain-break` correctly refuses when no unacknowledged event
+exists. The post-fix hints were rewritten to read "if not already
+acknowledged in `vigil doctor`: vigil ack chain-break" instead of
+unconditionally telling the operator to acknowledge. Combined with the
+new `vigil audit verify -v` output, the operator gets a complete
+triage path: save a copy of `audit.db`, run `vigil audit verify -v`,
+then conditionally acknowledge.
+
+### Hardened — compile-time-enforced `vigil recover --reason` table
+
+The previous `KNOWN_REASONS` slice in `src/commands/recover.rs` was a
+hand-maintained `&[(&str, &str, &str)]` table with **six** entries.
+The `DegradedReason` enum in `src/types/config_types.rs` had **fourteen**
+variants. Eight reasons the daemon could legitimately emit
+(`clock_skew_detected`, `event_loss_detected`, `fanotify_mark_failed`,
+`fanotify_read_failed`, `fanotify_queue_overflow`,
+`worker_db_unrecoverable`, `retention_policy_mismatch`,
+`userspace_event_drops`) had no matching `KNOWN_REASONS` entry —
+`vigil recover --reason <X>` would silently refuse a real degraded
+state.
+
+- New method `DegradedReason::reason_code() -> &'static str` returns
+  the stable parameter-free identifier. Adding a new variant without
+  a code is a compile error. (`src/types/config_types.rs`)
+- New method `DegradedReason::all_variants_for_introspection()`
+  returns sample instances of every variant, used by tests and by
+  `vigil recover --list`. (`src/types/config_types.rs`)
+- `src/commands/recover.rs` rewritten to derive its description table
+  from a `describe(&DegradedReason)` function whose exhaustive `match`
+  is the single source of truth. **All fourteen variants are now
+  recoverable** with operator-facing situation/action text.
+- New unit tests `every_degraded_reason_has_recovery_description` and
+  `reason_codes_are_shell_safe` lock the invariant in.
+
+### Hardened — typed `DegradedReason` lookup in doctor recovery hints
+
+`src/doctor/recovery.rs` previously extracted reason codes from
+`DaemonState::Degraded::Display` strings via
+`reason.split_whitespace().next()`. A future variant whose `Display`
+did not start with the code (or any reformatting that prepended a
+prefix) would silently produce a recovery command that
+`vigil recover` would refuse — the same drift class as the bug above.
+
+The new `reason_display_to_code()` helper looks up the extracted
+token against `DegradedReason::all_variants_for_introspection()` and
+verifies it matches a real `reason_code()`. Both
+`daemon_degraded_unacked_recovery` and
+`daemon_degraded_acknowledged_recovery` now emit a
+`RecoveryHint::Manual` warning ("unknown degraded reason '...'; run
+`vigil recover --list` to see options") if verification fails —
+visible drift instead of silent corruption.
+
+### Hardened — root-vs-stale-socket disambiguation in `vigil baseline refresh`
+
+`src/commands/baseline.rs` previously told **all** `EPERM` callers to
+"use sudo". But `EPERM` while running **as root** means the control
+socket is owned by another uid — a stale socket from a previous run,
+or a hijack. Telling root to sudo would loop the operator and hide a
+security-grade anomaly.
+
+The error branch now checks `nix::unistd::geteuid().is_root()`.
+Non-root operators still get the sudo hint. Root operators receive an
+explicit anomaly message naming the socket path and pointing them at
+`ls -l` and `lsof` to investigate ownership.
+
+### Hardened — pacman hooks now fail loud when vigil binary is missing
+
+`hooks/pacman/vigil-pre.hook` and `hooks/pacman/vigil-post.hook`
+previously `exit 0` silently when `/usr/bin/vigil` was absent. That is
+correct during a fresh install but operator-hostile when **vigild is
+running** — the daemon will report inconsistent state with no log
+trail.
+
+Both hooks now check `systemctl is-active --quiet vigild` when the
+binary is missing. If vigild is active, escalate: `logger -p
+daemon.err` (visible in `journalctl -p err`) plus `notify-send -u
+critical`. If vigild is not active, log at info level — the
+legitimate fresh-install case. **Both branches still `exit 0`**:
+hooks must never block a package transaction (Principle XV). The
+existing `pacman_post_hook_has_one_logger_per_failure_branch` test
+bound updated from 2 to 3 mutually-exclusive branches.
+
+### Tests — clap-validity guard for every recovery command literal
+
+The previous test suite asserted that `Recovery::Command` strings
+**start with** "vigil " but never round-tripped them through the clap
+grammar. The `vigil daemon recover` bug passed that test. Two new
+regression tests in `tests/doctor_output_tests.rs`:
+
+- `every_doctor_recovery_command_literal_parses_via_clap` —
+  `include_str!`s `src/doctor/{recovery,checks}.rs` and
+  `src/commands/{audit,baseline}.rs`; scrapes every `"vigil ..."`
+  literal; substitutes `<placeholder>` tokens; runs each through
+  `Cli::try_parse_from`. Any literal that does not parse fails the
+  test with the exact command and clap's error.
+- `every_degraded_reason_recover_command_parses` — for every
+  `DegradedReason` variant, asserts `vigil recover --reason <code>
+  --yes` parses.
+
+These tests would have caught the `vigil daemon recover` bug at the
+moment it was introduced.
+
+### Compatibility
+
+No schema changes. No public API breaks beyond the additive
+`DegradedReason::reason_code()` and `all_variants_for_introspection()`
+methods. Audit-log format unchanged; HMAC chain unchanged. Operators
+upgrading from 1.8.1 should **stop the daemon, run the upgrade, then
+delete any pre-existing `/var/lib/vigil/baseline.db-wal` /
+`baseline.db-shm` if a refresh under 1.8.1 has been attempted**, then
+run `sudo vigil baseline refresh` to rebuild cleanly. Audit log and
+acknowledgments survive untouched.
+
+### Verification
+
+- `cargo build` clean.
+- `cargo clippy --all-targets -- -D warnings` clean.
+- `cargo test` 370 lib + integration tests pass (was 368), 0 failures.
+
+### Bumps
+
+- README version badge aligned to `1.8.2`.
+- `aur/PKGBUILD` `pkgver` and `aur/.SRCINFO` aligned to `1.8.2`.
+
 ## [1.8.1] - 2026-04-30
 
 ### Added — Forensic Disambiguation

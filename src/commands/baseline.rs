@@ -39,6 +39,22 @@ fn cmd_baseline_refresh(config_path: Option<&Path>, quiet: bool) -> vigil::Resul
                 ));
             }
             if e.kind() == std::io::ErrorKind::PermissionDenied {
+                // Discriminate: a non-root operator just needs sudo. A *root*
+                // operator hitting EPERM means the socket is owned by another
+                // uid -- a stale socket from a previous vigild run as a
+                // different user, or worse, a hijack. Telling root to "use
+                // sudo" would be operator-hostile and hide a real anomaly.
+                if nix::unistd::geteuid().is_root() {
+                    return Err(vigil::VigilError::PermissionDenied(format!(
+                        "control socket at {} refused connection as root. \
+                         The socket is owned by another uid -- this is either a \
+                         stale socket from a previous run or a hijack. \
+                         Inspect with: ls -l {}; lsof {}",
+                        cfg.daemon.control_socket.display(),
+                        cfg.daemon.control_socket.display(),
+                        cfg.daemon.control_socket.display(),
+                    )));
+                }
                 return Err(vigil::VigilError::PermissionDenied(
                     "cannot connect to vigild control socket. This command requires root.\n\
                      Run: sudo vigil baseline refresh"
@@ -321,7 +337,7 @@ fn finish_event(event: &serde_json::Value, quiet: bool, is_tty: bool) -> vigil::
                         .and_then(|v| v.as_i64())
                         .unwrap_or(0);
                     eprintln!(
-                        "audit log: chain broken at sequence {} (recover with: vigil daemon recover --reason audit_chain_broken)",
+                        "audit log: chain broken at sequence {} (investigate: save a copy of audit.db then `vigil audit verify -v`; if not already acknowledged in `vigil doctor`: `vigil ack chain-break`)",
                         break_id
                     );
                 } else if let (Some(count), Some(true)) = (entry_count, chain_intact) {

@@ -368,7 +368,11 @@ pub enum AuditAction {
     },
 
     /// Verify audit chain integrity
-    Verify,
+    Verify {
+        /// Print per-break context (neighboring entries, recorded chain hashes)
+        #[arg(long, short = 'v')]
+        verbose: bool,
+    },
 
     /// List sealed audit segments
     Segments,

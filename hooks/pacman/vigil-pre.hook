@@ -12,4 +12,4 @@ Target = boot/*
 [Action]
 Description = Vigil Baseline: entering maintenance window...
 When = PreTransaction
-Exec = /bin/sh -c 'if [ -x /usr/bin/vigil ]; then /usr/bin/vigil maintenance enter --quiet 2>/dev/null; fi; exit 0'
+Exec = /bin/sh -c 'VIGIL=/usr/bin/vigil; if [ -x "$VIGIL" ]; then "$VIGIL" maintenance enter --quiet 2>/dev/null; exit 0; fi; if systemctl is-active --quiet vigild 2>/dev/null; then logger -p daemon.err -t vigil-pacman "vigild is running but $VIGIL is missing; maintenance window NOT entered. The post-hook will fail and Vigil will report inconsistent state. Reinstall vigil-baseline as soon as the transaction completes."; notify-send -u critical "Vigil" "vigild is running but the vigil binary is missing. Reinstall vigil-baseline." 2>/dev/null; fi; exit 0'

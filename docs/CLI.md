@@ -772,7 +772,14 @@ When HMAC signing is disabled, a prominent warning is displayed explaining the d
 
 ```bash
 vigil audit verify
+vigil audit verify -v       # also dump per-break context (read-only)
 ```
+
+With `--verbose` / `-v`, every detected chain break is followed by a
+read-only dump of the surrounding entries (`B-2..=B+2`), each line
+showing id, timestamp, kind (`detection` / `checkpoint`), severity,
+HMAC presence, and the recorded `chain_hash` prefix. The broken row
+is marked with `>>`. The verifier never mutates the audit log.
 
 Output with checkpoints:
 ```

@@ -382,7 +382,7 @@ fn recovery_command_is_command_variant() {
 fn recovery_command_with_context_has_both_fields() {
     let r = vigil::doctor::Recovery::CommandWithContext {
         command: "vigil audit prune --before 2026-01-01 --confirm".into(),
-        context: "or: vigil daemon recover --reason audit_log_full".into(),
+        context: "or: vigil recover --reason audit_log_full".into(),
     };
     match r {
         vigil::doctor::Recovery::CommandWithContext { command, context } => {
@@ -863,4 +863,119 @@ fn hooks_repair_parses() {
     use clap::Parser;
     let result = vigil::cli::Cli::try_parse_from(["vigil", "hooks", "repair"]);
     assert!(result.is_ok(), "vigil hooks repair should parse");
+}
+
+// ===========================================================================
+// Regression: every literal `vigil ...` recovery command in the doctor
+// module must round-trip through the clap parser.
+//
+// This is the exact bug class that produced `vigil daemon recover --reason
+// audit_chain_broken` -- a string that LOOKS like a vigil command but has
+// no matching subcommand. It shipped for multiple releases because nothing
+// in the test suite parsed recovery hints back through the CLI grammar.
+//
+// The two source files below contain every operator-facing recovery command
+// the doctor and CLI emit. Scraping their string literals is fragile to
+// formatting but cheap, exhaustive, and catches the regression.
+// ===========================================================================
+
+const DOCTOR_RECOVERY_SRC: &str = include_str!("../src/doctor/recovery.rs");
+const DOCTOR_CHECKS_SRC: &str = include_str!("../src/doctor/checks.rs");
+const COMMANDS_AUDIT_SRC: &str = include_str!("../src/commands/audit.rs");
+const COMMANDS_BASELINE_SRC: &str = include_str!("../src/commands/baseline.rs");
+
+/// Find every `"vigil ..."` literal in `src` and return the inner text.
+/// Only matches simple double-quoted strings on a single line; recovery
+/// hints are always written this way in the codebase. Strings with `{...}`
+/// format placeholders are skipped because we cannot validate templates.
+fn extract_vigil_command_literals(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in src.lines() {
+        // Find every "vigil ..." substring on this line.
+        let mut idx = 0;
+        while let Some(start) = line[idx..].find("\"vigil ") {
+            let abs_start = idx + start + 1; // after the opening quote
+                                             // Find the closing quote on the same line.
+            if let Some(rel_end) = line[abs_start..].find('"') {
+                let abs_end = abs_start + rel_end;
+                let literal = &line[abs_start..abs_end];
+                // Skip strings that contain format placeholders -- we can
+                // only parse fully-resolved commands.
+                if !literal.contains('{') && !literal.contains('\\') {
+                    out.push(literal.to_string());
+                }
+                idx = abs_end + 1;
+            } else {
+                break;
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn every_doctor_recovery_command_literal_parses_via_clap() {
+    use clap::Parser;
+    let mut all = Vec::new();
+    all.extend(extract_vigil_command_literals(DOCTOR_RECOVERY_SRC));
+    all.extend(extract_vigil_command_literals(DOCTOR_CHECKS_SRC));
+    all.extend(extract_vigil_command_literals(COMMANDS_AUDIT_SRC));
+    all.extend(extract_vigil_command_literals(COMMANDS_BASELINE_SRC));
+
+    assert!(
+        !all.is_empty(),
+        "scraper found no `vigil ...` literals -- the test is broken"
+    );
+
+    let mut failures: Vec<(String, String)> = Vec::new();
+    for cmd in &all {
+        // Tokenize on whitespace. Recovery hints never contain quoted args.
+        let argv: Vec<&str> = cmd.split_whitespace().collect();
+        // Replace operator-supplied placeholders with sentinel values so the
+        // parser sees a complete command. `<date>` etc. would otherwise be
+        // taken as positional values clap may reject.
+        let argv: Vec<String> = argv
+            .iter()
+            .map(|s| {
+                if s.starts_with('<') && s.ends_with('>') {
+                    "PLACEHOLDER".to_string()
+                } else {
+                    (*s).to_string()
+                }
+            })
+            .collect();
+        match vigil::cli::Cli::try_parse_from(argv.iter().map(String::as_str)) {
+            Ok(_) => {}
+            Err(e) => failures.push((cmd.clone(), e.to_string())),
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "the following recovery-command literals do not parse via clap \
+         (this is the `vigil daemon recover` bug class):\n{}",
+        failures
+            .iter()
+            .map(|(c, e)| format!("  `{}` -> {}", c, e.lines().next().unwrap_or("")))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+#[test]
+fn every_degraded_reason_recover_command_parses() {
+    use clap::Parser;
+    use vigil::types::DegradedReason;
+
+    for variant in DegradedReason::all_variants_for_introspection() {
+        let code = variant.reason_code();
+        let argv = ["vigil", "recover", "--reason", code, "--yes"];
+        let result = vigil::cli::Cli::try_parse_from(argv);
+        assert!(
+            result.is_ok(),
+            "`vigil recover --reason {}` does not parse: {:?}",
+            code,
+            result.err()
+        );
+    }
 }

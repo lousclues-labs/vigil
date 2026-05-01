@@ -718,8 +718,53 @@ impl ControlHandler {
                     None
                 };
 
+                // Checkpoint the temp DB so its WAL/SHM sidecars are empty
+                // before we close it. Without this, the temp's -wal/-shm files
+                // can be carried into the live slot via stale on-disk state.
+                let _ = tmp_conn.pragma_update(None, "wal_checkpoint", "TRUNCATE");
                 // Close temp connection before rename
                 drop(tmp_conn);
+
+                // Close the live baseline connection BEFORE the rename so that
+                // its file descriptor no longer references the (about to be
+                // unlinked) old inode. Replace with an in-memory placeholder
+                // so the Mutex stays well-typed; the real connection is
+                // re-opened against the new file below.
+                //
+                // Without this step, SQLite's WAL/SHM sidecars belonging to
+                // the old inode survive on disk under the names
+                // `${db}-wal` / `${db}-shm`. After the rename, those stale
+                // sidecars are name-associated with the new (different) inode.
+                // The next process to open the baseline DB (the daemon's own
+                // reopen below, or `vigil check` from the CLI) loads the
+                // mismatched WAL/SHM and fails with
+                // "database disk image is malformed".
+                {
+                    let mut guard = self.baseline_conn.lock();
+                    match rusqlite::Connection::open_in_memory() {
+                        Ok(placeholder) => {
+                            let old = std::mem::replace(&mut *guard, placeholder);
+                            drop(old);
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "failed to allocate in-memory placeholder; aborting swap"
+                            );
+                            let _ = std::fs::remove_file(&tmp_path);
+                            let _ = write_event(
+                                stream,
+                                &serde_json::json!({
+                                    "event": "error",
+                                    "error": format!(
+                                        "failed to prepare baseline swap: {}", e
+                                    )
+                                }),
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
 
                 // Signal the guardian that an authorized replacement is about
                 // to happen, so it does not degrade on the inode change.
@@ -728,6 +773,14 @@ impl ControlHandler {
                         std::time::Instant::now() + crate::coordinator::BASELINE_REPLACEMENT_WINDOW;
                     shared_id.expect_baseline_replacement(deadline);
                 }
+
+                // Remove stale `-wal` / `-shm` sidecars that belonged to the
+                // old inode. Errors are non-fatal: the files may not exist
+                // (e.g. WAL mode disabled, or already checkpointed at close).
+                let live_wal = sidecar_path(db_path, "-wal");
+                let live_shm = sidecar_path(db_path, "-shm");
+                let _ = std::fs::remove_file(&live_wal);
+                let _ = std::fs::remove_file(&live_shm);
 
                 // Atomic swap: rename temp over live.
                 // This MUST happen regardless of diff outcome.
@@ -742,6 +795,12 @@ impl ControlHandler {
                     );
                     return Ok(());
                 }
+
+                // Best-effort cleanup of the temp DB's sidecars. After
+                // wal_checkpoint(TRUNCATE) + drop they should already be
+                // gone, but guard against any straggler.
+                let _ = std::fs::remove_file(sidecar_path(&tmp_path, "-wal"));
+                let _ = std::fs::remove_file(sidecar_path(&tmp_path, "-shm"));
 
                 // Reopen the daemon's baseline connection
                 {
@@ -945,6 +1004,17 @@ fn query_audit_log_status(
     }
 
     obj
+}
+
+/// Build a SQLite sidecar path (e.g. `${db}-wal`, `${db}-shm`) by appending
+/// `suffix` to the database path. Used to clean up stale sidecars before/after
+/// the atomic baseline swap so a renamed inode does not inherit the old
+/// inode's WAL/SHM contents (which would surface as
+/// "database disk image is malformed" on the next open).
+fn sidecar_path(db: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    let mut s: std::ffi::OsString = db.as_os_str().to_owned();
+    s.push(suffix);
+    std::path::PathBuf::from(s)
 }
 
 /// Read a single line from the stream, bounded to MAX_REQUEST_LINE_BYTES.

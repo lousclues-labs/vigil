@@ -77,7 +77,7 @@ The `audit.max_size_mb` cap operates independently of the retention sweep:
 - **100% of cap:** daemon enters `Degraded { reason: AuditLogFull }`, refuses
   new audit writes, high-severity audit record and desktop notification.
   Recovery: `vigil audit prune --before <date> --confirm` or
-  `vigil daemon recover --reason audit_log_full`.
+  `vigil recover --reason audit_log_full`.
 
 ## Manual pruning
 
