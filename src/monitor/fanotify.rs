@@ -1,15 +1,27 @@
 //! Fanotify-based filesystem monitor.
 //!
-//! Marks mount points with FAN_MARK_MOUNT, uses poll(2) on the fanotify fd
-//! to block until events arrive, resolves /proc/self/fd/N to a path,
-//! bloom-filter rejects unwatched paths, and forwards watched events to
-//! workers via a bounded channel. Handles dynamic mark add/remove for
-//! overlapping mounts (VIGIL-VULN-069) and kernel queue overflows
-//! (FAN_Q_OVERFLOW triggers a compensating full scan).
+//! Supports two operational modes selected by the detected `FanotifyTier`:
+//!
+//! - **Legacy (fd-based):** Marks mount points with `FAN_MARK_MOUNT`, events
+//!   carry open fds for TOCTOU-safe hashing. Falls back to a reduced event
+//!   mask when the kernel rejects `FAN_ATTRIB`/`FAN_CREATE`/`FAN_DELETE`/
+//!   `FAN_MOVED_*` under mount-mark semantics (Linux 6.18+).
+//!
+//! - **FID (file-handle based, Linux 5.9+):** Initialised with
+//!   `FAN_REPORT_DFID_NAME | FAN_REPORT_FID` and marks with
+//!   `FAN_MARK_FILESYSTEM`, which accepts the full event mask on all
+//!   current kernels. Events carry directory file handles + child names;
+//!   paths and event fds are resolved via `open_by_handle_at(2)`.
+//!
+//! Uses poll(2) on the fanotify fd to block until events arrive, bloom-filter
+//! rejects unwatched paths, and forwards watched events to workers via a
+//! bounded channel. Handles dynamic mark add/remove for overlapping mounts
+//! (VIGIL-VULN-069) and kernel queue overflows (FAN_Q_OVERFLOW triggers a
+//! compensating full scan).
 
 #![allow(unsafe_code)]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
@@ -80,6 +92,15 @@ const FAN_Q_OVERFLOW: u64 = 0x0000_4000;
 /// longer observe in real time. See `apply_fanotify_mark`.
 const FAN_MOUNT_COMPATIBLE_EVENTS: u64 = FAN_MODIFY | FAN_CLOSE_WRITE;
 
+// FID-mode constants (Linux 5.1+ / 5.9+).
+const FAN_REPORT_FID: u32 = 0x0000_0200;
+const FAN_REPORT_DFID_NAME: u32 = 0x0000_1000;
+const FAN_MARK_FILESYSTEM: u32 = 0x0000_0100;
+const FAN_NOFD: i32 = -1;
+
+const FAN_EVENT_INFO_TYPE_FID: u8 = 1;
+const FAN_EVENT_INFO_TYPE_DFID_NAME: u8 = 2;
+
 const FAN_EVENT_METADATA_LEN: usize = std::mem::size_of::<FanotifyEventMetadata>();
 
 #[repr(C)]
@@ -92,6 +113,24 @@ struct FanotifyEventMetadata {
     mask: u64,
     fd: i32,
     pid: i32,
+}
+
+/// Header for variable-length info records appended after the fixed
+/// `FanotifyEventMetadata` in FID-mode events.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct FanotifyEventInfoHeader {
+    info_type: u8,
+    pad: u8,
+    len: u16,
+}
+
+/// Fixed-size prefix of a kernel `struct file_handle`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct FileHandleHeader {
+    handle_bytes: u32,
+    handle_type: i32,
 }
 
 struct OwnedRawFd(RawFd);
@@ -134,6 +173,91 @@ impl Drop for EventFdGuard {
     }
 }
 
+/// Maps filesystem IDs (from `statfs.f_fsid`) to open mount-point fds for
+/// `open_by_handle_at` resolution in FID mode.
+type FsidMountMap = HashMap<[u8; 8], RawFd>;
+
+/// Build a map of fsid → mount fd for FID-mode handle resolution.
+///
+/// For each mount point, calls `statfs()` to get the filesystem's fsid,
+/// then opens the mount point with `O_RDONLY | O_PATH` to obtain a
+/// reference fd suitable for `open_by_handle_at`.
+#[allow(unsafe_code)]
+fn build_fsid_mount_map(mount_points: &[PathBuf]) -> FsidMountMap {
+    let mut map = FsidMountMap::new();
+    for mount in mount_points {
+        let c_path = match CString::new(mount.as_os_str().as_bytes()) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        unsafe {
+            let mut buf: libc::statfs = std::mem::zeroed();
+            if libc::statfs(c_path.as_ptr(), &mut buf) != 0 {
+                tracing::warn!(
+                    mount = %mount.display(),
+                    error = %std::io::Error::last_os_error(),
+                    "statfs failed; FID handle resolution may fail for this filesystem"
+                );
+                continue;
+            }
+            let fsid_bytes: [u8; 8] = std::mem::transmute(buf.f_fsid);
+            if map.contains_key(&fsid_bytes) {
+                continue; // already have an fd for this filesystem
+            }
+            let fd = libc::open(
+                c_path.as_ptr(),
+                libc::O_RDONLY | libc::O_PATH | libc::O_CLOEXEC,
+            );
+            if fd < 0 {
+                tracing::warn!(
+                    mount = %mount.display(),
+                    error = %std::io::Error::last_os_error(),
+                    "cannot open mount point for FID handle resolution"
+                );
+                continue;
+            }
+            map.insert(fsid_bytes, fd);
+        }
+    }
+    map
+}
+
+/// Add a mount point's filesystem to the fsid map if not already present.
+#[allow(unsafe_code)]
+fn ensure_fsid_mount_fd(mount: &std::path::Path, mount_fds: &mut FsidMountMap) {
+    let c_path = match CString::new(mount.as_os_str().as_bytes()) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    unsafe {
+        let mut buf: libc::statfs = std::mem::zeroed();
+        if libc::statfs(c_path.as_ptr(), &mut buf) != 0 {
+            return;
+        }
+        let fsid_bytes: [u8; 8] = std::mem::transmute(buf.f_fsid);
+        if mount_fds.contains_key(&fsid_bytes) {
+            return;
+        }
+        let fd = libc::open(
+            c_path.as_ptr(),
+            libc::O_RDONLY | libc::O_PATH | libc::O_CLOEXEC,
+        );
+        if fd >= 0 {
+            mount_fds.insert(fsid_bytes, fd);
+        }
+    }
+}
+
+/// Close all fds in the mount map.
+#[allow(unsafe_code)]
+fn close_fsid_mount_map(map: &FsidMountMap) {
+    for &fd in map.values() {
+        unsafe {
+            libc::close(fd);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn start(
     _config: &Config,
@@ -146,14 +270,26 @@ pub fn start(
     state: Option<Arc<RwLock<DaemonState>>>,
     scan_trigger: Option<Sender<crate::control::ScanRequest>>,
     mount_mark_rx: Option<crossbeam_channel::Receiver<MountMarkRequest>>,
+    tier: super::FanotifyTier,
 ) -> Result<crossbeam_channel::Sender<Vec<PathBuf>>> {
+    // Use FID mode when the kernel supports DFID_NAME reporting (Linux 5.9+).
+    // This allows FAN_MARK_FILESYSTEM with the full event mask, restoring
+    // real-time coverage of FAN_CREATE/FAN_DELETE/FAN_MOVED_*/FAN_ATTRIB
+    // that newer kernels reject under FAN_MARK_MOUNT.
+    let fid_mode = matches!(tier, super::FanotifyTier::FidDfidName);
+
     // SAFETY: fanotify_init returns a new fd or -1. We check for < 0 below.
     // FAN_CLOEXEC prevents fd leak across exec; FAN_NONBLOCK makes read()
     // return EAGAIN instead of blocking the monitor thread.
+    let init_flags = if fid_mode {
+        FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_NONBLOCK | FAN_REPORT_DFID_NAME | FAN_REPORT_FID
+    } else {
+        FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_NONBLOCK
+    };
     let fan_fd = unsafe {
         libc::syscall(
             libc::SYS_fanotify_init,
-            FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_NONBLOCK,
+            init_flags,
             libc::O_RDONLY | libc::O_LARGEFILE,
         )
     };
@@ -178,7 +314,7 @@ pub fn start(
     }
 
     let mount_points = resolve_mount_points(watch_paths);
-    tracing::info!(mounts = ?mount_points, "fanotify watching mount points");
+    tracing::info!(mounts = ?mount_points, fid_mode, "fanotify watching mount points");
     let mask = FAN_MODIFY
         | FAN_CLOSE_WRITE
         | FAN_ATTRIB
@@ -188,7 +324,7 @@ pub fn start(
         | FAN_MOVED_TO;
 
     for mount in &mount_points {
-        match apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD) {
+        match apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD, fid_mode) {
             Ok(MarkOutcome::Full) => {}
             Ok(MarkOutcome::Reduced) => {
                 tracing::warn!(
@@ -255,6 +391,13 @@ pub fn start(
                 })
                 .ok();
 
+            // In FID mode, build the fsid→mount-fd map for open_by_handle_at.
+            let mut mount_fds = if fid_mode {
+                build_fsid_mount_map(&mount_points)
+            } else {
+                FsidMountMap::new()
+            };
+
             let result = crate::supervised_thread::run_supervised(
                 || {
                     run_event_loop(
@@ -271,6 +414,8 @@ pub fn start(
                         &scan_trigger,
                         mask,
                         &mount_points,
+                        fid_mode,
+                        &mut mount_fds,
                     )
                 },
                 3, // max restarts
@@ -301,7 +446,8 @@ pub fn start(
                 }
             }
 
-            // Close the eventfd and join the waker thread.
+            // Close the eventfd, FID mount fds, and join the waker thread.
+            close_fsid_mount_map(&mount_fds);
             // SAFETY: shutdown_efd is a valid fd owned by this scope.
             unsafe {
                 libc::close(shutdown_efd);
@@ -333,6 +479,8 @@ fn run_event_loop(
     scan_trigger: &Option<Sender<crate::control::ScanRequest>>,
     mask: u64,
     initial_mounts: &[PathBuf],
+    fid_mode: bool,
+    mount_fds: &mut FsidMountMap,
 ) -> crate::supervised_thread::ExitReason {
     let mut buf = Box::new([0u8; 262_144]);
     let mut current_bloom = bloom.clone();
@@ -349,7 +497,10 @@ fn run_event_loop(
             current_bloom = Arc::new(BloomFilter::from_watch_paths(&new_paths));
 
             for mount in new_mounts.difference(&current_mounts) {
-                match apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD) {
+                if fid_mode {
+                    ensure_fsid_mount_fd(mount, mount_fds);
+                }
+                match apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_ADD, fid_mode) {
                     Ok(MarkOutcome::Full) => {}
                     Ok(MarkOutcome::Reduced) => {
                         tracing::warn!(
@@ -385,7 +536,8 @@ fn run_event_loop(
                 }
             }
             for mount in current_mounts.difference(&new_mounts) {
-                if let Err(e) = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_REMOVE) {
+                if let Err(e) = apply_fanotify_mark(fan_fd, mount, mask, FAN_MARK_REMOVE, fid_mode)
+                {
                     tracing::warn!(
                         mount = %mount.display(),
                         error = %e,
@@ -407,7 +559,10 @@ fn run_event_loop(
                     MountMarkOp::Add => FAN_MARK_ADD,
                     MountMarkOp::Remove => FAN_MARK_REMOVE,
                 };
-                match apply_fanotify_mark(fan_fd, &req.mount, mask, op_flag) {
+                if fid_mode && matches!(req.op, MountMarkOp::Add) {
+                    ensure_fsid_mount_fd(&req.mount, mount_fds);
+                }
+                match apply_fanotify_mark(fan_fd, &req.mount, mask, op_flag, fid_mode) {
                     Ok(outcome) => {
                         if matches!(outcome, MarkOutcome::Reduced) {
                             tracing::warn!(
@@ -695,6 +850,78 @@ fn run_event_loop(
                         // else: not watched. fd_guard drops and closes.
                     }
                     // else: read_link failed. fd_guard drops and closes.
+                } else if fid_mode && event.fd == FAN_NOFD {
+                    // FID-mode path: resolve via file-handle info records
+                    // instead of the legacy event fd.
+                    let event_slice = &buf[offset..offset + len];
+                    if let Some((raw_path, event_fd)) =
+                        resolve_fid_event(event_slice, len, mount_fds, metrics)
+                    {
+                        let (path, was_deleted) = strip_deleted_suffix(&raw_path);
+                        if was_deleted {
+                            tracing::info!(
+                                stripped = %path.display(),
+                                "resolved deleted-file path from FID fanotify event"
+                            );
+                        }
+
+                        metrics.bloom_checks_total.fetch_add(1, Ordering::Relaxed);
+                        if !current_bloom.might_contain_prefix_of(&path) {
+                            metrics.bloom_rejects_total.fetch_add(1, Ordering::Relaxed);
+                            offset += len;
+                            continue;
+                        }
+
+                        let idx = watch_index.load();
+                        if idx.is_watched(&path) {
+                            let process = if event.pid > 0 {
+                                let exe = std::fs::read_link(format!("/proc/{}/exe", event.pid))
+                                    .ok()
+                                    .map(|p| p.to_string_lossy().to_string());
+                                Some(ProcessAttribution {
+                                    pid: event.pid as u32,
+                                    exe,
+                                })
+                            } else {
+                                None
+                            };
+
+                            let event_type_resolved = if was_deleted {
+                                Some(FsEventType::Delete)
+                            } else {
+                                mask_to_event_type(event.mask)
+                            };
+
+                            if let Some(event_type) = event_type_resolved {
+                                metrics.events_received.fetch_add(1, Ordering::Relaxed);
+
+                                let fs_event = FsEvent {
+                                    path: Arc::new(path),
+                                    event_type,
+                                    timestamp: Utc::now(),
+                                    event_fd,
+                                    process,
+                                    bloom_generation: 0,
+                                };
+
+                                match event_tx.send_timeout(fs_event, Duration::from_secs(1)) {
+                                    Ok(()) => {}
+                                    Err(crossbeam_channel::SendTimeoutError::Timeout(_)) => {
+                                        metrics.events_dropped.fetch_add(1, Ordering::Relaxed);
+                                        tracing::warn!(
+                                            "FID fanotify event channel full for 1s; dropping"
+                                        );
+                                    }
+                                    Err(crossbeam_channel::SendTimeoutError::Disconnected(_)) => {
+                                        tracing::error!("event channel disconnected");
+                                        return crate::supervised_thread::ExitReason::Fatal(
+                                            "event channel disconnected".into(),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 offset += len;
@@ -731,8 +958,10 @@ pub(crate) enum MarkOutcome {
     /// retried with `FAN_MOUNT_COMPATIBLE_EVENTS` and that mask was
     /// accepted. Real-time coverage of attribute changes, file creations,
     /// deletions, and renames is degraded for this mount until the daemon
-    /// is rewritten to use `FAN_MARK_FILESYSTEM` + `FAN_REPORT_DFID_NAME`.
-    /// Scheduled scans remain a backstop for these event classes.
+    /// is rewritten to use `FAN_MARK_FILESYSTEM` + `FAN_REPORT_DFID_NAME`,
+    /// which is now done automatically when the kernel supports it (tier
+    /// `FidDfidName`). Scheduled scans remain a backstop for these event
+    /// classes when running in legacy mode.
     Reduced,
 }
 
@@ -741,17 +970,26 @@ fn apply_fanotify_mark(
     mount: &std::path::Path,
     mask: u64,
     op: u32,
+    fid_mode: bool,
 ) -> Result<MarkOutcome> {
     let c_path = CString::new(mount.as_os_str().as_bytes())
         .map_err(|_| VigilError::Fanotify(format!("invalid path: {}", mount.display())))?;
 
+    // In FID mode, use FAN_MARK_FILESYSTEM which supports the full event
+    // mask. In legacy mode, use FAN_MARK_MOUNT with EINVAL fallback.
+    let mark_type = if fid_mode {
+        FAN_MARK_FILESYSTEM
+    } else {
+        FAN_MARK_MOUNT
+    };
+
     // SAFETY: fanotify_mark syscall with a valid fd, a valid NUL-terminated
-    // C string, and FAN_MARK_MOUNT semantics. Return value checked below.
+    // C string, and the selected mark type. Return value checked below.
     let ret = unsafe {
         libc::syscall(
             libc::SYS_fanotify_mark,
             fan_fd,
-            op | FAN_MARK_MOUNT,
+            op | mark_type,
             mask,
             libc::AT_FDCWD,
             c_path.as_ptr(),
@@ -763,6 +1001,16 @@ fn apply_fanotify_mark(
     }
 
     let err = std::io::Error::last_os_error();
+
+    // In FID mode, EINVAL fallback is not needed — FAN_MARK_FILESYSTEM
+    // accepts the full mask. Fail immediately on any error.
+    if fid_mode {
+        return Err(VigilError::Fanotify(format!(
+            "fanotify_mark (FID/filesystem) failed for {}: {}",
+            mount.display(),
+            err
+        )));
+    }
 
     // EINVAL with FAN_MARK_MOUNT typically means the requested event mask
     // includes bits that newer kernels refuse for mount-mark semantics
@@ -827,6 +1075,230 @@ fn mask_to_event_type(mask: u64) -> Option<FsEventType> {
     } else {
         None
     }
+}
+
+/// Resolve path and optionally an event fd from FID-mode info records.
+///
+/// Parses the variable-length info records appended after the fixed
+/// `FanotifyEventMetadata` in FID-mode events:
+///
+/// - `DFID_NAME`: parent directory handle + child filename
+///   → `open_by_handle_at` + readlink for parent, then append child name.
+/// - `FID`: file handle for the target itself
+///   → `open_by_handle_at` → event fd for TOCTOU-safe hashing by the worker.
+///
+/// Returns `(path, Option<OwnedFd>)` on success, or `None` if the event
+/// cannot be resolved (stale handle, unknown fsid, etc.).
+#[allow(unsafe_code)]
+fn resolve_fid_event(
+    event_buf: &[u8],
+    event_len: usize,
+    mount_fds: &FsidMountMap,
+    metrics: &Arc<Metrics>,
+) -> Option<(PathBuf, Option<OwnedFd>)> {
+    let info_hdr_size = std::mem::size_of::<FanotifyEventInfoHeader>();
+    let fsid_size: usize = 8; // sizeof(__kernel_fsid_t)
+    let fh_hdr_size = std::mem::size_of::<FileHandleHeader>();
+
+    let mut dir_path: Option<PathBuf> = None;
+    let mut child_name: Option<String> = None;
+    let mut file_fd: Option<OwnedFd> = None;
+
+    let mut pos = FAN_EVENT_METADATA_LEN;
+    while pos + info_hdr_size <= event_len {
+        // SAFETY: bounds checked above; read_unaligned for potentially
+        // unaligned buffer offsets.
+        let hdr: FanotifyEventInfoHeader = unsafe {
+            std::ptr::read_unaligned(event_buf.as_ptr().add(pos) as *const FanotifyEventInfoHeader)
+        };
+
+        let record_len = hdr.len as usize;
+        if record_len < info_hdr_size || pos + record_len > event_len {
+            break;
+        }
+
+        let data_start = pos + info_hdr_size;
+
+        match hdr.info_type {
+            FAN_EVENT_INFO_TYPE_DFID_NAME => {
+                // Layout: fsid(8) + file_handle_header(8) + handle_data(var) + name(NUL, padded)
+                if data_start + fsid_size + fh_hdr_size > pos + record_len {
+                    pos += record_len;
+                    continue;
+                }
+
+                let fsid_start = data_start;
+                let mut fsid_bytes = [0u8; 8];
+                fsid_bytes.copy_from_slice(&event_buf[fsid_start..fsid_start + fsid_size]);
+
+                let fh_start = fsid_start + fsid_size;
+                let fh_hdr: FileHandleHeader = unsafe {
+                    std::ptr::read_unaligned(
+                        event_buf.as_ptr().add(fh_start) as *const FileHandleHeader
+                    )
+                };
+
+                let handle_data_start = fh_start + fh_hdr_size;
+                let handle_data_end = handle_data_start + fh_hdr.handle_bytes as usize;
+                if handle_data_end > pos + record_len {
+                    pos += record_len;
+                    continue;
+                }
+
+                let mount_fd = match mount_fds.get(&fsid_bytes) {
+                    Some(&fd) => fd,
+                    None => {
+                        tracing::debug!(
+                            fsid = ?fsid_bytes,
+                            "no mount fd for fsid; cannot resolve FID event"
+                        );
+                        pos += record_len;
+                        continue;
+                    }
+                };
+
+                // Build a file_handle buffer for open_by_handle_at.
+                let total_handle_size = fh_hdr_size + fh_hdr.handle_bytes as usize;
+                let mut handle_buf = vec![0u8; total_handle_size];
+                handle_buf[..fh_hdr_size]
+                    .copy_from_slice(&event_buf[fh_start..fh_start + fh_hdr_size]);
+                handle_buf[fh_hdr_size..]
+                    .copy_from_slice(&event_buf[handle_data_start..handle_data_end]);
+
+                // SAFETY: open_by_handle_at with valid mount fd, valid handle
+                // buffer, and O_PATH (no content access). Return checked.
+                let dir_fd = unsafe {
+                    libc::syscall(
+                        libc::SYS_open_by_handle_at,
+                        mount_fd,
+                        handle_buf.as_ptr(),
+                        libc::O_RDONLY | libc::O_PATH,
+                    )
+                } as i32;
+
+                if dir_fd < 0 {
+                    tracing::debug!(
+                        error = %std::io::Error::last_os_error(),
+                        "open_by_handle_at failed for directory handle"
+                    );
+                    metrics
+                        .fanotify_open_by_handle_at_failures
+                        .fetch_add(1, Ordering::Relaxed);
+                    pos += record_len;
+                    continue;
+                }
+
+                let link = format!("/proc/self/fd/{}", dir_fd);
+                let resolved = std::fs::read_link(&link);
+                // SAFETY: dir_fd is valid (>= 0) and owned by this scope.
+                unsafe {
+                    libc::close(dir_fd);
+                }
+
+                let resolved_path = match resolved {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::debug!(error = %e, "readlink failed for dir fd");
+                        pos += record_len;
+                        continue;
+                    }
+                };
+
+                dir_path = Some(resolved_path);
+
+                // Extract child name from bytes after the file handle.
+                if handle_data_end < pos + record_len {
+                    let name_bytes = &event_buf[handle_data_end..pos + record_len];
+                    let name_end = name_bytes
+                        .iter()
+                        .position(|&b| b == 0)
+                        .unwrap_or(name_bytes.len());
+                    if name_end > 0 {
+                        let name = String::from_utf8_lossy(&name_bytes[..name_end]).into_owned();
+                        if name != "." {
+                            child_name = Some(name);
+                        }
+                    }
+                }
+            }
+            FAN_EVENT_INFO_TYPE_FID => {
+                // Layout: fsid(8) + file_handle_header(8) + handle_data(var)
+                if data_start + fsid_size + fh_hdr_size > pos + record_len {
+                    pos += record_len;
+                    continue;
+                }
+
+                let fsid_start = data_start;
+                let mut fsid_bytes = [0u8; 8];
+                fsid_bytes.copy_from_slice(&event_buf[fsid_start..fsid_start + fsid_size]);
+
+                let fh_start = fsid_start + fsid_size;
+                let fh_hdr: FileHandleHeader = unsafe {
+                    std::ptr::read_unaligned(
+                        event_buf.as_ptr().add(fh_start) as *const FileHandleHeader
+                    )
+                };
+
+                let handle_data_start = fh_start + fh_hdr_size;
+                let handle_data_end = handle_data_start + fh_hdr.handle_bytes as usize;
+                if handle_data_end > pos + record_len {
+                    pos += record_len;
+                    continue;
+                }
+
+                let mount_fd = match mount_fds.get(&fsid_bytes) {
+                    Some(&fd) => fd,
+                    None => {
+                        pos += record_len;
+                        continue;
+                    }
+                };
+
+                // Build file_handle and try to open the file for hashing.
+                let total_handle_size = fh_hdr_size + fh_hdr.handle_bytes as usize;
+                let mut handle_buf = vec![0u8; total_handle_size];
+                handle_buf[..fh_hdr_size]
+                    .copy_from_slice(&event_buf[fh_start..fh_start + fh_hdr_size]);
+                handle_buf[fh_hdr_size..]
+                    .copy_from_slice(&event_buf[handle_data_start..handle_data_end]);
+
+                // SAFETY: open_by_handle_at with valid mount fd and handle.
+                // O_RDONLY for content hashing. Return checked.
+                let fd = unsafe {
+                    libc::syscall(
+                        libc::SYS_open_by_handle_at,
+                        mount_fd,
+                        handle_buf.as_ptr(),
+                        libc::O_RDONLY,
+                    )
+                } as i32;
+
+                if fd >= 0 {
+                    // SAFETY: fd is valid (>= 0) and uniquely owned.
+                    file_fd = Some(unsafe { OwnedFd::from_raw_fd(fd) });
+                } else {
+                    // File may have been deleted; not fatal for the event.
+                    metrics
+                        .fanotify_open_by_handle_at_failures
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            _ => {
+                // Unknown info type; skip.
+            }
+        }
+
+        pos += record_len;
+    }
+
+    // Construct the final path.
+    let path = match (dir_path, child_name) {
+        (Some(dir), Some(name)) => dir.join(name),
+        (Some(dir), None) => dir, // directory event (name was ".")
+        _ => return None,
+    };
+
+    Some((path, file_fd))
 }
 
 fn resolve_mount_points(paths: &[PathBuf]) -> Vec<PathBuf> {

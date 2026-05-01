@@ -35,13 +35,13 @@ pub struct SupervisorResult {
 ///
 /// `restart_counter` is incremented on each restart for metrics.
 pub fn run_supervised<F>(
-    body_fn: F,
+    mut body_fn: F,
     max_restarts: u32,
     restart_delay: Duration,
     restart_counter: &Arc<AtomicU64>,
 ) -> SupervisorResult
 where
-    F: Fn() -> ExitReason,
+    F: FnMut() -> ExitReason,
 {
     let mut consecutive_failures = 0u32;
 

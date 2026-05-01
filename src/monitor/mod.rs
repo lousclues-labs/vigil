@@ -245,6 +245,7 @@ fn start_monitor_inner(
                 state,
                 scan_trigger,
                 Some(mount_mark_rx),
+                tier,
             ) {
                 Ok(reconfigure_tx) => {
                     return Ok(MonitorHandle {

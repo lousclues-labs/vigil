@@ -2,6 +2,42 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.9.0] - 2026-05-01
+
+### Added — FID-mode fanotify: full real-time coverage on Linux 5.9+
+
+When the kernel supports `FAN_REPORT_DFID_NAME | FAN_REPORT_FID`
+(Linux 5.9+, detected automatically via `FanotifyTier::FidDfidName`),
+the daemon now initialises its fanotify group with FID report flags
+and marks filesystems with `FAN_MARK_FILESYSTEM` instead of
+`FAN_MARK_MOUNT`.
+
+This eliminates the v1.8.3 degraded-coverage fallback on kernels that
+reject `FAN_ATTRIB | FAN_CREATE | FAN_DELETE | FAN_MOVED_FROM |
+FAN_MOVED_TO` under mount-mark semantics. Real-time monitoring of
+file creates, deletes, renames, and attribute changes is restored
+without relying on scheduled-scan backstops.
+
+**Key changes:**
+
+- `fanotify_init` uses `FAN_REPORT_DFID_NAME | FAN_REPORT_FID` when
+  the tier probe succeeds for `FidDfidName`.
+- `apply_fanotify_mark` uses `FAN_MARK_FILESYSTEM` in FID mode; the
+  `EINVAL` fallback path remains for legacy-mode kernels.
+- New `resolve_fid_event` function parses FID info records
+  (`FAN_EVENT_INFO_TYPE_DFID_NAME`, `FAN_EVENT_INFO_TYPE_FID`),
+  resolves paths via `open_by_handle_at(2)`, and provides an event fd
+  for TOCTOU-safe hashing by the worker.
+- `FsidMountMap` maps filesystem IDs to open mount-point fds for
+  `open_by_handle_at` resolution; built at startup and extended
+  dynamically during config reload and overlapping-mount handling.
+- `run_supervised` widened from `Fn` to `FnMut` to support mutable
+  mount-fd state across supervisor restarts.
+
+**Backward compatibility:** Kernels without FID support (< 5.9, or
+`fanotify_tier = "legacy_fd"` in config) continue using the existing
+mount-mark path with `EINVAL` fallback, unchanged from v1.8.3.
+
 ## [1.8.3] - 2026-05-01
 
 ### Fixed — Critical: fanotify_mark rejected by current Linux kernels
