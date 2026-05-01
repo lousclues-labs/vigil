@@ -174,6 +174,29 @@ regression tests in `tests/doctor_output_tests.rs`:
 These tests would have caught the `vigil daemon recover` bug at the
 moment it was introduced.
 
+### Tests — hook-isolation suite no longer pollutes the system journal
+
+The four hook-isolation tests in `tests/hook_failure_isolation_tests.rs`
+(`pacman_post_hook_exits_zero_when_vigil_missing`,
+`pacman_post_hook_exits_zero_when_refresh_fails`,
+`apt_hook_exits_zero_when_vigil_missing`,
+`pacman_pre_hook_exits_zero_when_vigil_missing`) forked `/bin/sh`
+scripts that invoked real `logger -t vigil-pacman "..." 2>/dev/null`.
+`logger` writes to syslog, **not stderr**, so the redirect was a
+no-op — every `cargo test` run appended fake hook-failure entries to
+the host's system journal under the `vigil-pacman` and `vigil-apt`
+tags. `vigil doctor` correctly surfaced the most recent test
+execution as a real failed pacman trigger ("Hooks installed; last
+trigger ... failed"), which is the principle working as designed but
+created persistent false-positive warnings on developer workstations.
+
+The test contract is exit-code 0; the `logger` invocation was
+incidental noise. Replaced with `:` (the shell no-op builtin)
+preserving the original message text in a comment-style argument so
+test intent stays visible. The real hook source files in
+`hooks/pacman/` and `hooks/apt/` are unchanged — they continue to
+emit `logger` entries on real package transactions.
+
 ### Compatibility
 
 No schema changes. No public API breaks beyond the additive
