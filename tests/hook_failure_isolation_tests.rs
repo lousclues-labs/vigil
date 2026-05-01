@@ -8,10 +8,13 @@ use std::process::Command;
 fn pacman_post_hook_exits_zero_when_vigil_missing() {
     // The hook checks for /usr/bin/vigil, but we test the shell logic
     // with a PATH that doesn't include vigil.
+    // NOTE: `logger` is replaced by `:` (no-op) in test scripts so the test
+    // suite does not pollute the system journal with `vigil-pacman` tags that
+    // would otherwise be picked up by `vigil doctor` as recent hook failures.
     let hook_script = r#"
         VIGIL=/nonexistent/vigil
         if [ ! -x "$VIGIL" ]; then
-            logger -t vigil-pacman "vigil binary not found at $VIGIL; skipping refresh" 2>/dev/null || true
+            : "would log: vigil binary not found at $VIGIL; skipping refresh"
             exit 0
         fi
         $VIGIL baseline refresh --quiet 2>/dev/null
@@ -55,7 +58,7 @@ fn pacman_post_hook_exits_zero_when_refresh_fails() {
         if "$VIGIL" baseline refresh --quiet 2>/dev/null; then
             "$VIGIL" maintenance exit --quiet 2>/dev/null
         else
-            logger -t vigil-pacman "baseline refresh failed; investigate with: vigil doctor" 2>/dev/null || true
+            : "would log: baseline refresh failed; investigate with: vigil doctor"
             "$VIGIL" maintenance exit --quiet 2>/dev/null
         fi
         exit 0
@@ -83,13 +86,13 @@ fn apt_hook_exits_zero_when_vigil_missing() {
     let hook_script = r#"
         VIGIL=/nonexistent/vigil
         if [ ! -x "$VIGIL" ]; then
-            logger -t vigil-apt "vigil binary not found; skipping refresh" 2>/dev/null || true
+            : "would log: vigil binary not found; skipping refresh"
             true
         elif "$VIGIL" baseline refresh --quiet 2>/dev/null; then
             "$VIGIL" maintenance exit --quiet 2>/dev/null
             true
         else
-            logger -t vigil-apt "baseline refresh failed; investigate with: vigil doctor" 2>/dev/null || true
+            : "would log: baseline refresh failed; investigate with: vigil doctor"
             "$VIGIL" maintenance exit --quiet 2>/dev/null
             true
         fi
