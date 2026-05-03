@@ -184,6 +184,22 @@ test: add race regression for delete-between-open-and-hash
 - do not reformat unrelated files
 - keep behavior deterministic
 
+### Architectural Diagrams
+
+Vigil's architectural diagrams in `docs/diagrams/` cover
+structural decisions that change rarely. If your PR
+changes one of those structures (adds a new long-lived
+thread, changes the WAL format, adds a new persistent
+file, changes the trust model), update the corresponding
+diagram in the same PR.
+
+If your PR changes implementation details (function
+internals, call sequences, recovery mechanics), update
+the relevant code comments. The diagrams should NOT need
+updating for implementation changes; if they do, the
+diagram was drawn at too fine a grain and should be
+revised.
+
 ---
 
 ## Testing Requirements

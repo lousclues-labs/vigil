@@ -2,6 +2,42 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+## [1.10.0] - 2026-05-02
+
+### Added — Architectural diagrams (`docs/diagrams/`)
+
+Twelve hand-drawn ASCII diagrams covering vigil's structural decisions:
+system overview, module dependency graph, thread topology, WAL format,
+WAL consumers, audit chain, baseline schema, event flow, daemon state
+machine, coordinator split, trust boundaries, and control socket
+protocol. Each diagram captures an architectural choice that has
+remained stable across the 1.x series.
+
+Navigable index at `docs/diagrams/README.md`, grouped by category
+(system & structure, persistence & chain, operational shape,
+boundaries).
+
+### Changed — Principle XI test revised
+
+The previous Principle XI test ("explain the architecture in a single
+ASCII diagram that fits on one terminal screen") produced no diagrams.
+The original revision ("diagram every operational flow") would have
+produced 30+ diagrams that aged badly because they depicted
+implementation details that change naturally as the code evolves.
+
+The new test asks for the durable set: a small collection of
+architectural diagrams in `docs/diagrams/` covering structural
+decisions that don't change release-to-release. Implementation
+details are documented in code comments next to the code they
+describe, where they move naturally as the code moves.
+
+### Added — Diagram discipline in CONTRIBUTING.md
+
+Contributors update architectural diagrams only when a PR changes
+architecture (new threads, WAL format changes, new persistent files,
+trust model changes). Implementation-detail changes update code
+comments, not diagrams.
+
 ## [1.9.0] - 2026-05-01
 
 ### Added — FID-mode fanotify: full real-time coverage on Linux 5.1+

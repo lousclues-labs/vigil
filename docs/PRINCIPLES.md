@@ -259,8 +259,20 @@ That's it. When deciding whether to add a feature, ask:
 
 If it's a second job, it's a second tool. Or it doesn't exist.
 
-**The test:** Can you explain Vigil Baseline's entire architecture in a single ASCII
-diagram that fits on one terminal screen? If not, simplify.
+**The test:** Vigil's architecture is documented in
+`docs/diagrams/` as a small set of ASCII diagrams covering
+the structural decisions that don't change release-to-release:
+module layout, thread topology, on-disk formats, the audit
+chain shape, trust boundaries, and the high-level event flow.
+Implementation details (specific function call sequences,
+internal state machines, recovery mechanics) are documented
+in code comments next to the code they describe, where they
+move naturally as the code moves.
+
+A flow that is too detailed to diagram architecturally is a
+flow whose details belong in code comments. A diagram that
+needs updating every release is a diagram drawn at the wrong
+altitude.
 
 ## XII. The Baseline Is Sacred
 
