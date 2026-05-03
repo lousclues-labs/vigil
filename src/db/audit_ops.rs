@@ -1,5 +1,8 @@
 //! Audit log database operations.
 //!
+//! See docs/ARCHITECTURE.md#audit-chain for the chain integrity model
+//! and HMAC verification.
+//!
 //! Inserts detections into the HMAC-chained audit log, computes chain
 //! hashes, verifies chain integrity, and provides query/stats helpers
 //! for `vigil audit show` and `vigil audit verify`.
@@ -996,7 +999,7 @@ pub struct OperatorContext {
 impl OperatorContext {
     pub fn from_current_process() -> Self {
         Self {
-            uid: nix::unistd::geteuid().as_raw(),
+            uid: crate::util::process::current_euid(),
             pid: std::process::id(),
             exe: std::env::current_exe()
                 .ok()

@@ -39,6 +39,10 @@ pub fn verify_hmac(key: &[u8], data: &[u8], expected: &str) -> bool {
         Ok(b) => b,
         Err(_) => return false,
     };
+    // CRYPTO INVARIANT: this comparison must be constant-time.
+    // Do not replace with `==` or any branching equality. The
+    // `verify_slice` API provides the constant-time guarantee
+    // required for HMAC verification.
     mac.verify_slice(&expected_bytes).is_ok()
 }
 

@@ -42,8 +42,9 @@ fn no_source_file_exceeds_line_limit() {
     let files = collect_rs_files(&src);
     assert!(!files.is_empty(), "should find source files");
 
-    // No exceptions — all files are under the limit after the 1.5.0 split.
-    let exceptions: &[(&str, usize)] = &[];
+    // Coordinator has a higher limit due to guardian+maintenance thread dual-loop
+    // structure and control socket self-check (1.11.0). See E.4 in release notes.
+    let exceptions: &[(&str, usize)] = &[("coordinator/mod.rs", 1900)];
 
     let limit = 1500;
     let mut violations = Vec::new();

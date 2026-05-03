@@ -209,12 +209,21 @@ fn pacman_post_hook_has_one_logger_per_failure_branch() {
     );
 }
 
+/// INVARIANT: every package manager hook vigil ships must loudly escalate
+/// (via logger and, when available, notify-send) when vigild is active and
+/// the vigil binary is missing from the expected install path. Silent
+/// exit-0 in this condition is operator-hostile.
+/// CATEGORY: principle
+/// SEE: docs/PRINCIPLES.md (Hooks Must Never Block, but Must Always Be Loud)
 #[test]
 fn apt_hook_has_one_logger_per_failure_branch() {
     let hook =
         std::fs::read_to_string("hooks/apt/99vigil").expect("hook source must exist in repo");
 
-    // The Post-Invoke line contains the shell logic.
+    // The Post-Invoke line contains the shell logic. Parity with pacman:
+    //   1. binary missing AND vigild active (daemon.err -- operator alarm)
+    //   2. binary missing AND vigild not active (info -- expected during install)
+    //   3. baseline refresh failed (daemon.err)
     let post_line = hook
         .lines()
         .find(|l| l.contains("Post-Invoke"))
@@ -222,9 +231,17 @@ fn apt_hook_has_one_logger_per_failure_branch() {
 
     let logger_count = post_line.matches("logger ").count();
     assert!(
-        logger_count <= 2,
-        "hook should have at most 2 logger calls (one per failure branch), found {}",
+        logger_count <= 3,
+        "hook should have at most 3 logger calls (one per failure branch), found {}",
         logger_count
+    );
+
+    // Critical failure branches must use daemon.err priority, not plain logger.
+    let daemon_err_count = post_line.matches("logger -p daemon.err").count();
+    assert!(
+        daemon_err_count >= 2,
+        "apt hook should escalate critical failures via 'logger -p daemon.err' (found {})",
+        daemon_err_count
     );
 }
 

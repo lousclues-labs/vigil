@@ -27,6 +27,23 @@ pub fn random_bytes(n: usize) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Read `n` bytes from the kernel CSPRNG with an all-zeros defense.
+///
+/// Returns Err if the kernel returns all zeros (defense against a
+/// catastrophically-broken CSPRNG; the probability of a false positive
+/// is 2^(-8n) for an n-byte read). All consumers requiring cryptographic
+/// randomness should prefer this over `random_bytes()`.
+pub fn secure_bytes(n: usize) -> Result<Vec<u8>> {
+    let buf = random_bytes(n)?;
+    if buf.iter().all(|&b| b == 0) {
+        return Err(VigilError::Daemon(
+            "getrandom returned all zeros; refusing to use output from potentially broken CSPRNG"
+                .to_string(),
+        ));
+    }
+    Ok(buf)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

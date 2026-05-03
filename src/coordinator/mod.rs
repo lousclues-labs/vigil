@@ -1,5 +1,8 @@
 //! Coordinator thread -- periodic maintenance for a running daemon.
 //!
+//! See docs/ARCHITECTURE.md#coordinator for the thread topology and
+//! guardian/maintenance split.
+//!
 //! Two loops: `vigil-guardian` (1s cadence) writes `guardian.json` and
 //! handles watchdog, backpressure, and identity checks. `vigil-maintenance`
 //! (60s cadence) writes `state.json`/`metrics.json`/`health.json`, checks
@@ -264,9 +267,10 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
     let g_shared_identity = cfg.shared_baseline_identity.clone();
     let g_db_path = coordinator.config.load().daemon.db_path.clone();
     let g_runtime_dir = coordinator.config.load().daemon.runtime_dir.clone();
+    let g_control_socket = coordinator.config.load().daemon.control_socket.clone();
 
     // Spawn guardian thread (1-second cadence): identity checks, backpressure,
-    // watchdog, state snapshot. Fast. Never blocks.
+    // watchdog, control socket self-check, state snapshot. Fast. Never blocks.
     let guardian_handle = std::thread::Builder::new()
         .name("vigil-guardian".into())
         .spawn(move || {
@@ -321,6 +325,49 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
                         if matches!(reason, DegradedReason::EventBackpressure) {
                             tracing::info!("backpressure resolved; returning to healthy state");
                             *s = DaemonState::Healthy;
+                        }
+                    }
+                }
+
+                // Control socket ownership/permission self-check.
+                if !g_control_socket.as_os_str().is_empty() && g_control_socket.exists() {
+                    match check_control_socket_ownership(&g_control_socket) {
+                        ControlSocketStatus::Ok => {
+                            // Self-clear if previously degraded for this reason.
+                            let mut s = g_state.write();
+                            if let DaemonState::Degraded { reason, .. } = &*s {
+                                if matches!(reason, DegradedReason::ControlSocketDrift { .. }) {
+                                    tracing::info!("control socket drift resolved; returning to healthy state");
+                                    *s = DaemonState::Healthy;
+                                }
+                            }
+                        }
+                        ControlSocketStatus::OwnershipDrift { .. } => {
+                            let mut s = g_state.write();
+                            if matches!(*s, DaemonState::Healthy) {
+                                tracing::warn!("control socket ownership drift detected");
+                                *s = DaemonState::Degraded {
+                                    reason: DegradedReason::ControlSocketDrift {
+                                        kind: "ownership_drift".to_string(),
+                                    },
+                                    since: Utc::now(),
+                                };
+                            }
+                        }
+                        ControlSocketStatus::PermissionDrift { .. } => {
+                            let mut s = g_state.write();
+                            if matches!(*s, DaemonState::Healthy) {
+                                tracing::warn!("control socket permission drift detected");
+                                *s = DaemonState::Degraded {
+                                    reason: DegradedReason::ControlSocketDrift {
+                                        kind: "permission_drift".to_string(),
+                                    },
+                                    since: Utc::now(),
+                                };
+                            }
+                        }
+                        ControlSocketStatus::Inaccessible(_) => {
+                            // Transient errors (e.g. ENOENT race) — don't degrade.
                         }
                     }
                 }
@@ -1528,6 +1575,42 @@ fn write_state_snapshot(
 
     atomic_write(&path, &serde_json::to_vec_pretty(&value)?)?;
     Ok(())
+}
+
+/// Control socket health status for guardian self-check.
+enum ControlSocketStatus {
+    Ok,
+    OwnershipDrift { _observed_uid: u32 },
+    PermissionDrift { _observed_mode: u32 },
+    Inaccessible(#[allow(dead_code)] std::io::Error),
+}
+
+/// Check whether the control socket's ownership and permissions match
+/// expectations. One stat call per tick — negligible cost.
+#[cfg(unix)]
+fn check_control_socket_ownership(path: &std::path::Path) -> ControlSocketStatus {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    match std::fs::metadata(path) {
+        Ok(meta) => {
+            let uid = meta.uid();
+            let mode = meta.permissions().mode() & 0o777;
+            let our_uid = crate::util::process::current_euid();
+            if uid != our_uid {
+                ControlSocketStatus::OwnershipDrift { _observed_uid: uid }
+            } else if mode != 0o600 && mode != 0o660 {
+                ControlSocketStatus::PermissionDrift { _observed_mode: mode }
+            } else {
+                ControlSocketStatus::Ok
+            }
+        }
+        Err(e) => ControlSocketStatus::Inaccessible(e),
+    }
+}
+
+#[cfg(not(unix))]
+fn check_control_socket_ownership(_path: &std::path::Path) -> ControlSocketStatus {
+    ControlSocketStatus::Ok
 }
 
 /// Write guardian.json (1Hz cadence, guardian thread only).

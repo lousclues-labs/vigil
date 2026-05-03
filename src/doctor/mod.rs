@@ -4,6 +4,7 @@
 pub mod acknowledgment;
 mod checks;
 pub(crate) mod recovery;
+pub mod recovery_builder;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -453,6 +454,7 @@ pub fn run_diagnostics(config: &Config) -> Vec<DiagnosticCheck> {
     checks_vec.push(checks::check_database_integrity(config));
     checks_vec.push(checks::check_audit_log(config));
     checks_vec.push(checks::check_audit_retention(config));
+    checks_vec.push(checks::check_audit_trajectory(config));
     checks_vec.push(checks::check_storage(config));
     checks_vec.push(checks::check_wal_pipeline(config, daemon_probe.running));
     checks_vec.push(checks::check_config(config));
@@ -875,7 +877,7 @@ mod tests {
     fn diagnostics_returns_expected_number_of_checks() {
         let cfg = crate::config::default_config();
         let checks = run_diagnostics(&cfg);
-        assert_eq!(checks.len(), 18);
+        assert_eq!(checks.len(), 19);
         for check in checks {
             assert!(!check.name.trim().is_empty());
             match check.status {

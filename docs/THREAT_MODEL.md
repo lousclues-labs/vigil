@@ -79,6 +79,19 @@ Key boundaries:
 
 ---
 
+## Network Posture
+
+**Vigil opens no listening network sockets.** Vigil's only network egress
+is the optional remote-syslog sink (`[alerts.remote_syslog]`), which is
+outbound-only and disabled by default. The webhook sink (`[alerts].webhook_url`)
+is also outbound-only. The control socket is a Unix domain socket at
+`/run/vigil/control.sock`, accessible only to local processes with
+appropriate uid/permissions. There is no TCP/UDP listener, no HTTP server,
+and no inbound network surface. This property is load-bearing for security
+evaluation: Vigil cannot be attacked from the network.
+
+---
+
 ## Attack Surface
 
 | Surface | Risk |

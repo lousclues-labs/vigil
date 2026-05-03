@@ -792,6 +792,26 @@ Output without checkpoints:
 audit log: 329,329 entries verified, chain intact
 ```
 
+#### Exit Codes (`audit verify`)
+
+| Code | Meaning |
+|------|---------|
+| `0` | Chain intact — all entries link correctly, HMAC valid (if enabled) |
+| `1` | Operational failure — cannot open DB, permission error, etc. |
+| `2` | Chain broken — at least one chain break detected |
+
+Shell scripts should distinguish `1` (operational failure, retry may
+succeed) from `2` (chain broken, investigate immediately):
+
+```bash
+vigil audit verify
+case $? in
+  0) echo "chain intact" ;;
+  1) echo "verify failed (operational error)" ;;
+  2) echo "CHAIN BROKEN — investigate" ;;
+esac
+```
+
 ### `audit prune`
 
 Manually prune old audit entries. Dry-run by default; pass `--confirm`

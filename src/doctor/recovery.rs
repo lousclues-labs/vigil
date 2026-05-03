@@ -81,8 +81,12 @@ pub(crate) fn baseline_refresh_acknowledged_recovery(
 pub(crate) fn chain_break_unacked_recovery() -> Recovery {
     Recovery::Multi(vec![
         RecoveryHint::Command {
-            verb: "recover",
+            verb: "diagnose",
             command: "vigil audit verify -v".into(),
+        },
+        RecoveryHint::Command {
+            verb: "investigate",
+            command: "vigil why <path>".into(),
         },
         RecoveryHint::Command {
             verb: "acknowledge",
@@ -102,8 +106,12 @@ pub(crate) fn chain_break_acknowledged_recovery(
 ) -> Recovery {
     let mut hints = acknowledgment_metadata_hints(ack_ts, uid, note);
     hints.push(RecoveryHint::Command {
-        verb: "recover",
+        verb: "diagnose",
         command: "vigil audit verify -v".into(),
+    });
+    hints.push(RecoveryHint::Command {
+        verb: "investigate",
+        command: "vigil why <path>".into(),
     });
     hints.push(RecoveryHint::Command {
         verb: "acknowledge again on recurrence",

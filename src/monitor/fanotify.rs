@@ -1,5 +1,8 @@
 //! Fanotify-based filesystem monitor.
 //!
+//! See docs/ARCHITECTURE.md#fanotify-tier-system for the tier selection
+//! logic and per-tier event coverage table.
+//!
 //! Supports two operational modes selected by the detected `FanotifyTier`:
 //!
 //! - **Legacy (fd-based):** Marks mount points with `FAN_MARK_MOUNT`, events
@@ -135,19 +138,8 @@ struct FileHandleHeader {
     handle_type: i32,
 }
 
-struct OwnedRawFd(RawFd);
-
-impl Drop for OwnedRawFd {
-    fn drop(&mut self) {
-        if self.0 >= 0 {
-            // SAFETY: fd is owned by this RAII wrapper and is valid (>= 0).
-            // We check >= 0 because -1 is the sentinel for "no fd".
-            unsafe {
-                libc::close(self.0);
-            }
-        }
-    }
-}
+// Use the single canonical OwnedRawFd from util::owned_fd.
+use crate::util::owned_fd::OwnedRawFd;
 
 /// RAII guard for an event fd. Closes the fd on drop unless ownership
 /// is transferred via `take()`. Eliminates fd leak risk in the event loop.

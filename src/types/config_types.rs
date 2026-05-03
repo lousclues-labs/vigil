@@ -39,6 +39,16 @@ pub enum DegradedReason {
         dropped: u64,
         window_secs: u64,
     },
+    /// Alert sink consistently failing to deliver; alerts may be silently lost.
+    AlertSinkFailing {
+        sink: String,
+        failure_count: u32,
+        window_seconds: u32,
+    },
+    /// Control socket ownership or permissions drifted from expected values.
+    ControlSocketDrift {
+        kind: String,
+    },
 }
 
 impl std::fmt::Display for DegradedReason {
@@ -84,6 +94,18 @@ impl std::fmt::Display for DegradedReason {
                 "userspace_event_drops (dropped={}, window={}s)",
                 dropped, window_secs
             ),
+            DegradedReason::AlertSinkFailing {
+                sink,
+                failure_count,
+                window_seconds,
+            } => write!(
+                f,
+                "alert_sink_failing (sink={}, failures={}, window={}s)",
+                sink, failure_count, window_seconds
+            ),
+            DegradedReason::ControlSocketDrift { kind } => {
+                write!(f, "control_socket_drift ({})", kind)
+            }
         }
     }
 }
@@ -114,6 +136,8 @@ impl DegradedReason {
             DegradedReason::AuditLogFull => "audit_log_full",
             DegradedReason::RetentionPolicyMismatch { .. } => "retention_policy_mismatch",
             DegradedReason::UserspaceEventDrops { .. } => "userspace_event_drops",
+            DegradedReason::AlertSinkFailing { .. } => "alert_sink_failing",
+            DegradedReason::ControlSocketDrift { .. } => "control_socket_drift",
         }
     }
 
@@ -148,6 +172,14 @@ impl DegradedReason {
             DegradedReason::UserspaceEventDrops {
                 dropped: 0,
                 window_secs: 0,
+            },
+            DegradedReason::AlertSinkFailing {
+                sink: "socket".to_string(),
+                failure_count: 0,
+                window_seconds: 0,
+            },
+            DegradedReason::ControlSocketDrift {
+                kind: "ownership_drift".to_string(),
             },
         ]
     }

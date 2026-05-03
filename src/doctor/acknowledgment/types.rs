@@ -230,12 +230,5 @@ pub fn build_operator_payload(
 }
 
 pub fn effective_uid() -> u32 {
-    #[cfg(unix)]
-    {
-        nix::unistd::geteuid().as_raw()
-    }
-    #[cfg(not(unix))]
-    {
-        0
-    }
+    crate::util::process::current_euid()
 }

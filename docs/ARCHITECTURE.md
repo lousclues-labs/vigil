@@ -570,6 +570,35 @@ Vigil Baseline architecture is intentionally small. You should be able to trace 
 
 ---
 
+## Concurrency
+
+Vigil's daemon uses `std` threads + bounded channels (no async runtime).
+Long-lived synchronization primitives:
+
+| Lock | Owner | Held during | Acquired with |
+|---|---|---|---|
+| `DaemonState` (`RwLock`) | coordinator/guardian | state transitions | nothing else |
+| `ui::progress::ProgressState::mu` | progress renderer | render tick | nothing else |
+| `wal::file_mutex` | WAL append/truncate | entry write + CRC | nothing else |
+| `wal::sink_runner::cooldowns` | sink runner thread | per-event lookup | nothing else |
+| `alert::router::timestamps` | alert router | per-event lookup | nothing else |
+| `alert::router::rate_limiter` | alert router | rate-limit check | nothing else |
+| `alert::router::last_chain_hash` | alert router | chain hash update | nothing else |
+| `alert::dispatcher::audit_retry_buffer` | alert dispatcher | retry queue check | nothing else |
+| `coordinator::expectation_registry` | coordinator/control | expectation check | nothing else |
+
+**Invariant:** no function in vigil ever holds two of these locks
+simultaneously. The WAL writer acquires its file mutex only; the
+coordinator acquires the state RwLock only. Lock-free paths use
+`AtomicU64`/`AtomicBool` for counters and flags, and `ArcSwap` for
+config reads.
+
+If a future change needs to break this invariant, document the new
+acquisition order here and add a runtime check (deadlock detector or
+lock-order assertion in debug builds).
+
+---
+
 ## Structural Invariants (1.5.0)
 
 These rules were established in the 1.5.0 Principle XI compliance

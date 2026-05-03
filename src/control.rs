@@ -1,5 +1,8 @@
 //! Unix domain control socket for CLI-to-daemon communication.
 //!
+//! See docs/ARCHITECTURE.md#control-socket for the protocol and
+//! authentication model.
+//!
 //! Accepts connections on `/run/vigil/control.sock`, authenticates via
 //! HMAC challenge-response over SO_PEERCRED, and dispatches commands
 //! (status, scan, reload, maintenance). Reads are bounded to 64KB
@@ -1059,14 +1062,8 @@ fn log_control_action(method: &str, metrics: &Metrics) {
 /// Generate a random 32-byte hex nonce for challenge-response auth.
 /// Returns Err if randomness cannot be obtained, to prevent predictable nonces.
 fn generate_nonce() -> std::result::Result<String, std::io::Error> {
-    let buf = crate::util::random::random_bytes(32)
-        .map_err(|e| std::io::Error::other(format!("random_bytes failed: {}", e)))?;
-    // Verify buffer is not all-zero (catastrophic RNG failure)
-    if buf.iter().all(|&b| b == 0) {
-        return Err(std::io::Error::other(
-            "getrandom returned all zeros; refusing to generate nonce",
-        ));
-    }
+    let buf = crate::util::random::secure_bytes(32)
+        .map_err(|e| std::io::Error::other(format!("secure_bytes failed: {}", e)))?;
     Ok(hex::encode(buf))
 }
 
@@ -1103,16 +1100,10 @@ fn peer_credentials(stream: &std::os::unix::net::UnixStream) -> Option<libc::ucr
     }
 }
 
-/// Return the daemon's effective UID. Cached in a OnceLock to avoid
-/// repeated syscalls on every connection (VIGIL-VULN-073).
-#[allow(unsafe_code)]
+/// Return the daemon's effective UID. Delegates to the centralized
+/// util::process::current_euid() (VIGIL-VULN-073).
 fn current_euid() -> u32 {
-    static EUID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *EUID.get_or_init(|| {
-        // SAFETY: geteuid returns the effective uid with no side effects.
-        // Cannot fail and has no memory safety implications.
-        unsafe { libc::geteuid() }
-    })
+    crate::util::process::current_euid()
 }
 
 #[cfg(test)]

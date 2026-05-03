@@ -2,6 +2,76 @@
 
 All notable changes to Vigil Baseline will be documented in this file.
 
+> **Releasing?** See [docs/RELEASING.md](docs/RELEASING.md) for the
+> full checklist: fmt → clippy → test → build --release → CHANGELOG →
+> version-bump → commit → push → tag.
+
+## [1.11.0] - 2026-05-02
+
+### Drift class elimination (compile-time and test-time enforcement)
+
+- New `RecoveryBuilder` module (`src/doctor/recovery_builder.rs`) is the single
+  source of truth for every recovery hint vigil emits. The `for_degraded(reason)`
+  constructor is exhaustive over `DegradedReason`; adding a variant without a
+  recovery is a compile error.
+- Every `DegradedReason` variant now has end-to-end coverage asserting that
+  `RecoveryBuilder::for_degraded` returns non-empty recovery for every variant.
+- Tests enforcing architectural invariants are now marked with `INVARIANT:` doc
+  comments and categorized (principle / safety / compatibility / crypto).
+- The apt package manager hook now matches the pacman hook's loud-failure
+  escalation. Silent `exit 0` when vigild is active and the binary is missing
+  is no longer possible for any shipped hook.
+
+### Daemon self-observation (fail loud, applied internally)
+
+- New `AlertSinkFailing` degraded state. When a configured sink fails to deliver
+  beyond the configured threshold, the daemon transitions to Degraded immediately
+  rather than waiting for `vigil doctor` to surface the silent loss. Configurable
+  via `[alerts].sink_failure_threshold` and `sink_failure_window_seconds`.
+- New `ControlSocketDrift` degraded state. The guardian thread now stat-checks the
+  control socket every tick; ownership or permission drift surfaces as Degraded
+  with a specific recovery command.
+- `vigil doctor` now warns when the audit DB is on track to reach its cap within
+  30 days (configurable via `[audit].trajectory_warning_days`). Cheap to compute
+  (one SQL query per doctor run), high signal.
+
+### Single source of truth consolidations
+
+- `current_euid()` is now the single entry point for process identity in
+  `util/process.rs`; `libc::geteuid` and `nix::unistd::geteuid` callers in
+  `control.rs`, `db/audit_ops.rs`, and `doctor/acknowledgment/types.rs` have
+  been migrated.
+- The duplicate `OwnedRawFd` in `src/monitor/fanotify.rs` has been deleted in
+  favor of `util::OwnedRawFd`.
+- `getrandom` zero-output check is now centralized in `util::random::secure_bytes`;
+  previously inconsistent across consumers. Control socket nonce and WAL nonce
+  generation now use `secure_bytes()`.
+- `vigil why <path>` is now surfaced as a recovery hint alongside `vigil audit
+  verify` when the doctor reports audit chain breaks.
+
+### Documentation discoverability
+
+- `docs/CLI.md` now documents exit codes for `audit verify` (0/1/2 contract).
+- `docs/THREAT_MODEL.md` now states explicitly that vigil opens no listening
+  network sockets.
+- `docs/ARCHITECTURE.md` now contains a Concurrency section with the lock
+  inventory and the no-overlap invariant.
+- Major modules (`wal/mod.rs`, `coordinator/mod.rs`, `worker.rs`,
+  `monitor/fanotify.rs`, `db/audit_ops.rs`, `control.rs`) now deep-link from
+  their top-of-file doc comments to the relevant `docs/ARCHITECTURE.md` section.
+- Constant-time crypto comparisons now carry `CRYPTO INVARIANT:` comments at
+  the call site (`hmac.rs`, `attest/key.rs`, `wal/mod.rs`).
+- Release checklist link added to top of `CHANGELOG.md`.
+
+### Config
+
+- `[alerts].sink_failure_threshold` (u32, default 10): consecutive sink delivery
+  failures within window that trigger AlertSinkFailing degraded state.
+- `[alerts].sink_failure_window_seconds` (u32, default 300): window for sink
+  failure threshold.
+- `[audit].trajectory_warning_days` (u32, default 30): warn in `vigil doctor`
+  when projected days to reach cap is below this threshold.
+
 ## [1.10.0] - 2026-05-02
 
 ### Added — Architectural diagrams (`docs/diagrams/`)

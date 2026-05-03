@@ -1,5 +1,8 @@
 //! Append-only detection log with HMAC entry signing and CRC32 framing.
 //!
+//! See docs/ARCHITECTURE.md#wal-pipeline for the design rationale and
+//! the on-disk format diagram.
+//!
 //! Writers append detection records. Two consumers (audit writer, alert sink)
 //! mark entries consumed independently. Truncation only runs after both
 //! consumers acknowledge. Torn writes at the tail are detected by CRC and
@@ -626,9 +629,9 @@ pub fn fingerprint_for_key(key: &[u8]) -> [u8; 16] {
     fp
 }
 
-/// Generate a random 32-byte nonce using the shared getrandom utility.
+/// Generate a random 32-byte nonce using the shared secure_bytes utility.
 fn random_nonce() -> Result<[u8; 32]> {
-    let bytes = crate::util::random::random_bytes(32)?;
+    let bytes = crate::util::random::secure_bytes(32)?;
     let mut nonce = [0u8; 32];
     nonce.copy_from_slice(&bytes);
     Ok(nonce)
@@ -669,6 +672,10 @@ fn verify_entry_hmac(
     mac.update(instance_nonce);
     mac.update(&sequence.to_le_bytes());
     mac.update(payload);
+    // CRYPTO INVARIANT: this comparison must be constant-time.
+    // Do not replace with `==` or any branching equality. The
+    // `verify_slice` API provides the constant-time guarantee
+    // required for HMAC verification.
     Ok(mac.verify_slice(expected).is_ok())
 }
 

@@ -35,6 +35,13 @@ pub struct SinkRunner {
     max_alerts_per_minute: u32,
     metrics: Arc<Metrics>,
     hostname: String,
+    /// Per-sink failure tracking for degraded state escalation.
+    sink_failure_counts: Vec<u32>,
+    sink_failure_window_start: Instant,
+    sink_failure_threshold: u32,
+    sink_failure_window_seconds: u32,
+    /// Optional handle for degraded state escalation.
+    daemon_state: Option<crate::types::DaemonStateHandle>,
 }
 
 impl SinkRunner {
@@ -77,6 +84,8 @@ impl SinkRunner {
             }
         }
 
+        let sink_count = sinks.len();
+
         Ok(Self {
             wal,
             sinks,
@@ -89,7 +98,18 @@ impl SinkRunner {
             max_alerts_per_minute: config.alerts.max_alerts_per_minute,
             metrics,
             hostname,
+            sink_failure_counts: vec![0u32; sink_count],
+            sink_failure_window_start: Instant::now(),
+            sink_failure_threshold: config.alerts.sink_failure_threshold,
+            sink_failure_window_seconds: config.alerts.sink_failure_window_seconds,
+            daemon_state: None,
         })
+    }
+
+    /// Set the daemon state handle for degraded state escalation.
+    pub fn with_daemon_state(mut self, state: crate::types::DaemonStateHandle) -> Self {
+        self.daemon_state = Some(state);
+        self
     }
 
     pub fn spawn(mut self, shutdown: Arc<AtomicBool>) -> Result<JoinHandle<()>> {
@@ -171,11 +191,53 @@ impl SinkRunner {
         tracing::info!(hostname = %self.hostname, "WAL sink runner stopped");
     }
 
-    fn dispatch_to_sinks(&self, alert: &Alert) {
-        for sink in &self.sinks {
+    fn dispatch_to_sinks(&mut self, alert: &Alert) {
+        // Reset failure window if expired.
+        if self.sink_failure_window_start.elapsed()
+            > Duration::from_secs(self.sink_failure_window_seconds as u64)
+        {
+            for count in &mut self.sink_failure_counts {
+                *count = 0;
+            }
+            self.sink_failure_window_start = Instant::now();
+
+            // Self-clear if previously degraded for sink failure.
+            if let Some(ref state) = self.daemon_state {
+                let mut s = state.0.write();
+                if let crate::types::DaemonState::Degraded { reason, .. } = &*s {
+                    if matches!(reason, crate::types::DegradedReason::AlertSinkFailing { .. }) {
+                        tracing::info!("alert sink failures resolved; returning to healthy state");
+                        *s = crate::types::DaemonState::Healthy;
+                    }
+                }
+            }
+        }
+
+        for (i, sink) in self.sinks.iter().enumerate() {
             if alert.severity >= sink.min_severity() {
                 if let Err(e) = sink.dispatch(alert) {
                     tracing::warn!(sink = sink.name(), error = %e, "alert sink failed");
+                    if i < self.sink_failure_counts.len() {
+                        self.sink_failure_counts[i] += 1;
+                        if self.sink_failure_counts[i] >= self.sink_failure_threshold {
+                            if let Some(ref state) = self.daemon_state {
+                                let degraded = state.degrade_if_healthy(
+                                    crate::types::DegradedReason::AlertSinkFailing {
+                                        sink: sink.name().to_string(),
+                                        failure_count: self.sink_failure_counts[i],
+                                        window_seconds: self.sink_failure_window_seconds,
+                                    },
+                                );
+                                if degraded {
+                                    tracing::error!(
+                                        sink = sink.name(),
+                                        failures = self.sink_failure_counts[i],
+                                        "alert sink failure threshold reached; daemon degraded"
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -120,6 +120,10 @@ pub fn sign_hmac_blake3(key: &[u8], content_hash: &[u8; 32]) -> Vec<u8> {
 /// Verify HMAC-BLAKE3 signature over a content hash.
 pub fn verify_hmac_blake3(key: &[u8], content_hash: &[u8; 32], signature: &[u8]) -> bool {
     let expected = sign_hmac_blake3(key, content_hash);
+    // CRYPTO INVARIANT: this comparison must be constant-time.
+    // Do not replace with `==` or any branching equality. The
+    // `constant_time_eq` API provides the constant-time guarantee
+    // required for HMAC verification.
     constant_time_eq::constant_time_eq(&expected, signature)
 }
 

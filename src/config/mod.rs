@@ -409,6 +409,13 @@ pub struct AlertsConfig {
     /// Storm window in seconds.
     #[serde(default = "default_storm_window_secs")]
     pub storm_window_secs: u64,
+    /// Number of consecutive sink delivery failures within window that
+    /// triggers AlertSinkFailing degraded state. Default: 10.
+    #[serde(default = "default_sink_failure_threshold")]
+    pub sink_failure_threshold: u32,
+    /// Window in seconds for sink failure threshold. Default: 300.
+    #[serde(default = "default_sink_failure_window_seconds")]
+    pub sink_failure_window_seconds: u32,
 }
 
 impl Default for AlertsConfig {
@@ -428,6 +435,8 @@ impl Default for AlertsConfig {
             webhook_bearer_token: None,
             storm_threshold: default_storm_threshold(),
             storm_window_secs: default_storm_window_secs(),
+            sink_failure_threshold: default_sink_failure_threshold(),
+            sink_failure_window_seconds: default_sink_failure_window_seconds(),
         }
     }
 }
@@ -438,6 +447,14 @@ fn default_storm_threshold() -> u64 {
 
 fn default_storm_window_secs() -> u64 {
     60
+}
+
+fn default_sink_failure_threshold() -> u32 {
+    10
+}
+
+fn default_sink_failure_window_seconds() -> u32 {
+    300
 }
 
 fn default_notification_rate_limit() -> u32 {
@@ -688,6 +705,11 @@ pub struct AuditConfig {
     /// Default 1000.
     #[serde(default = "default_min_entries_to_keep")]
     pub min_entries_to_keep: u32,
+
+    /// Warn in `vigil doctor` when projected days to reach cap is below
+    /// this threshold. Default 30.
+    #[serde(default = "default_trajectory_warning_days")]
+    pub trajectory_warning_days: u32,
 }
 
 impl Default for AuditConfig {
@@ -697,6 +719,7 @@ impl Default for AuditConfig {
             retention_check_interval: default_retention_check_interval(),
             max_size_mb: default_max_size_mb(),
             min_entries_to_keep: default_min_entries_to_keep(),
+            trajectory_warning_days: default_trajectory_warning_days(),
         }
     }
 }
@@ -728,6 +751,10 @@ fn default_max_size_mb() -> u32 {
 
 fn default_min_entries_to_keep() -> u32 {
     1000
+}
+
+fn default_trajectory_warning_days() -> u32 {
+    30
 }
 
 /// Parse a simple duration string: "24h", "1h", "7d", "60s", etc.

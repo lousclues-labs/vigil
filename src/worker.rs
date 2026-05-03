@@ -1,5 +1,8 @@
 //! Worker pool for filesystem event processing.
 //!
+//! See docs/ARCHITECTURE.md#worker-pool for the event flow and
+//! comparison model.
+//!
 //! Each worker thread owns a read-only baseline DB connection and a
 //! BLAKE3-keyed file cache. Events arrive from the monitor via a bounded
 //! channel, are compared against the baseline snapshot (fd-based TOCTOU

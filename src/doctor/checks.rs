@@ -20,6 +20,7 @@ use super::recovery::{
     retention_failure_acknowledged_recovery, retention_failure_unacked_recovery,
     unacked_hook_recovery,
 };
+use super::recovery_builder::RecoveryBuilder;
 use super::{
     audit_check_from_snapshot, baseline_check_from_snapshot, command_exists,
     database_check_from_snapshot, detect_active_config_path, format_age, format_compact_duration,
@@ -332,11 +333,7 @@ pub(super) fn check_database_integrity(config: &Config) -> DiagnosticCheck {
                 name: "Database".to_string(),
                 status: CheckStatus::Failed,
                 detail: format!("cannot open baseline database: {}", e),
-                recovery: Recovery::Command(format!(
-                    "cp {} {}.bak && vigil init",
-                    baseline_path.display(),
-                    baseline_path.display()
-                )),
+                recovery: RecoveryBuilder::db_backup_and_reinit(baseline_path),
             };
         }
     };
@@ -346,11 +343,7 @@ pub(super) fn check_database_integrity(config: &Config) -> DiagnosticCheck {
             name: "Database".to_string(),
             status: CheckStatus::Failed,
             detail: format!("integrity check failed: {}", e),
-            recovery: Recovery::Command(format!(
-                "cp {} {}.bak && vigil init",
-                baseline_path.display(),
-                baseline_path.display()
-            )),
+            recovery: RecoveryBuilder::db_backup_and_reinit(baseline_path),
         };
     }
 
@@ -361,11 +354,7 @@ pub(super) fn check_database_integrity(config: &Config) -> DiagnosticCheck {
                 name: "Database".to_string(),
                 status: CheckStatus::Failed,
                 detail: format!("cannot open audit database: {}", e),
-                recovery: Recovery::Command(format!(
-                    "cp {} {}.bak && vigil init",
-                    audit_path.display(),
-                    audit_path.display()
-                )),
+                recovery: RecoveryBuilder::db_backup_and_reinit(&audit_path),
             };
         }
     };
@@ -375,11 +364,7 @@ pub(super) fn check_database_integrity(config: &Config) -> DiagnosticCheck {
             name: "Database".to_string(),
             status: CheckStatus::Failed,
             detail: format!("integrity check failed: {}", e),
-            recovery: Recovery::Command(format!(
-                "cp {} {}.bak && vigil init",
-                baseline_path.display(),
-                baseline_path.display()
-            )),
+            recovery: RecoveryBuilder::db_backup_and_reinit(baseline_path),
         };
     }
 
@@ -573,6 +558,110 @@ pub(super) fn check_audit_retention(config: &Config) -> DiagnosticCheck {
     }
 }
 
+/// Check audit DB cap trajectory: warn when projected days-to-cap is below
+/// the configured threshold (default 30 days).
+pub(super) fn check_audit_trajectory(config: &Config) -> DiagnosticCheck {
+    let audit_path = crate::db::audit_db_path(config);
+    let conn = match rusqlite::Connection::open_with_flags(
+        &audit_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        Ok(c) => c,
+        Err(_) => {
+            return DiagnosticCheck {
+                name: "Audit trajectory".to_string(),
+                status: CheckStatus::Unknown,
+                detail: "cannot open audit DB".to_string(),
+                recovery: Recovery::None,
+            };
+        }
+    };
+
+    let db_size_bytes = crate::db::audit_ops::db_file_size(&conn).unwrap_or(0) as u64;
+    let max_bytes = config.audit.max_size_bytes();
+
+    if max_bytes == 0 || db_size_bytes == 0 {
+        return DiagnosticCheck {
+            name: "Audit trajectory".to_string(),
+            status: CheckStatus::Ok,
+            detail: "insufficient data for projection".to_string(),
+            recovery: Recovery::None,
+        };
+    }
+
+    let total_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
+        .unwrap_or(0);
+
+    let recent_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE timestamp > unixepoch() - 7 * 86400",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if total_rows == 0 || recent_rows == 0 {
+        return DiagnosticCheck {
+            name: "Audit trajectory".to_string(),
+            status: CheckStatus::Ok,
+            detail: "insufficient data for projection".to_string(),
+            recovery: Recovery::None,
+        };
+    }
+
+    let bytes_per_row = db_size_bytes as f64 / total_rows as f64;
+    let rows_per_day = recent_rows as f64 / 7.0;
+    let bytes_per_day = rows_per_day * bytes_per_row;
+
+    if bytes_per_day <= 0.0 {
+        return DiagnosticCheck {
+            name: "Audit trajectory".to_string(),
+            status: CheckStatus::Ok,
+            detail: "no measurable growth".to_string(),
+            recovery: Recovery::None,
+        };
+    }
+
+    let remaining_bytes = max_bytes.saturating_sub(db_size_bytes) as f64;
+    let days_to_cap = (remaining_bytes / bytes_per_day) as u32;
+    let threshold = config.audit.trajectory_warning_days;
+
+    let pct = (db_size_bytes as f64 / max_bytes as f64 * 100.0) as u32;
+    let mb_per_day = (bytes_per_day / 1_048_576.0) as u32;
+
+    if days_to_cap < threshold {
+        DiagnosticCheck {
+            name: "Audit trajectory".to_string(),
+            status: CheckStatus::Warning,
+            detail: format!(
+                "{}% of {} MB cap; ~{} MB/day growth; projected to reach cap in ~{} days",
+                pct, config.audit.max_size_mb, mb_per_day, days_to_cap
+            ),
+            recovery: Recovery::Multi(vec![
+                RecoveryHint::Manual {
+                    verb: "options",
+                    instruction: "raise audit.max_size_mb or lower audit.retention_days in vigil.toml".into(),
+                },
+                RecoveryHint::Command {
+                    verb: "investigate",
+                    command: "vigil audit stats --period 30d".into(),
+                },
+            ]),
+        }
+    } else {
+        DiagnosticCheck {
+            name: "Audit trajectory".to_string(),
+            status: CheckStatus::Ok,
+            detail: format!(
+                "{}% of {} MB cap; ~{} MB/day growth; ~{} days to cap",
+                pct, config.audit.max_size_mb, mb_per_day, days_to_cap
+            ),
+            recovery: Recovery::None,
+        }
+    }
+}
+
 pub(super) fn check_config(config: &Config) -> DiagnosticCheck {
     let config_path = detect_active_config_path()
         .map(|p| p.display().to_string())
@@ -678,11 +767,7 @@ pub(super) fn check_hmac_key(config: &Config) -> DiagnosticCheck {
             name: "HMAC key".to_string(),
             status: CheckStatus::Failed,
             detail: format!("not found at {}", key_path.display()),
-            recovery: Recovery::Command(format!(
-                "openssl rand -hex 32 | sudo tee {} >/dev/null && sudo chmod 0600 {}",
-                key_path.display(),
-                key_path.display()
-            )),
+            recovery: RecoveryBuilder::hmac_key_create(key_path),
         };
     }
 
@@ -724,25 +809,21 @@ pub(super) fn check_hmac_key(config: &Config) -> DiagnosticCheck {
             name: "HMAC key".to_string(),
             status: CheckStatus::Warning,
             detail: joined,
-            recovery: Recovery::Command(format!("sudo chmod 0600 {}", key_path.display())),
+            recovery: RecoveryBuilder::hmac_key_chmod(key_path),
         }
     } else if joined.contains("Cannot stat") {
         DiagnosticCheck {
             name: "HMAC key".to_string(),
             status: CheckStatus::Failed,
             detail: joined,
-            recovery: Recovery::Command(format!(
-                "openssl rand -hex 32 | sudo tee {} >/dev/null && sudo chmod 0600 {}",
-                key_path.display(),
-                key_path.display()
-            )),
+            recovery: RecoveryBuilder::hmac_key_create(key_path),
         }
     } else {
         DiagnosticCheck {
             name: "HMAC key".to_string(),
             status: CheckStatus::Warning,
             detail: joined,
-            recovery: Recovery::Command(format!("sudo chown root:root {}", key_path.display())),
+            recovery: RecoveryBuilder::hmac_key_chown(key_path),
         }
     }
 }
@@ -806,10 +887,7 @@ pub(super) fn check_attest_key() -> DiagnosticCheck {
                                 name: "Attest key".to_string(),
                                 status: CheckStatus::Warning,
                                 detail: format!("{}: {}", key_path.display(), issues.join("; ")),
-                                recovery: Recovery::Command(format!(
-                                    "sudo chmod 600 {}",
-                                    key_path.display()
-                                )),
+                                recovery: RecoveryBuilder::attest_key_chmod(key_path),
                             }
                         }
                     }
