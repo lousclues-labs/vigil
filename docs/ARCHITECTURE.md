@@ -233,6 +233,31 @@ Result: `baseline` table is populated with trusted file state.
 
 ### 2) Real-time Event Pipeline (`vigild`)
 
+#### Fanotify tier system
+
+The monitor backend probes the kernel's fanotify capabilities at
+startup and selects the highest supported tier:
+
+| Tier | Kernel | Init flags | Mark type | Event mask |
+|------|--------|-----------|-----------|------------|
+| `FidDfidName` | 5.9+ | `FAN_REPORT_DFID_NAME \| FAN_REPORT_FID` | `FAN_MARK_FILESYSTEM` | Full (`FAN_CREATE`, `FAN_DELETE`, `FAN_MOVED_*`, `FAN_ATTRIB`, `FAN_MODIFY`, `FAN_CLOSE_WRITE`) |
+| `Fid` | 5.1+ | `FAN_REPORT_FID` | `FAN_MARK_FILESYSTEM` | Full (same as above) |
+| `LegacyFd` | <5.1 | (none) | `FAN_MARK_MOUNT` | `FAN_MODIFY \| FAN_CLOSE_WRITE` on strict kernels (6.18+); full mask on older kernels that silently accept |
+| `Inotify` | any | n/a | per-directory watches | inotify event set |
+
+On FID-capable kernels (`Fid` or `FidDfidName`), events arrive without
+file descriptors. Paths are resolved via `open_by_handle_at(2)` using a
+filesystem-ID-to-mount-fd map (`FsidMountMap`) built at startup. The
+existing fd-based resolution path remains for the `LegacyFd` tier.
+
+The 1.8.3 `EINVAL` fallback (`MarkOutcome::Reduced`) only triggers on
+the `LegacyFd` path. It degrades the event mask to `FAN_MODIFY |
+FAN_CLOSE_WRITE` when the kernel rejects the full mask under mount-mark
+semantics. Scheduled scans backstop the missing event classes.
+
+`vigil doctor` surfaces a "Real-time coverage" row showing the active
+tier and whether any mounts are running with a reduced event mask.
+
 ```
 filesystem event
   -> monitor backend (fanotify or inotify)

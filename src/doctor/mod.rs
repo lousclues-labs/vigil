@@ -170,6 +170,10 @@ pub struct RuntimeMetrics {
     pub scan_duration_ms: u64,
     #[serde(default)]
     pub uptime_start: i64,
+    #[serde(default)]
+    pub fanotify_mark_reduced_coverage: u64,
+    #[serde(default)]
+    pub fanotify_tier: u64,
 }
 
 /// Lightweight health snapshot produced by the privileged daemon.
@@ -443,6 +447,7 @@ pub fn run_diagnostics(config: &Config) -> Vec<DiagnosticCheck> {
     checks_vec.push(daemon_check);
     checks_vec.push(checks::check_daemon_state(config, daemon_probe.running));
     checks_vec.push(checks::check_backend(config, daemon_probe.running));
+    checks_vec.push(checks::check_realtime_coverage(config, daemon_probe.running));
     checks_vec.push(checks::check_control_socket(config));
     checks_vec.push(checks::check_baseline(config));
     checks_vec.push(checks::check_database_integrity(config));
@@ -870,7 +875,7 @@ mod tests {
     fn diagnostics_returns_expected_number_of_checks() {
         let cfg = crate::config::default_config();
         let checks = run_diagnostics(&cfg);
-        assert_eq!(checks.len(), 17);
+        assert_eq!(checks.len(), 18);
         for check in checks {
             assert!(!check.name.trim().is_empty());
             match check.status {

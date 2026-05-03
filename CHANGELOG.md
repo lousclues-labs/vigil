@@ -4,13 +4,13 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [1.9.0] - 2026-05-01
 
-### Added — FID-mode fanotify: full real-time coverage on Linux 5.9+
+### Added — FID-mode fanotify: full real-time coverage on Linux 5.1+
 
-When the kernel supports `FAN_REPORT_DFID_NAME | FAN_REPORT_FID`
-(Linux 5.9+, detected automatically via `FanotifyTier::FidDfidName`),
-the daemon now initialises its fanotify group with FID report flags
-and marks filesystems with `FAN_MARK_FILESYSTEM` instead of
-`FAN_MARK_MOUNT`.
+When the kernel supports FID-tier fanotify (Linux 5.9+ for
+`FanotifyTier::FidDfidName`, or Linux 5.1+ for `FanotifyTier::Fid`),
+the daemon now initialises its fanotify group with the appropriate
+FID report flags and marks filesystems with `FAN_MARK_FILESYSTEM`
+instead of `FAN_MARK_MOUNT`.
 
 This eliminates the v1.8.3 degraded-coverage fallback on kernels that
 reject `FAN_ATTRIB | FAN_CREATE | FAN_DELETE | FAN_MOVED_FROM |
@@ -21,7 +21,8 @@ without relying on scheduled-scan backstops.
 **Key changes:**
 
 - `fanotify_init` uses `FAN_REPORT_DFID_NAME | FAN_REPORT_FID` when
-  the tier probe succeeds for `FidDfidName`.
+  the tier probe succeeds for `FidDfidName`, or `FAN_REPORT_FID`
+  alone for the `Fid` tier.
 - `apply_fanotify_mark` uses `FAN_MARK_FILESYSTEM` in FID mode; the
   `EINVAL` fallback path remains for legacy-mode kernels.
 - New `resolve_fid_event` function parses FID info records
@@ -33,8 +34,12 @@ without relying on scheduled-scan backstops.
   dynamically during config reload and overlapping-mount handling.
 - `run_supervised` widened from `Fn` to `FnMut` to support mutable
   mount-fd state across supervisor restarts.
+- `vigil doctor` now surfaces a "Real-time coverage" row: when
+  `fanotify_mark_reduced_coverage > 0`, the row warns that some
+  mounts are running with a reduced event mask and links to the
+  architecture documentation.
 
-**Backward compatibility:** Kernels without FID support (< 5.9, or
+**Backward compatibility:** Kernels without FID support (< 5.1, or
 `fanotify_tier = "legacy_fd"` in config) continue using the existing
 mount-mark path with `EINVAL` fallback, unchanged from v1.8.3.
 

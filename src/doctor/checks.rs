@@ -99,6 +99,68 @@ pub(super) fn check_backend(config: &Config, daemon_running: bool) -> Diagnostic
     }
 }
 
+/// Check whether real-time event coverage is degraded due to mount-mark
+/// limitations on this kernel. When `fanotify_mark_reduced_coverage > 0`,
+/// some mounts accepted only the reduced event mask (`FAN_MODIFY |
+/// FAN_CLOSE_WRITE`), meaning create/delete/move/attribute changes are
+/// not delivered in real time and must wait for the next scheduled scan.
+///
+/// This is informational — the operator cannot change their kernel from
+/// the CLI. On FID-capable kernels (tier Fid or FidDfidName), this
+/// counter stays at zero because `FAN_MARK_FILESYSTEM` accepts the full
+/// event mask.
+pub(super) fn check_realtime_coverage(config: &Config, daemon_running: bool) -> DiagnosticCheck {
+    if !daemon_running {
+        return DiagnosticCheck {
+            name: "Real-time coverage".to_string(),
+            status: CheckStatus::Unknown,
+            detail: "unknown (daemon not running)".to_string(),
+            recovery: Recovery::None,
+        };
+    }
+
+    let metrics = read_metrics(config);
+    let reduced = metrics
+        .as_ref()
+        .map(|m| m.fanotify_mark_reduced_coverage)
+        .unwrap_or(0);
+    let tier = metrics.as_ref().map(|m| m.fanotify_tier).unwrap_or(0);
+
+    if reduced == 0 {
+        let tier_label = match tier {
+            3 => "fid_dfid_name",
+            2 => "fid",
+            1 => "legacy_fd",
+            _ => "unknown",
+        };
+        DiagnosticCheck {
+            name: "Real-time coverage".to_string(),
+            status: CheckStatus::Ok,
+            detail: format!(
+                "full event coverage on all mounts (tier: {})",
+                tier_label
+            ),
+            recovery: Recovery::None,
+        }
+    } else {
+        DiagnosticCheck {
+            name: "Real-time coverage".to_string(),
+            status: CheckStatus::Warning,
+            detail: format!(
+                "{} mount(s) accepted only a reduced event mask; \
+                 create/delete/move/attribute changes are backstopped \
+                 by scheduled scans, not real-time events. \
+                 This kernel does not support FID-tier fanotify, which \
+                 would restore full real-time coverage.",
+                reduced
+            ),
+            recovery: Recovery::Documentation(
+                "docs/ARCHITECTURE.md § Fanotify tier system".into(),
+            ),
+        }
+    }
+}
+
 pub(super) fn check_baseline(config: &Config) -> DiagnosticCheck {
     let db_path = &config.daemon.db_path;
     if !db_path.exists() {

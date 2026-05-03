@@ -89,7 +89,7 @@ Key boundaries:
 | signal socket path (`hooks.signal_socket`) | local IPC misuse if path permissions weak |
 | control socket (`/run/vigil/control.sock`) | privileged command injection. Mitigated: 0600 permissions, challenge-response authentication, peer credential logging, control command audit trail. |
 | Detection WAL (`/run/vigil/detections.wal` or `/var/lib/vigil/detections.wal`) | WAL entry tampering or deletion. Mitigated: per-entry HMAC-SHA256 when HMAC signing enabled; CRC32 checksums for crash recovery; file permissions 0600; periodic TOCTOU identity check by coordinator; instance nonce prevents cross-instance replay. |
-| monitor backend interfaces (fanotify/inotify) | dropped events or reduced coverage under fallback. Mitigated: event drop detection with coordinator-level alerting. |
+| monitor backend interfaces (fanotify/inotify) | dropped events or reduced coverage under fallback. Mitigated: event drop detection with coordinator-level alerting; FID-tier event loop on supported kernels (5.1+) restores full real-time coverage; `vigil doctor` surfaces degraded coverage when present. |
 
 ---
 
@@ -182,9 +182,9 @@ capability tier resolved at daemon startup:
 
 | Tier | Kernel | Coverage |
 |------|--------|----------|
-| `fid_dfid_name` | Linux 5.9+ | Full: `FAN_CREATE`, `FAN_DELETE`, `FAN_MOVED_TO` events deliver directory FID + filename. Ideal for closed-set watches. |
-| `fid` | Linux 5.1+ | Full: FID-mode events deliver file handles resolvable via `open_by_handle_at(2)`. |
-| `legacy_fd` | Linux <5.1 | Partial: directory-modification events may be delivered with `fd == -1` (FAN_NOFD) and silently skipped. Scheduled scans compensate. |
+| `fid_dfid_name` | Linux 5.9+ | Full: `FAN_CREATE`, `FAN_DELETE`, `FAN_MOVED_TO`, `FAN_ATTRIB` events delivered in real time via `FAN_MARK_FILESYSTEM`. Directory FID + filename resolution via `open_by_handle_at(2)`. Ideal for closed-set watches. |
+| `fid` | Linux 5.1+ | Full: FID-mode events with `FAN_MARK_FILESYSTEM` deliver the full event mask in real time. File handles resolved via `open_by_handle_at(2)`. |
+| `legacy_fd` | Linux <5.1 | Partial: uses `FAN_MARK_MOUNT`, which does not support `FAN_CREATE`/`FAN_DELETE`/`FAN_MOVED_*`/`FAN_ATTRIB`. On strict kernels (6.18+), falls back to `FAN_MODIFY | FAN_CLOSE_WRITE` only. Scheduled scans compensate for missing event classes. |
 | `inotify` | any | Partial: inotify backend has no mount-scoped coverage; relies on per-directory watches with limited scalability. |
 
 The detected tier is logged at `info` at startup, exposed in `vigil status`

@@ -62,6 +62,13 @@ snapshot. Deviations are written to a crash-safe WAL and an
 HMAC-chained audit log. Notifications are storm-suppressed,
 per-path-cooldowned, and written once.
 
+On FID-capable kernels (Linux 5.1+), real-time coverage spans all
+event classes: creates, deletes, moves, attribute changes, and
+content modifications. On pre-FID kernels, the daemon monitors
+content modifications in real time and relies on scheduled scans to
+detect creates, deletes, moves, and attribute changes. Run
+`vigil doctor` to see which tier your kernel supports.
+
 The principles that drive every design decision are in
 [PRINCIPLES.md](docs/PRINCIPLES.md). Worth reading before you
 decide whether vigil is the right tool for your situation.

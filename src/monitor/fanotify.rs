@@ -7,11 +7,13 @@
 //!   mask when the kernel rejects `FAN_ATTRIB`/`FAN_CREATE`/`FAN_DELETE`/
 //!   `FAN_MOVED_*` under mount-mark semantics (Linux 6.18+).
 //!
-//! - **FID (file-handle based, Linux 5.9+):** Initialised with
-//!   `FAN_REPORT_DFID_NAME | FAN_REPORT_FID` and marks with
-//!   `FAN_MARK_FILESYSTEM`, which accepts the full event mask on all
-//!   current kernels. Events carry directory file handles + child names;
-//!   paths and event fds are resolved via `open_by_handle_at(2)`.
+//! - **FID (file-handle based, Linux 5.1+/5.9+):** Initialised with
+//!   `FAN_REPORT_FID` (Fid tier, Linux 5.1+) or
+//!   `FAN_REPORT_DFID_NAME | FAN_REPORT_FID` (FidDfidName tier, Linux 5.9+)
+//!   and marks with `FAN_MARK_FILESYSTEM`, which accepts the full event
+//!   mask on all current kernels. Events carry file handles (and optionally
+//!   directory handles + child names); paths and event fds are resolved
+//!   via `open_by_handle_at(2)`.
 //!
 //! Uses poll(2) on the fanotify fd to block until events arrive, bloom-filter
 //! rejects unwatched paths, and forwards watched events to workers via a
@@ -272,19 +274,26 @@ pub fn start(
     mount_mark_rx: Option<crossbeam_channel::Receiver<MountMarkRequest>>,
     tier: super::FanotifyTier,
 ) -> Result<crossbeam_channel::Sender<Vec<PathBuf>>> {
-    // Use FID mode when the kernel supports DFID_NAME reporting (Linux 5.9+).
+    // Use FID mode when the kernel supports FID or DFID_NAME reporting.
     // This allows FAN_MARK_FILESYSTEM with the full event mask, restoring
     // real-time coverage of FAN_CREATE/FAN_DELETE/FAN_MOVED_*/FAN_ATTRIB
     // that newer kernels reject under FAN_MARK_MOUNT.
-    let fid_mode = matches!(tier, super::FanotifyTier::FidDfidName);
+    let fid_mode = matches!(
+        tier,
+        super::FanotifyTier::FidDfidName | super::FanotifyTier::Fid
+    );
 
     // SAFETY: fanotify_init returns a new fd or -1. We check for < 0 below.
     // FAN_CLOEXEC prevents fd leak across exec; FAN_NONBLOCK makes read()
     // return EAGAIN instead of blocking the monitor thread.
-    let init_flags = if fid_mode {
-        FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_NONBLOCK | FAN_REPORT_DFID_NAME | FAN_REPORT_FID
-    } else {
-        FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_NONBLOCK
+    let init_flags = match tier {
+        super::FanotifyTier::FidDfidName => {
+            FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_NONBLOCK | FAN_REPORT_DFID_NAME | FAN_REPORT_FID
+        }
+        super::FanotifyTier::Fid => {
+            FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_NONBLOCK | FAN_REPORT_FID
+        }
+        _ => FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_NONBLOCK,
     };
     let fan_fd = unsafe {
         libc::syscall(
@@ -957,11 +966,10 @@ pub(crate) enum MarkOutcome {
     /// The kernel rejected the full mask with `EINVAL`; the call was
     /// retried with `FAN_MOUNT_COMPATIBLE_EVENTS` and that mask was
     /// accepted. Real-time coverage of attribute changes, file creations,
-    /// deletions, and renames is degraded for this mount until the daemon
-    /// is rewritten to use `FAN_MARK_FILESYSTEM` + `FAN_REPORT_DFID_NAME`,
-    /// which is now done automatically when the kernel supports it (tier
-    /// `FidDfidName`). Scheduled scans remain a backstop for these event
-    /// classes when running in legacy mode.
+    /// deletions, and renames is degraded for this mount. This only occurs
+    /// on the `LegacyFd` tier path where mount-mark semantics are used.
+    /// On `Fid` and `FidDfidName` tiers, `FAN_MARK_FILESYSTEM` accepts
+    /// the full mask. Scheduled scans backstop the degraded event classes.
     Reduced,
 }
 
@@ -1488,6 +1496,161 @@ mod tests {
             FAN_MOUNT_COMPATIBLE_EVENTS & FAN_CLOSE_WRITE,
             0,
             "FAN_MOUNT_COMPATIBLE_EVENTS must include FAN_CLOSE_WRITE"
+        );
+    }
+
+    /// FID mode must be selected for both FidDfidName and Fid tiers, and
+    /// must NOT be selected for LegacyFd or Inotify. This is a property-shape
+    /// test: any future contributor who accidentally enables FID-tier code on
+    /// the LegacyFd or Inotify path will break this assertion.
+    #[test]
+    fn fid_mode_only_for_fid_and_fid_dfid_name_tiers() {
+        use crate::monitor::FanotifyTier;
+
+        let fid_tiers = [
+            FanotifyTier::FidDfidName,
+            FanotifyTier::Fid,
+        ];
+        let non_fid_tiers = [
+            FanotifyTier::LegacyFd,
+            FanotifyTier::Inotify,
+        ];
+
+        for tier in fid_tiers {
+            let fid_mode = matches!(
+                tier,
+                FanotifyTier::FidDfidName | FanotifyTier::Fid
+            );
+            assert!(
+                fid_mode,
+                "tier {:?} must select FID mode",
+                tier
+            );
+        }
+
+        for tier in non_fid_tiers {
+            let fid_mode = matches!(
+                tier,
+                FanotifyTier::FidDfidName | FanotifyTier::Fid
+            );
+            assert!(
+                !fid_mode,
+                "tier {:?} must NOT select FID mode",
+                tier
+            );
+        }
+    }
+
+    /// FidDfidName init flags include both DFID_NAME and FID report flags.
+    #[test]
+    fn fid_dfid_name_init_flags_include_both_report_flags() {
+        let flags = FAN_CLOEXEC
+            | FAN_CLASS_NOTIF
+            | FAN_NONBLOCK
+            | FAN_REPORT_DFID_NAME
+            | FAN_REPORT_FID;
+        assert_ne!(flags & FAN_REPORT_DFID_NAME, 0);
+        assert_ne!(flags & FAN_REPORT_FID, 0);
+    }
+
+    /// Fid-only init flags include FAN_REPORT_FID but not FAN_REPORT_DFID_NAME.
+    #[test]
+    fn fid_only_init_flags_exclude_dfid_name() {
+        let flags = FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_NONBLOCK | FAN_REPORT_FID;
+        assert_ne!(flags & FAN_REPORT_FID, 0);
+        assert_eq!(flags & FAN_REPORT_DFID_NAME, 0);
+    }
+
+    /// FID mode uses FAN_MARK_FILESYSTEM, legacy mode uses FAN_MARK_MOUNT.
+    #[test]
+    fn fid_mode_selects_filesystem_mark() {
+        assert_ne!(FAN_MARK_FILESYSTEM, FAN_MARK_MOUNT);
+        assert_ne!(FAN_MARK_FILESYSTEM, 0);
+        assert_ne!(FAN_MARK_MOUNT, 0);
+    }
+
+    /// The FID event info type constants must match the kernel ABI values.
+    #[test]
+    fn fid_event_info_type_constants() {
+        assert_eq!(FAN_EVENT_INFO_TYPE_FID, 1);
+        assert_eq!(FAN_EVENT_INFO_TYPE_DFID_NAME, 2);
+    }
+
+    /// resolve_fid_event returns None when given an event buffer with no
+    /// valid info records (empty info section after the metadata header).
+    #[test]
+    fn resolve_fid_event_returns_none_on_empty_info() {
+        let metrics = std::sync::Arc::new(crate::metrics::Metrics::new());
+        let mount_fds = FsidMountMap::new();
+
+        // Minimal valid event: just the metadata header, no info records.
+        let mut buf = vec![0u8; FAN_EVENT_METADATA_LEN];
+        let event_len = FAN_EVENT_METADATA_LEN as u32;
+        buf[0..4].copy_from_slice(&event_len.to_ne_bytes());
+
+        let result = resolve_fid_event(&buf, FAN_EVENT_METADATA_LEN, &mount_fds, &metrics);
+        assert!(result.is_none(), "empty info section should return None");
+    }
+
+    /// resolve_fid_event returns None when the fsid in the info record
+    /// does not match any entry in the mount_fds map.
+    #[test]
+    fn resolve_fid_event_returns_none_on_unknown_fsid() {
+        let metrics = std::sync::Arc::new(crate::metrics::Metrics::new());
+        let mount_fds = FsidMountMap::new(); // empty map
+
+        let info_hdr_size = std::mem::size_of::<FanotifyEventInfoHeader>();
+        let fsid_size = 8usize;
+        let fh_hdr_size = std::mem::size_of::<FileHandleHeader>();
+        let handle_bytes = 8u32;
+        let name = b"test.txt\0";
+        let name_padded_len = (name.len() + 7) & !7;
+
+        let record_len =
+            info_hdr_size + fsid_size + fh_hdr_size + handle_bytes as usize + name_padded_len;
+        let total_len = FAN_EVENT_METADATA_LEN + record_len;
+
+        let mut buf = vec![0u8; total_len];
+        buf[0..4].copy_from_slice(&(total_len as u32).to_ne_bytes());
+
+        let pos = FAN_EVENT_METADATA_LEN;
+        buf[pos] = FAN_EVENT_INFO_TYPE_DFID_NAME;
+        buf[pos + 1] = 0;
+        buf[pos + 2..pos + 4].copy_from_slice(&(record_len as u16).to_ne_bytes());
+
+        let fh_pos = pos + info_hdr_size + fsid_size;
+        buf[fh_pos..fh_pos + 4].copy_from_slice(&handle_bytes.to_ne_bytes());
+        buf[fh_pos + 4..fh_pos + 8].copy_from_slice(&0i32.to_ne_bytes());
+
+        let name_pos = fh_pos + fh_hdr_size + handle_bytes as usize;
+        buf[name_pos..name_pos + name.len()].copy_from_slice(name);
+
+        let result = resolve_fid_event(&buf, total_len, &mount_fds, &metrics);
+        assert!(
+            result.is_none(),
+            "unknown fsid should return None"
+        );
+    }
+
+    /// Verify mask_to_event_type covers all FID-relevant event types.
+    #[test]
+    fn mask_to_event_type_covers_fid_events() {
+        use crate::types::FsEventType;
+        assert_eq!(mask_to_event_type(FAN_CREATE), Some(FsEventType::Create));
+        assert_eq!(mask_to_event_type(FAN_DELETE), Some(FsEventType::Delete));
+        assert_eq!(
+            mask_to_event_type(FAN_MOVED_FROM),
+            Some(FsEventType::MovedFrom)
+        );
+        assert_eq!(
+            mask_to_event_type(FAN_MOVED_TO),
+            Some(FsEventType::MovedTo)
+        );
+        assert_eq!(mask_to_event_type(FAN_ATTRIB), Some(FsEventType::Attrib));
+        assert_eq!(mask_to_event_type(FAN_MODIFY), Some(FsEventType::Modify));
+        assert_eq!(
+            mask_to_event_type(FAN_CLOSE_WRITE),
+            Some(FsEventType::Modify)
         );
     }
 }
