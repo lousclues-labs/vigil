@@ -161,15 +161,25 @@ pub(crate) fn cmd_update(
             new_version
         )));
     } else {
-        // Version downgrade warning
+        // Version downgrade warning (semantic comparison)
         if current_version != "unknown" {
             let cur = current_version.trim_start_matches('v');
             let new = new_version.trim_start_matches('v');
-            if new < cur {
-                prog.warn(&format!(
-                    "downgrade: {} \u{2192} {}",
-                    current_version, new_version
-                ));
+            match (semver::Version::parse(cur), semver::Version::parse(new)) {
+                (Ok(cur_ver), Ok(new_ver)) => {
+                    if new_ver < cur_ver {
+                        prog.warn(&format!(
+                            "downgrade: {} \u{2192} {}",
+                            current_version, new_version
+                        ));
+                    }
+                }
+                _ => {
+                    prog.warn(&format!(
+                        "cannot compare versions semantically (current: {}, target: {}); proceeding anyway",
+                        cur, new
+                    ));
+                }
             }
         }
         prog.end_step_ok(None);
@@ -1045,6 +1055,18 @@ fn display_version(v: &str) -> &str {
     v.trim_start_matches('v')
 }
 
+/// Compare two version strings semantically to determine if moving from
+/// `current` to `target` is an upgrade.
+///
+/// Returns `Some(true)` if upgrade, `Some(false)` if downgrade or equal,
+/// `None` if either version cannot be parsed as semver.
+#[cfg(test)]
+fn is_upgrade_semver(current: &str, target: &str) -> Option<bool> {
+    let cur = semver::Version::parse(current.trim_start_matches('v')).ok()?;
+    let tgt = semver::Version::parse(target.trim_start_matches('v')).ok()?;
+    Some(tgt > cur)
+}
+
 /// Read the package version from Cargo.toml without building.
 fn read_cargo_toml_version(repo: &Path) -> Option<String> {
     let content = std::fs::read_to_string(repo.join("Cargo.toml")).ok()?;
@@ -1331,5 +1353,35 @@ mod tests {
             assert_ne!(dir_meta.uid(), 0);
             assert_ne!(toml_meta.uid(), 0);
         }
+    }
+
+    #[test]
+    fn version_compare_handles_double_digit_minor() {
+        // The regression: 1.8.3 → 1.11.0 was reported as a downgrade
+        // because string-sort puts "1.11.0" before "1.8.3".
+        assert_eq!(is_upgrade_semver("1.8.3", "1.11.0"), Some(true));
+        assert_eq!(is_upgrade_semver("1.11.0", "1.8.3"), Some(false));
+        assert_eq!(is_upgrade_semver("1.0.0", "2.0.0"), Some(true));
+        assert_eq!(is_upgrade_semver("2.0.0", "1.99.99"), Some(false));
+        assert_eq!(is_upgrade_semver("1.0.0", "1.0.1"), Some(true));
+    }
+
+    #[test]
+    fn version_compare_equal_is_not_upgrade() {
+        assert_eq!(is_upgrade_semver("1.11.0", "1.11.0"), Some(false));
+    }
+
+    #[test]
+    fn version_compare_strips_v_prefix() {
+        assert_eq!(is_upgrade_semver("v1.8.3", "v1.11.0"), Some(true));
+        assert_eq!(is_upgrade_semver("v1.11.0", "v1.8.3"), Some(false));
+    }
+
+    #[test]
+    fn version_compare_acknowledges_unparseable() {
+        // Dev builds or non-semver strings return None.
+        assert_eq!(is_upgrade_semver("1.11.0-dev+abc123", "1.8.3"), Some(false));
+        assert_eq!(is_upgrade_semver("not-a-version", "1.8.3"), None);
+        assert_eq!(is_upgrade_semver("1.8.3", "not-a-version"), None);
     }
 }

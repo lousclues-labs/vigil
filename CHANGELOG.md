@@ -6,6 +6,36 @@ All notable changes to Vigil Baseline will be documented in this file.
 > full checklist: fmt → clippy → test → build --release → CHANGELOG →
 > version-bump → commit → push → tag.
 
+## [1.11.1] - 2026-05-02
+
+### Changed (Principle V — clear, unambiguous)
+
+- `vigil doctor` output redesigned. Failures and warnings now appear in a
+  dedicated "Needs attention" zone at the top of the report, immediately under
+  a one-line headline summary. Healthy items are compactly listed below in a
+  single flat section. Recovery hints are clearly subordinate to their parent
+  rows and capped at three per row to reduce noise. The previous section
+  subdivisions (Runtime / Pipeline / Data / Configuration / Integrations) have
+  been removed; they organized the data correctly but made failures hard to spot.
+
+### Fixed (Principle V — unambiguous)
+
+- `vigil update` no longer reports forward minor-version moves past .9 as
+  downgrades. The version comparison was doing string-sort instead of
+  semantic-version-sort, so going from 1.8.3 to 1.11.0 incorrectly displayed
+  a "downgrade" warning. Now uses the `semver` crate for comparison. Unparseable
+  version strings (e.g., dev builds) produce an explicit "cannot compare
+  semantically" notice rather than silently picking a branch.
+
+### Compatibility
+
+- `vigil doctor --json` output is unchanged. Only the human-readable rendering
+  is affected. Dashboards and scripts consuming the JSON are unaffected.
+
+### Dependencies
+
+- Added `semver` (1.x) for semantic version comparison in `vigil update`.
+
 ## [1.11.0] - 2026-05-02
 
 ### Drift class elimination (compile-time and test-time enforcement)

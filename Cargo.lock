@@ -1548,7 +1548,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vigil-baseline"
-version = "1.11.0"
+version = "1.11.1"
 dependencies = [
  "arc-swap",
  "blake3",
@@ -1574,6 +1574,7 @@ dependencies = [
  "rmp-serde",
  "rusqlite",
  "sd-notify",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
