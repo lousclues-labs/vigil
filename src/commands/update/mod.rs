@@ -185,6 +185,21 @@ pub(crate) fn cmd_update(
         prog.end_step_ok(None);
     }
 
+    // ── Enter maintenance window before stopping daemon ────
+    // This tells the running daemon to suppress alerts during the update.
+    // Best-effort: if daemon isn't running or socket is unavailable, we proceed.
+    let vigil_bin = installed_vigil_path();
+    if vigil_bin.exists() {
+        let _ = ProcessCommand::new("sudo")
+            .arg(&vigil_bin)
+            .arg("maintenance")
+            .arg("enter")
+            .arg("--quiet")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+
     // ── Step 4: Stop daemon ────────────────────────────────
     prog.begin_step(UpdateStep::StopDaemon);
     let mut daemon_stop_cmd = ProcessCommand::new("sudo");
@@ -373,6 +388,39 @@ pub(crate) fn cmd_update(
         prog.end_step_warn("daemon not started (no backups for rollback)");
     } else {
         prog.end_step_ok(None);
+    }
+
+    // ── Baseline refresh after update ──────────────────────
+    // The daemon just started with new binaries. Refresh the baseline now
+    // so the changed vigil binaries are recorded, preventing false tamper
+    // detections and chain breaks.
+    if daemon_started && healthy {
+        let new_vigil = installed_vigil_path();
+        let refresh_result = ProcessCommand::new("sudo")
+            .arg(&new_vigil)
+            .arg("baseline")
+            .arg("refresh")
+            .arg("--quiet")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        match refresh_result {
+            Ok(s) if s.success() => {
+                prog.message("Baseline refreshed after update");
+            }
+            _ => {
+                prog.warn("baseline refresh after update did not succeed; run `sudo vigil baseline refresh` manually");
+            }
+        }
+        // Exit maintenance window (entered before daemon stop)
+        let _ = ProcessCommand::new("sudo")
+            .arg(&new_vigil)
+            .arg("maintenance")
+            .arg("exit")
+            .arg("--quiet")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
     }
 
     // ── Step 10: Archive backups ───────────────────────────

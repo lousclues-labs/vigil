@@ -484,12 +484,21 @@ impl ControlHandler {
         self.maintenance_active.store(true, Ordering::Release);
         self.maintenance_entered_at
             .store(chrono::Utc::now().timestamp(), Ordering::Release);
+        // Persist breadcrumb so a daemon restart during maintenance can resume the window.
+        let cfg = self.config.load();
+        let breadcrumb = cfg.daemon.runtime_dir.join("maintenance.pending");
+        let _ = std::fs::create_dir_all(&cfg.daemon.runtime_dir);
+        let _ = std::fs::write(&breadcrumb, chrono::Utc::now().timestamp().to_string());
         serde_json::json!({"ok": true, "message": "maintenance window entered"})
     }
 
     fn handle_maintenance_exit(&self) -> serde_json::Value {
         self.maintenance_active.store(false, Ordering::Release);
         self.maintenance_entered_at.store(0, Ordering::Release);
+        // Remove breadcrumb.
+        let cfg = self.config.load();
+        let breadcrumb = cfg.daemon.runtime_dir.join("maintenance.pending");
+        let _ = std::fs::remove_file(&breadcrumb);
         serde_json::json!({"ok": true, "message": "maintenance window exited"})
     }
 
@@ -1637,5 +1646,60 @@ mod tests {
         assert!(status["entry_count"].is_null());
         assert!(status["chain_intact"].is_null());
         assert!(status["error"].is_string());
+    }
+
+    #[test]
+    fn maintenance_breadcrumb_written_and_cleaned() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::default_config();
+        cfg.daemon.runtime_dir = dir.path().to_path_buf();
+
+        let (scan_tx, _scan_rx) = crossbeam_channel::bounded::<ScanRequest>(1);
+        let handler = ControlHandler {
+            metrics: Arc::new(Metrics::new()),
+            state: Arc::new(RwLock::new(DaemonState::Healthy)),
+            reload_flag: Arc::new(AtomicBool::new(false)),
+            scan_trigger_tx: scan_tx,
+            baseline_db_path: PathBuf::from("/dev/null"),
+            baseline_conn: Arc::new(Mutex::new({
+                let conn = rusqlite::Connection::open_in_memory().unwrap();
+                crate::db::schema::create_baseline_tables(&conn).unwrap();
+                conn
+            })),
+            config: Arc::new(arc_swap::ArcSwap::from_pointee(cfg)),
+            hmac_key: None,
+            auth_enabled: false,
+            maintenance_active: Arc::new(AtomicBool::new(false)),
+            maintenance_entered_at: Arc::new(AtomicI64::new(0)),
+            control_unauthenticated_connections: Arc::new(AtomicU64::new(0)),
+            wal: None,
+            shared_baseline_identity: None,
+            baseline_generation: Arc::new(AtomicU64::new(0)),
+            expectation_registry: None,
+        };
+
+        // Enter maintenance: breadcrumb must be written
+        let result = handler.handle_maintenance_enter();
+        assert_eq!(result["ok"], true);
+        let breadcrumb = dir.path().join("maintenance.pending");
+        assert!(
+            breadcrumb.exists(),
+            "maintenance breadcrumb must be written on enter"
+        );
+        let content = std::fs::read_to_string(&breadcrumb).unwrap();
+        assert!(
+            content.trim().parse::<i64>().is_ok(),
+            "breadcrumb must contain a unix timestamp"
+        );
+        assert!(handler.maintenance_active.load(Ordering::Acquire));
+
+        // Exit maintenance: breadcrumb must be removed
+        let result = handler.handle_maintenance_exit();
+        assert_eq!(result["ok"], true);
+        assert!(
+            !breadcrumb.exists(),
+            "maintenance breadcrumb must be removed on exit"
+        );
+        assert!(!handler.maintenance_active.load(Ordering::Acquire));
     }
 }

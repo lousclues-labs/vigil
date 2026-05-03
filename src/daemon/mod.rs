@@ -101,6 +101,26 @@ impl Daemon {
             }
         }
 
+        // Check for a maintenance breadcrumb from a previous daemon session.
+        // If present, the daemon was stopped during a maintenance window (e.g.,
+        // a package update stopped the daemon mid-transaction). Resume the
+        // maintenance window so detection records written during catch-up are
+        // flagged as maintenance and the auto-timeout mechanism can clean up.
+        let breadcrumb = config.daemon.runtime_dir.join("maintenance.pending");
+        let (resume_maintenance, resume_ts) = if breadcrumb.exists() {
+            let ts = std::fs::read_to_string(&breadcrumb)
+                .ok()
+                .and_then(|s| s.trim().parse::<i64>().ok())
+                .unwrap_or_else(|| chrono::Utc::now().timestamp());
+            tracing::info!(
+                entered_at = ts,
+                "resuming maintenance window from previous session"
+            );
+            (true, ts)
+        } else {
+            (false, 0)
+        };
+
         Ok(Self {
             config: Arc::new(ArcSwap::from_pointee(config)),
             baseline_conn,
@@ -113,8 +133,8 @@ impl Daemon {
             baseline_db_identity,
             audit_db_identity,
             startup_hmac_key,
-            maintenance_active: Arc::new(AtomicBool::new(false)),
-            maintenance_entered_at: Arc::new(AtomicI64::new(0)),
+            maintenance_active: Arc::new(AtomicBool::new(resume_maintenance)),
+            maintenance_entered_at: Arc::new(AtomicI64::new(resume_ts)),
         })
     }
 

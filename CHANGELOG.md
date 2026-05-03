@@ -27,6 +27,23 @@ All notable changes to Vigil Baseline will be documented in this file.
   version strings (e.g., dev builds) produce an explicit "cannot compare
   semantically" notice rather than silently picking a branch.
 
+- `vigil update` now enters a maintenance window before stopping the daemon and
+  runs `baseline refresh` after restart. This prevents false tamper detections
+  and chain breaks when the updated binaries are first seen by the new daemon.
+  Previously, the daemon restarted with a stale baseline and immediately flagged
+  its own binaries as tampered.
+
+- Package manager post-hooks (pacman, apt) now unconditionally exit the
+  maintenance window after a baseline refresh attempt, regardless of whether
+  the refresh succeeded. Previously, a failed refresh could leave the
+  maintenance window open until the 30-minute auto-timeout.
+
+- Maintenance window state is now persisted as a breadcrumb file
+  (`/run/vigil/maintenance.pending`). If the daemon is stopped during a
+  maintenance window and restarted, it resumes the window (subject to the
+  existing auto-timeout). This prevents false tamper detections during the
+  gap between daemon restart and post-hook execution.
+
 ### Compatibility
 
 - `vigil doctor --json` output is unchanged. Only the human-readable rendering
