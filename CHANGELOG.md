@@ -18,6 +18,13 @@ All notable changes to Vigil Baseline will be documented in this file.
   subdivisions (Runtime / Pipeline / Data / Configuration / Integrations) have
   been removed; they organized the data correctly but made failures hard to spot.
 
+- `vigil check --verbose` now appends a "Recent baseline activity" timeline
+  showing the last 7 days (or `--since` window) of file-change audit entries,
+  grouped by day, one line per event with severity marker and change type.
+  Internal vigil events are filtered out. Summary line shows event count, unique
+  paths affected, and maintenance-window events. This gives operators a
+  single-pane view of both current state and recent history.
+
 ### Fixed (Principle V — unambiguous)
 
 - `vigil update` no longer reports forward minor-version moves past .9 as

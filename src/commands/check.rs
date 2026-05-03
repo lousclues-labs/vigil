@@ -8,7 +8,9 @@ use std::sync::Arc;
 use vigil::display;
 use vigil::types::{OutputFormat, ScanMode, Severity};
 
-use super::common::{format_count, parse_time_filter_strict, pipe_to_pager, print_header};
+use super::common::{
+    format_count, parse_time_filter, parse_time_filter_strict, pipe_to_pager, print_header,
+};
 
 pub(crate) struct CheckOpts {
     pub config_path: Option<PathBuf>,
@@ -247,7 +249,15 @@ pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
 
     // Render output
     let term = display::term::TermInfo::detect();
-    let output = display::render_check(&report, opts.format, &term, opts.verbose, opts.brief);
+    let mut output = display::render_check(&report, opts.format, &term, opts.verbose, opts.brief);
+
+    // Verbose mode: append recent audit activity timeline.
+    if opts.verbose && opts.format == OutputFormat::Human {
+        let activity = render_recent_activity(&cfg, &opts);
+        if !activity.is_empty() {
+            output.push_str(&activity);
+        }
+    }
 
     // Pager support: pipe through $PAGER when output exceeds terminal height.
     // Never auto-page when mutating baseline (accept flow) so the operator sees receipts directly.
@@ -603,6 +613,171 @@ pub(crate) fn cmd_check_live(config_path: Option<&Path>, full: bool) -> vigil::R
     Ok(())
 }
 
+/// Render a "Recent baseline activity" timeline from the audit log.
+///
+/// Shows the last 7 days of audit entries (or the window specified by --since),
+/// grouped by day, one line per event. Filters out internal vigil events
+/// (operator acknowledgments, checkpoints) to focus on file changes.
+fn render_recent_activity(cfg: &vigil::config::Config, opts: &CheckOpts) -> String {
+    let audit_conn = match vigil::db::open_audit_db(cfg) {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+
+    let since_ts = opts
+        .since
+        .as_deref()
+        .and_then(parse_time_filter)
+        .unwrap_or_else(|| chrono::Utc::now().timestamp() - 7 * 86_400);
+
+    let q = vigil::db::audit_ops::AuditQuery {
+        since: Some(since_ts),
+        limit: 200,
+        ..Default::default()
+    };
+
+    let entries = match vigil::db::audit_ops::query(&audit_conn, &q) {
+        Ok(e) => e,
+        Err(_) => return String::new(),
+    };
+
+    // Filter out internal vigil events — only show real file changes.
+    // Filesystem paths start with '/'; internal events do not.
+    let file_entries: Vec<_> = entries.iter().filter(|e| e.path.starts_with('/')).collect();
+
+    if file_entries.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::with_capacity(2048);
+
+    let window_label = opts.since.as_deref().unwrap_or("7 days");
+
+    out.push_str("\n  ");
+    for _ in 0..62 {
+        out.push('\u{2500}');
+    }
+    out.push_str("\n  Recent baseline activity (");
+    out.push_str(window_label);
+    out.push_str(")\n  ");
+    for _ in 0..62 {
+        out.push('\u{2500}');
+    }
+    out.push('\n');
+
+    // Group by day (local time), most recent first.
+    let mut current_day = String::new();
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let yesterday = (chrono::Local::now() - chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    for entry in &file_entries {
+        let Some(dt) = chrono::DateTime::<chrono::Utc>::from_timestamp(entry.timestamp, 0) else {
+            continue;
+        };
+        let local = dt.with_timezone(&chrono::Local);
+        let day_key = local.format("%Y-%m-%d").to_string();
+
+        if day_key != current_day {
+            let day_label = if day_key == today {
+                "Today".to_string()
+            } else if day_key == yesterday {
+                "Yesterday".to_string()
+            } else {
+                local.format("%b %d").to_string()
+            };
+            out.push_str(&format!("\n  {}\n", day_label));
+            current_day = day_key;
+        }
+
+        let time = local.format("%H:%M");
+        let sev_upper = entry.severity.to_uppercase();
+        let sev_marker = match entry.severity.as_str() {
+            "critical" | "high" => "\u{25CF}",
+            "medium" => "\u{25CF}",
+            _ => "\u{25CB}",
+        };
+
+        // Extract a short change description from the JSON.
+        let change_desc = short_change_description(&entry.changes_json);
+
+        let maint_flag = if entry.maintenance { " [maint]" } else { "" };
+
+        out.push_str(&format!(
+            "    {}  {} {:<8} {:<36} {}{}\n",
+            time,
+            sev_marker,
+            sev_upper,
+            truncate_for_activity(&entry.path, 36),
+            change_desc,
+            maint_flag,
+        ));
+    }
+
+    // Summary line.
+    let mut unique_paths = std::collections::HashSet::new();
+    let mut maint_count = 0usize;
+    for e in &file_entries {
+        unique_paths.insert(&e.path);
+        if e.maintenance {
+            maint_count += 1;
+        }
+    }
+
+    out.push_str(&format!(
+        "\n  {} event{} in last {} \u{00B7} {} path{} affected",
+        file_entries.len(),
+        if file_entries.len() == 1 { "" } else { "s" },
+        window_label,
+        unique_paths.len(),
+        if unique_paths.len() == 1 { "" } else { "s" },
+    ));
+    if maint_count > 0 {
+        out.push_str(&format!(" \u{00B7} {} during maintenance", maint_count));
+    }
+    out.push_str("\n\n");
+
+    out
+}
+
+/// Extract a short human-readable description from changes_json.
+fn short_change_description(json: &str) -> &'static str {
+    if json.contains("ContentModified") {
+        "content modified"
+    } else if json.contains("Created") {
+        "created"
+    } else if json.contains("Deleted") {
+        "deleted"
+    } else if json.contains("PermissionsChanged") {
+        "permissions changed"
+    } else if json.contains("OwnerChanged") {
+        "owner changed"
+    } else if json.contains("SizeChanged") {
+        "size changed"
+    } else {
+        "changed"
+    }
+}
+
+/// Truncate a path for the activity timeline, preserving the filename.
+fn truncate_for_activity(path: &str, max: usize) -> String {
+    if path.len() <= max {
+        return path.to_string();
+    }
+    if let Some(pos) = path.rfind('/') {
+        let filename = &path[pos..];
+        if filename.len() >= max {
+            return format!("…{}", &filename[filename.len() - (max - 1)..]);
+        }
+        let avail = max - filename.len() - 1; // 1 for ellipsis
+        if avail > 0 {
+            return format!("{}…{}", &path[..avail], filename);
+        }
+    }
+    format!("{}…", &path[..max - 1])
+}
+
 /// Runs forensic disambiguation against every change with a `ContentModified`,
 /// attaching the result to `change.disambiguation`. Best-effort: failures
 /// are silently skipped (the file may have been deleted or become unreadable
@@ -642,5 +817,66 @@ fn run_disambiguation_pass(changes: &mut [vigil::types::ChangeResult], mmap_thre
         }
         // Errors are intentionally swallowed: disambiguation is best-effort
         // metadata, not detection.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_change_description_detects_content_modified() {
+        assert_eq!(
+            short_change_description(r#"[{"ContentModified":{"old":"a","new":"b"}}]"#),
+            "content modified"
+        );
+    }
+
+    #[test]
+    fn short_change_description_detects_created() {
+        assert_eq!(short_change_description(r#"["Created"]"#), "created");
+    }
+
+    #[test]
+    fn short_change_description_detects_deleted() {
+        assert_eq!(short_change_description(r#"["Deleted"]"#), "deleted");
+    }
+
+    #[test]
+    fn short_change_description_fallback() {
+        assert_eq!(short_change_description(r#"[]"#), "changed");
+    }
+
+    #[test]
+    fn truncate_for_activity_short_path() {
+        let result = truncate_for_activity("/usr/bin/vigil", 36);
+        assert_eq!(result, "/usr/bin/vigil");
+    }
+
+    #[test]
+    fn truncate_for_activity_long_path() {
+        let long = "/very/long/path/that/exceeds/limit/file.txt";
+        let result = truncate_for_activity(long, 30);
+        // Display width: the ellipsis occupies 1 column but 3 bytes.
+        let display_width = result.chars().count();
+        assert!(
+            display_width <= 30,
+            "truncated display width {} exceeds 30: {}",
+            display_width,
+            result
+        );
+        assert!(
+            result.contains("file.txt"),
+            "must keep filename: {}",
+            result
+        );
+        assert!(result.contains('…'), "must have ellipsis: {}", result);
+    }
+
+    #[test]
+    fn truncate_for_activity_exact_boundary() {
+        let path = "/usr/bin/vigil"; // 14 chars
+        let result = truncate_for_activity(path, 14);
+        assert_eq!(result, path);
     }
 }
