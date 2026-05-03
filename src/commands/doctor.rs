@@ -147,14 +147,14 @@ pub(crate) fn render_doctor(checks: &[DiagnosticCheck]) -> String {
     out.push('\n');
 
     for check in &healthy {
-        out.push_str(&format!("  {:<16}{}\n", check.name, check.detail));
+        out.push_str(&format!("  {:<20}{}\n", check.name, check.detail));
     }
 
     // ── Optional items ─────────────────────────────────────
     if !optional.is_empty() {
         out.push('\n');
         for check in &optional {
-            out.push_str(&format!("  \u{25CB} {:<13}{}\n", check.name, check.detail));
+            out.push_str(&format!("  \u{25CB} {:<17}{}\n", check.name, check.detail));
         }
     }
 
@@ -164,12 +164,24 @@ pub(crate) fn render_doctor(checks: &[DiagnosticCheck]) -> String {
 
 /// Render a single row in the "Needs attention" zone.
 fn render_attention_row(out: &mut String, check: &DiagnosticCheck) {
-    // Row title: marker + name + detail
-    out.push_str(&format!("  {} {}\n", check.status.marker(), check.name));
+    // Extract acknowledgment metadata from recovery hints, if present.
+    let ack_annotation = extract_acknowledgment(&check.recovery);
+
+    // Row title: marker + name + optional acknowledgment annotation
+    if let Some(ref ack) = ack_annotation {
+        out.push_str(&format!(
+            "  {} {}    {}\n",
+            check.status.marker(),
+            check.name,
+            ack
+        ));
+    } else {
+        out.push_str(&format!("  {} {}\n", check.status.marker(), check.name));
+    }
     // Detail on next line, indented
     out.push_str(&format!("    {}\n", check.detail));
 
-    // Recovery hints with → prefix, max 3
+    // Recovery hints with → prefix, max 3 (excluding acknowledgment metadata)
     render_recovery_hints(out, &check.recovery);
 }
 
@@ -204,6 +216,7 @@ fn render_recovery_hints(out: &mut String, recovery: &Recovery) {
 }
 
 /// Extract (command_or_instruction, optional_description) pairs from a Recovery.
+/// Skips acknowledgment metadata hints — those are rendered inline on the row title.
 fn collect_hints(recovery: &Recovery) -> Vec<(String, Option<String>)> {
     match recovery {
         Recovery::Command(cmd) => vec![(cmd.clone(), None)],
@@ -215,6 +228,7 @@ fn collect_hints(recovery: &Recovery) -> Vec<(String, Option<String>)> {
         Recovery::None => vec![],
         Recovery::Multi(hints) => hints
             .iter()
+            .filter(|h| !is_acknowledgment_metadata(h))
             .map(|h| match h {
                 RecoveryHint::Command { verb, command } => {
                     if verb.is_empty() {
@@ -233,6 +247,30 @@ fn collect_hints(recovery: &Recovery) -> Vec<(String, Option<String>)> {
                 RecoveryHint::Documentation { reference } => (format!("see: {}", reference), None),
             })
             .collect(),
+    }
+}
+
+/// Extract acknowledgment annotation text from recovery hints.
+/// Returns e.g. "acknowledged 2026-04-26 by uid 0" for inline display.
+fn extract_acknowledgment(recovery: &Recovery) -> Option<String> {
+    let Recovery::Multi(hints) = recovery else {
+        return None;
+    };
+    for hint in hints {
+        if let RecoveryHint::Manual { verb, instruction } = hint {
+            if *verb == "acknowledged" {
+                return Some(format!("acknowledged {}", instruction));
+            }
+        }
+    }
+    None
+}
+
+/// True if a hint is acknowledgment metadata (not an actionable recovery step).
+fn is_acknowledgment_metadata(hint: &RecoveryHint) -> bool {
+    match hint {
+        RecoveryHint::Manual { verb, .. } => *verb == "acknowledged" || *verb == "note",
+        _ => false,
     }
 }
 
@@ -510,6 +548,48 @@ mod tests {
         assert!(
             fail_pos < warn_pos,
             "failures must appear before warnings in Needs attention zone"
+        );
+    }
+
+    #[test]
+    fn doctor_acknowledged_items_show_inline_annotation() {
+        let checks = vec![make_check(
+            "Audit log",
+            CheckStatus::Warning,
+            "chain tamper at entry 329459",
+            Recovery::Multi(vec![
+                RecoveryHint::Manual {
+                    verb: "acknowledged",
+                    instruction: "2026-04-26T00:29 by uid 0".into(),
+                },
+                RecoveryHint::Command {
+                    verb: "diagnose",
+                    command: "vigil audit verify -v".into(),
+                },
+                RecoveryHint::Command {
+                    verb: "investigate",
+                    command: "vigil why <path>".into(),
+                },
+            ]),
+        )];
+
+        let output = render_doctor(&checks);
+
+        // Acknowledgment should appear inline on the row title, not as a → hint
+        assert!(
+            output.contains("Audit log    acknowledged 2026-04-26T00:29 by uid 0"),
+            "acknowledged annotation must appear inline on row title:\n{}",
+            output
+        );
+        // The → leader should point to an actual command, not the ack metadata
+        let arrow_line = output
+            .lines()
+            .find(|l| l.contains('\u{2192}'))
+            .expect("must have an arrow hint");
+        assert!(
+            arrow_line.contains("vigil audit verify"),
+            "arrow must point to a real command, not ack metadata: {}",
+            arrow_line
         );
     }
 }
