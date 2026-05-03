@@ -147,20 +147,14 @@ pub(crate) fn render_doctor(checks: &[DiagnosticCheck]) -> String {
     out.push('\n');
 
     for check in &healthy {
-        out.push_str(&format!(
-            "  {:<16}{}\n",
-            check.name, check.detail
-        ));
+        out.push_str(&format!("  {:<16}{}\n", check.name, check.detail));
     }
 
     // ── Optional items ─────────────────────────────────────
     if !optional.is_empty() {
         out.push('\n');
         for check in &optional {
-            out.push_str(&format!(
-                "  \u{25CB} {:<13}{}\n",
-                check.name, check.detail
-            ));
+            out.push_str(&format!("  \u{25CB} {:<13}{}\n", check.name, check.detail));
         }
     }
 
@@ -171,11 +165,7 @@ pub(crate) fn render_doctor(checks: &[DiagnosticCheck]) -> String {
 /// Render a single row in the "Needs attention" zone.
 fn render_attention_row(out: &mut String, check: &DiagnosticCheck) {
     // Row title: marker + name + detail
-    out.push_str(&format!(
-        "  {} {}\n",
-        check.status.marker(),
-        check.name
-    ));
+    out.push_str(&format!("  {} {}\n", check.status.marker(), check.name));
     // Detail on next line, indented
     out.push_str(&format!("    {}\n", check.detail));
 
@@ -198,20 +188,14 @@ fn render_recovery_hints(out: &mut String, recovery: &Recovery) {
         if i == 0 {
             // First hint gets the arrow
             if let Some(desc) = description {
-                out.push_str(&format!(
-                    "      \u{2192} {:<40}{}\n",
-                    command, desc
-                ));
+                out.push_str(&format!("      \u{2192} {:<40}{}\n", command, desc));
             } else {
                 out.push_str(&format!("      \u{2192} {}\n", command));
             }
         } else {
             // Subsequent hints align under the command column
             if let Some(desc) = description {
-                out.push_str(&format!(
-                    "        {:<40}{}\n",
-                    command, desc
-                ));
+                out.push_str(&format!("        {:<40}{}\n", command, desc));
             } else {
                 out.push_str(&format!("        {}\n", command));
             }
@@ -246,9 +230,7 @@ fn collect_hints(recovery: &Recovery) -> Vec<(String, Option<String>)> {
                         (instruction.clone(), Some(verb.to_string()))
                     }
                 }
-                RecoveryHint::Documentation { reference } => {
-                    (format!("see: {}", reference), None)
-                }
+                RecoveryHint::Documentation { reference } => (format!("see: {}", reference), None),
             })
             .collect(),
     }
@@ -276,7 +258,12 @@ mod tests {
     use super::*;
     use vigil::doctor::{CheckStatus, DiagnosticCheck, Recovery, RecoveryHint};
 
-    fn make_check(name: &str, status: CheckStatus, detail: &str, recovery: Recovery) -> DiagnosticCheck {
+    fn make_check(
+        name: &str,
+        status: CheckStatus,
+        detail: &str,
+        recovery: Recovery,
+    ) -> DiagnosticCheck {
         DiagnosticCheck {
             name: name.to_string(),
             status,
@@ -291,14 +278,31 @@ mod tests {
     fn doctor_headline_counts_match_rendered_rows() {
         let checks = vec![
             make_check("Daemon", CheckStatus::Ok, "running", Recovery::None),
-            make_check("Socket", CheckStatus::Failed, "dropping alerts",
-                Recovery::Command("vigil alerts socket disable".into())),
-            make_check("Audit log", CheckStatus::Warning, "chain tamper at entry 329459",
-                Recovery::Command("vigil audit verify -v".into())),
-            make_check("Hooks", CheckStatus::Warning, "last pacman trigger failed",
-                Recovery::Command("vigil hooks verify".into())),
+            make_check(
+                "Socket",
+                CheckStatus::Failed,
+                "dropping alerts",
+                Recovery::Command("vigil alerts socket disable".into()),
+            ),
+            make_check(
+                "Audit log",
+                CheckStatus::Warning,
+                "chain tamper at entry 329459",
+                Recovery::Command("vigil audit verify -v".into()),
+            ),
+            make_check(
+                "Hooks",
+                CheckStatus::Warning,
+                "last pacman trigger failed",
+                Recovery::Command("vigil hooks verify".into()),
+            ),
             make_check("Config", CheckStatus::Ok, "valid", Recovery::None),
-            make_check("Attest key", CheckStatus::Unknown, "not configured (optional)", Recovery::None),
+            make_check(
+                "Attest key",
+                CheckStatus::Unknown,
+                "not configured (optional)",
+                Recovery::None,
+            ),
         ];
 
         let output = render_doctor(&checks);
@@ -309,31 +313,60 @@ mod tests {
 
         // The headline should have the same counts (one occurrence each in headline)
         // Plus the attention zone rows. Headline has 1 ✗ + attention has 1 ✗ = 2 total.
-        assert_eq!(fail_markers, 2, "headline + row failure markers: {}", output);
+        assert_eq!(
+            fail_markers, 2,
+            "headline + row failure markers: {}",
+            output
+        );
         // Headline has 1 ⚠ + 2 attention rows = 3 total ⚠
-        assert_eq!(warn_markers, 3, "headline + row warning markers: {}", output);
+        assert_eq!(
+            warn_markers, 3,
+            "headline + row warning markers: {}",
+            output
+        );
     }
 
     #[test]
     fn doctor_all_healthy_omits_needs_attention() {
         let checks = vec![
-            make_check("Daemon", CheckStatus::Ok, "running · pid 94773", Recovery::None),
+            make_check(
+                "Daemon",
+                CheckStatus::Ok,
+                "running · pid 94773",
+                Recovery::None,
+            ),
             make_check("Config", CheckStatus::Ok, "valid", Recovery::None),
             make_check("Database", CheckStatus::Ok, "integrity OK", Recovery::None),
         ];
 
         let output = render_doctor(&checks);
 
-        assert!(!output.contains("Needs attention"), "all-healthy output must not show Needs attention zone:\n{}", output);
-        assert!(output.contains("Healthy"), "must show Healthy zone:\n{}", output);
-        assert!(output.contains("\u{25CF} 3 healthy"), "headline must show 3 healthy:\n{}", output);
+        assert!(
+            !output.contains("Needs attention"),
+            "all-healthy output must not show Needs attention zone:\n{}",
+            output
+        );
+        assert!(
+            output.contains("Healthy"),
+            "must show Healthy zone:\n{}",
+            output
+        );
+        assert!(
+            output.contains("\u{25CF} 3 healthy"),
+            "headline must show 3 healthy:\n{}",
+            output
+        );
     }
 
     #[test]
     fn doctor_failure_only_no_warnings() {
         let checks = vec![
-            make_check("Daemon", CheckStatus::Failed, "not running",
-                Recovery::Command("sudo systemctl start vigild".into())),
+            make_check(
+                "Daemon",
+                CheckStatus::Failed,
+                "not running",
+                Recovery::Command("sudo systemctl start vigild".into()),
+            ),
             make_check("Config", CheckStatus::Ok, "valid", Recovery::None),
         ];
 
@@ -341,19 +374,34 @@ mod tests {
 
         assert!(output.contains("Needs attention"));
         assert!(output.contains("\u{2717} 1 failure"));
-        assert!(!output.contains("\u{26A0}"), "no warnings in headline:\n{}", output);
+        assert!(
+            !output.contains("\u{26A0}"),
+            "no warnings in headline:\n{}",
+            output
+        );
     }
 
     #[test]
     fn doctor_no_optional_omits_optional_from_headline() {
-        let checks = vec![
-            make_check("Daemon", CheckStatus::Ok, "running", Recovery::None),
-        ];
+        let checks = vec![make_check(
+            "Daemon",
+            CheckStatus::Ok,
+            "running",
+            Recovery::None,
+        )];
 
         let output = render_doctor(&checks);
 
-        assert!(!output.contains("\u{25CB}"), "no optional marker:\n{}", output);
-        assert!(!output.contains("optional"), "no optional text:\n{}", output);
+        assert!(
+            !output.contains("\u{25CB}"),
+            "no optional marker:\n{}",
+            output
+        );
+        assert!(
+            !output.contains("optional"),
+            "no optional text:\n{}",
+            output
+        );
     }
 
     #[test]
@@ -371,22 +419,47 @@ mod tests {
 
         let output = render_doctor(&checks);
 
-        assert!(output.contains("\u{25CB} 1 optional"), "headline shows optional:\n{}", output);
-        assert!(output.contains("\u{25CB} Attest key"), "optional item rendered with ○:\n{}", output);
+        assert!(
+            output.contains("\u{25CB} 1 optional"),
+            "headline shows optional:\n{}",
+            output
+        );
+        assert!(
+            output.contains("\u{25CB} Attest key"),
+            "optional item rendered with ○:\n{}",
+            output
+        );
     }
 
     #[test]
     fn doctor_max_three_hints_per_row() {
-        let checks = vec![
-            make_check("Audit log", CheckStatus::Warning, "chain tamper",
-                Recovery::Multi(vec![
-                    RecoveryHint::Command { verb: "recover", command: "vigil audit verify -v".into() },
-                    RecoveryHint::Command { verb: "investigate", command: "vigil why <path>".into() },
-                    RecoveryHint::Command { verb: "acknowledge", command: "vigil ack chain-break".into() },
-                    RecoveryHint::Command { verb: "backup", command: "cp audit.db audit.db.bak".into() },
-                    RecoveryHint::Manual { verb: "note", instruction: "extra hint".into() },
-                ])),
-        ];
+        let checks = vec![make_check(
+            "Audit log",
+            CheckStatus::Warning,
+            "chain tamper",
+            Recovery::Multi(vec![
+                RecoveryHint::Command {
+                    verb: "recover",
+                    command: "vigil audit verify -v".into(),
+                },
+                RecoveryHint::Command {
+                    verb: "investigate",
+                    command: "vigil why <path>".into(),
+                },
+                RecoveryHint::Command {
+                    verb: "acknowledge",
+                    command: "vigil ack chain-break".into(),
+                },
+                RecoveryHint::Command {
+                    verb: "backup",
+                    command: "cp audit.db audit.db.bak".into(),
+                },
+                RecoveryHint::Manual {
+                    verb: "note",
+                    instruction: "extra hint".into(),
+                },
+            ]),
+        )];
 
         let output = render_doctor(&checks);
 
@@ -395,7 +468,8 @@ mod tests {
             .lines()
             .filter(|l| {
                 let trimmed = l.trim_start();
-                trimmed.starts_with('\u{2192}') || (l.starts_with("        ") && !l.trim().is_empty())
+                trimmed.starts_with('\u{2192}')
+                    || (l.starts_with("        ") && !l.trim().is_empty())
             })
             .collect();
         assert!(
@@ -410,17 +484,29 @@ mod tests {
     #[test]
     fn doctor_failures_appear_before_warnings() {
         let checks = vec![
-            make_check("Hooks", CheckStatus::Warning, "hook failed",
-                Recovery::Command("vigil hooks verify".into())),
-            make_check("Socket", CheckStatus::Failed, "dropping alerts",
-                Recovery::Command("vigil alerts socket disable".into())),
+            make_check(
+                "Hooks",
+                CheckStatus::Warning,
+                "hook failed",
+                Recovery::Command("vigil hooks verify".into()),
+            ),
+            make_check(
+                "Socket",
+                CheckStatus::Failed,
+                "dropping alerts",
+                Recovery::Command("vigil alerts socket disable".into()),
+            ),
             make_check("Config", CheckStatus::Ok, "valid", Recovery::None),
         ];
 
         let output = render_doctor(&checks);
 
-        let fail_pos = output.find("\u{2717} Socket").expect("failure row must exist");
-        let warn_pos = output.find("\u{26A0} Hooks").expect("warning row must exist");
+        let fail_pos = output
+            .find("\u{2717} Socket")
+            .expect("failure row must exist");
+        let warn_pos = output
+            .find("\u{26A0} Hooks")
+            .expect("warning row must exist");
         assert!(
             fail_pos < warn_pos,
             "failures must appear before warnings in Needs attention zone"
