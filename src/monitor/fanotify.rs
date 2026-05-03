@@ -282,9 +282,7 @@ pub fn start(
         super::FanotifyTier::FidDfidName => {
             FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_NONBLOCK | FAN_REPORT_DFID_NAME | FAN_REPORT_FID
         }
-        super::FanotifyTier::Fid => {
-            FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_NONBLOCK | FAN_REPORT_FID
-        }
+        super::FanotifyTier::Fid => FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_NONBLOCK | FAN_REPORT_FID,
         _ => FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_NONBLOCK,
     };
     let fan_fd = unsafe {
@@ -1499,48 +1497,25 @@ mod tests {
     fn fid_mode_only_for_fid_and_fid_dfid_name_tiers() {
         use crate::monitor::FanotifyTier;
 
-        let fid_tiers = [
-            FanotifyTier::FidDfidName,
-            FanotifyTier::Fid,
-        ];
-        let non_fid_tiers = [
-            FanotifyTier::LegacyFd,
-            FanotifyTier::Inotify,
-        ];
+        let fid_tiers = [FanotifyTier::FidDfidName, FanotifyTier::Fid];
+        let non_fid_tiers = [FanotifyTier::LegacyFd, FanotifyTier::Inotify];
 
         for tier in fid_tiers {
-            let fid_mode = matches!(
-                tier,
-                FanotifyTier::FidDfidName | FanotifyTier::Fid
-            );
-            assert!(
-                fid_mode,
-                "tier {:?} must select FID mode",
-                tier
-            );
+            let fid_mode = matches!(tier, FanotifyTier::FidDfidName | FanotifyTier::Fid);
+            assert!(fid_mode, "tier {:?} must select FID mode", tier);
         }
 
         for tier in non_fid_tiers {
-            let fid_mode = matches!(
-                tier,
-                FanotifyTier::FidDfidName | FanotifyTier::Fid
-            );
-            assert!(
-                !fid_mode,
-                "tier {:?} must NOT select FID mode",
-                tier
-            );
+            let fid_mode = matches!(tier, FanotifyTier::FidDfidName | FanotifyTier::Fid);
+            assert!(!fid_mode, "tier {:?} must NOT select FID mode", tier);
         }
     }
 
     /// FidDfidName init flags include both DFID_NAME and FID report flags.
     #[test]
     fn fid_dfid_name_init_flags_include_both_report_flags() {
-        let flags = FAN_CLOEXEC
-            | FAN_CLASS_NOTIF
-            | FAN_NONBLOCK
-            | FAN_REPORT_DFID_NAME
-            | FAN_REPORT_FID;
+        let flags =
+            FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_NONBLOCK | FAN_REPORT_DFID_NAME | FAN_REPORT_FID;
         assert_ne!(flags & FAN_REPORT_DFID_NAME, 0);
         assert_ne!(flags & FAN_REPORT_FID, 0);
     }
@@ -1618,10 +1593,7 @@ mod tests {
         buf[name_pos..name_pos + name.len()].copy_from_slice(name);
 
         let result = resolve_fid_event(&buf, total_len, &mount_fds, &metrics);
-        assert!(
-            result.is_none(),
-            "unknown fsid should return None"
-        );
+        assert!(result.is_none(), "unknown fsid should return None");
     }
 
     /// Verify mask_to_event_type covers all FID-relevant event types.
@@ -1634,10 +1606,7 @@ mod tests {
             mask_to_event_type(FAN_MOVED_FROM),
             Some(FsEventType::MovedFrom)
         );
-        assert_eq!(
-            mask_to_event_type(FAN_MOVED_TO),
-            Some(FsEventType::MovedTo)
-        );
+        assert_eq!(mask_to_event_type(FAN_MOVED_TO), Some(FsEventType::MovedTo));
         assert_eq!(mask_to_event_type(FAN_ATTRIB), Some(FsEventType::Attrib));
         assert_eq!(mask_to_event_type(FAN_MODIFY), Some(FsEventType::Modify));
         assert_eq!(

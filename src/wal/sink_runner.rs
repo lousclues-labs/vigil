@@ -205,7 +205,10 @@ impl SinkRunner {
             if let Some(ref state) = self.daemon_state {
                 let mut s = state.0.write();
                 if let crate::types::DaemonState::Degraded { reason, .. } = &*s {
-                    if matches!(reason, crate::types::DegradedReason::AlertSinkFailing { .. }) {
+                    if matches!(
+                        reason,
+                        crate::types::DegradedReason::AlertSinkFailing { .. }
+                    ) {
                         tracing::info!("alert sink failures resolved; returning to healthy state");
                         *s = crate::types::DaemonState::Healthy;
                     }

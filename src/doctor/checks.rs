@@ -137,10 +137,7 @@ pub(super) fn check_realtime_coverage(config: &Config, daemon_running: bool) -> 
         DiagnosticCheck {
             name: "Real-time coverage".to_string(),
             status: CheckStatus::Ok,
-            detail: format!(
-                "full event coverage on all mounts (tier: {})",
-                tier_label
-            ),
+            detail: format!("full event coverage on all mounts (tier: {})", tier_label),
             recovery: Recovery::None,
         }
     } else {
@@ -155,9 +152,7 @@ pub(super) fn check_realtime_coverage(config: &Config, daemon_running: bool) -> 
                  would restore full real-time coverage.",
                 reduced
             ),
-            recovery: Recovery::Documentation(
-                "docs/ARCHITECTURE.md § Fanotify tier system".into(),
-            ),
+            recovery: Recovery::Documentation("docs/ARCHITECTURE.md § Fanotify tier system".into()),
         }
     }
 }
@@ -641,7 +636,8 @@ pub(super) fn check_audit_trajectory(config: &Config) -> DiagnosticCheck {
             recovery: Recovery::Multi(vec![
                 RecoveryHint::Manual {
                     verb: "options",
-                    instruction: "raise audit.max_size_mb or lower audit.retention_days in vigil.toml".into(),
+                    instruction:
+                        "raise audit.max_size_mb or lower audit.retention_days in vigil.toml".into(),
                 },
                 RecoveryHint::Command {
                     verb: "investigate",

@@ -337,7 +337,9 @@ pub fn spawn(cfg: CoordinatorConfig) -> crate::Result<std::thread::JoinHandle<()
                             let mut s = g_state.write();
                             if let DaemonState::Degraded { reason, .. } = &*s {
                                 if matches!(reason, DegradedReason::ControlSocketDrift { .. }) {
-                                    tracing::info!("control socket drift resolved; returning to healthy state");
+                                    tracing::info!(
+                                        "control socket drift resolved; returning to healthy state"
+                                    );
                                     *s = DaemonState::Healthy;
                                 }
                             }
@@ -1599,7 +1601,9 @@ fn check_control_socket_ownership(path: &std::path::Path) -> ControlSocketStatus
             if uid != our_uid {
                 ControlSocketStatus::OwnershipDrift { _observed_uid: uid }
             } else if mode != 0o600 && mode != 0o660 {
-                ControlSocketStatus::PermissionDrift { _observed_mode: mode }
+                ControlSocketStatus::PermissionDrift {
+                    _observed_mode: mode,
+                }
             } else {
                 ControlSocketStatus::Ok
             }

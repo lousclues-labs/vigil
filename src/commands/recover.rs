@@ -128,12 +128,18 @@ fn describe(reason: &DegradedReason) -> ReasonInfo {
         DegradedReason::AlertSinkFailing { ref sink, .. } => ReasonInfo {
             code,
             situation: match sink.as_str() {
-                "socket" => "A configured alert socket sink is failing to deliver. \
-                    Alerts are silently dropped until the sink recovers.",
-                "webhook" => "A configured webhook sink is failing to deliver. \
-                    Alerts are silently dropped until the sink recovers.",
-                _ => "A configured alert sink is failing to deliver. \
-                    Alerts are silently dropped until the sink recovers.",
+                "socket" => {
+                    "A configured alert socket sink is failing to deliver. \
+                    Alerts are silently dropped until the sink recovers."
+                }
+                "webhook" => {
+                    "A configured webhook sink is failing to deliver. \
+                    Alerts are silently dropped until the sink recovers."
+                }
+                _ => {
+                    "A configured alert sink is failing to deliver. \
+                    Alerts are silently dropped until the sink recovers."
+                }
             },
             action: "Investigate the sink configuration and connectivity, fix the \
                 underlying issue, then recover.",
@@ -141,13 +147,19 @@ fn describe(reason: &DegradedReason) -> ReasonInfo {
         DegradedReason::ControlSocketDrift { ref kind } => ReasonInfo {
             code,
             situation: match kind.as_str() {
-                "ownership_drift" => "The control socket ownership has changed from \
+                "ownership_drift" => {
+                    "The control socket ownership has changed from \
                     the daemon's effective UID. Another process or operator may have \
-                    modified the socket file.",
-                "permission_drift" => "The control socket permissions have changed \
-                    from the expected mode. This could allow unauthorized access.",
-                "missing" => "The control socket file has been removed while the \
-                    daemon is running. CLI commands will fail until it is recreated.",
+                    modified the socket file."
+                }
+                "permission_drift" => {
+                    "The control socket permissions have changed \
+                    from the expected mode. This could allow unauthorized access."
+                }
+                "missing" => {
+                    "The control socket file has been removed while the \
+                    daemon is running. CLI commands will fail until it is recreated."
+                }
                 _ => "The control socket file has drifted from its expected state.",
             },
             action: "Restore the control socket to its expected ownership and \

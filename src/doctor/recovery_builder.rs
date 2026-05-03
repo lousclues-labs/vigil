@@ -173,12 +173,8 @@ impl RecoveryBuilder {
             }
             DegradedReason::ControlSocketDrift { kind } => {
                 let fix = match kind.as_str() {
-                    "ownership_drift" => {
-                        "sudo chown root:root /run/vigil/control.sock".to_string()
-                    }
-                    "permission_drift" => {
-                        "sudo chmod 0660 /run/vigil/control.sock".to_string()
-                    }
+                    "ownership_drift" => "sudo chown root:root /run/vigil/control.sock".to_string(),
+                    "permission_drift" => "sudo chmod 0660 /run/vigil/control.sock".to_string(),
                     "missing" => "sudo systemctl restart vigild".to_string(),
                     _ => "sudo systemctl restart vigild".to_string(),
                 };
@@ -259,10 +255,7 @@ impl RecoveryBuilder {
 
     /// Recovery for HMAC key ownership fix.
     pub fn hmac_key_chown(key_path: &Path) -> Recovery {
-        Recovery::Command(format!(
-            "sudo chown root:root {}",
-            shell_escape(key_path)
-        ))
+        Recovery::Command(format!("sudo chown root:root {}", shell_escape(key_path)))
     }
 
     /// Recovery for attest key permission fix.
@@ -296,18 +289,17 @@ mod tests {
             let recovery = RecoveryBuilder::for_degraded(&reason);
             match &recovery {
                 Recovery::None => {
-                    panic!("RecoveryBuilder::for_degraded returned None for {:?}", reason)
+                    panic!(
+                        "RecoveryBuilder::for_degraded returned None for {:?}",
+                        reason
+                    )
                 }
-                Recovery::Command(cmd) => assert!(
-                    !cmd.is_empty(),
-                    "empty recovery command for {:?}",
-                    reason
-                ),
-                Recovery::Multi(hints) => assert!(
-                    !hints.is_empty(),
-                    "empty Multi recovery for {:?}",
-                    reason
-                ),
+                Recovery::Command(cmd) => {
+                    assert!(!cmd.is_empty(), "empty recovery command for {:?}", reason)
+                }
+                Recovery::Multi(hints) => {
+                    assert!(!hints.is_empty(), "empty Multi recovery for {:?}", reason)
+                }
                 _ => {}
             }
         }
@@ -343,10 +335,7 @@ mod tests {
                 "audit_chain_break_with_path",
                 RecoveryBuilder::audit_chain_break(Some(Path::new("/etc/shadow"))),
             ),
-            (
-                "ack_chain_break",
-                RecoveryBuilder::ack_chain_break("test"),
-            ),
+            ("ack_chain_break", RecoveryBuilder::ack_chain_break("test")),
         ];
 
         for (label, recovery) in &standalone_recoveries {
@@ -361,14 +350,10 @@ mod tests {
         }
     }
 
-    fn check_recovery_commands_parse(
-        recovery: &Recovery,
-        label: &str,
-        failures: &mut Vec<String>,
-    ) {
+    fn check_recovery_commands_parse(recovery: &Recovery, label: &str, failures: &mut Vec<String>) {
+        use crate::cli::Cli;
         #[allow(unused_imports)]
         use clap::Parser;
-        use crate::cli::Cli;
 
         let commands = extract_vigil_commands(recovery);
         for cmd in commands {
@@ -412,9 +397,6 @@ mod tests {
 
     #[test]
     fn shell_escape_path_with_spaces() {
-        assert_eq!(
-            shell_escape(Path::new("/my path/file")),
-            "'/my path/file'"
-        );
+        assert_eq!(shell_escape(Path::new("/my path/file")), "'/my path/file'");
     }
 }

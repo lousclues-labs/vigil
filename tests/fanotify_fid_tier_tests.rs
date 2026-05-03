@@ -22,20 +22,12 @@ use vigil::monitor::FanotifyTier;
 fn fid_code_path_selected_only_for_fid_tiers() {
     for tier in [FanotifyTier::FidDfidName, FanotifyTier::Fid] {
         let fid_mode = matches!(tier, FanotifyTier::FidDfidName | FanotifyTier::Fid);
-        assert!(
-            fid_mode,
-            "{:?} must select FID code path",
-            tier
-        );
+        assert!(fid_mode, "{:?} must select FID code path", tier);
     }
 
     for tier in [FanotifyTier::LegacyFd, FanotifyTier::Inotify] {
         let fid_mode = matches!(tier, FanotifyTier::FidDfidName | FanotifyTier::Fid);
-        assert!(
-            !fid_mode,
-            "{:?} must NOT select FID code path",
-            tier
-        );
+        assert!(!fid_mode, "{:?} must NOT select FID code path", tier);
     }
 }
 
@@ -54,7 +46,10 @@ fn fid_and_fid_dfid_name_have_distinct_init_flags() {
     let dfid_flags =
         FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_NONBLOCK | FAN_REPORT_DFID_NAME | FAN_REPORT_FID;
 
-    assert_ne!(fid_flags, dfid_flags, "Fid and FidDfidName must use different init flags");
+    assert_ne!(
+        fid_flags, dfid_flags,
+        "Fid and FidDfidName must use different init flags"
+    );
     assert_eq!(
         fid_flags & FAN_REPORT_DFID_NAME,
         0,
@@ -170,17 +165,26 @@ fn fid_tier_receives_create_delete_move_attrib_events() {
             libc::O_RDONLY | libc::O_LARGEFILE,
         )
     } as RawFd;
-    assert!(fan_fd >= 0, "fanotify_init failed: {}", std::io::Error::last_os_error());
+    assert!(
+        fan_fd >= 0,
+        "fanotify_init failed: {}",
+        std::io::Error::last_os_error()
+    );
 
     // Create a tmpdir (on tmpfs if possible)
     let tmpdir = tempfile::tempdir().expect("failed to create tmpdir");
     let tmpdir_path = tmpdir.path();
 
     // Mark the filesystem
-    let c_path = std::ffi::CString::new(tmpdir_path.as_os_str().as_encoded_bytes())
-        .expect("CString failed");
-    let mask = FAN_MODIFY | FAN_CLOSE_WRITE | FAN_ATTRIB | FAN_CREATE | FAN_DELETE
-        | FAN_MOVED_FROM | FAN_MOVED_TO;
+    let c_path =
+        std::ffi::CString::new(tmpdir_path.as_os_str().as_encoded_bytes()).expect("CString failed");
+    let mask = FAN_MODIFY
+        | FAN_CLOSE_WRITE
+        | FAN_ATTRIB
+        | FAN_CREATE
+        | FAN_DELETE
+        | FAN_MOVED_FROM
+        | FAN_MOVED_TO;
 
     #[allow(unsafe_code)]
     let mark_ret = unsafe {
@@ -193,7 +197,11 @@ fn fid_tier_receives_create_delete_move_attrib_events() {
             c_path.as_ptr(),
         )
     };
-    assert!(mark_ret >= 0, "fanotify_mark failed: {}", std::io::Error::last_os_error());
+    assert!(
+        mark_ret >= 0,
+        "fanotify_mark failed: {}",
+        std::io::Error::last_os_error()
+    );
 
     // Perform filesystem operations
     let test_file = tmpdir_path.join("test_create.txt");
@@ -233,24 +241,38 @@ fn fid_tier_receives_create_delete_move_attrib_events() {
         let mut offset = 0;
         while offset + meta_size <= n {
             let event_len = u32::from_ne_bytes([
-                buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3],
+                buf[offset],
+                buf[offset + 1],
+                buf[offset + 2],
+                buf[offset + 3],
             ]) as usize;
             if event_len < meta_size || offset + event_len > n {
                 break;
             }
             let event_mask = u64::from_ne_bytes([
-                buf[offset + 8], buf[offset + 9], buf[offset + 10], buf[offset + 11],
-                buf[offset + 12], buf[offset + 13], buf[offset + 14], buf[offset + 15],
+                buf[offset + 8],
+                buf[offset + 9],
+                buf[offset + 10],
+                buf[offset + 11],
+                buf[offset + 12],
+                buf[offset + 13],
+                buf[offset + 14],
+                buf[offset + 15],
             ]);
             event_masks.push(event_mask);
 
             // Close any fd in the event (FID mode should have fd == -1)
             let fd = i32::from_ne_bytes([
-                buf[offset + 16], buf[offset + 17], buf[offset + 18], buf[offset + 19],
+                buf[offset + 16],
+                buf[offset + 17],
+                buf[offset + 18],
+                buf[offset + 19],
             ]);
             #[allow(unsafe_code)]
             if fd >= 0 {
-                unsafe { libc::close(fd); }
+                unsafe {
+                    libc::close(fd);
+                }
             }
             offset += event_len;
         }
@@ -258,13 +280,19 @@ fn fid_tier_receives_create_delete_move_attrib_events() {
 
     // Close the fanotify fd
     #[allow(unsafe_code)]
-    unsafe { libc::close(fan_fd); }
+    unsafe {
+        libc::close(fan_fd);
+    }
 
     // Verify we received the expected event types.
     // We look for at least one of each type we triggered.
     let has_create = event_masks.iter().any(|m| m & FAN_CREATE != 0);
-    let has_modify = event_masks.iter().any(|m| m & (FAN_MODIFY | FAN_CLOSE_WRITE) != 0);
-    let has_moved = event_masks.iter().any(|m| m & (FAN_MOVED_FROM | FAN_MOVED_TO) != 0);
+    let has_modify = event_masks
+        .iter()
+        .any(|m| m & (FAN_MODIFY | FAN_CLOSE_WRITE) != 0);
+    let has_moved = event_masks
+        .iter()
+        .any(|m| m & (FAN_MOVED_FROM | FAN_MOVED_TO) != 0);
     let has_attrib = event_masks.iter().any(|m| m & FAN_ATTRIB != 0);
     let has_delete = event_masks.iter().any(|m| m & FAN_DELETE != 0);
 

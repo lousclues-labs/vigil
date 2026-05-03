@@ -448,7 +448,10 @@ pub fn run_diagnostics(config: &Config) -> Vec<DiagnosticCheck> {
     checks_vec.push(daemon_check);
     checks_vec.push(checks::check_daemon_state(config, daemon_probe.running));
     checks_vec.push(checks::check_backend(config, daemon_probe.running));
-    checks_vec.push(checks::check_realtime_coverage(config, daemon_probe.running));
+    checks_vec.push(checks::check_realtime_coverage(
+        config,
+        daemon_probe.running,
+    ));
     checks_vec.push(checks::check_control_socket(config));
     checks_vec.push(checks::check_baseline(config));
     checks_vec.push(checks::check_database_integrity(config));
