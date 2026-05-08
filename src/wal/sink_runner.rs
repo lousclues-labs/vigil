@@ -248,6 +248,14 @@ impl SinkRunner {
 
     fn is_suppressed(&mut self, change: &ChangeResult, maintenance_window: bool) -> bool {
         if maintenance_window && change.package.is_some() {
+            // Inode-only changes on package-managed paths during a maintenance
+            // window are deterministically benign: package install/upgrade
+            // recreates files via open+write+rename, allocating new inodes
+            // even when content is byte-identical. Audit log still records
+            // the event (Principle XIII).
+            if is_inode_only(&change.changes) {
+                return true;
+            }
             if change.severity >= Severity::High {
                 return false;
             }
@@ -336,6 +344,13 @@ fn change_to_name(change: &Change) -> &'static str {
         Change::Deleted => "deleted",
         Change::Created => "created",
     }
+}
+
+/// Returns true iff the change set is exactly one `InodeChanged` and
+/// nothing else. Structural signature of a package manager rewriting a
+/// file via open+write+rename.
+fn is_inode_only(changes: &[Change]) -> bool {
+    matches!(changes, [Change::InodeChanged { .. }])
 }
 
 #[cfg(test)]
@@ -540,6 +555,95 @@ mod tests {
         assert_eq!(
             sink_pending, 0,
             "all entries should have sink_done set (including suppressed)"
+        );
+    }
+
+    #[test]
+    fn inode_only_on_package_path_suppressed_during_maintenance_at_every_severity() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal = Arc::new(
+            super::super::DetectionWal::open(
+                &dir.path().join("detections.wal"),
+                None,
+                64 * 1024 * 1024,
+            )
+            .unwrap(),
+        );
+
+        let cfg = crate::config::default_config();
+        let metrics = Arc::new(Metrics::new());
+        let mut runner = SinkRunner::new(wal, &cfg, metrics, "test".to_string()).unwrap();
+
+        for (i, severity) in [
+            Severity::Low,
+            Severity::Medium,
+            Severity::High,
+            Severity::Critical,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let change = ChangeResult {
+                path: Arc::new(std::path::PathBuf::from(format!(
+                    "/boot/grub/locale/en@quot-{}.mo",
+                    i
+                ))),
+                changes: vec![Change::InodeChanged {
+                    old: 332,
+                    new: 1037,
+                }],
+                severity,
+                monitored_group: "boot".into(),
+                process: None,
+                package: Some("grub".into()),
+                package_update: false,
+                disambiguation: None,
+            };
+            assert!(
+                runner.is_suppressed(&change, true),
+                "inode-only on package path must suppress during maintenance \
+                 (severity={:?})",
+                severity
+            );
+        }
+    }
+
+    #[test]
+    fn inode_plus_content_change_not_suppressed_during_maintenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal = Arc::new(
+            super::super::DetectionWal::open(
+                &dir.path().join("detections.wal"),
+                None,
+                64 * 1024 * 1024,
+            )
+            .unwrap(),
+        );
+
+        let cfg = crate::config::default_config();
+        let metrics = Arc::new(Metrics::new());
+        let mut runner = SinkRunner::new(wal, &cfg, metrics, "test".to_string()).unwrap();
+
+        let change = ChangeResult {
+            path: Arc::new(std::path::PathBuf::from("/usr/bin/sudo")),
+            changes: vec![
+                Change::InodeChanged { old: 1, new: 2 },
+                Change::ContentModified {
+                    old_hash: "aaa".into(),
+                    new_hash: "bbb".into(),
+                },
+            ],
+            severity: Severity::Critical,
+            monitored_group: "system".into(),
+            process: None,
+            package: Some("sudo".into()),
+            package_update: true,
+            disambiguation: None,
+        };
+
+        assert!(
+            !runner.is_suppressed(&change, true),
+            "Critical content change must pass through even with inode change present"
         );
     }
 }

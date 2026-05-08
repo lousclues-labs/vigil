@@ -289,6 +289,16 @@ impl AlertDispatcher {
         // Never fully suppress Critical/High changes, even during maintenance windows.
         // These still dispatch to sinks but will have maintenance_window=true in the alert.
         if maintenance_window && change.package.is_some() {
+            // Inode-only changes on package-managed paths during a maintenance
+            // window are deterministically benign: package install/upgrade
+            // recreates files via open+write+rename, allocating new inodes
+            // even when content is byte-identical. The hash already matched
+            // (otherwise a `ContentModified` would also be present and the
+            // change set would not be inode-only). Suppress notification at
+            // every severity. Audit log still records the event (Principle XIII).
+            if is_inode_only(&change.changes) {
+                return true;
+            }
             if change.severity >= Severity::High {
                 return false;
             }
@@ -439,6 +449,14 @@ fn change_to_name(change: &Change) -> &'static str {
         Change::Deleted => "deleted",
         Change::Created => "created",
     }
+}
+
+/// Returns true iff the change set is exactly one `InodeChanged` and
+/// nothing else. Content, permissions, ownership, xattrs, etc. are all
+/// unchanged. This is the structural signature of a package manager
+/// rewriting a file in place via open+write+rename.
+fn is_inode_only(changes: &[Change]) -> bool {
+    matches!(changes, [Change::InodeChanged { .. }])
 }
 
 #[cfg(test)]
@@ -673,6 +691,136 @@ mod tests {
         assert!(
             dispatcher.is_suppressed(&low_change, true),
             "Low severity changes with package should be suppressed during maintenance"
+        );
+    }
+
+    #[test]
+    fn inode_only_on_package_path_suppressed_during_maintenance_at_every_severity() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit_path = dir.path().join("audit.db");
+
+        let cfg = crate::config::default_config();
+        let metrics = Arc::new(crate::metrics::Metrics::new());
+        let dispatcher =
+            AlertDispatcher::new(&cfg, &audit_path, metrics, None, false, "test".to_string())
+                .unwrap();
+
+        // Inode-only on a package-managed path is the textbook signature of
+        // `pacman`/`apt`/`rpm` rewriting a file via open+write+rename. The
+        // hash already matched (or `ContentModified` would also be present),
+        // so this is a deterministic non-event regardless of severity.
+        for severity in [
+            Severity::Low,
+            Severity::Medium,
+            Severity::High,
+            Severity::Critical,
+        ] {
+            let change = ChangeResult {
+                path: std::sync::Arc::new(std::path::PathBuf::from("/boot/grub/locale/en@quot.mo")),
+                changes: vec![Change::InodeChanged {
+                    old: 332,
+                    new: 1037,
+                }],
+                severity,
+                monitored_group: "boot".into(),
+                process: None,
+                package: Some("grub".into()),
+                package_update: false,
+                disambiguation: None,
+            };
+
+            assert!(
+                dispatcher.is_suppressed(&change, true),
+                "inode-only change on package path must be suppressed during maintenance \
+                 (severity={:?})",
+                severity
+            );
+        }
+
+        // Without a maintenance window, the same change must NOT be suppressed
+        // by this rule. (Cooldown/rate-limit may still apply, but the first
+        // occurrence on a fresh dispatcher passes through.)
+        let change = ChangeResult {
+            path: std::sync::Arc::new(std::path::PathBuf::from("/boot/grub/locale/en@quot.mo")),
+            changes: vec![Change::InodeChanged {
+                old: 332,
+                new: 1037,
+            }],
+            severity: Severity::Critical,
+            monitored_group: "boot".into(),
+            process: None,
+            package: Some("grub".into()),
+            package_update: false,
+            disambiguation: None,
+        };
+        assert!(
+            !dispatcher.is_suppressed(&change, false),
+            "inode-only change outside a maintenance window must still alert"
+        );
+    }
+
+    #[test]
+    fn inode_plus_content_change_not_suppressed_during_maintenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit_path = dir.path().join("audit.db");
+
+        let cfg = crate::config::default_config();
+        let metrics = Arc::new(crate::metrics::Metrics::new());
+        let dispatcher =
+            AlertDispatcher::new(&cfg, &audit_path, metrics, None, false, "test".to_string())
+                .unwrap();
+
+        // Inode + content together is NOT inode-only. This must follow the
+        // standard severity rule (Critical/High passes through, Low/Medium drops).
+        let change = ChangeResult {
+            path: std::sync::Arc::new(std::path::PathBuf::from("/usr/bin/sudo")),
+            changes: vec![
+                Change::InodeChanged { old: 1, new: 2 },
+                Change::ContentModified {
+                    old_hash: "aaa".into(),
+                    new_hash: "bbb".into(),
+                },
+            ],
+            severity: Severity::Critical,
+            monitored_group: "system".into(),
+            process: None,
+            package: Some("sudo".into()),
+            package_update: true,
+            disambiguation: None,
+        };
+
+        assert!(
+            !dispatcher.is_suppressed(&change, true),
+            "Critical content change must pass through even with inode change present"
+        );
+    }
+
+    #[test]
+    fn inode_only_on_unowned_path_not_suppressed() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit_path = dir.path().join("audit.db");
+
+        let cfg = crate::config::default_config();
+        let metrics = Arc::new(crate::metrics::Metrics::new());
+        let dispatcher =
+            AlertDispatcher::new(&cfg, &audit_path, metrics, None, false, "test".to_string())
+                .unwrap();
+
+        // No package owner → no maintenance suppression at all.
+        let change = ChangeResult {
+            path: std::sync::Arc::new(std::path::PathBuf::from("/etc/local-config.conf")),
+            changes: vec![Change::InodeChanged { old: 1, new: 2 }],
+            severity: Severity::High,
+            monitored_group: "etc".into(),
+            process: None,
+            package: None,
+            package_update: false,
+            disambiguation: None,
+        };
+
+        assert!(
+            !dispatcher.is_suppressed(&change, true),
+            "inode-only change on unowned path must not be suppressed"
         );
     }
 }

@@ -6,6 +6,21 @@ All notable changes to Vigil Baseline will be documented in this file.
 > full checklist: fmt → clippy → test → build --release → CHANGELOG →
 > version-bump → commit → push → tag.
 
+## [1.11.2] - 2026-05-08
+
+### Changed (Principle II — silence is the default)
+
+- Inode-only changes on package-managed paths during a maintenance window are
+  now suppressed at every severity. Package install/upgrade rewrites files via
+  open+write+rename, allocating a fresh inode even when content is byte-identical
+  (e.g. every `.mo` file in `/boot/grub/locale/` after a `grub` upgrade). When
+  the change set is exactly `[InodeChanged]`, the path has a known package
+  owner, and a maintenance window is active, the per-event notification is
+  dropped. Audit log records every event regardless (Principle XIII). Three
+  structural facts, no thresholds, no timing heuristics. If any of `Content`,
+  `Permissions`, `Owner`, `Xattr`, etc. accompanies the inode change, the
+  existing severity rule applies and Critical/High still alert.
+
 ## [1.11.1] - 2026-05-02
 
 ### Changed (Principle V — clear, unambiguous)
