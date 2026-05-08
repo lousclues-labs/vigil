@@ -1529,6 +1529,33 @@ Kinds: `hooks`, `baseline-refresh`, `chain-break`, `retention`, `degraded`.
 Every ack/revoke writes a chain-extending audit record and prints the
 new sequence ID.
 
+### Operator notes
+
+The `--note` value is bounded and durable. Treat it like a commit message.
+
+- **Maximum 1024 bytes.** Longer notes are rejected at the CLI boundary
+  with a clear error. Split context across multiple acknowledgments if
+  needed.
+- **Stored verbatim.** The exact bytes you type are recorded in the
+  audit chain and HMAC-bound to the acknowledgment's sequence number
+  (Principle XIII). The chain breaks if the stored bytes are altered.
+- **Sanitized on display.** When the note is rendered (doctor, audit
+  listing, `vigil why`, ack confirmation), control characters and
+  bidi-override codepoints are escaped to visible forms (`\x1b`,
+  `\u{202e}`, etc.) so a malicious note cannot rewrite a terminal,
+  spoof additional log lines, or visually reorder text.
+- **Durable.** Notes survive across exports, alert-sink dispatch,
+  backups, and audit rotation. Do not include secrets, credentials, or
+  third-party identifiers you would not put in a public commit.
+
+Recommended note shape: factual, terse, references a verifiable
+artifact.
+
+```bash
+sudo vigil ack baseline-refresh --note \
+    "vapoursynth 75-2 shipped vspipe as Python shim; pacman -Qkk clean"
+```
+
 There is no `--suppress`, `--ignore`, or blanket category silence flag.
 
 ---

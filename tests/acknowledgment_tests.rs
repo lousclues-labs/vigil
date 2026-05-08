@@ -230,3 +230,72 @@ fn acknowledgment_records_indexed_for_fast_lookup() {
         .unwrap();
     assert_eq!(idx_exists, 1, "expected idx_audit_path_id index to exist");
 }
+
+#[test]
+fn operator_note_round_trip_preserves_raw_bytes_in_audit_chain() {
+    // Principle XIII: storage must record the operator's exact bytes.
+    // Display sanitization is layered on top; the chain HMAC binds the raw.
+    let conn = test_audit_conn();
+    let raw = "ANSI \x1b[31m bidi \u{202e} newline \n end";
+    let payload = ack::build_operator_payload(
+        DoctorEventKind::HookInvocationFailure,
+        1,
+        AcknowledgmentKind::Acknowledge,
+        Some(raw.to_string()),
+    );
+    let payload_json = serde_json::to_string(&payload).unwrap();
+    let (_hash, _seq) = vigil::db::audit_ops::insert_acknowledgment_entry(
+        &conn,
+        &payload_json,
+        &genesis_hash(),
+        None,
+    )
+    .unwrap();
+
+    let stored: String = conn
+        .query_row(
+            "SELECT changes_json FROM audit_log WHERE path = 'vigil:operator_acknowledgment' ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    let stored_note = parsed["note"].as_str().unwrap();
+    assert_eq!(
+        stored_note, raw,
+        "raw bytes must be preserved verbatim in the audit chain"
+    );
+}
+
+#[test]
+fn operator_note_render_strips_terminal_attack_vectors() {
+    let raw = "\x1b[31m\x07\u{202e}\r\nfake critical";
+    let safe = ack::sanitize_for_display(raw);
+    for c in safe.chars() {
+        assert!(
+            !c.is_control(),
+            "render output must contain no control chars; found {:?}",
+            c
+        );
+    }
+    assert!(!safe.contains('\u{202e}'));
+    assert!(safe.contains("\\x1b"));
+    assert!(safe.contains("\\u{202e}"));
+    assert!(safe.contains("\\x0d"));
+    assert!(safe.contains("\\x0a"));
+}
+
+#[test]
+fn operator_note_validation_rejects_oversize_at_cli_boundary() {
+    let huge = "x".repeat(ack::MAX_NOTE_LEN + 100);
+    let err = ack::validate_operator_note(Some(huge)).unwrap_err();
+    let msg = format!("{}", err);
+    assert!(msg.contains("too long"), "error was: {}", msg);
+}
+
+#[test]
+fn operator_note_validation_passthrough_normal() {
+    let normal = "vapoursynth 75-2 shim; pacman -Qkk clean".to_string();
+    let out = ack::validate_operator_note(Some(normal.clone())).unwrap();
+    assert_eq!(out, Some(normal));
+}

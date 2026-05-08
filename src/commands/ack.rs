@@ -34,6 +34,7 @@ fn cmd_ack_mark(
     explicit_sequence: Option<i64>,
     note: Option<String>,
 ) -> vigil::Result<i32> {
+    let note = ack::validate_operator_note(note)?;
     let kind = DoctorEventKind::from_cli_name(kind_str).ok_or_else(|| {
         vigil::VigilError::Config(format!(
             "unknown event kind '{}'. valid kinds: {}",
@@ -112,7 +113,10 @@ fn cmd_ack_mark(
     );
     println!("audit record: sequence {}", ack_seq);
     if let Some(n) = &note {
-        println!("note: \"{}\"", n);
+        // Sanitize before printing: the note is operator-supplied and could
+        // contain terminal escape sequences. Storage and HMAC bind the raw
+        // bytes; only the rendering is sanitized (Principle XIII).
+        println!("note: \"{}\"", ack::sanitize_for_display(n));
     }
     println!();
     println!("the event remains visible in doctor output with this acknowledgment");

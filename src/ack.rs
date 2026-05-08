@@ -13,6 +13,11 @@ pub use crate::doctor::acknowledgment::types::{
     EventReference,
 };
 
+// Re-export operator-note helpers.
+pub use crate::doctor::acknowledgment::note::{
+    sanitize_for_display, validate_operator_note, MAX_NOTE_LEN,
+};
+
 // Re-export SQL queries from their canonical home.
 pub use crate::db::audit_ack::{
     build_cache_from_audit_log, find_most_recent_unacknowledged, find_unacknowledged_events,

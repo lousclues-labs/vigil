@@ -281,7 +281,13 @@ pub enum Command {
         #[arg(long)]
         sequence: Option<i64>,
 
-        /// Attach an operator note to the acknowledgment
+        /// Attach an operator note to the acknowledgment.
+        ///
+        /// Notes are recorded in the audit log and HMAC-signed by your
+        /// uid. Treat them like commit messages: factual, no secrets.
+        /// Maximum 1024 bytes. Control characters and bidi-override
+        /// codepoints are escaped on display; the stored bytes are
+        /// preserved as typed.
         #[arg(long)]
         note: Option<String>,
 

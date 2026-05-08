@@ -225,9 +225,12 @@ pub(crate) fn acknowledgment_metadata_hints(
         instruction: format!("{} by uid {}", format_ack_timestamp(ack_ts), uid),
     }];
     if let Some(n) = note {
+        // Sanitize for terminal display. Raw bytes remain in the audit
+        // chain; only the rendered hint is escaped (Principle XIII).
+        let safe = crate::doctor::acknowledgment::note::sanitize_for_display(&n);
         hints.push(RecoveryHint::Manual {
             verb: "note",
-            instruction: format!("\"{}\"", n),
+            instruction: format!("\"{}\"", safe),
         });
     }
     hints

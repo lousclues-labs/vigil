@@ -23,6 +23,16 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ### Hardening
 
+- `vigil ack --note` is now bounded (1024-byte cap, enforced at the CLI
+  boundary with a clear error) and sanitized on display. Control
+  characters (C0/C1/DEL) and Unicode bidi-override codepoints (the
+  Trojan Source class: `U+202A..E`, `U+2066..9`) are escaped to
+  visible forms when notes render in doctor output, `vigil audit show
+  --with-acknowledgments`, and the ack confirmation. The stored bytes
+  are preserved verbatim and remain HMAC-bound to the audit chain
+  (Principle XIII). New module `src/doctor/acknowledgment/note.rs`
+  with 18 unit tests covering ANSI CSI, OSC, NEL, bidi overrides,
+  ZWJ-emoji passthrough, idempotence, and the byte-length cap.
 - `nix` bumped from 0.28 to 0.31. No behavior change; all fanotify, inotify,
   signal, and unistd call sites continue to compile and pass tests on 0.31.
 - New `docs/UNSAFE_AUDIT.md` inventories every `unsafe` block in the library

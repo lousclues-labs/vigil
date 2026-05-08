@@ -194,7 +194,12 @@ pub(crate) fn cmd_audit(
                                     let note = ack
                                         .note
                                         .as_deref()
-                                        .map(|n| format!(" (note: \"{}\")", n))
+                                        .map(|n| {
+                                            format!(
+                                                " (note: \"{}\")",
+                                                vigil::ack::sanitize_for_display(n)
+                                            )
+                                        })
                                         .unwrap_or_default();
                                     println!(
                                         "    acknowledgment: {:?} by uid {}{}",
