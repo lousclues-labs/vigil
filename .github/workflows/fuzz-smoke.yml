@@ -30,7 +30,7 @@ jobs:
             .
             fuzz
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        run: cargo install cargo-fuzz
       - name: Build fuzz targets
         run: cargo +nightly fuzz build
       - name: Run fuzz targets (60s each)
