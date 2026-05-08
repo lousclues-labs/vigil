@@ -4,6 +4,39 @@ Short answers to common questions.
 
 ---
 
+## Can I run this on a server?
+
+No. Vigil Baseline is a desktop Linux file integrity monitor. The defaults,
+the notification path, and the alerting cadence assume one human at one
+keyboard reading desktop popups via `notify-send`. On a headless server,
+the daemon will run, but:
+
+- desktop notifications go nowhere (no `notify-send`, no session bus)
+- the alert volume is tuned to a single attention budget, not a NOC
+- the package-manager hooks target desktop distros (Arch, Debian, Ubuntu)
+- there is no central reporting, no fleet view, no agent-server channel
+
+For server or fleet use, look at AIDE, Samhain, Wazuh, or Auditbeat.
+Those tools are built for that shape of problem. Vigil is not.
+
+---
+
+## Why is this desktop-only?
+
+Because every design choice optimizes for one operator at one machine.
+"Silence is the default" works when one human can hear the silence.
+Storm suppression and per-path cooldowns assume that same human's
+attention is the scarce resource. The package-manager hooks assume a
+desktop distro install path. The recovery hints in `vigil doctor`
+assume the operator can run the suggested commands locally.
+
+A server FIM is a different product with a different shape: central
+collection, fleet correlation, alert routing into a ticket system, and
+much higher event volume. Vigil could grow that. It chooses not to.
+See [Principles](PRINCIPLES.md), Principle XV.
+
+---
+
 ## What is the difference between `vigil watch` and `vigil check`?
 
 - `vigil watch` starts real-time monitoring and waits for filesystem events.

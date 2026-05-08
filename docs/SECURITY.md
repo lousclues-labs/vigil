@@ -378,28 +378,23 @@ baseline.
 
 ## Unsafe Code Policy
 
-The crate root declares `#![deny(unsafe_code)]`.
+The crate root declares `#![deny(unsafe_code)]`. Every `unsafe` block
+in the library is gated by a targeted `#[allow(unsafe_code)]` and
+carries a `// SAFETY:` comment naming the syscall and its invariants.
 
-All `unsafe` usage must be annotated with `#[allow(unsafe_code)]` on the specific function, impl block, or module that requires it. Each `unsafe` block must include a `// SAFETY:` comment explaining why the invariants hold.
+The complete inventory, grouped by category (process hardening,
+fanotify, mmap/forensics, small libc wrappers, `Send` impls), lives in
+[docs/UNSAFE_AUDIT.md](UNSAFE_AUDIT.md). Adding new `unsafe` requires
+an entry in that file and a `// SAFETY:` comment on the block. Both
+are enforced by review.
 
-Current allowed locations:
-
-| Location | Reason |
-|----------|--------|
-| `src/lib.rs` -- `harden_process()` | prctl, umask syscalls |
-| `src/lib.rs` -- `raise_nofile_limit()` | getrlimit/setrlimit syscalls |
-| `src/hash.rs` -- `MmapGuard` | mmap/munmap/from_raw_parts |
-| `src/hash.rs` -- `blake3_hash_fd()` | calls MmapGuard::new |
-| `src/worker.rs` -- `dup_to_file()` | libc::fcntl(F_DUPFD_CLOEXEC), File::from_raw_fd |
-| `src/display/term.rs` -- `TermInfo::ioctl_size()` | ioctl TIOCGWINSZ for terminal dimensions |
-| `src/control.rs` -- `log_peer_credentials()` | getsockopt SO_PEERCRED |
-| `src/control.rs` -- `current_euid()` | libc::geteuid (cached in OnceLock) |
-| `src/doctor.rs` -- `is_pid_alive()` | libc::kill signal 0 probe |
-| `src/monitor/fanotify.rs` | module-level allow (fanotify syscalls) |
-| `src/types/event.rs` -- `impl Send for FsEvent` | OwnedFd thread transfer |
-| `src/wal/mod.rs` -- `random_nonce()` | libc::getrandom syscall |
-
-Adding new `unsafe` code without updating this table and providing a `// SAFETY:` comment will be caught by `cargo clippy` and CI.
+`unsafe` is constrained to operations without a usable safe wrapper on
+the project's MSRV: fanotify FID-mode events, `open_by_handle_at`,
+mmap-based BLAKE3, page-cache forensics (`posix_fadvise`, `mincore`),
+process hardening (`prctl`, `umask`, `setrlimit`), `SO_PEERCRED`, and
+`getrandom`. Vigil does not claim "no unsafe code." It claims unsafe
+code is audited, minimized, and constrained to the surface
+[docs/UNSAFE_AUDIT.md](UNSAFE_AUDIT.md) describes.
 
 ---
 

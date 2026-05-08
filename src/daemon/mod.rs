@@ -1168,6 +1168,8 @@ fn raise_nofile_limit(target: u64) {
             rlim_cur: new_cur,
             rlim_max: current.rlim_max,
         };
+        // SAFETY: setrlimit fallback path; same invariants as the call above.
+        // fallback is stack-allocated and the pointer is valid for the call.
         let rc2 =
             unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &mut fallback as *mut libc::rlimit) };
         if rc2 != 0 {

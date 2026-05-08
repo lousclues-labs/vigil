@@ -10,9 +10,11 @@ is wrong or the principle needs updating. We should talk about it.
 
 ## The Soul of Vigil Baseline
 
+Vigil Baseline is a tool for one human running one Linux desktop.
+
 You download things. People send you files. You torrent. You install packages
 from repositories you half-trust. You live in the real world of untrusted
-content and shared systems.
+content on a workstation you sit in front of.
 
 Your fear was never "malware" in the abstract. Your fear was invisible
 intrusion. Something slipping in, changing what shouldn't change, and you
@@ -24,6 +26,12 @@ Vigil Baseline exists because of one truth:
 
 Vigil Baseline is the gatekeeper that refuses to let anything cross the threshold
 silently. Not a guard who fights. A witness who never looks away.
+
+This tool was built for that one human at that one keyboard. It is not a
+fleet agent, a server FIM, or a multi-tenant product. The deployment model
+is a single system-wide daemon on a single Linux desktop, with desktop
+notifications going to the human who installed it. Every other principle
+on this page assumes that context.
 
 ---
 
@@ -317,11 +325,21 @@ without explicit configuration.
 Vigil Baseline is designed for someone who understands their system, reads alerts
 and acts on them, and trusts their own judgment.
 
+"The operator" means one human at one Linux desktop. Not a sysadmin running
+a fleet. Not a SOC analyst watching a queue. Not an automation pipeline.
+One person, one workstation, one baseline. Every default in Vigil assumes
+that person is at the keyboard and will see the next desktop notification.
+
 No confirmation prompts. No "are you sure?" dialogs. No safety rails
 except the ones that prevent unrecoverable damage (like `vigil init`
 warning before overwriting an existing baseline).
 
 Vigil Baseline provides information, not opinions. The operator decides.
+
+Server, headless, container-host, and fleet deployments are out of scope.
+Not "discouraged," not "unsupported with caveats." Out of scope. The
+attention model breaks, the notification path breaks, and the package-manager
+hooks aim at the wrong distros. If you need a server FIM, use a server FIM.
 
 ---
 

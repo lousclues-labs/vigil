@@ -21,6 +21,24 @@ All notable changes to Vigil Baseline will be documented in this file.
   `Permissions`, `Owner`, `Xattr`, etc. accompanies the inode change, the
   existing severity rule applies and Critical/High still alert.
 
+### Hardening
+
+- `nix` bumped from 0.28 to 0.31. No behavior change; all fanotify, inotify,
+  signal, and unistd call sites continue to compile and pass tests on 0.31.
+- New `docs/UNSAFE_AUDIT.md` inventories every `unsafe` block in the library
+  with file:line references, grouped by category (process hardening, fanotify,
+  mmap/forensics, small libc wrappers, `Send` impls). The crate root retains
+  `#![deny(unsafe_code)]`; targeted `#[allow(unsafe_code)]` annotations remain
+  the only escape hatches. `docs/SECURITY.md` now links to the audit doc
+  instead of carrying a stale per-location table.
+- README version badge switched from a hardcoded `1.8.3` shield to a dynamic
+  `crates.io` shield so it tracks the published crate automatically.
+- `[profile.release]` kept at `opt-level = 2` after measurement. `opt-level = 3`
+  regressed BLAKE3 1 MiB throughput by ~6%, the exclusion filter by ~19%, and
+  grew the `vigil` binary by ~9%. Methodology and numbers recorded in
+  `docs/DEVELOPMENT.md` "Release profile". `benches/benchmarks.rs` extended
+  to cover BLAKE3 at 64 KiB / 1 MiB / 16 MiB with `Throughput::Bytes`.
+
 ## [1.11.1] - 2026-05-02
 
 ### Changed (Principle V — clear, unambiguous)

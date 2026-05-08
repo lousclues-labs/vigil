@@ -3,6 +3,14 @@
 Install Vigil Baseline from source on Linux.
 No container, no network service, no cloud account.
 
+> **Scope.** Vigil Baseline is a desktop Linux file integrity monitor.
+> These instructions assume a workstation or laptop running a desktop
+> distro (Arch, Debian, Ubuntu, Fedora, or similar) with one human
+> operator. The daemon installs system-wide via systemd and sends
+> notifications to the desktop session. Vigil is not designed for
+> servers, headless hosts, container nodes, or fleets. See
+> [docs/THREAT_MODEL.md](THREAT_MODEL.md) for the full scope statement.
+
 ---
 
 ## Requirements

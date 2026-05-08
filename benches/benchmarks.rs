@@ -1,14 +1,18 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 
 fn bench_blake3_hash_bytes(c: &mut Criterion) {
-    let data = vec![42u8; 1_048_576];
-
-    c.bench_function("blake3_hash_bytes_1MB", |b| {
-        b.iter(|| {
-            let out = vigil::hash::blake3_hash_bytes(black_box(&data));
-            black_box(out);
-        })
-    });
+    let mut group = c.benchmark_group("blake3_hash_bytes");
+    for &size in &[64 * 1024usize, 1_048_576, 16 * 1_048_576] {
+        let data = vec![42u8; size];
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_function(format!("{}KiB", size / 1024), |b| {
+            b.iter(|| {
+                let out = vigil::hash::blake3_hash_bytes(black_box(&data));
+                black_box(out);
+            })
+        });
+    }
+    group.finish();
 }
 
 fn bench_exclusion_filter(c: &mut Criterion) {

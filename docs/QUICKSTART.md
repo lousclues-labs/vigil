@@ -1,5 +1,11 @@
 # Vigil Baseline -- Quickstart
 
+> **Scope.** This guide assumes a desktop Linux workstation or laptop
+> with one human operator. The daemon installs system-wide; alerts
+> land in your desktop notification area via `notify-send`. Vigil is
+> not designed for servers, headless hosts, container nodes, or
+> fleets. See [docs/THREAT_MODEL.md](THREAT_MODEL.md) for scope.
+
 ## What you'll have in 5 minutes
 
 - Vigil monitoring your critical system files.

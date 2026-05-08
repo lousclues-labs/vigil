@@ -184,6 +184,10 @@ fn build_fsid_mount_map(mount_points: &[PathBuf]) -> FsidMountMap {
             Ok(p) => p,
             Err(_) => continue,
         };
+        // SAFETY: c_path is a valid NUL-terminated string for the duration of
+        // this block. statfs writes into a stack-allocated buffer; libc::open
+        // returns a new fd or -1. f_fsid is plain-old-data; transmute to [u8;8]
+        // is a sound bit reinterpretation of equally-sized POD.
         unsafe {
             let mut buf: libc::statfs = std::mem::zeroed();
             if libc::statfs(c_path.as_ptr(), &mut buf) != 0 {
@@ -223,6 +227,8 @@ fn ensure_fsid_mount_fd(mount: &std::path::Path, mount_fds: &mut FsidMountMap) {
         Ok(p) => p,
         Err(_) => return,
     };
+    // SAFETY: same contract as build_fsid_mount_map. c_path is valid for the
+    // entire block; statfs/open use stack buffers and return -1 on error.
     unsafe {
         let mut buf: libc::statfs = std::mem::zeroed();
         if libc::statfs(c_path.as_ptr(), &mut buf) != 0 {
@@ -246,6 +252,9 @@ fn ensure_fsid_mount_fd(mount: &std::path::Path, mount_fds: &mut FsidMountMap) {
 #[allow(unsafe_code)]
 fn close_fsid_mount_map(map: &FsidMountMap) {
     for &fd in map.values() {
+        // SAFETY: each fd was returned by libc::open in build_fsid_mount_map
+        // or ensure_fsid_mount_fd; the map owns these fds and is dropped
+        // immediately after this call, so no aliased fd remains.
         unsafe {
             libc::close(fd);
         }

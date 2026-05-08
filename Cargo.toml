@@ -3,7 +3,7 @@ name = "vigil-baseline"
 version = "1.11.2"
 edition = "2021"
 rust-version = "1.85"
-description = "Linux file integrity monitor. Kernel-level filesystem watching, BLAKE3 hashing, HMAC-chained audit trail. Silent by default, local by design, deeply paranoid."
+description = "Desktop Linux file integrity monitor. One operator, one workstation. Kernel-level filesystem watching, BLAKE3 hashing, HMAC-chained audit trail. Silent by default, local by design, deeply paranoid."
 # Vigil Baseline is dual-licensed: GPL-3.0-only for open-source use,
 # or Commercial License for proprietary use. See licenses/LICENSE-COMMERCIAL.md
 license = "GPL-3.0-only"
@@ -75,7 +75,7 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 
 # Linux syscalls
-nix = { version = "0.28", features = [
+nix = { version = "0.31", features = [
     "event",
     "fs",
     "inotify",
@@ -154,6 +154,15 @@ tempfile = "3"
 name = "benchmarks"
 harness = false
 
+# Release profile rationale (re-evaluated v1.11.2):
+#
+# opt-level = 2 was retained after benchmarking. opt-level = 3 produced
+# a regression on this codebase under LTO (BLAKE3 1MiB: -6%, exclusion
+# filter: -19% on the reference machine), with no measurable win on
+# 16MiB BLAKE3. The hot path is already SIMD-vectorised inside the
+# `blake3` crate; aggressive inlining at opt-level=3 hurt more than it
+# helped once LTO collapsed crate boundaries. See
+# docs/DEVELOPMENT.md "Release profile" for methodology and numbers.
 [profile.release]
 opt-level = 2
 lto = true

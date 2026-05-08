@@ -5,6 +5,34 @@ It detects structural changes. It does not interpret intent.
 
 ---
 
+## Scope
+
+Vigil Baseline is a desktop Linux tool. The threat model below assumes
+that exact deployment context.
+
+In scope:
+- a single Linux desktop or laptop
+- one human operator at the keyboard
+- one baseline, local to that machine
+- a system-wide `vigild` daemon (root, via systemd) on that machine
+- desktop notifications via `notify-send` to the logged-in session
+- package-manager hooks for desktop distros (pacman, apt)
+
+Out of scope:
+- servers, VMs used as servers, or any headless host
+- container hosts, Kubernetes nodes, or orchestrated workloads
+- multi-tenant systems or shared workstations
+- fleets of machines, fleet management, or central reporting
+- agent-server architectures or remote control planes
+
+The "silence is the default" posture, the alerting model, the recovery
+hints, and the package-manager hooks all assume one human, one machine.
+On a server, the same defaults produce noise without an operator to
+read it. If you need a server FIM, AIDE, Samhain, Wazuh, and Auditbeat
+are designed for that.
+
+---
+
 ## What Vigil Baseline Detects
 
 | Detection | Example |

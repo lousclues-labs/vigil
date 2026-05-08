@@ -309,6 +309,65 @@ cargo +nightly fuzz run fuzz_config_parse -- -max_total_time=120
 
 ---
 
+## Release profile
+
+`Cargo.toml` pins `[profile.release]` to:
+
+```toml
+opt-level = 2
+lto = true
+codegen-units = 1
+strip = true
+```
+
+`opt-level = 2` was kept after measurement, not by default.
+
+### Methodology
+
+Bench the BLAKE3 hot path and the exclusion filter under each
+candidate `opt-level`. Single-codegen-unit + LTO is held constant.
+
+```bash
+cargo bench --bench benchmarks -- --warm-up-time 1 --measurement-time 3
+cargo build --release && ls -l target/release/{vigil,vigild}
+```
+
+`benches/benchmarks.rs` covers BLAKE3 at 64 KiB / 1 MiB / 16 MiB
+(captures cold, warm, and large-mmap regimes) plus a 10k-path
+exclusion filter pass.
+
+### Results (v1.11.2, x86_64 reference machine)
+
+| Metric                   | opt-level 2          | opt-level 3          | Delta   |
+|--------------------------|----------------------|----------------------|---------|
+| BLAKE3 64 KiB throughput | 3.40 GiB/s           | (within noise)       | flat    |
+| BLAKE3 1 MiB throughput  | 3.46 GiB/s           | 3.18 GiB/s           | -6.4%   |
+| BLAKE3 16 MiB throughput | 3.12 GiB/s           | 3.03 GiB/s           | -2.8%   |
+| event_filter_10k         | 776 us               | 981 us               | +19% slower |
+| `vigil` binary           | 8.59 MB              | 9.35 MB              | +8.9% bigger |
+| `vigild` binary          | 5.63 MB              | 6.28 MB              | +11.6% bigger |
+
+`opt-level = 3` was slower *and* larger on this codebase. The hot path
+is already SIMD-vectorised inside the `blake3` crate, so aggressive
+inlining at `-O3` did not unlock new SIMD codegen. Once LTO collapses
+crate boundaries, `-O3` inliner heuristics produced cache-unfriendly
+code in the exclusion filter. `opt-level = "s"` was not pursued after
+this finding: there is no throughput pressure to trade off against.
+
+### When to revisit
+
+Re-run the benchmark suite if any of the following changes:
+
+- `blake3` crate major version bump.
+- Significant rewrite of the worker, scanner, or filter hot path.
+- Toolchain MSRV bump that changes the LLVM version.
+- Migration to a different default codegen backend (e.g. `cranelift`).
+
+Record the new numbers in this section. Do not change the profile
+silently.
+
+---
+
 ## Before Opening a PR
 
 Run the full gate:

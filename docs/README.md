@@ -2,6 +2,12 @@
 
 Use this index when you need answers fast.
 
+This is the documentation for a desktop Linux file integrity
+monitor. One human, one workstation, one baseline. Vigil is
+not designed for servers, headless hosts, container nodes, or
+fleets. See [Principles](PRINCIPLES.md) and
+[Threat Model](THREAT_MODEL.md) for the scope statement.
+
 ---
 
 ## Getting Started
@@ -28,6 +34,7 @@ Use this index when you need answers fast.
 | [Forensics](FORENSICS.md) | Offline comparison workflows with `vigil inspect` |
 | [Attestation](ATTEST.md) | Portable signed evidence files (`.vatt`) and offline verification |
 | [Security](SECURITY.md) | Security policy, dependency justification, trust model |
+| [Unsafe Audit](UNSAFE_AUDIT.md) | Inventory of every `unsafe` block, grouped by category, with SAFETY-invariant rationale |
 | [Vulnerabilities](VULNERABILITIES.md) | All remediated vulnerabilities with VIGIL-VULN tracking IDs |
 | [Audit HMAC Format](AUDIT_HMAC_FORMAT.md) | v1 (legacy) and v2 (CBOR) HMAC encoding reference for chain auditors |
 

@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/badge/CI-GitHub_Actions-success)](.github/workflows/ci.yml)
 [![Security Audit](https://img.shields.io/badge/Security-Audit-success)](.github/workflows/scheduled.yml)
-[![Version](https://img.shields.io/badge/version-1.8.3-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/crates/v/vigil-baseline.svg?label=version)](https://crates.io/crates/vigil-baseline)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange.svg)](https://www.rust-lang.org/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
 
@@ -12,14 +12,26 @@
 
 ---
 
-A file integrity monitor for Linux. You tell it what to watch.
-It records exactly what those files look like. Then it watches
-them. When something changes, it tells you.
+A file integrity monitor for a desktop Linux workstation. You tell
+it what to watch. It records exactly what those files look like.
+Then it watches them. When something changes, it tells you.
 
 That's all it does. No machine learning. No risk score. No
 threat feed. No opinion about whether a change is "suspicious."
 Hashes match or they don't. Permissions changed or they didn't.
 There is no "maybe."
+
+> **Scope.** Vigil Baseline is built for one human operator on
+> one Linux desktop. The daemon runs system-wide on that single
+> machine, notifications go to the desktop session via
+> `notify-send`, and the package-manager hooks target desktop
+> distros (Arch, Debian, Ubuntu, Fedora). It is not designed
+> for servers, headless hosts, container or Kubernetes nodes,
+> multi-tenant systems, or fleet management. There is no
+> central reporting, no agent-server split, and no remote
+> control plane. Running it on a server will produce noise and
+> confusion. If you need a server FIM, look at AIDE, Samhain,
+> Wazuh, or Auditbeat.
 
 ```
 $ vigil check
@@ -54,13 +66,15 @@ If you'd rather configure by hand, see
 
 ## What it is
 
-Vigil records a known-good snapshot of every watched file: hash,
+Vigil Baseline is a desktop Linux file integrity monitor. One
+human at the keyboard, one workstation, one baseline. The daemon
+records a known-good snapshot of every watched file: hash,
 permissions, ownership, inode, capabilities, xattrs, and
-SELinux/AppArmor context. The daemon watches via fanotify
-(falling back to inotify) and compares every event against that
-snapshot. Deviations are written to a crash-safe WAL and an
-HMAC-chained audit log. Notifications are storm-suppressed,
-per-path-cooldowned, and written once.
+SELinux/AppArmor context. It watches via fanotify (falling back
+to inotify) and compares every event against that snapshot.
+Deviations are written to a crash-safe WAL and an HMAC-chained
+audit log. Notifications are storm-suppressed,
+per-path-cooldowned, and written once to the desktop session.
 
 On FID-capable kernels (Linux 5.1+), real-time coverage spans all
 event classes: creates, deletes, moves, attribute changes, and
@@ -101,6 +115,30 @@ signal socket and webhook are the only integration points; both
 are off by default and outbound-only when enabled.
 
 If you need more, vigil is probably not the right fit.
+
+## Who this is for
+
+- One person running one Linux desktop or laptop.
+- Arch, Debian, Ubuntu, Fedora, or a similar desktop distro.
+- A graphical session (GNOME, KDE, Sway, Hyprland, etc.) where
+  `notify-send` reaches a human at the keyboard.
+- An operator who installs their own packages and reads their
+  own alerts.
+
+## Who this is not for
+
+- Servers, VMs, or any headless host.
+- Container hosts, Kubernetes nodes, or anything orchestrated.
+- Fleets of machines, multi-tenant systems, or shared workstations.
+- Anyone who needs central reporting, a dashboard, an agent-server
+  split, or remote control.
+
+Vigil has no fleet management, no agent protocol, no server
+component, and no plan to grow one. The "silent by default"
+posture assumes a single attention budget, not a NOC. The
+package-manager hooks assume a desktop session. If your use
+case is server-side, AIDE, Samhain, Wazuh, and Auditbeat exist
+and are good at it.
 
 ## How it's built
 
@@ -150,9 +188,9 @@ where to start.
 
 ## Requirements
 
-Linux. Optional `CAP_SYS_ADMIN` for fanotify (inotify fallback
-otherwise). Optional `notify-send` for desktop notifications.
-SQLite is bundled.
+A desktop Linux workstation. Optional `CAP_SYS_ADMIN` for
+fanotify (inotify fallback otherwise). Optional `notify-send`
+for desktop notifications. SQLite is bundled.
 
 ## License
 
