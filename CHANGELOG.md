@@ -6,6 +6,63 @@ All notable changes to Vigil Baseline will be documented in this file.
 > full checklist: fmt → clippy → test → build --release → CHANGELOG →
 > version-bump → commit → push → tag.
 
+## [1.11.3] - 2026-05-08
+
+### Fixed
+
+- `vigil doctor` no longer glues the verb annotation onto recovery
+  commands that exceed the 40-char column. Previously a degraded
+  state with `clock_skew_detected` rendered as
+  `vigil recover --reason clock_skew_detectedrecover` because the
+  `{:<40}` formatter adds zero padding when the value already fills
+  the column. Long commands are now followed by a guaranteed
+  2-space gap before the verb (`recover`, `acknowledge`, etc.).
+  Regression test added in `commands/doctor.rs`.
+
+### Changed (Principle V — clear, unambiguous)
+
+- `vigil doctor` recovery hints render with three small readability
+  tweaks. Verbs are parenthesized — `(diagnose)` instead of a bare
+  trailing `diagnose` — so they read as annotations rather than
+  trailing tokens that look like part of the command. Verbs within
+  a single attention row are aligned to a common column derived
+  from the longest command in that row, so short and long commands
+  no longer produce a ragged right edge. Inline acknowledgment
+  metadata on the row title now uses an em-dash separator
+  (`Audit log — acknowledged 2026-04-26 by uid 0`) instead of four
+  spaces, visually grouping the annotation with the title without
+  making it look like part of the row name. No information is
+  hidden or condensed; only spacing and punctuation changed.
+
+### Hardening
+
+- `vigil ack --note` is now bounded (1024-byte cap, enforced at the CLI
+  boundary with a clear error) and sanitized on display. Control
+  characters (C0/C1/DEL) and Unicode bidi-override codepoints (the
+  Trojan Source class: `U+202A..E`, `U+2066..9`) are escaped to
+  visible forms when notes render in doctor output, `vigil audit show
+  --with-acknowledgments`, and the ack confirmation. The stored bytes
+  are preserved verbatim and remain HMAC-bound to the audit chain
+  (Principle XIII). New module `src/doctor/acknowledgment/note.rs`
+  with 18 unit tests covering ANSI CSI, OSC, NEL, bidi overrides,
+  ZWJ-emoji passthrough, idempotence, and the byte-length cap.
+  Conforms with Principle V.b (notes are operator context),
+  Principle XIII (audit log records what actually happened), and
+  Principle III (deterministic sanitization, no heuristics). Four
+  integration tests in `tests/acknowledgment_tests.rs` verify
+  raw-bytes round-trip through the audit chain plus end-to-end
+  rendering. `docs/CLI.md` gains an "Operator notes" subsection
+  describing the cap, verbatim storage, sanitize-on-display, and
+  durability guarantees.
+
+### Versioning
+
+- `Cargo.toml` 1.11.2 → 1.11.3.
+- `aur/PKGBUILD` and `aur/.SRCINFO` 1.11.2 → 1.11.3.
+- `docs/DEVELOPMENT.md` release-profile section continues to reference
+  the v1.11.2 measurement run (numbers unchanged for 1.11.3 since
+  the profile itself did not change).
+
 ## [1.11.2] - 2026-05-08
 
 ### Changed (Principle II — silence is the default)
@@ -23,16 +80,6 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ### Hardening
 
-- `vigil ack --note` is now bounded (1024-byte cap, enforced at the CLI
-  boundary with a clear error) and sanitized on display. Control
-  characters (C0/C1/DEL) and Unicode bidi-override codepoints (the
-  Trojan Source class: `U+202A..E`, `U+2066..9`) are escaped to
-  visible forms when notes render in doctor output, `vigil audit show
-  --with-acknowledgments`, and the ack confirmation. The stored bytes
-  are preserved verbatim and remain HMAC-bound to the audit chain
-  (Principle XIII). New module `src/doctor/acknowledgment/note.rs`
-  with 18 unit tests covering ANSI CSI, OSC, NEL, bidi overrides,
-  ZWJ-emoji passthrough, idempotence, and the byte-length cap.
 - `nix` bumped from 0.28 to 0.31. No behavior change; all fanotify, inotify,
   signal, and unistd call sites continue to compile and pass tests on 0.31.
 - New `docs/UNSAFE_AUDIT.md` inventories every `unsafe` block in the library

@@ -167,10 +167,12 @@ fn render_attention_row(out: &mut String, check: &DiagnosticCheck) {
     // Extract acknowledgment metadata from recovery hints, if present.
     let ack_annotation = extract_acknowledgment(&check.recovery);
 
-    // Row title: marker + name + optional acknowledgment annotation
+    // Row title: marker + name + optional acknowledgment annotation.
+    // Em-dash separator visually groups the ack metadata with the row
+    // title without making it look like part of the name.
     if let Some(ref ack) = ack_annotation {
         out.push_str(&format!(
-            "  {} {}    {}\n",
+            "  {} {} \u{2014} {}\n",
             check.status.marker(),
             check.name,
             ack
@@ -185,31 +187,56 @@ fn render_attention_row(out: &mut String, check: &DiagnosticCheck) {
     render_recovery_hints(out, &check.recovery);
 }
 
+/// Minimum width of the command column inside a hint row. Commands that
+/// exceed this width are followed by a literal `MIN_HINT_GAP`-space gap so
+/// the verb on the right never collides with the command — the previous
+/// `{:<40}` formatter silently produced output like
+/// `vigil recover --reason clock_skew_detectedrecover` whenever the command
+/// hit 40 chars. Width is computed in `chars()` so multi-byte verbs do not
+/// confuse the alignment.
+const HINT_COMMAND_COL: usize = 40;
+const MIN_HINT_GAP: usize = 2;
+
 /// Render recovery hints with → leader, capped at MAX_HINTS_PER_ROW.
+///
+/// Verbs are aligned per-row to a common column derived from the longest
+/// command in this hint group, never less than `HINT_COMMAND_COL`. Verbs
+/// render parenthesized so they read as annotations rather than as part
+/// of the command — `(diagnose)` instead of a bare trailing word.
 fn render_recovery_hints(out: &mut String, recovery: &Recovery) {
     let hints = collect_hints(recovery);
     if hints.is_empty() {
         return;
     }
 
+    let visible: Vec<&(String, Option<String>)> = hints.iter().take(MAX_HINTS_PER_ROW).collect();
+    let max_cmd_len = visible
+        .iter()
+        .filter(|(_, d)| d.is_some())
+        .map(|(c, _)| c.chars().count())
+        .max()
+        .unwrap_or(0);
+    let verb_col = max_cmd_len.max(HINT_COMMAND_COL.saturating_sub(MIN_HINT_GAP));
+
     out.push('\n');
-    for (i, (command, description)) in hints.iter().enumerate() {
-        if i >= MAX_HINTS_PER_ROW {
-            break;
-        }
-        if i == 0 {
-            // First hint gets the arrow
-            if let Some(desc) = description {
-                out.push_str(&format!("      \u{2192} {:<40}{}\n", command, desc));
-            } else {
-                out.push_str(&format!("      \u{2192} {}\n", command));
-            }
+    for (i, (command, description)) in visible.iter().enumerate() {
+        let leader = if i == 0 {
+            "      \u{2192} "
         } else {
-            // Subsequent hints align under the command column
-            if let Some(desc) = description {
-                out.push_str(&format!("        {:<40}{}\n", command, desc));
-            } else {
-                out.push_str(&format!("        {}\n", command));
+            "        "
+        };
+        match description {
+            Some(desc) => {
+                let cmd_len = command.chars().count();
+                let pad = verb_col.saturating_sub(cmd_len) + MIN_HINT_GAP;
+                out.push_str(&format!(
+                    "{leader}{command}{:pad$}({desc})\n",
+                    "",
+                    pad = pad
+                ));
+            }
+            None => {
+                out.push_str(&format!("{leader}{command}\n"));
             }
         }
     }
@@ -577,7 +604,7 @@ mod tests {
 
         // Acknowledgment should appear inline on the row title, not as a → hint
         assert!(
-            output.contains("Audit log    acknowledged 2026-04-26T00:29 by uid 0"),
+            output.contains("Audit log \u{2014} acknowledged 2026-04-26T00:29 by uid 0"),
             "acknowledged annotation must appear inline on row title:\n{}",
             output
         );
@@ -589,6 +616,50 @@ mod tests {
         assert!(
             arrow_line.contains("vigil audit verify"),
             "arrow must point to a real command, not ack metadata: {}",
+            arrow_line
+        );
+    }
+
+    #[test]
+    fn doctor_long_command_does_not_collide_with_verb() {
+        // Regression: `vigil recover --reason clock_skew_detected` is 42
+        // chars, which used to render as
+        //   `vigil recover --reason clock_skew_detectedrecover`
+        // because `{:<40}` adds zero padding when the value already fills
+        // the column. The fix enforces a `MIN_HINT_GAP`-space gap.
+        let long_cmd = "vigil recover --reason clock_skew_detected";
+        assert!(long_cmd.len() > HINT_COMMAND_COL);
+        let checks = vec![make_check(
+            "State",
+            CheckStatus::Failed,
+            "degraded: clock_skew_detected (skew=315s)",
+            Recovery::Multi(vec![
+                RecoveryHint::Command {
+                    verb: "recover",
+                    command: long_cmd.into(),
+                },
+                RecoveryHint::Command {
+                    verb: "acknowledge",
+                    command: "vigil ack degraded".into(),
+                },
+            ]),
+        )];
+
+        let output = render_doctor(&checks);
+
+        assert!(
+            !output.contains("clock_skew_detectedrecover"),
+            "verb must not be glued to the command:\n{}",
+            output
+        );
+        let arrow_line = output
+            .lines()
+            .find(|l| l.contains('\u{2192}'))
+            .expect("must have an arrow hint");
+        assert!(
+            arrow_line.contains("clock_skew_detected  (recover)"),
+            "long command must be followed by at least {} spaces before parenthesized verb: {:?}",
+            MIN_HINT_GAP,
             arrow_line
         );
     }
