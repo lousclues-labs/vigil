@@ -6,6 +6,151 @@ All notable changes to Vigil Baseline will be documented in this file.
 > full checklist: fmt → clippy → test → build --release → CHANGELOG →
 > version-bump → commit → push → tag.
 
+## [1.11.4] - 2026-05-10
+
+### Fixed — `vigil recover` was unimplemented on the daemon side (CRITICAL operator-facing regression)
+
+#### Symptom
+
+Every invocation of `vigil recover --reason <X>` against a running
+daemon failed with:
+
+```
+error: failed to send recovery command: unknown method: recover.
+The daemon may require authentication; try with HMAC key configured.
+```
+
+The trailing "may require authentication" hint was actively
+misleading — the daemon answered the request, parsed it
+successfully, and explicitly rejected the method. No authentication
+path was ever reached.
+
+#### Root cause
+
+The CLI side of recover was complete: `cmd_recover` in
+`src/commands/recover.rs` validates the reason against
+`DegradedReason::all_variants_for_introspection()`, prompts for
+confirmation, and sends `{"method":"recover","reason":"<code>"}`
+over the control socket via `query_control_socket`.
+
+The daemon side was not. `ControlHandler::dispatch` in
+`src/control.rs` matched only nine methods —
+`status`, `baseline_count`, `reload`, `scan`, `metrics_prometheus`,
+`maintenance_enter`, `maintenance_exit`, `baseline_refresh`,
+`expect_file_change` — and fell through to:
+
+```rust
+_ => serde_json::json!({"ok": false, "error": format!("unknown method: {}", method)}),
+```
+
+`query_control_socket` then converted the `ok:false` response into
+an `Err`, and `cmd_recover` wrapped that error with the boilerplate
+auth hint, producing the misleading message above.
+
+This affected every degraded reason the daemon can produce
+(`baseline_db_replaced`, `audit_db_replaced`, `wal_file_replaced`,
+`event_backpressure`, `event_loss_detected`, `clock_skew_detected`,
+`fanotify_mark_failed`, `fanotify_read_failed`,
+`worker_db_unrecoverable`, `baseline_hmac_mismatch`,
+`fanotify_queue_overflow`, `audit_log_full`,
+`retention_policy_mismatch`, `userspace_event_drops`,
+`alert_sink_failing`, `control_socket_drift`). The `vigil doctor`
+output advertised `vigil recover --reason <code>` as the canonical
+recovery action for every one of them, so operators following the
+documented workflow hit a dead end.
+
+#### Detection
+
+Reported by a user running 1.11.3 whose daemon entered
+`degraded: clock_skew_detected (skew=121s)`. `vigil doctor`
+surfaced the standard `vigil recover --reason clock_skew_detected`
+hint; the command failed with the message above. `systemctl status
+vigild` confirmed the daemon was alive and that the control socket
+connection had been accepted (`control socket conne…` log line),
+ruling out the "is vigild running?" branch.
+
+#### Fix
+
+`src/control.rs`:
+
+- **New handler `ControlHandler::handle_recover(request)`**:
+  - Extracts `reason` from the request; returns
+    `{"ok":false,"error":"missing 'reason' parameter"}` when absent.
+  - Validates the requested code against
+    `DegradedReason::all_variants_for_introspection()` so the daemon
+    cannot be coaxed into a fictional recovery (defence in depth;
+    the CLI already validates, but the daemon does not trust the
+    CLI).
+  - Reads current `DaemonState` under the write lock. If `Healthy`,
+    returns `{"ok":true,"state":"healthy","message":"daemon already
+    healthy"}` (idempotent — repeated recoveries are safe).
+  - If `Degraded { reason, .. }`, requires the request's `reason`
+    to match the current `reason.reason_code()` exactly. Mismatch
+    returns an error naming the actual current reason so operators
+    don't recover the wrong state.
+  - On match, transitions to `DaemonState::Healthy` and logs at
+    `tracing::warn!` with `reason = <code>` and the message
+    `"operator-initiated recovery via control socket; transitioning
+    to Healthy"`. Warn level (not info) because operator-initiated
+    state transitions are security-relevant.
+- **`dispatch` now routes `"recover"` to `handle_recover`** —
+  the single-line wire-up that was missing.
+- **`log_control_action`** now classifies `"recover"` alongside
+  `reload`, `scan`, `maintenance_enter`, `maintenance_exit`, and
+  `baseline_refresh` (info level, mutating command bucket).
+  Previously a `recover` call would have logged as
+  `"control socket unknown method"` at debug — a tell-tale we missed.
+
+#### Tests
+
+New unit tests in `src/control.rs` (all under the existing `tests`
+module, sharing a `make_handler_with_state` helper to keep the
+boilerplate contained):
+
+- `recover_clears_matching_degraded_state` — daemon in
+  `Degraded { ClockSkewDetected }` recovers to `Healthy` when the
+  CLI sends `reason: "clock_skew_detected"`. Asserts both the JSON
+  response (`ok:true`, `state:"healthy"`) and the post-call lock
+  state.
+- `recover_refuses_mismatched_reason` — daemon in
+  `Degraded { ClockSkewDetected }` rejects
+  `reason: "baseline_db_replaced"`. Asserts the error names
+  `clock_skew_detected` and that the state remains `Degraded`.
+- `recover_when_healthy_is_idempotent` — `Healthy` daemon returns
+  `ok:true` to any well-formed recover request.
+- `recover_rejects_unknown_reason` — request with
+  `reason: "not_a_real_reason"` returns
+  `ok:false` with `"unknown"` in the error.
+- `recover_requires_reason_parameter` — request without `reason`
+  field returns `ok:false` with `"reason"` in the error.
+
+Full test suite for the control module: 19 passed, 0 failed.
+
+#### Operational note
+
+`vigil recover` is a state transition, not a remediation. If the
+underlying condition that triggered the degradation has not been
+addressed, the coordinator will re-enter `Degraded` on its next
+tick (~60 s). For `clock_skew_detected` specifically, stabilise
+NTP first (`timedatectl status`, `chronyc tracking`) and verify
+wall vs monotonic agreement before recovering. The daemon already
+auto-recovers from clock skew after `security.clock_skew_recovery_window`
+seconds of clean ticks; manual `vigil recover` is the shortcut.
+
+#### Files changed
+
+- `src/control.rs` — `handle_recover` handler, `dispatch` arm, and
+  `log_control_action` classification.
+- `src/control_recover_tests.rs` — new file holding the 5 recover
+  unit tests, mounted from `control.rs` via
+  `#[path = "control_recover_tests.rs"] mod control_recover_tests;`.
+  Extracted so `src/control.rs` stays under the 1500-line
+  architectural invariant enforced by
+  `tests/architecture_invariants_test.rs::no_source_file_exceeds_line_limit`.
+- `CHANGELOG.md` — this entry.
+- `Cargo.toml` — 1.11.3 → 1.11.4.
+- `aur/PKGBUILD` and `aur/.SRCINFO` — 1.11.3 → 1.11.4.
+
 ## [1.11.3] - 2026-05-08
 
 ### Fixed

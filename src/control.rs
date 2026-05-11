@@ -395,6 +395,7 @@ impl ControlHandler {
             "maintenance_exit" => self.handle_maintenance_exit(),
             "baseline_refresh" => self.handle_baseline_refresh(),
             "expect_file_change" => self.handle_expect_file_change(request),
+            "recover" => self.handle_recover(request),
             _ => serde_json::json!({"ok": false, "error": format!("unknown method: {}", method)}),
         }
     }
@@ -509,6 +510,65 @@ impl ControlHandler {
             "ok": false,
             "error": "baseline_refresh requires a streaming connection"
         })
+    }
+
+    fn handle_recover(&self, request: &serde_json::Value) -> serde_json::Value {
+        use crate::types::DegradedReason;
+
+        let requested = match request.get("reason").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                return serde_json::json!({
+                    "ok": false,
+                    "error": "missing 'reason' parameter"
+                });
+            }
+        };
+
+        // Validate against the typed enum so callers can't request recovery
+        // for a reason the daemon would never produce.
+        let known: Vec<&'static str> = DegradedReason::all_variants_for_introspection()
+            .iter()
+            .map(|v| v.reason_code())
+            .collect();
+        if !known.contains(&requested) {
+            return serde_json::json!({
+                "ok": false,
+                "error": format!("unknown degraded reason: {}", requested)
+            });
+        }
+
+        let mut state = self.state.write();
+        match &*state {
+            DaemonState::Healthy => serde_json::json!({
+                "ok": true,
+                "message": "daemon already healthy",
+                "state": "healthy"
+            }),
+            DaemonState::Degraded { reason, .. } => {
+                let current = reason.reason_code();
+                if current != requested {
+                    return serde_json::json!({
+                        "ok": false,
+                        "error": format!(
+                            "current degraded reason is '{}', not '{}'. Run `vigil doctor` to see current state.",
+                            current, requested
+                        )
+                    });
+                }
+                tracing::warn!(
+                    reason = current,
+                    "operator-initiated recovery via control socket; transitioning to Healthy"
+                );
+                *state = DaemonState::Healthy;
+                serde_json::json!({
+                    "ok": true,
+                    "message": "recovered",
+                    "state": "healthy",
+                    "reason": current
+                })
+            }
+        }
     }
 
     fn handle_expect_file_change(&self, request: &serde_json::Value) -> serde_json::Value {
@@ -1058,7 +1118,8 @@ fn log_control_action(method: &str, metrics: &Metrics) {
         "status" | "baseline_count" | "metrics_prometheus" => {
             tracing::debug!(method = method, "control socket query");
         }
-        "reload" | "scan" | "maintenance_enter" | "maintenance_exit" | "baseline_refresh" => {
+        "reload" | "scan" | "maintenance_enter" | "maintenance_exit" | "baseline_refresh"
+        | "recover" => {
             tracing::info!(method = method, "control socket command executed");
         }
         _ => {
@@ -1703,3 +1764,7 @@ mod tests {
         assert!(!handler.maintenance_active.load(Ordering::Acquire));
     }
 }
+
+#[cfg(test)]
+#[path = "control_recover_tests.rs"]
+mod control_recover_tests;
