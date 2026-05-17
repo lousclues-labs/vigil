@@ -1,6 +1,6 @@
 [Unit]
 Description=Vigil Baseline — Lightweight File Integrity Monitor
-Documentation=man:vigild(8)
+Documentation=https://github.com/lousclues-labs/vigil
 After=local-fs.target
 
 [Service]

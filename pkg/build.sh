@@ -127,24 +127,44 @@ install_deb_deps() {
     section "install_deb_deps"
     export DEBIAN_FRONTEND=noninteractive
     run apt-get update -qq
-    # Defensive: some bookworm and jammy container images ship with a
-    # partially-upgraded systemd dep chain (libsystemd0 was bumped but
-    # libcryptsetup12 / libfdisk1 / libkmod2 / libsystemd-shared etc.
-    # were not), and any subsequent apt-get install then trips on
-    # 'unmet dependencies: systemd : Depends: libcryptsetup12 ...'
-    # with exit 100.
+    # Some bookworm and jammy GH Actions container images ship in a
+    # state where libsystemd0 was bumped (e.g. to 252.39-1~deb12u2)
+    # but the corresponding libcryptsetup12 / libfdisk1 / libkmod2 /
+    # libsystemd-shared / libapparmor1 / libip4tc2 were NOT, and
+    # apt's safety check then blocks any install with:
+    #   'unmet dependencies: systemd : Depends: libcryptsetup12 ... but
+    #    it is not going to be installed'
+    # exit 100.
     #
-    # Two remediation passes before our real install:
-    #   1. dist-upgrade pulls held-back libs forward to match the
-    #      package they're depended on by (the standard apt term for
-    #      'resolve everything to a consistent state').
-    #   2. `install -f` (no packages) is a narrower fallback that
-    #      asks apt to fix any remaining broken state.
-    # Both are silenced + `|| true` so they never regress the common
-    # case where state is already clean. If neither fixes the cascade,
-    # the real install below fails the same way it would have without
-    # these lines -- nothing lost.
-    apt-get -y --no-install-recommends dist-upgrade >/dev/null 2>&1 || true
+    # Four-step remediation, each silenced + '|| true' so it never
+    # regresses the common case where state is already clean:
+    #   1. dpkg --configure -a  -- finish any half-configured packages
+    #      (a configured-but-not-finalised systemd would itself trip
+    #      apt's dep check on every subsequent invocation).
+    #   2. apt-mark unhold      -- lift any package holds. Held libs
+    #      can't be upgraded by dist-upgrade, so the cascade persists.
+    #   3. explicit lib install -- ask apt directly for the libs that
+    #      systemd needs. If they're in the repo (just not chosen by
+    #      the solver in earlier steps), this forces them in. Names
+    #      are bookworm/jammy-specific; missing libs are tolerated.
+    #   4. dist-upgrade + install -f -- consolidate everything. The
+    #      --allow-{downgrades,change-held-packages} flags relax
+    #      apt's safety checks so the solver can pick a consistent
+    #      version set even if it means downgrading something.
+    #
+    # If the cascade still survives all four passes, the real install
+    # below fails the same way it would have without these lines --
+    # nothing lost.
+    dpkg --configure -a >/dev/null 2>&1 || true
+    apt-mark showhold 2>/dev/null | xargs -r apt-mark unhold >/dev/null 2>&1 || true
+    apt-get install -y --no-install-recommends \
+        libsystemd0 libcryptsetup12 libfdisk1 libkmod2 libsystemd-shared \
+        libapparmor1 libip4tc2 >/dev/null 2>&1 || true
+    apt-get -y --no-install-recommends \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" \
+        --allow-downgrades --allow-change-held-packages \
+        dist-upgrade >/dev/null 2>&1 || true
     apt-get install -y --no-install-recommends -f >/dev/null 2>&1 || true
     # strip-nondeterminism: post-processes .deb to scrub embedded
     # timestamps that fpm does not honour SOURCE_DATE_EPOCH for
@@ -375,7 +395,24 @@ VIGILD=/usr/bin/vigild
 
 if [ -x "$VIGILD" ]; then
     if command -v setcap >/dev/null 2>&1; then
-        if ! setcap cap_sys_admin,cap_dac_read_search+ep "$VIGILD"; then
+        if setcap cap_sys_admin,cap_dac_read_search+ep "$VIGILD" 2>/dev/null; then
+            # Smoke test the binary AFTER setcap. With file caps applied
+            # the dynamic linker switches to secure-execution mode
+            # (AT_SECURE=1), which sanitises the environment and uses
+            # a stricter library search policy. On some minimal container
+            # images this breaks even harmless invocations like --help
+            # (cause is environment- or libc-specific, not in our binary).
+            # If --help fails, the binary is still functional when run
+            # as root via systemd (root has all caps regardless of file
+            # caps), so revert the caps rather than leaving the package
+            # in an unverifiable state.
+            if ! "$VIGILD" --help >/dev/null 2>&1; then
+                echo "vigil-baseline: WARN: vigild --help failed after setcap;" >&2
+                echo "vigil-baseline:       reverting file caps. vigild will rely on" >&2
+                echo "vigil-baseline:       systemd running it as root for capabilities." >&2
+                setcap -r "$VIGILD" 2>/dev/null || true
+            fi
+        else
             echo "vigil-baseline: WARN: setcap on $VIGILD failed; vigild will need" >&2
             echo "vigil-baseline:       to run as uid 0 to use fanotify." >&2
         fi
