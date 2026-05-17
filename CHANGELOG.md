@@ -13,11 +13,38 @@ All notable changes to Vigil Baseline will be documented in this file.
 - **Source-project contract for lousclues-pkg.** Added `pkg/build.sh`
   so the lousclues-pkg release-build workflow can build `.deb` and
   `.rpm` artifacts for this project across the noble, jammy,
-  bookworm, el9, and fedora distros. The script is currently a
-  fail-loud scaffold; the operator must fill in the per-distro
-  cargo and fpm calls before the first release. See
-  `lousclues-labs/lousclues-pkg` for the release pipeline that
-  consumes this contract.
+  bookworm, el9, and fedora distros. Full implementation: per-distro
+  dep install (apt-get / dnf), rustup + fpm bootstrap, two-binary
+  cargo build (`vigil` + `vigild`, `--locked --frozen`), staging of
+  systemd units + config example + generated completions + generated
+  man pages + apt/dnf hooks + docs, fpm packaging with pinned
+  metadata + naming, a `setcap cap_sys_admin,cap_dac_read_search+ep`
+  postinst (replacing the unit's `AmbientCapabilities=`), and a
+  `*.manifest.json` sidecar emitted next to each artifact for the
+  `docs/ATTEST.md` attestation step. Reproducible: `LC_ALL=C`,
+  `TZ=UTC`, `gzip -9n`, `find -exec touch -d @SOURCE_DATE_EPOCH`,
+  cargo `--locked --frozen`. See `lousclues-labs/lousclues-pkg` for
+  the release pipeline that consumes this contract.
+- **`vigil man <page>`** — new CLI subcommand (hidden from end-user
+  help) that renders the project's three man pages to stdout in
+  roff: `vigil(1)` and `vigild(8)` from `clap_mangen`, and
+  `vigil.toml(5)` from a hand-authored `man/vigil.toml.5.in`
+  included verbatim via `include_str!`. Invoked by `pkg/build.sh`
+  during staging so man pages ship pre-rendered without committing
+  generated files. Dep addition: `clap_mangen = "0.2"`.
+- **DNF transaction hook.** Added `hooks/dnf/vigil.py` and
+  `hooks/dnf/vigil.conf` — the DNF4 plugin mirror of
+  `hooks/apt/99vigil`. `pre_transaction` runs `vigil maintenance
+  enter`; `post_transaction` runs `vigil baseline refresh && vigil
+  maintenance exit`. Missing-binary handling matches the apt hook:
+  logs critical via syslog + `notify-send`, never blocks the dnf
+  transaction. DNF5 (Fedora 41+) uses a different plugin ABI; that
+  port is a separate ticket.
+- **`vigild --help` / `--version`** — the daemon now recognises both
+  flags (and rejects any other argument with exit code 2) so
+  packaging gates can validate the binary without starting it.
+  Operational configuration is still entirely `VIGIL_CONFIG`-driven;
+  no other flags are introduced.
 - **`.github/workflows/pkg-build.yml` — merge-blocking gate for the
   packaging contract.** Three-layer workflow (lint, negative-input
   tests, per-distro container build) that proves `pkg/build.sh`
@@ -45,6 +72,17 @@ All notable changes to Vigil Baseline will be documented in this file.
   `pkg-build.yml` is the merge-blocking gate for any change under
   `pkg/` or `systemd/`, with a cross-link to `docs/ATTEST.md` for
   the reproducibility line.
+
+### Changed
+
+- **`systemd/vigild.service`** — removed `AmbientCapabilities=`. The
+  required `cap_sys_admin,cap_dac_read_search` are now granted via
+  file caps on `/usr/bin/vigild` by the package's `postinst`
+  scriptlet. File caps are narrower (they don't propagate to
+  children, and they fail loudly if `setcap` is missing).
+  `CapabilityBoundingSet=` is retained as the upper bound the
+  process may ever hold. The CI layout-check accepts either posture
+  so the unit is back-portable.
 
 ## [1.11.4] - 2026-05-10
 

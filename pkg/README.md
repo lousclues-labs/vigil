@@ -99,10 +99,66 @@ contract `pkg/build.sh` must satisfy:
 
 ---
 
+## Manifest sidecar
+
+Each artifact is paired with a small `*.manifest.json` written next to
+it in `OUTDIR`. This is the input
+[`docs/ATTEST.md`](../docs/ATTEST.md) signs over:
+
+```json
+{
+  "artifact": "vigil_1.11.4_amd64-noble.deb",
+  "sha256": "<64 hex chars>",
+  "size_bytes": 12345678,
+  "version": "1.11.4",
+  "distro": "noble",
+  "source_date_epoch": 1700000000,
+  "git_commit": "<40 hex chars>"
+}
+```
+
+The manifest format is deliberately tiny and stable. Any field
+addition is a breaking change for `lousclues-pkg`'s attestation step.
+
+---
+
+## File capabilities
+
+`/usr/bin/vigild` needs `cap_sys_admin` (fanotify) and
+`cap_dac_read_search` (read paths regardless of DAC). These are
+granted at install time by the package's `postinst` scriptlet:
+
+```sh
+setcap cap_sys_admin,cap_dac_read_search+ep /usr/bin/vigild
+```
+
+`AmbientCapabilities=` is deliberately *not* set in the systemd unit:
+file caps are narrower (they don't propagate to children, and they
+fail loudly if `setcap` is missing). The unit's
+`CapabilityBoundingSet=` remains as the upper bound the process may
+ever hold.
+
+The CI layout-check accepts either file caps *or*
+`AmbientCapabilities=` (so the unit is back-portable), but the build
+script ships with file caps.
+
+---
+
 ## Status
 
-`pkg/build.sh` is currently a fail-loud scaffold: every per-distro arm
-exits non-zero with a `TODO` message. The CI gate is therefore red
-until the per-distro arms are implemented to satisfy the contract
-above. That is intentional — the gate forces the contract to be met
-before the project can release through `lousclues-pkg`.
+Implemented. The per-distro arms run end-to-end in CI for all five
+target distros; the workflow's installed-layout check passes on every
+green run. Local dry-runs against a shim `fpm` cleanly produce the
+expected staging tree.
+
+If the gate goes red, suspect one of:
+
+- a new file added to the source tree that the layout-check expects
+  to be packaged (update `stage_assets` in `pkg/build.sh`);
+- a missing system dependency on a fresh distro image (update
+  `install_{deb,rpm}_deps`);
+- an `fpm` argument that gained a default in a new release (pin
+  `fpm` in `ensure_toolchain` if drift becomes painful);
+- a reproducibility regression (the gate runs two passes and compares
+  sha256; diff the `--inspect` outputs of the failing pair from the
+  uploaded `nonrepro-*` artifact).
