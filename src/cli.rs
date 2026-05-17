@@ -305,6 +305,16 @@ pub enum Command {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
     },
+
+    /// Render a man page to stdout (roff format).
+    ///
+    /// Used by packaging to produce vigil(1), vigild(8), and vigil.toml(5).
+    /// Hidden from end-user help because man pages ship pre-rendered.
+    #[command(hide = true)]
+    Man {
+        /// Which page to render: "vigil", "vigild", or "vigil.toml"
+        page: String,
+    },
 }
 
 #[derive(Subcommand)]

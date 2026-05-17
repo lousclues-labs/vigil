@@ -1,0 +1,242 @@
+.\" vigil.toml(5) — configuration file format
+.\" Hand-authored roff (this file is included verbatim by `vigil man vigil.toml`).
+.\" Sources of truth: src/config/, config/vigil.toml.
+.TH VIGIL.TOML 5 "" "vigil" "File Formats Manual"
+.SH NAME
+vigil.toml \- configuration file for vigil(1) and vigild(8)
+.SH SYNOPSIS
+.B /etc/vigil/vigil.toml
+.SH DESCRIPTION
+.B vigil.toml
+is the TOML configuration file consumed by
+.BR vigil (1)
+and
+.BR vigild (8).
+The daemon reads this file at startup; the CLI reads it for every command
+that touches the baseline, audit log, or alert pipeline.
+
+The path may be overridden by the
+.B \-\-config
+flag on
+.BR vigil (1)
+or by setting the
+.B VIGIL_CONFIG
+environment variable for
+.BR vigild (8).
+The full annotated example installed at
+.I /usr/share/doc/vigil-baseline/vigil.toml.example
+is the canonical reference. This page documents the table layout and the
+fields most likely to require operator attention; it is intentionally not
+exhaustive.
+.SH FORMAT
+The file is parsed as TOML 1.0. Unknown keys are rejected by default;
+new fields added by a vigil upgrade are documented in the package
+.B CHANGELOG.
+Paths beginning with
+.B ~
+inside
+.B [watch.*]
+tables are expanded relative to the home directory of the user running
+.BR vigil (1)
+or to
+.B HOME
+for
+.BR vigild (8).
+.SH TABLES
+.SS [daemon]
+Runtime parameters for
+.BR vigild (8).
+.TP
+.B pid_file
+PID file written by
+.BR vigild (8).
+Default:
+.IR /run/vigil/vigild.pid .
+.TP
+.B db_path
+SQLite database holding the baseline, audit log, and ack ledger.
+Default:
+.IR /var/lib/vigil/baseline.db .
+.TP
+.B log_level
+.B trace ", " debug ", " info ", " warn ", " error
+\(em the structured log verbosity for tracing\-subscriber. May be
+overridden at startup by
+.BR RUST_LOG .
+.TP
+.B monitor_backend
+.B fanotify " or " inotify .
+.B fanotify
+is the default and is required for the page\-cache disambiguation
+features described under
+.BR [detection] .
+.TP
+.B control_socket
+Unix\-domain socket the daemon binds for the CLI. Mode 0660,
+group\-readable by the
+.B vigil
+group created by the package.
+.SS [scanner]
+Periodic full\-tree rescan settings. The scanner is independent of the
+inotify/fanotify event stream; it provides a defence in depth against
+events lost to overflow or backend failure.
+.TP
+.B schedule
+Cron expression for the scheduled scan. Default:
+.B "0 3 * * *"
+(03:00 daily).
+.TP
+.B mode
+.B incremental " (default) or " full .
+.TP
+.B hash_algorithm
+.B blake3 " (default) or " sha256 .
+Changing this invalidates the existing baseline.
+.TP
+.B max_file_size
+Bytes. Files larger than this are recorded but their content is not
+hashed. Default: 2 GiB.
+.SS [alerts]
+Channels used to surface findings. Each finding is dispatched to every
+enabled channel that passes the severity filter.
+.TP
+.B desktop_notifications
+Send a D\-Bus desktop notification when a graphical session is active.
+.TP
+.B syslog
+Forward findings to the system journal via libsystemd.
+.TP
+.B log_file
+Append findings as one JSON object per line.
+.TP
+.B webhook_url
+HTTPS endpoint to POST a finding payload to. Empty string disables.
+.TP
+.B rate_limit ", " cooldown_seconds
+Token\-bucket throttling for each channel: at most
+.I rate_limit
+findings per
+.I cooldown_seconds
+window. Excess findings are coalesced into a single summary alert and
+recorded in the audit log.
+.SS [alerts.severity_filter]
+Minimum severity per channel:
+.B dbus_min_severity
+and
+.B log_min_severity .
+Allowed values:
+.B info ", " low ", " medium ", " high ", " critical .
+.SS [exclusions]
+.TP
+.B patterns
+Glob patterns matched against the file basename. Matches are excluded
+from both event handling and scheduled scans.
+.TP
+.B system_exclusions
+Glob patterns matched against the absolute path. Used to keep
+ephemeral mounts like
+.IR /proc ", " /sys ", and " /run
+out of the baseline.
+.SS [package_manager]
+.TP
+.B auto_rebaseline
+When
+.BR true ,
+vigil refreshes the baseline for files touched by a package
+transaction announced through the apt/dnf maintenance hooks.
+.TP
+.B backend
+.B auto ", " apt ", " dnf ", or " none .
+.SS [hooks]
+.TP
+.B signal_socket
+Optional Unix\-domain socket on which third\-party tooling may signal
+.B maintenance enter
+and
+.B maintenance exit
+without invoking the CLI. Empty string disables.
+.SS [security]
+.TP
+.B hmac_signing
+When
+.BR true ,
+the audit log uses an HMAC\-chained record format. See
+.BR vigil\-audit (7)
+if installed, or
+.I /usr/share/doc/vigil-baseline/AUDIT_HMAC_FORMAT.md .
+.TP
+.B hmac_key_path
+Path to the HMAC key file. Must be mode 0600, owned by the
+.B vigil
+user.
+.TP
+.B verify_config_integrity
+When
+.BR true ,
+.BR vigild (8)
+computes a digest of this file at startup and refuses to start if the
+on\-disk contents change without an operator acknowledgement.
+.SS [detection]
+.TP
+.B disambiguate_on_detection
+When
+.BR true ,
+content mismatches are additionally classified as
+.BR page_cache_only ", " disk_modification ", " active_modification ", or " inconclusive
+and the result is stored in the audit log's
+.B disambiguation
+column. The classification evicts the affected file's page cache via
+.BR posix_fadvise (2)
+with
+.BR POSIX_FADV_DONTNEED ;
+this is correct behaviour for incident triage but may be surprising as
+steady\-state. Off by default.
+.SS [database]
+.TP
+.B wal_mode
+SQLite WAL journal mode. Recommended; the default.
+.TP
+.B audit_rotation_size
+Bytes. The audit table is rotated to a compressed history file when it
+exceeds this size.
+.TP
+.B audit_retention_days
+Days of rotated audit history retained on disk before pruning.
+.SS [watch.<group>]
+One or more tables describing groups of paths to monitor. The group
+name is opaque to vigil but is recorded in audit records and rendered
+by
+.BR vigil\-status (1).
+.TP
+.B severity
+.B info ", " low ", " medium ", " high ", or " critical .
+Drives alert routing and the colour of CLI output.
+.TP
+.B paths
+Array of strings. Each entry may be a file, a directory (recursive),
+or a path ending in
+.B /
+to denote a directory tree.
+.SH FILES
+.TP
+.I /etc/vigil/vigil.toml
+Default configuration path.
+.TP
+.I /usr/share/doc/vigil-baseline/vigil.toml.example
+Annotated reference shipped by the package.
+.TP
+.I /etc/vigil/hmac.key
+HMAC key file referenced by
+.BR [security].hmac_key_path .
+.SH SEE ALSO
+.BR vigil (1),
+.BR vigild (8),
+.BR vigil\-config (1),
+.BR systemd.service (5)
+.SH NOTES
+This file is parsed before privileges are dropped. A syntactically
+invalid file causes
+.BR vigild (8)
+to exit before forking; the operator is expected to validate with
+.B vigil config check
+before restarting the service.

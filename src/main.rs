@@ -248,5 +248,6 @@ fn run(cli: Cli) -> vigil::Result<i32> {
             );
             Ok(0)
         }
+        Command::Man { page } => commands::cmd_man(&page),
     }
 }
