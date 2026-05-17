@@ -383,6 +383,26 @@ jobs:
         if: matrix.ext == 'deb'
         run: |
           export DEBIAN_FRONTEND=noninteractive
+          # The preceding `smoke install (deb)` step used dpkg -i
+          # --force-depends because the minimal container images miss
+          # libssl3 / libcap2-bin. That leaves apt in a broken-deps
+          # state, and the libsystemd0-vs-deps version skew on
+          # bookworm/jammy container images then trips this apt-get
+          # install with `Unmet dependencies: systemd : Depends:
+          # libcryptsetup12 (>= 2:2.4) but it is not going to be
+          # installed`. Five-step remediation chain, each silenced +
+          # '|| true' so it never regresses the clean case:
+          dpkg --configure -a >/dev/null 2>&1 || true
+          apt-mark showhold 2>/dev/null | xargs -r apt-mark unhold >/dev/null 2>&1 || true
+          apt-get install -y --no-install-recommends \
+            libsystemd0 libcryptsetup12 libfdisk1 libkmod2 libsystemd-shared \
+            libapparmor1 libip4tc2 >/dev/null 2>&1 || true
+          apt-get -y --no-install-recommends \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
+            --allow-downgrades --allow-change-held-packages \
+            dist-upgrade >/dev/null 2>&1 || true
+          apt-get install -y --no-install-recommends -f >/dev/null 2>&1 || true
           apt-get install -y --no-install-recommends \
             libcap2-bin systemd coreutils
         # systemd-analyze lives in the `systemd` binary package on
@@ -509,6 +529,15 @@ jobs:
 
           # ── Package-manager hooks (source-tree conditional) ──
           # Pacman is out of scope for this workflow (no archlinux matrix entry).
+          #
+          # apt hooks ship split by destination because apt.conf(5)
+          # has no escape for embedding " inside "..." strings:
+          #   hooks/apt/99vigil       -> /etc/apt/apt.conf.d/99vigil   (apt.conf format)
+          #   hooks/apt/apt-pre.sh    -> /usr/lib/vigil/apt-pre.sh     (called from 99vigil)
+          #   hooks/apt/apt-post.sh   -> /usr/lib/vigil/apt-post.sh    (called from 99vigil)
+          # The check below mirrors that split. Putting .sh files in
+          # /etc/apt/apt.conf.d/ would be wrong -- apt parses that
+          # directory as apt.conf, not as a directory of executables.
           if [ -d hooks/apt ] && [ "$EXT" = "deb" ]; then
             shopt -s nullglob
             apt_src=(hooks/apt/*)
@@ -518,7 +547,10 @@ jobs:
             else
               for src in "${apt_src[@]}"; do
                 name=$(basename "$src")
-                installed="/etc/apt/apt.conf.d/$name"
+                case "$name" in
+                  *.sh) installed="/usr/lib/vigil/$name" ;;
+                  *)    installed="/etc/apt/apt.conf.d/$name" ;;
+                esac
                 if [ -f "$installed" ]; then ok "apt hook installed: $installed"
                 else fail "apt hook source $src present in tree but $installed missing"; fi
               done

@@ -7,7 +7,11 @@ After=local-fs.target
 Type=notify
 NotifyAccess=main
 ExecStart=/usr/bin/vigild
-ExecReload=/bin/kill -HUP $MAINPID
+# /usr/bin/kill (not /bin/kill): on usrmerge systems both resolve to
+# the same inode, but minimal Fedora container images can have a
+# broken /bin symlink at systemd-analyze verify time, which then
+# rejects the unit with 'Command /bin/kill is not executable'.
+ExecReload=/usr/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
 
@@ -27,13 +31,24 @@ MemoryHigh=30M
 
 # Required capabilities
 #
-# Capabilities are granted via file caps on /usr/bin/vigild
-# (set by the package post-install scriptlet: setcap
-# cap_sys_admin,cap_dac_read_search+ep). AmbientCapabilities= is
-# intentionally NOT set here: it would mask cases where the file caps
-# are missing, and would grant caps to any child processes vigild
-# spawns (vigild spawns none). CapabilityBoundingSet= remains as the
-# upper bound the process can ever hold.
+# CAP_SYS_ADMIN       -- fanotify_init / fanotify_mark
+# CAP_DAC_READ_SEARCH -- bypass DAC on read across uid/mount boundaries
+#
+# Provided two ways for defence in depth:
+#   1. File caps on /usr/bin/vigild via setcap in the postinst
+#      scriptlet. Lets manual `vigild` invocations (testing,
+#      troubleshooting) work without sudo for fanotify-only ops.
+#   2. AmbientCapabilities= here. systemd grants these to the exec'd
+#      process directly. If the postinst's setcap fails or is
+#      reverted (some minimal container images break the binary's
+#      --help after setcap because file caps trigger AT_SECURE=1
+#      secure-execution mode in the dynamic linker), the systemd-
+#      launched vigild still gets the caps it needs.
+#
+# CapabilityBoundingSet= caps both paths -- the process can never
+# acquire any capability outside this set, regardless of source.
+# vigild spawns no children, so the ambient set leaking is moot.
+AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
 
 # Watchdog
