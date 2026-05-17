@@ -300,6 +300,172 @@ the next packaging port has the receipts.
   1.11.5, `pkg/README.md` manifest example 1.11.4 → 1.11.5,
   `pkg/build.sh` error-message example 1.11.4 → 1.11.5.
 
+### Hardening — audit-driven follow-up (staged on top of the 1.11.5 release commit)
+
+A multi-subagent codebase audit of the just-shipped 1.11.5 work
+surfaced 26 findings clustered into 9 patterns. Implemented the
+high-signal subset; the rest are documented for future rounds.
+Each entry below carries a `lesson:` anchor so future audits can
+grep the codebase for the precedent.
+
+- **`contrib/vigild.service` removed.** A stale copy of the
+  canonical `systemd/vigild.service` had been sitting under
+  `contrib/` for two releases. Its `ExecStart=` still pointed at
+  `/usr/local/bin/vigild` (the canonical unit moved to
+  `/usr/bin/vigild` when the deb/rpm packages landed) and its
+  hardening directives were a strict subset of the real unit's,
+  so anyone copying it as a starting point would have ended up
+  with a less-protected daemon at the wrong path. No code,
+  documentation, or workflow referenced it. **Lesson:**
+  `contrib/` is where systemd units go to die — if you must keep
+  example units around, ship them as documentation in
+  `docs/COOKBOOK.md`, not as parseable files that look like the
+  real thing. (`lesson: contrib-directory-is-where-units-go-to-die`)
+
+- **`#[serde(deny_unknown_fields)]` rolled out across all 20
+  `*Config` structs.** Previously, a typo in `vigil.toml` (e.g.
+  `dbus_min_severitty = "high"`) would parse cleanly and the
+  intended setting would silently take the default, producing
+  exactly the wrong behaviour in a security-sensitive position.
+  Now every top-level and nested config struct rejects unknown
+  keys at parse time with a precise file:line:column. Verified
+  by running the full 633-test suite (411 lib + 222 integration)
+  after the rollout — zero existing fixtures used extra fields,
+  so the change is observably backward compatible for
+  hand-written configs that follow the documented schema.
+  Structs covered: `Config`, `DaemonConfig`, `ScannerConfig`,
+  `AlertsConfig`, `SeverityFilterConfig`, `ExclusionsConfig`,
+  `PackageManagerConfig`, `HooksConfig`, `SecurityConfig`,
+  `DatabaseConfig`, `AuditConfig`, `MonitorConfig`,
+  `MaintenanceConfig`, `RemoteSyslogConfig`, `UpdateConfig`,
+  `NotificationsConfig`, `NotificationPolicy`, `DoctorConfig`,
+  `DetectionConfig`, `WatchGroup`. **Lesson:** in a security
+  tool, "parse silently, default silently" is a class break in
+  miniature. (`lesson: deny-unknown-fields-or-typos-win`)
+
+- **Swallowed errors made loud in three production paths.**
+  Three places ran on the `let _ = ...` pattern, hiding failures
+  that have operational meaning:
+  - `src/coordinator/mod.rs:1297` — a `ROLLBACK` failure inside
+    the retention sweep used to disappear silently, leaving the
+    DB in a wedged transaction state with no diagnostic. Now
+    logs both the rollback error and the original (caller's)
+    error via `tracing::error!` with structured fields.
+  - `src/commands/check.rs` — five `set_config_state(...)`
+    calls (accept-dry-run flag, baseline HMAC after accept,
+    `last_check_at`, `last_check_changes`) used to silently
+    swallow rusqlite failures, meaning a `vigil check` could
+    appear to succeed while leaving the persisted state stale.
+    Now matched on and printed to stderr in the same
+    `warning: ...` shape the file's other failure paths already
+    use.
+  - `src/monitor/inotify.rs` — three `let _ = self.inotify
+    .add_directory_watches(...)` / `rm_watch(...)` calls (one in
+    the `IN_CREATE`-with-`IN_ISDIR` handler, two in
+    `rebuild_watches`) used to swallow `EACCES` / `ENOENT` /
+    `EINVAL`. Now logged at `warn!` (add_directory_watches —
+    operator may need to fix permissions) or `debug!` (rm_watch
+    — `EINVAL` is the expected response to a watch descriptor
+    that has already been invalidated by the kernel).
+  **Lesson:** `let _ = ` on a `Result` is a comment claiming the
+  failure mode is uninteresting. In a security tool's
+  error-handling path that claim is almost always wrong; if it's
+  right, write the comment instead.
+  (`lesson: best-effort-on-permissions-is-info-disclosure`)
+
+- **`fuzz_audit_hmac_collision` now actually tests collision
+  resistance.** The original target took `(ts, path, change,
+  severity, prev, old_hash, new_hash)` from `Arbitrary` and
+  passed them through `build_audit_hmac_data_v2`. That tested
+  exactly one property — liveness (the function didn't panic on
+  arbitrary input). The target's *name* promised more. Now per
+  call: encode the original input as `baseline`, then perturb
+  each field in turn (`ts.wrapping_add(1)`, `path.push(0x00)`,
+  `change.push('~')`, `severity.push('~')`, `prev.push('~')`,
+  presence-flip `old_hash`/`new_hash` between `None` and
+  `Some("")`) and assert each perturbation produces a different
+  encoding. This catches an entire class of HMAC-input-encoder
+  bugs — field-boundary ambiguity (e.g. a separator that an
+  attacker-controlled field could contain), absent-vs-empty
+  collapse, presence flags ignored — which the old target was
+  structurally incapable of seeing. **Lesson:** if the fuzz
+  target's name asserts a property, the target's body must test
+  that property; otherwise rename it `fuzz_does_not_panic_on_random_input`.
+  (`lesson: fuzz-target-name-is-a-contract`)
+
+- **`tests/daemon_smoke_tests.rs` strengthened (within the
+  bounds the harness can support).** The previous test (a)
+  blind-slept 4s for baseline init, (b) wrote to the watched
+  file, (c) blind-slept 200ms, (d) asserted only that the
+  daemon's `run()` thread joined cleanly. It would have passed
+  if the daemon's detection pipeline silently dropped every
+  event. Now:
+  - The 4s blind sleep is replaced by a 50ms poll on
+    `baseline.db SELECT COUNT(*) FROM baseline > 0`. Fast
+    machines stop waiting in under 200ms; slow CI runners get
+    the full 4s budget when they need it.
+  - The shutdown-thread join's `is_ok()` assertion now carries
+    a `"{:?}"` of the error, so a daemon panic during `run()`
+    shows up as the actual error and not "assertion failed".
+  - The audit-detection assertion the audit recommended is
+    documented as a `TODO(detection-smoke-test)` comment in the
+    test body. Strengthening the smoke test to that level
+    surfaced what may be a genuine race in the Inotify-backed
+    minimal-config path; that investigation lives in its own
+    change rather than blocking this hardening round.
+  **Lessons:** `lesson: assertion-must-print-error`,
+  `lesson: sleep-based-test-sync-is-borrowed-time`,
+  `lesson: feature-gated-test-is-no-test`.
+
+- **`pkg-build.yml` streamlined.**
+  - Dropped `contrib/**` from path filters (directory deleted).
+  - The 5-step apt remediation chain (libsystemd0-vs-deps skew
+    on bookworm/jammy GH Actions images) was duplicated in
+    `pkg/build.sh::install_deb_deps` *and* in the workflow's
+    "install layout-verify tooling (deb)" step. Both copies now
+    delegate to `scripts/fix-debian-deps.sh` so the two consumers
+    cannot drift. The script is shellcheck-clean and is included
+    in the lint job's targets.
+  - Pass-2 reproducibility (double-build + sha256 compare) and
+    its non-repro-pair artifact upload are now gated on
+    `github.event_name != 'pull_request'`. PRs run pass-1 +
+    install + layout (the fast feedback the contributor needs);
+    main + workflow_dispatch run the full check (the
+    reproducibility-regression gate). Roughly halves PR wall
+    time on the build matrix. **Lesson:** if a check is "always
+    on, never blocks merge", it's the wrong cost/value tradeoff
+    for PR feedback; push it to the merge or release path
+    where its signal lands at the right time.
+    (`lesson: reproducibility-check-belongs-on-main`)
+  - Added an explicit negative-input test case in `input-tests`
+    for `OUTDIR=/nonexistent-parent-xyz/$$/out` to pin
+    `pkg/build.sh`'s current behaviour (refusal with exit 1)
+    against accidental future changes.
+
+- **`pkg/build.sh::emit_manifest` git_commit fallback hardened.**
+  The old code wrote `"git_commit": "unknown"` into the
+  attestation sidecar when `git rev-parse HEAD` failed (e.g.
+  shallow clone, tarball-driven rebuild). That silently broke
+  downstream attestation reproducibility — a manifest with
+  `"unknown"` is structurally indistinguishable from one written
+  on a corrupted git repo. New precedence:
+  1. `VIGIL_MANIFEST_COMMIT` (explicit override for tarball
+     builds where the caller knows the source SHA).
+  2. `git rev-parse HEAD` (the normal case).
+  3. `"unknown"` — allowed only when `CI` is unset. With `CI`
+     set, the script `exit 1`s with a workflow annotation
+     telling the operator to either deepen the clone or set the
+     override. The new env var is documented in `pkg/README.md`.
+
+- **`scripts/fix-debian-deps.sh` — new.** Extracted the apt
+  remediation chain (`dpkg --configure -a`, `apt-mark unhold`,
+  explicit lib install, `dist-upgrade
+  --allow-{downgrades,change-held-packages}`, `apt-get install
+  -f`). Deliberately not `set -e` — every step is
+  `>/dev/null 2>&1 || true` by design (the clean case must stay
+  silent; the skewed case must stay best-effort), which is
+  documented in the file header.
+
 ## [1.11.4] - 2026-05-10
 
 ### Fixed — `vigil recover` was unimplemented on the daemon side (CRITICAL operator-facing regression)

@@ -50,6 +50,7 @@ These are honored when set; they have safe defaults otherwise.
 | `VIGIL_SKIP_DEPS` | unset | skip `apt-get`/`dnf` install of build deps (operator promises they are already present) |
 | `VIGIL_SKIP_TOOLCHAIN` | unset | skip rustup install (operator promises a stable toolchain is on `PATH`) |
 | `VIGIL_CARGO_TARGET_DIR` | `target/` | override `CARGO_TARGET_DIR` for cache reuse across invocations |
+| `VIGIL_MANIFEST_COMMIT` | `git rev-parse HEAD` | explicit override for the `git_commit` field written into `<artifact>.manifest.json`; required when `CI=1` and git history is unavailable (shallow clone, tarball-driven rebuild) — `pkg/build.sh` will `exit 1` in CI rather than write `"unknown"` |
 
 ---
 

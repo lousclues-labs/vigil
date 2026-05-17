@@ -1293,8 +1293,19 @@ impl Coordinator {
                 );
             }
             Err(e) => {
-                // Rollback on failure
-                let _ = conn.execute("ROLLBACK", []);
+                // Rollback on failure. If ROLLBACK itself fails the
+                // SQLite connection may be left in an inconsistent
+                // transaction state; surface the error loudly so the
+                // operator/log scraper sees it. The outer error is
+                // still the proximate cause.
+                if let Err(rb_err) = conn.execute("ROLLBACK", []) {
+                    tracing::error!(
+                        rollback_error = %rb_err,
+                        primary_error = %e,
+                        "retention sweep ROLLBACK failed after primary error; \
+                         audit chain may be inconsistent until next sweep"
+                    );
+                }
                 tracing::error!(
                     error = %e,
                     "retention sweep failed; will retry next cycle"

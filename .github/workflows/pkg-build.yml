@@ -36,8 +36,8 @@ on:
       - 'Cargo.lock'
       - 'systemd/**'
       - 'config/**'
-      - 'contrib/**'
       - 'hooks/**'
+      - 'scripts/fix-debian-deps.sh'
       - '.github/workflows/pkg-build.yml'
   push:
     branches: [main]
@@ -47,8 +47,8 @@ on:
       - 'Cargo.lock'
       - 'systemd/**'
       - 'config/**'
-      - 'contrib/**'
       - 'hooks/**'
+      - 'scripts/fix-debian-deps.sh'
       - '.github/workflows/pkg-build.yml'
   workflow_dispatch:
 
@@ -75,6 +75,12 @@ jobs:
 
       - name: bash -n pkg/build.sh
         run: bash -n pkg/build.sh
+
+      - name: shellcheck scripts/fix-debian-deps.sh
+        run: shellcheck -x scripts/fix-debian-deps.sh
+
+      - name: bash -n scripts/fix-debian-deps.sh
+        run: bash -n scripts/fix-debian-deps.sh
 
       - name: shellcheck setup.sh
         run: shellcheck -x setup.sh
@@ -160,6 +166,14 @@ jobs:
           # 3. missing OUTDIR  -> 1
           check "missing OUTDIR" 1 -- \
             env -u OUTDIR DISTRO=noble VERSION="$ACTUAL" bash pkg/build.sh
+
+          # 3b. OUTDIR points at a path whose parent does not exist.
+          # pkg/build.sh's `mkdir -p` should still succeed (mkdir -p
+          # creates parents), so this case is treated as VALID input;
+          # if a regression ever makes build.sh refuse, update this
+          # test to the new contract.
+          check "OUTDIR with nonexistent parent" 1 -- \
+            env DISTRO=noble VERSION="$ACTUAL" OUTDIR="/nonexistent-parent-xyz/$$/out" bash pkg/build.sh
 
           # 4. unknown DISTRO=arch -> 2
           check "unknown DISTRO arch" 2 -- \
@@ -292,7 +306,12 @@ jobs:
 
       # ── Pass 2: build again to prove reproducibility.
       # vigil-specific: shroud's workflow does not do this.
+      # Gate: only on push to main + workflow_dispatch. Skipping on
+      # pull_request keeps PR feedback fast (~halves the build job
+      # wall time) and the reproducibility regression catches at
+      # merge time anyway. lesson: reproducibility-check-belongs-on-main
       - name: pkg/build.sh -- pass 2 (reproducibility)
+        if: github.event_name != 'pull_request'
         env:
           DISTRO: ${{ matrix.distro }}
           VERSION: ${{ steps.ver.outputs.actual }}
@@ -304,6 +323,7 @@ jobs:
 
       - name: compare sha256 (reproducibility check)
         id: repro
+        if: github.event_name != 'pull_request'
         env:
           EXT: ${{ matrix.ext }}
         run: |
@@ -330,7 +350,7 @@ jobs:
           echo "reproducibility check passed."
 
       - name: upload non-reproducible pair (debug)
-        if: failure() && steps.repro.outputs.repro == 'fail'
+        if: failure() && github.event_name != 'pull_request' && steps.repro.outputs.repro == 'fail'
         uses: actions/upload-artifact@v4
         with:
           name: nonrepro-${{ matrix.distro }}-${{ matrix.ext }}
@@ -390,19 +410,10 @@ jobs:
           # bookworm/jammy container images then trips this apt-get
           # install with `Unmet dependencies: systemd : Depends:
           # libcryptsetup12 (>= 2:2.4) but it is not going to be
-          # installed`. Five-step remediation chain, each silenced +
-          # '|| true' so it never regresses the clean case:
-          dpkg --configure -a >/dev/null 2>&1 || true
-          apt-mark showhold 2>/dev/null | xargs -r apt-mark unhold >/dev/null 2>&1 || true
-          apt-get install -y --no-install-recommends \
-            libsystemd0 libcryptsetup12 libfdisk1 libkmod2 libsystemd-shared \
-            libapparmor1 libip4tc2 >/dev/null 2>&1 || true
-          apt-get -y --no-install-recommends \
-            -o Dpkg::Options::="--force-confdef" \
-            -o Dpkg::Options::="--force-confold" \
-            --allow-downgrades --allow-change-held-packages \
-            dist-upgrade >/dev/null 2>&1 || true
-          apt-get install -y --no-install-recommends -f >/dev/null 2>&1 || true
+          # installed`. Delegate the 5-step remediation chain to the
+          # extracted script so this YAML and pkg/build.sh stay in
+          # lockstep.
+          bash scripts/fix-debian-deps.sh
           apt-get install -y --no-install-recommends \
             libcap2-bin systemd coreutils procps
         # systemd-analyze lives in the `systemd` binary package on

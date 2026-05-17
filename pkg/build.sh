@@ -127,45 +127,16 @@ install_deb_deps() {
     section "install_deb_deps"
     export DEBIAN_FRONTEND=noninteractive
     run apt-get update -qq
-    # Some bookworm and jammy GH Actions container images ship in a
-    # state where libsystemd0 was bumped (e.g. to 252.39-1~deb12u2)
-    # but the corresponding libcryptsetup12 / libfdisk1 / libkmod2 /
-    # libsystemd-shared / libapparmor1 / libip4tc2 were NOT, and
-    # apt's safety check then blocks any install with:
-    #   'unmet dependencies: systemd : Depends: libcryptsetup12 ... but
-    #    it is not going to be installed'
-    # exit 100.
-    #
-    # Four-step remediation, each silenced + '|| true' so it never
-    # regresses the common case where state is already clean:
-    #   1. dpkg --configure -a  -- finish any half-configured packages
-    #      (a configured-but-not-finalised systemd would itself trip
-    #      apt's dep check on every subsequent invocation).
-    #   2. apt-mark unhold      -- lift any package holds. Held libs
-    #      can't be upgraded by dist-upgrade, so the cascade persists.
-    #   3. explicit lib install -- ask apt directly for the libs that
-    #      systemd needs. If they're in the repo (just not chosen by
-    #      the solver in earlier steps), this forces them in. Names
-    #      are bookworm/jammy-specific; missing libs are tolerated.
-    #   4. dist-upgrade + install -f -- consolidate everything. The
-    #      --allow-{downgrades,change-held-packages} flags relax
-    #      apt's safety checks so the solver can pick a consistent
-    #      version set even if it means downgrading something.
-    #
-    # If the cascade still survives all four passes, the real install
-    # below fails the same way it would have without these lines --
-    # nothing lost.
-    dpkg --configure -a >/dev/null 2>&1 || true
-    apt-mark showhold 2>/dev/null | xargs -r apt-mark unhold >/dev/null 2>&1 || true
-    apt-get install -y --no-install-recommends \
-        libsystemd0 libcryptsetup12 libfdisk1 libkmod2 libsystemd-shared \
-        libapparmor1 libip4tc2 >/dev/null 2>&1 || true
-    apt-get -y --no-install-recommends \
-        -o Dpkg::Options::="--force-confdef" \
-        -o Dpkg::Options::="--force-confold" \
-        --allow-downgrades --allow-change-held-packages \
-        dist-upgrade >/dev/null 2>&1 || true
-    apt-get install -y --no-install-recommends -f >/dev/null 2>&1 || true
+    # libsystemd0-vs-deps version skew remediation: see
+    # scripts/fix-debian-deps.sh for the full rationale. Sourcing the
+    # script (rather than duplicating its 5-step cascade inline) means
+    # the workflow and pkg/build.sh stay in lockstep automatically.
+    local fix_script="$REPO_ROOT/scripts/fix-debian-deps.sh"
+    if [ -x "$fix_script" ]; then
+        run bash "$fix_script"
+    else
+        log "warning: $fix_script not present or not executable; skipping libsystemd0 skew remediation"
+    fi
     # strip-nondeterminism: post-processes .deb to scrub embedded
     # timestamps that fpm does not honour SOURCE_DATE_EPOCH for
     # (ar entry mtimes, gzip headers, tar entry mtimes/ordering).
@@ -596,7 +567,32 @@ emit_manifest() {
     local size
     size=$(stat -c '%s' "$artifact")
     local git_commit
-    git_commit=$(cd "$REPO_ROOT" && git rev-parse HEAD 2>/dev/null || echo "unknown")
+    # Resolution precedence:
+    #   1. VIGIL_MANIFEST_COMMIT  -- explicit override (lousclues-pkg
+    #      release pipeline sets this to the exact tag commit so
+    #      downstream attestation can pin to the source commit even
+    #      when this script is invoked from a non-repo working copy).
+    #   2. git rev-parse HEAD     -- the common case, deterministic
+    #      across CI re-runs of the same SHA.
+    #   3. "unknown"              -- last resort, allowed ONLY when
+    #      not running in CI. In CI a missing git_commit silently
+    #      breaks attestation reproducibility downstream, so we fail
+    #      loudly with exit 1 instead. Set VIGIL_MANIFEST_COMMIT to
+    #      override if the CI environment legitimately has no git
+    #      history (e.g. tarball-driven rebuild).
+    if [ -n "${VIGIL_MANIFEST_COMMIT:-}" ]; then
+        git_commit="$VIGIL_MANIFEST_COMMIT"
+    else
+        git_commit=$(cd "$REPO_ROOT" && git rev-parse HEAD 2>/dev/null || echo "")
+        if [ -z "$git_commit" ]; then
+            if [ -n "${CI:-}" ]; then
+                echo "::error::emit_manifest: git_commit unresolved in CI;" \
+                     "set VIGIL_MANIFEST_COMMIT or fix shallow-clone depth" >&2
+                exit 1
+            fi
+            git_commit="unknown"
+        fi
+    fi
     cat > "${artifact}.manifest.json" <<EOF
 {
   "artifact": "$(basename "$artifact")",

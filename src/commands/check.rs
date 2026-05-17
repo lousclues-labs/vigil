@@ -351,16 +351,20 @@ pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
                 println!("  Dry run only. Baseline was not modified.");
                 println!("  To apply: rerun without --dry-run");
 
-                let _ = vigil::db::baseline_ops::set_config_state(
+                if let Err(e) = vigil::db::baseline_ops::set_config_state(
                     &conn,
                     "last_check_at",
                     &chrono::Utc::now().timestamp().to_string(),
-                );
-                let _ = vigil::db::baseline_ops::set_config_state(
+                ) {
+                    eprintln!("  warning: failed to persist last_check_at: {}", e);
+                }
+                if let Err(e) = vigil::db::baseline_ops::set_config_state(
                     &conn,
                     "last_check_changes",
                     &report.scan.changes_found.to_string(),
-                );
+                ) {
+                    eprintln!("  warning: failed to persist last_check_changes: {}", e);
+                }
                 return Ok(code);
             }
 
@@ -443,11 +447,16 @@ pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
                 if let Ok(key) = vigil::hmac::load_hmac_key(&cfg.security.hmac_key_path) {
                     match vigil::db::baseline_ops::compute_baseline_hmac(&conn, &key) {
                         Ok(hmac) => {
-                            let _ = vigil::db::baseline_ops::set_config_state(
+                            if let Err(e) = vigil::db::baseline_ops::set_config_state(
                                 &conn,
                                 "baseline_hmac",
                                 &hmac,
-                            );
+                            ) {
+                                eprintln!(
+                                    "  warning: failed to persist baseline_hmac after accept: {}",
+                                    e
+                                );
+                            }
                         }
                         Err(e) => {
                             eprintln!("  warning: failed to update baseline HMAC: {}", e);
@@ -486,16 +495,20 @@ pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
     }
 
     // Persist last-check metadata for temporal context in future runs.
-    let _ = vigil::db::baseline_ops::set_config_state(
+    if let Err(e) = vigil::db::baseline_ops::set_config_state(
         &conn,
         "last_check_at",
         &chrono::Utc::now().timestamp().to_string(),
-    );
-    let _ = vigil::db::baseline_ops::set_config_state(
+    ) {
+        eprintln!("warning: failed to persist last_check_at: {}", e);
+    }
+    if let Err(e) = vigil::db::baseline_ops::set_config_state(
         &conn,
         "last_check_changes",
         &report.scan.changes_found.to_string(),
-    );
+    ) {
+        eprintln!("warning: failed to persist last_check_changes: {}", e);
+    }
 
     Ok(code)
 }

@@ -165,6 +165,7 @@ impl SyncMode {
 
 /// Top-level Vigil configuration, deserialized from TOML.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default = "default_config_version")]
     pub config_version: u32,
@@ -207,6 +208,7 @@ fn default_config_version() -> u32 {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DaemonConfig {
     #[serde(default = "default_pid_file")]
     pub pid_file: PathBuf,
@@ -320,6 +322,7 @@ fn default_monitor_backend() -> MonitorBackend {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScannerConfig {
     #[serde(default = "default_schedule")]
     pub schedule: String,
@@ -376,6 +379,7 @@ fn default_max_file_size() -> u64 {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AlertsConfig {
     #[serde(default = "default_true")]
     pub desktop_notifications: bool,
@@ -482,6 +486,7 @@ fn default_max_alerts_per_minute() -> u32 {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SeverityFilterConfig {
     #[serde(default = "default_dbus_min_severity")]
     pub dbus_min_severity: Severity,
@@ -507,6 +512,7 @@ fn default_log_min_severity() -> Severity {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExclusionsConfig {
     #[serde(default = "default_exclusion_patterns")]
     pub patterns: Vec<String>,
@@ -554,6 +560,7 @@ fn default_system_exclusions() -> Vec<String> {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PackageManagerConfig {
     #[serde(default = "default_true")]
     pub auto_rebaseline: bool,
@@ -575,12 +582,14 @@ fn default_pkg_backend() -> PackageBackend {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct HooksConfig {
     #[serde(default)]
     pub signal_socket: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SecurityConfig {
     #[serde(default)]
     pub hmac_signing: bool,
@@ -641,6 +650,7 @@ fn default_hmac_key_path() -> PathBuf {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DatabaseConfig {
     #[serde(default = "default_true")]
     pub wal_mode: bool,
@@ -685,6 +695,7 @@ fn default_audit_retention_days() -> u32 {
 // ── Audit Retention Config ─────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuditConfig {
     /// Entries older than this many days are pruned on the next sweep.
     /// Validated: must be >= 7. Default 365.
@@ -783,6 +794,7 @@ fn parse_duration_string(s: &str) -> Option<std::time::Duration> {
 // ── Monitor Config ─────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MonitorConfig {
     /// Event loss alert threshold per coordinator tick.
     /// When user-space or kernel event loss exceeds this count in a single tick,
@@ -844,6 +856,7 @@ fn default_fanotify_tier() -> String {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MaintenanceConfig {
     /// Maximum maintenance window duration in seconds (safety timeout).
     #[serde(default = "default_max_window_seconds")]
@@ -863,6 +876,7 @@ fn default_max_window_seconds() -> u64 {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemoteSyslogConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -919,6 +933,7 @@ impl WatchMode {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateConfig {
     /// Maximum number of binary backup archives to keep.
     #[serde(default = "default_backup_retention_count")]
@@ -939,6 +954,7 @@ fn default_backup_retention_count() -> usize {
 
 /// Severity-aware notification delivery policies.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct NotificationsConfig {
     #[serde(default)]
     pub critical: NotificationPolicy,
@@ -1002,6 +1018,7 @@ fn default_storm_window_secs_notif() -> u64 {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct NotificationPolicy {
     #[serde(default)]
     pub deliver: DeliverMode,
@@ -1042,6 +1059,7 @@ pub enum DeliverMode {
 /// conservative (long windows) because aging is the only mechanism for
 /// events to leave doctor. See Principle V.c.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DoctorConfig {
     /// Events younger than this render at natural severity.
     /// Format: duration string (e.g. "7d", "24h"). Default: "7d".
@@ -1095,6 +1113,7 @@ fn default_acknowledgment_cache_size() -> usize {
 /// Adds ~one extra read per detected mismatch. For a healthy system (zero
 /// mismatches) there is no overhead. See `docs/FORENSICS.md`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DetectionConfig {
     /// When a content mismatch is detected, perform a forensic disambiguation
     /// read to classify the cause as page-cache-only, disk modification, or
@@ -1133,6 +1152,7 @@ fn parse_duration_secs(input: &str) -> Option<i64> {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct WatchGroup {
     pub severity: Severity,
     pub paths: Vec<String>,

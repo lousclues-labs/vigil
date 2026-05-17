@@ -93,7 +93,24 @@ pub fn start(
                                 if event.mask.contains(AddWatchFlags::IN_CREATE)
                                     && event.mask.contains(AddWatchFlags::IN_ISDIR)
                                 {
-                                    let _ = add_directory_watches(&inotify, &file_path, flags, &mut wd_to_path);
+                                    if let Err(e) = add_directory_watches(
+                                        &inotify,
+                                        &file_path,
+                                        flags,
+                                        &mut wd_to_path,
+                                    ) {
+                                        // A failure here means a new subtree is
+                                        // not being watched: mutations under it
+                                        // will be silently missed until the next
+                                        // rebuild. Surface it so the operator
+                                        // sees a leaking-coverage signal.
+                                        tracing::warn!(
+                                            path = %file_path.display(),
+                                            error = %e,
+                                            "failed to add inotify watch for newly-created \
+                                             directory; subtree will not be monitored"
+                                        );
+                                    }
                                 }
 
                                 if let Some(event_type) = inotify_mask_to_event_type(event.mask) {
@@ -153,13 +170,25 @@ fn rebuild_watches(
 ) -> Result<()> {
     let existing_wds: Vec<WatchDescriptor> = wd_map.keys().cloned().collect();
     for wd in existing_wds {
-        let _ = inotify.rm_watch(wd);
+        if let Err(e) = inotify.rm_watch(wd) {
+            // Most often EINVAL because the wd was already invalidated by
+            // an IN_IGNORED event. Logged at debug so a real kernel-side
+            // resource leak still leaves a paper trail without spamming.
+            tracing::debug!(error = %e, "inotify rm_watch failed during rebuild");
+        }
     }
     wd_map.clear();
 
     for path in watch_paths {
         if path.is_dir() {
-            let _ = add_directory_watches(inotify, path, flags, wd_map);
+            if let Err(e) = add_directory_watches(inotify, path, flags, wd_map) {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "failed to re-add inotify watch during rebuild; directory \
+                     will not be monitored until next rebuild"
+                );
+            }
         } else if path.is_file() {
             if let Some(parent) = path.parent() {
                 if let Ok(wd) = inotify.add_watch(parent, flags) {
