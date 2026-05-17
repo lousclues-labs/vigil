@@ -127,18 +127,30 @@ install_deb_deps() {
     section "install_deb_deps"
     export DEBIAN_FRONTEND=noninteractive
     run apt-get update -qq
+    # strip-nondeterminism: post-processes .deb to scrub embedded
+    # timestamps that fpm does not honour SOURCE_DATE_EPOCH for
+    # (ar entry mtimes, gzip headers, tar entry mtimes/ordering).
     run apt-get install -y --no-install-recommends \
         ca-certificates curl build-essential pkg-config libssl-dev \
-        ruby ruby-dev rubygems file
+        ruby ruby-dev rubygems file strip-nondeterminism
 }
 
 install_rpm_deps() {
     [ "${VIGIL_SKIP_DEPS:-0}" = "1" ] && { log "VIGIL_SKIP_DEPS=1; skipping dnf install"; return 0; }
     section "install_rpm_deps"
+    # strip-nondeterminism is in Fedora repos but NOT in EL9/Rocky9's
+    # default repos or EPEL9. On EL9 we rely on rpmbuild's native
+    # SOURCE_DATE_EPOCH support (rpm >= 4.16) for reproducibility.
+    local extra_pkgs=""
+    case "$DISTRO" in
+        fedora) extra_pkgs="strip-nondeterminism" ;;
+    esac
     # --allowerasing handles curl-minimal -> curl on fedora.
+    # shellcheck disable=SC2086  # $extra_pkgs intentionally unquoted (may be empty)
     run dnf install -y --allowerasing --setopt=install_weak_deps=False \
         ca-certificates curl gcc gcc-c++ pkgconf-pkg-config openssl-devel \
-        ruby ruby-devel rubygems rubygem-json rpm-build python3 file
+        ruby ruby-devel rubygems rubygem-json rpm-build python3 file \
+        $extra_pkgs
 }
 
 # ─── 6. Rust toolchain + fpm. ───
@@ -246,12 +258,24 @@ stage_assets() {
     # ── Package-manager hooks. Source-tree conditional: only install
     # when the hooks/ subtree is present in the repo. The workflow's
     # layout-check is symmetrically conditional.
-    if [ -d "$REPO_ROOT/hooks/apt" ] && [ "${FPM_TARGET:-}" = "deb" ]; then
-        local hook
-        for hook in "$REPO_ROOT/hooks/apt"/*; do
-            [ -f "$hook" ] || continue
-            install_to 644 "$hook" "etc/apt/apt.conf.d/$(basename "$hook")"
-        done
+    #
+    # apt hook layout (split because apt.conf(5) has no \"-escape):
+    #   /etc/apt/apt.conf.d/99vigil   -- two-line config delegating to
+    #   /usr/lib/vigil/apt-pre.sh     -- pre-invoke maintenance enter
+    #   /usr/lib/vigil/apt-post.sh    -- post-invoke baseline refresh
+    if [ "${FPM_TARGET:-}" = "deb" ] && [ -d "$REPO_ROOT/hooks/apt" ]; then
+        if [ -f "$REPO_ROOT/hooks/apt/99vigil" ]; then
+            install_to 644 "$REPO_ROOT/hooks/apt/99vigil" \
+                "etc/apt/apt.conf.d/99vigil"
+        fi
+        if [ -f "$REPO_ROOT/hooks/apt/apt-pre.sh" ]; then
+            install_to 755 "$REPO_ROOT/hooks/apt/apt-pre.sh" \
+                "usr/lib/vigil/apt-pre.sh"
+        fi
+        if [ -f "$REPO_ROOT/hooks/apt/apt-post.sh" ]; then
+            install_to 755 "$REPO_ROOT/hooks/apt/apt-post.sh" \
+                "usr/lib/vigil/apt-post.sh"
+        fi
     fi
     if [ -d "$REPO_ROOT/hooks/dnf" ] && [ "${FPM_TARGET:-}" = "rpm" ]; then
         # DNF4 plugin layout: /usr/lib/python3.X/site-packages/dnf-plugins/
@@ -353,6 +377,9 @@ fpm_deb() {
     postinst="$(mktemp -t vigil-postinst.XXXXXX)"
     emit_postinst > "$postinst"
     chmod 0755 "$postinst"
+    # Pin the tempfile mtime: fpm captures it into control.tar.gz and
+    # mktemp leaves it at wall-clock time, which breaks reproducibility.
+    touch -h -d "@$SOURCE_DATE_EPOCH" "$postinst"
 
     rm -f "$out"
     run fpm \
@@ -390,6 +417,9 @@ fpm_rpm() {
     postinst="$(mktemp -t vigil-postinst.XXXXXX)"
     emit_postinst > "$postinst"
     chmod 0755 "$postinst"
+    # Same pin as fpm_deb -- rpmbuild captures the file's mtime into
+    # the cpio archive and SOURCE_DATE_EPOCH alone doesn't cover it.
+    touch -h -d "@$SOURCE_DATE_EPOCH" "$postinst"
 
     rm -f "$out"
     run fpm \
@@ -449,6 +479,14 @@ validate_stage() {
     check usr/share/doc/vigil/changelog.gz
     if [ "${FPM_TARGET:-}" = "deb" ]; then
         check usr/share/doc/vigil/copyright
+        # apt hook: config + both delegated scripts must ship together.
+        # Shipping the config without the scripts (or vice-versa) would
+        # leave apt unable to enter/exit the maintenance window cleanly.
+        if [ -d "$REPO_ROOT/hooks/apt" ]; then
+            check etc/apt/apt.conf.d/99vigil
+            check usr/lib/vigil/apt-pre.sh
+            check usr/lib/vigil/apt-post.sh
+        fi
     else
         check usr/share/doc/vigil/LICENSE
     fi
@@ -457,6 +495,23 @@ validate_stage() {
         exit 1
     fi
     log "stage OK"
+}
+
+# Reproducibility post-processor. fpm doesn't honour SOURCE_DATE_EPOCH
+# in its internal tar/gzip/ar invocations -- ar entry mtimes, gzip
+# header timestamps, and tar entry ordering all vary run-to-run.
+# strip-nondeterminism is the standard tool for this (Debian
+# reproducible-builds project). Available on Debian/Ubuntu/Fedora;
+# absent on EL9, where we rely on rpmbuild's native SOURCE_DATE_EPOCH
+# support (rpm >= 4.16, EL9 ships 4.16).
+make_reproducible() {
+    local artifact="$1"
+    section "make_reproducible"
+    if command -v strip-nondeterminism >/dev/null 2>&1; then
+        run strip-nondeterminism --timestamp="$SOURCE_DATE_EPOCH" "$artifact"
+    else
+        log "strip-nondeterminism not available; relying on SOURCE_DATE_EPOCH alone (rpmbuild path)"
+    fi
 }
 
 # Sidecar JSON next to the artifact -- consumed by ATTEST.md generation
@@ -516,5 +571,6 @@ if [ ! -f "$artifact" ]; then
     echo "ERROR: fpm reported success but $artifact is missing" >&2
     exit 1
 fi
+make_reproducible "$artifact"
 emit_manifest "$artifact"
 log "done: $artifact"
