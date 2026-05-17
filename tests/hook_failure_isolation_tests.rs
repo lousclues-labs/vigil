@@ -235,8 +235,8 @@ fn apt_hook_has_one_logger_per_failure_branch() {
     //   1. binary missing AND vigild active (daemon.err -- operator alarm)
     //   2. binary missing AND vigild not active (info -- expected during install)
     //   3. baseline refresh failed (daemon.err)
-    let hook = std::fs::read_to_string("hooks/apt/apt-post.sh")
-        .expect("apt-post.sh must exist in repo");
+    let hook =
+        std::fs::read_to_string("hooks/apt/apt-post.sh").expect("apt-post.sh must exist in repo");
 
     let logger_count = hook.matches("logger ").count();
     assert!(
