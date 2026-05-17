@@ -466,6 +466,19 @@ grep the codebase for the precedent.
   silent; the skewed case must stay best-effort), which is
   documented in the file header.
 
+- **`systemd/vigil-scan.timer` — `man:` URI replaced with
+  `https:`.** Same fix the canonical `vigild.service` got in the
+  1.11.5 post-spec hardening pass, but the scan timer was
+  missed. Local `systemd-analyze verify systemd/vigil-scan.timer`
+  on a no-TTY/strict-glibc host failed identically
+  (`(man) failed with exit status 16`); RPM matrix arms would
+  have followed if not caught here. Now points at
+  `https://github.com/lousclues-labs/vigil`, the same target the
+  daemon unit uses. **Lesson:** when a fix lands in *one* of N
+  similar files, grep the tree for the same anti-pattern in the
+  same change. The other N-1 will not file themselves.
+  (`lesson: man-uri-in-systemd-units-is-a-ci-minefield`)
+
 ## [1.11.4] - 2026-05-10
 
 ### Fixed — `vigil recover` was unimplemented on the daemon side (CRITICAL operator-facing regression)

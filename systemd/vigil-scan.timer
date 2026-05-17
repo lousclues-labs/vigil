@@ -1,6 +1,6 @@
 [Unit]
 Description=Vigil Baseline scheduled integrity scan
-Documentation=man:vigil(1)
+Documentation=https://github.com/lousclues-labs/vigil
 
 [Timer]
 OnCalendar=*-*-* 03:00:00
