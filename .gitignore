@@ -1,2 +1,5 @@
 /target/
 fuzz/target/
+
+# Python bytecode (from local syntax checks of dnf plugin)
+hooks/**/__pycache__/
