@@ -169,16 +169,27 @@ fn pacman_pre_hook_references_real_vigil_path() {
 
 #[test]
 fn apt_hook_references_real_vigil_path() {
-    let hook =
-        std::fs::read_to_string("hooks/apt/99vigil").expect("hook source must exist in repo");
-    assert!(
-        hook.contains("/usr/bin/vigil"),
-        "hook must reference the real vigil install path"
-    );
-    assert!(
-        !hook.contains("/nonexistent"),
-        "hook must not contain sentinel paths"
-    );
+    // The apt hook ships in three pieces:
+    //   hooks/apt/99vigil       -- apt.conf config, delegates to scripts
+    //   hooks/apt/apt-pre.sh    -- Pre-Invoke logic (maintenance enter)
+    //   hooks/apt/apt-post.sh   -- Post-Invoke logic (baseline refresh,
+    //                                                 maintenance exit)
+    // The real vigil path lives in the scripts -- 99vigil only points at
+    // /usr/lib/vigil/apt-{pre,post}.sh because apt.conf(5) has no escape
+    // for embedding " inside "..." strings, so multi-line shell logic
+    // can't live in apt.conf entries directly.
+    for path in ["hooks/apt/apt-pre.sh", "hooks/apt/apt-post.sh"] {
+        let hook = std::fs::read_to_string(path)
+            .unwrap_or_else(|_| panic!("hook source must exist in repo: {path}"));
+        assert!(
+            hook.contains("/usr/bin/vigil"),
+            "{path} must reference the real vigil install path"
+        );
+        assert!(
+            !hook.contains("/nonexistent"),
+            "{path} must not contain sentinel paths"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -217,27 +228,25 @@ fn pacman_post_hook_has_one_logger_per_failure_branch() {
 /// SEE: docs/PRINCIPLES.md (Hooks Must Never Block, but Must Always Be Loud)
 #[test]
 fn apt_hook_has_one_logger_per_failure_branch() {
-    let hook =
-        std::fs::read_to_string("hooks/apt/99vigil").expect("hook source must exist in repo");
-
-    // The Post-Invoke line contains the shell logic. Parity with pacman:
+    // The Post-Invoke logic was split out of 99vigil into apt-post.sh
+    // (see apt_hook_references_real_vigil_path for the why). The three
+    // mutually-exclusive failure branches that must escalate live in
+    // apt-post.sh now:
     //   1. binary missing AND vigild active (daemon.err -- operator alarm)
     //   2. binary missing AND vigild not active (info -- expected during install)
     //   3. baseline refresh failed (daemon.err)
-    let post_line = hook
-        .lines()
-        .find(|l| l.contains("Post-Invoke"))
-        .expect("hook must have a Post-Invoke line");
+    let hook = std::fs::read_to_string("hooks/apt/apt-post.sh")
+        .expect("apt-post.sh must exist in repo");
 
-    let logger_count = post_line.matches("logger ").count();
+    let logger_count = hook.matches("logger ").count();
     assert!(
         logger_count <= 3,
-        "hook should have at most 3 logger calls (one per failure branch), found {}",
+        "apt-post.sh should have at most 3 logger calls (one per failure branch), found {}",
         logger_count
     );
 
     // Critical failure branches must use daemon.err priority, not plain logger.
-    let daemon_err_count = post_line.matches("logger -p daemon.err").count();
+    let daemon_err_count = hook.matches("logger -p daemon.err").count();
     assert!(
         daemon_err_count >= 2,
         "apt hook should escalate critical failures via 'logger -p daemon.err' (found {})",
