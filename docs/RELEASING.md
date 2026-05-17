@@ -181,6 +181,30 @@ Signing and publishing are not this gate's job — those belong to
 `lousclues-labs/lousclues-pkg`. This gate only proves that what is
 fed to the signer is correct.
 
+### Wiring `pkg-success` into branch protection
+
+The aggregate check is named `pkg-success`. To make it the single
+required status (rather than wiring all four jobs individually,
+which is brittle as the workflow evolves):
+
+1. GitHub → repo → **Settings → Branches → Branch protection rules**.
+2. Edit (or create) the rule for `main`.
+3. Tick **Require status checks to pass before merging**, then
+   **Require branches to be up to date before merging**.
+4. In the *Search for status checks* box, type `pkg-success` and
+   select it. Do **not** also select `lint`, `input-tests`, or any
+   `build (…)` matrix child — `pkg-success` already gates on all of
+   them via `needs: [lint, input-tests, build]` and runs with
+   `if: always()`. Selecting the children individually means a
+   matrix-cardinality change to the workflow silently bypasses the
+   gate.
+5. Save.
+
+For the same reason, the workflow's `pkg-success` job is *not*
+inside the `build` matrix and does *not* use `success()` — it
+explicitly inspects each `needs.<job>.result` and fails if any is
+not `success`. This shape survives workflow refactors.
+
 ---
 
 *Releases are trust events. Treat them like it.*
