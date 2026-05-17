@@ -153,4 +153,34 @@ Do not rewrite tags for published releases.
 
 ---
 
+## Packaging Gate
+
+`.github/workflows/pkg-build.yml` is the merge-blocking gate for any
+change under `pkg/`, `systemd/`, `config/`, `contrib/`, `hooks/`, or
+the top-level `Cargo.toml` / `Cargo.lock`. The aggregate check
+`pkg-success` is the single required status set in branch protection.
+
+The gate proves, for every distro in the matrix (`noble`, `jammy`,
+`bookworm`, `el9`, `fedora`):
+
+1. `pkg/build.sh` rejects every documented bad input shape.
+2. `pkg/build.sh` produces exactly one artifact per invocation.
+3. The artifact is reproducible — two builds with the same
+   `SOURCE_DATE_EPOCH` are byte-identical (sha256 match). This
+   underpins [ATTEST.md](ATTEST.md): signed attestations are only
+   meaningful over reproducible outputs.
+4. The artifact installs cleanly via `dpkg` / `rpm`.
+5. Every file Vigil claims to ship is at the claimed path, with
+   the claimed mode and ownership.
+6. Regression guards hold (no dev-paths in unit, correct
+   capability surface, correct file modes).
+7. Both binaries run their `--help` / `--version` paths without
+   requiring runtime deps.
+
+Signing and publishing are not this gate's job — those belong to
+`lousclues-labs/lousclues-pkg`. This gate only proves that what is
+fed to the signer is correct.
+
+---
+
 *Releases are trust events. Treat them like it.*

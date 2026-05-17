@@ -6,6 +6,46 @@ All notable changes to Vigil Baseline will be documented in this file.
 > full checklist: fmt → clippy → test → build --release → CHANGELOG →
 > version-bump → commit → push → tag.
 
+## [1.11.5] - 2026-05-16
+
+### Added
+
+- **Source-project contract for lousclues-pkg.** Added `pkg/build.sh`
+  so the lousclues-pkg release-build workflow can build `.deb` and
+  `.rpm` artifacts for this project across the noble, jammy,
+  bookworm, el9, and fedora distros. The script is currently a
+  fail-loud scaffold; the operator must fill in the per-distro
+  cargo and fpm calls before the first release. See
+  `lousclues-labs/lousclues-pkg` for the release pipeline that
+  consumes this contract.
+- **`.github/workflows/pkg-build.yml` — merge-blocking gate for the
+  packaging contract.** Three-layer workflow (lint, negative-input
+  tests, per-distro container build) that proves `pkg/build.sh`
+  rejects every documented bad-input shape, emits exactly one
+  artifact per invocation, installs cleanly via `dpkg`/`rpm`, and
+  yields the exact installed layout (`/usr/bin/vigil` +
+  `/usr/bin/vigild`, `vigild.service` with `CAP_SYS_ADMIN` via file
+  caps or `AmbientCapabilities=`, `/etc/vigil/vigil.toml.example`
+  mode `0644 root:root`, three man pages, three shell completions,
+  apt/dnf hooks gated on source-tree presence, and the standard
+  docs set). Aggregate check `pkg-success` is the single required
+  status for branch protection. Path-filtered to `pkg/`, `systemd/`,
+  `config/`, `contrib/`, `hooks/`, top-level `Cargo.toml` /
+  `Cargo.lock`, and the workflow itself. Also added `pkg/README.md`
+  documenting the `DISTRO`/`VERSION`/`OUTDIR` contract and the
+  optional knobs (`SOURCE_DATE_EPOCH`, `VIGIL_SKIP_DEPS`,
+  `VIGIL_SKIP_TOOLCHAIN`, `VIGIL_CARGO_TARGET_DIR`). Design lifted
+  from `lousclues-labs/shroud/.github/workflows/pkg-build.yml`,
+  with two vigil-specific adaptations not present in shroud's
+  version: (1) two-binary layout assertions (`vigil` + `vigild`,
+  vs shroud's single binary), and (2) a reproducibility check
+  (double-build with the same `SOURCE_DATE_EPOCH`, sha256 compare;
+  pairs with `docs/ATTEST.md`).
+- **`docs/RELEASING.md`** — added a paragraph noting that
+  `pkg-build.yml` is the merge-blocking gate for any change under
+  `pkg/` or `systemd/`, with a cross-link to `docs/ATTEST.md` for
+  the reproducibility line.
+
 ## [1.11.4] - 2026-05-10
 
 ### Fixed — `vigil recover` was unimplemented on the daemon side (CRITICAL operator-facing regression)
@@ -2472,17 +2512,11 @@ WAL HMAC hardening, deletion event detection, clock-drift resilience, and v0.34.
 
 ## [Unreleased]
 
-### Added
-
-- **Source-project contract for lousclues-pkg.** Added `pkg/build.sh`
-  so the lousclues-pkg release-build workflow can build `.deb` and
-  `.rpm` artifacts for this project across the noble, jammy,
-  bookworm, el9, and fedora distros. The script is currently a
-  fail-loud scaffold; the operator must fill in the per-distro
-  cargo and fpm calls before the first release. See
-  `lousclues-labs/lousclues-pkg` for the release pipeline that
-  consumes this contract.
-
+<!--
+  Boundary marker. Every numbered version above this line is a
+  private, never-publicly-released build. The last publicly-released
+  version is [0.32.1] below. Do not remove this header.
+-->
 
 ## [0.32.1] - 2026-04-15
 

@@ -1,0 +1,627 @@
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# pkg-build.yml -- packaging-contract gate for vigil.
+#
+# Validates pkg/build.sh -- the source-project contract that
+# lousclues-pkg invokes at release time to produce signed
+# .deb and .rpm artifacts. The validation is staged so PR
+# feedback is cheap and merge-blocking only on real defects.
+#
+# Three layers, fastest first:
+#   1. lint         -- shellcheck + bash -n, ~seconds.
+#   2. input-tests  -- pkg/build.sh refusal paths, ~seconds.
+#   3. build        -- per-distro container build + install
+#                       smoke + installed-layout assertions
+#                       + reproducibility check (~minutes).
+#
+# Aggregate gate: `pkg-success`. That is the single required
+# check name for branch protection.
+#
+# Design lifted from lousclues-labs/shroud's pkg-build.yml.
+# Vigil-specific adaptations:
+#   * Two-binary layout (vigil + vigild), not shroud's one.
+#   * Reproducibility check (double-build + sha256 compare).
+#     Pairs with docs/ATTEST.md.
+#
+# Out of scope: signing, publishing, AUR, cross-arch,
+# performance benchmarks, fuzz. See spec in CHANGELOG.
+
+name: pkg-build
+
+on:
+  pull_request:
+    paths:
+      - 'pkg/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'systemd/**'
+      - 'config/**'
+      - 'contrib/**'
+      - 'hooks/**'
+      - '.github/workflows/pkg-build.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'pkg/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'systemd/**'
+      - 'config/**'
+      - 'contrib/**'
+      - 'hooks/**'
+      - '.github/workflows/pkg-build.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: pkg-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # Layer 1: lint.
+  # ──────────────────────────────────────────────────────────────
+  lint:
+    name: lint shell sources
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck pkg/build.sh
+        run: shellcheck -x pkg/build.sh
+
+      - name: bash -n pkg/build.sh
+        run: bash -n pkg/build.sh
+
+      - name: shellcheck setup.sh
+        run: shellcheck -x setup.sh
+
+      - name: shellcheck contrib/**/*.sh (if any)
+        shell: bash
+        run: |
+          shopt -s nullglob globstar
+          files=(contrib/**/*.sh)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no contrib/**/*.sh -- skipping"
+            exit 0
+          fi
+          shellcheck -x "${files[@]}"
+
+      - name: shellcheck hooks/**/*.sh (if any)
+        shell: bash
+        run: |
+          shopt -s nullglob globstar
+          files=(hooks/**/*.sh)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no hooks/**/*.sh -- skipping"
+            exit 0
+          fi
+          shellcheck -x "${files[@]}"
+
+  # ──────────────────────────────────────────────────────────────
+  # Layer 2: negative input tests for pkg/build.sh.
+  # Pins the script's refusal contract.
+  # Exit codes: 1 = missing env, 2 = invalid input.
+  # ──────────────────────────────────────────────────────────────
+  input-tests:
+    name: pkg/build.sh negative input
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: resolve Cargo.toml version
+        id: ver
+        run: |
+          ACTUAL=$(awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' Cargo.toml)
+          if [ -z "$ACTUAL" ]; then
+            echo "::error::could not parse version from Cargo.toml"
+            exit 1
+          fi
+          echo "actual=$ACTUAL" >> "$GITHUB_OUTPUT"
+          echo "resolved Cargo.toml version: $ACTUAL"
+
+      - name: negative input cases
+        env:
+          ACTUAL: ${{ steps.ver.outputs.actual }}
+        run: |
+          set -u
+          FAIL=0
+          PASS=0
+          OUT="$RUNNER_TEMP/out"
+          mkdir -p "$OUT"
+
+          check() {
+            # usage: check "label" expected-exit -- <command...>
+            local label="$1" expected="$2"; shift 2
+            [ "$1" = "--" ] && shift
+            local actual=0
+            ( "$@" ) >/dev/null 2>&1 || actual=$?
+            if [ "$actual" -eq "$expected" ]; then
+              echo "PASS  $label (exit $actual)"
+              PASS=$((PASS+1))
+            else
+              echo "FAIL  $label (expected $expected, got $actual)"
+              FAIL=$((FAIL+1))
+            fi
+          }
+
+          # 1. missing DISTRO  -> 1
+          check "missing DISTRO" 1 -- \
+            env -u DISTRO VERSION="$ACTUAL" OUTDIR="$OUT" bash pkg/build.sh
+
+          # 2. missing VERSION -> 1
+          check "missing VERSION" 1 -- \
+            env -u VERSION DISTRO=noble OUTDIR="$OUT" bash pkg/build.sh
+
+          # 3. missing OUTDIR  -> 1
+          check "missing OUTDIR" 1 -- \
+            env -u OUTDIR DISTRO=noble VERSION="$ACTUAL" bash pkg/build.sh
+
+          # 4. unknown DISTRO=arch -> 2
+          check "unknown DISTRO arch" 2 -- \
+            env DISTRO=arch VERSION="$ACTUAL" OUTDIR="$OUT" bash pkg/build.sh
+
+          # 5. unknown DISTRO=gentoo -> 2
+          check "unknown DISTRO gentoo" 2 -- \
+            env DISTRO=gentoo VERSION="$ACTUAL" OUTDIR="$OUT" bash pkg/build.sh
+
+          # 6. leading v in VERSION -> 2
+          check "leading v in VERSION (v1.8.1)" 2 -- \
+            env DISTRO=noble VERSION="v1.8.1" OUTDIR="$OUT" bash pkg/build.sh
+
+          # 7. relative OUTDIR -> 2
+          check "relative OUTDIR" 2 -- \
+            env DISTRO=noble VERSION="$ACTUAL" OUTDIR="relative/out" bash pkg/build.sh
+
+          # 8. VERSION mismatch with Cargo.toml -> 2
+          check "VERSION mismatch (99.99.99 vs $ACTUAL)" 2 -- \
+            env DISTRO=noble VERSION="99.99.99" OUTDIR="$OUT" bash pkg/build.sh
+
+          echo
+          echo "Summary: $PASS passed, $FAIL failed"
+          if [ "$FAIL" -ne 0 ]; then
+            echo "::error::pkg/build.sh negative-input contract has $FAIL gap(s); see PASS/FAIL lines above"
+            exit 1
+          fi
+
+  # ──────────────────────────────────────────────────────────────
+  # Layer 3: real container build per distro.
+  # Builds twice (reproducibility), installs, verifies layout.
+  # ──────────────────────────────────────────────────────────────
+  build:
+    name: ${{ matrix.distro }} (${{ matrix.ext }})
+    needs: [lint, input-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: noble
+            image: 'ubuntu:24.04'
+            ext: deb
+          - distro: jammy
+            image: 'ubuntu:22.04'
+            ext: deb
+          - distro: bookworm
+            image: 'debian:12'
+            ext: deb
+          - distro: el9
+            image: 'rockylinux:9'
+            ext: rpm
+          - distro: fedora
+            image: 'fedora:latest'
+            ext: rpm
+    container:
+      image: ${{ matrix.image }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # ── Bootstrap: minimal container images don't ship git/curl,
+      # which actions/checkout needs. shell: sh because bash may
+      # not be on PATH yet on some images.
+      - name: bootstrap checkout deps (deb)
+        if: matrix.ext == 'deb'
+        shell: sh
+        run: |
+          set -e
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            ca-certificates git curl bash
+
+      - name: bootstrap checkout deps (rpm)
+        if: matrix.ext == 'rpm'
+        shell: sh
+        run: |
+          set -e
+          # --allowerasing so curl-minimal can swap for full curl
+          dnf install -y --allowerasing ca-certificates git curl bash
+
+      - uses: actions/checkout@v4
+
+      - name: resolve version + SOURCE_DATE_EPOCH
+        id: ver
+        run: |
+          # Mark workspace as a safe git directory inside the container
+          # so `git log` works after actions/checkout in a container UID
+          # that does not own the workspace.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
+          ACTUAL=$(awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' Cargo.toml)
+          if [ -z "$ACTUAL" ]; then
+            echo "::error::could not parse version from Cargo.toml"
+            exit 1
+          fi
+          SDE=$(git log -1 --pretty=%ct 2>/dev/null || true)
+          if [ -z "$SDE" ]; then
+            # Fallback: deterministic stable value if shallow clone lacks git history.
+            SDE=1700000000
+            echo "warning: git log unavailable, falling back to SOURCE_DATE_EPOCH=$SDE"
+          fi
+          echo "actual=$ACTUAL" >> "$GITHUB_OUTPUT"
+          echo "sde=$SDE" >> "$GITHUB_OUTPUT"
+          echo "version=$ACTUAL  SOURCE_DATE_EPOCH=$SDE"
+
+      # ── Pass 1: produce the artifact.
+      - name: pkg/build.sh -- pass 1
+        env:
+          DISTRO: ${{ matrix.distro }}
+          VERSION: ${{ steps.ver.outputs.actual }}
+          OUTDIR: ${{ github.workspace }}/out
+          SOURCE_DATE_EPOCH: ${{ steps.ver.outputs.sde }}
+        run: |
+          mkdir -p "$OUTDIR"
+          bash pkg/build.sh
+
+      - name: verify exactly one artifact (pass 1)
+        env:
+          EXT: ${{ matrix.ext }}
+        run: |
+          count=$(find out -maxdepth 1 -type f -name "*.${EXT}" | wc -l)
+          echo "artifact count: $count"
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected 1 .${EXT} artifact in out/, got $count"
+            ls -la out/ || true
+            exit 1
+          fi
+
+      # ── Pass 2: build again to prove reproducibility.
+      # vigil-specific: shroud's workflow does not do this.
+      - name: pkg/build.sh -- pass 2 (reproducibility)
+        env:
+          DISTRO: ${{ matrix.distro }}
+          VERSION: ${{ steps.ver.outputs.actual }}
+          OUTDIR: ${{ github.workspace }}/out2
+          SOURCE_DATE_EPOCH: ${{ steps.ver.outputs.sde }}
+        run: |
+          mkdir -p "$OUTDIR"
+          bash pkg/build.sh
+
+      - name: compare sha256 (reproducibility check)
+        id: repro
+        env:
+          EXT: ${{ matrix.ext }}
+        run: |
+          set -e
+          # Pre-flight: both directories must contain exactly one
+          # artifact, otherwise the sha256 compare below is meaningless.
+          c1=$(find out  -maxdepth 1 -type f -name "*.${EXT}" | wc -l)
+          c2=$(find out2 -maxdepth 1 -type f -name "*.${EXT}" | wc -l)
+          if [ "$c1" -ne 1 ] || [ "$c2" -ne 1 ]; then
+            echo "::error::reproducibility check needs exactly 1 artifact per pass; got pass1=$c1 pass2=$c2"
+            echo "repro=fail" >> "$GITHUB_OUTPUT"
+            ls -la out/ out2/ || true
+            exit 1
+          fi
+          a=$(sha256sum out/*."${EXT}"  | awk '{print $1}')
+          b=$(sha256sum out2/*."${EXT}" | awk '{print $1}')
+          echo "pass 1 sha256: $a"
+          echo "pass 2 sha256: $b"
+          if [ "$a" != "$b" ]; then
+            echo "::error::build is not reproducible: pass1=$a pass2=$b"
+            echo "repro=fail" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "reproducibility check passed."
+
+      - name: upload non-reproducible pair (debug)
+        if: failure() && steps.repro.outputs.repro == 'fail'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nonrepro-${{ matrix.distro }}-${{ matrix.ext }}
+          path: |
+            out/
+            out2/
+          retention-days: 14
+          if-no-files-found: warn
+
+      # ── Inspect.
+      - name: inspect contents (deb)
+        if: matrix.ext == 'deb'
+        run: |
+          pkg=$(ls out/*.deb)
+          echo "::group::dpkg-deb --info"
+          dpkg-deb --info "$pkg"
+          echo "::endgroup::"
+          echo "::group::dpkg-deb --contents"
+          dpkg-deb --contents "$pkg"
+          echo "::endgroup::"
+
+      - name: inspect contents (rpm)
+        if: matrix.ext == 'rpm'
+        run: |
+          pkg=$(ls out/*.rpm)
+          echo "::group::rpm -qip"
+          rpm -qip "$pkg"
+          echo "::endgroup::"
+          echo "::group::rpm -qlp"
+          rpm -qlp "$pkg"
+          echo "::endgroup::"
+
+      # ── Install. Neutralize slim-image excludes that strip
+      # /usr/share/doc and /usr/share/man on the official
+      # ubuntu/debian base images so packaged docs+man are not
+      # silently dropped (real systems don't have this file).
+      - name: smoke install (deb)
+        if: matrix.ext == 'deb'
+        run: |
+          rm -f /etc/dpkg/dpkg.cfg.d/excludes
+          dpkg -i --force-depends out/*.deb
+
+      - name: smoke install (rpm)
+        if: matrix.ext == 'rpm'
+        run: |
+          rpm -i --nodeps out/*.rpm
+
+      # ── Tools needed to inspect the installed layout.
+      - name: install layout-verify tooling (deb)
+        if: matrix.ext == 'deb'
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get install -y --no-install-recommends \
+            libcap2-bin systemd coreutils
+        # systemd-analyze lives in the `systemd` binary package on
+        # modern debian/ubuntu; libcap2-bin provides getcap.
+
+      - name: install layout-verify tooling (rpm)
+        if: matrix.ext == 'rpm'
+        run: |
+          dnf install -y --allowerasing libcap systemd coreutils
+
+      # ── Layout assertions. Aggregating-fail pattern: collect
+      # all violations, print at end, exit non-zero if any. This
+      # is the contract vigil's pkg/build.sh must satisfy.
+      - name: verify installed layout
+        env:
+          ACTUAL: ${{ steps.ver.outputs.actual }}
+          EXT: ${{ matrix.ext }}
+        run: |
+          FAILS=()
+          fail() { FAILS+=("$1"); echo "FAIL: $1"; }
+          ok()   { echo "OK:   $1"; }
+
+          # ── Binaries ──
+          for bin in /usr/bin/vigild /usr/bin/vigil; do
+            if [ -x "$bin" ]; then ok "$bin exists and is executable"
+            else fail "$bin missing or not executable"; fi
+          done
+
+          # ── Locate systemd unit (need it for cap fallback + guards) ──
+          UNIT=""
+          for cand in /lib/systemd/system/vigild.service /usr/lib/systemd/system/vigild.service; do
+            if [ -f "$cand" ]; then UNIT="$cand"; break; fi
+          done
+          if [ -z "$UNIT" ]; then
+            fail "vigild.service not found in /lib/systemd/system or /usr/lib/systemd/system"
+          else
+            ok "vigild.service located at $UNIT"
+          fi
+
+          # ── Daemon fanotify capability (file caps OR AmbientCapabilities=) ──
+          # The contract is one of those two. Either missing is a regression.
+          getcap_out=""
+          if command -v getcap >/dev/null 2>&1 && [ -x /usr/bin/vigild ]; then
+            getcap_out=$(getcap /usr/bin/vigild 2>/dev/null || true)
+          fi
+          unit_ambient=""
+          if [ -n "$UNIT" ]; then
+            unit_ambient=$(grep -E '^AmbientCapabilities=' "$UNIT" || true)
+          fi
+          if echo "$getcap_out" | grep -qi 'cap_sys_admin'; then
+            if echo "$getcap_out" | grep -Eq '\+ep|=ep'; then
+              ok "file caps on /usr/bin/vigild: $getcap_out"
+            else
+              fail "file caps present on /usr/bin/vigild but not +ep: $getcap_out"
+            fi
+          elif echo "$unit_ambient" | grep -q 'CAP_SYS_ADMIN'; then
+            ok "AmbientCapabilities=CAP_SYS_ADMIN in $UNIT"
+          else
+            fail "regression: vigild missing fanotify capability (no file caps on /usr/bin/vigild AND no AmbientCapabilities=CAP_SYS_ADMIN in unit)"
+          fi
+
+          # ── systemd unit regression guards ──
+          if [ -n "$UNIT" ]; then
+            if grep -qE 'ExecStart=.*(/usr/local/bin/vigild|target/debug/|target/release/)' "$UNIT"; then
+              fail "regression: $UNIT references a dev-only path (ExecStart pointing at /usr/local/bin or target/{debug,release})"
+            else
+              ok "$UNIT does not reference dev-only paths"
+            fi
+            if command -v systemd-analyze >/dev/null 2>&1; then
+              if systemd-analyze verify "$UNIT"; then
+                ok "systemd-analyze verify $UNIT"
+              else
+                fail "systemd-analyze verify $UNIT failed"
+              fi
+            else
+              fail "systemd-analyze missing -- install systemd / systemd-container"
+            fi
+            # Optional socket
+            for sock in /lib/systemd/system/vigild.socket /usr/lib/systemd/system/vigild.socket; do
+              if [ -f "$sock" ]; then
+                ok "vigild.socket present at $sock"
+                if ! systemd-analyze verify "$sock"; then
+                  fail "systemd-analyze verify $sock failed"
+                fi
+                break
+              fi
+            done
+          fi
+
+          # ── Config ──
+          CFG=/etc/vigil/vigil.toml.example
+          if [ -f "$CFG" ]; then
+            mode=$(stat -c '%a' "$CFG")
+            owner=$(stat -c '%U:%G' "$CFG")
+            if [ "$mode" = "644" ] && [ "$owner" = "root:root" ]; then
+              ok "$CFG mode=$mode owner=$owner"
+            else
+              [ "$mode"  = "644"        ] || fail "$CFG mode $mode != 644"
+              [ "$owner" = "root:root"  ] || fail "$CFG owner $owner != root:root"
+            fi
+          else
+            fail "$CFG missing"
+          fi
+
+          # ── Man pages (compressed by dpkg/rpm post-install) ──
+          for man in \
+            /usr/share/man/man8/vigild.8.gz \
+            /usr/share/man/man1/vigil.1.gz \
+            /usr/share/man/man5/vigil.toml.5.gz
+          do
+            if [ -s "$man" ]; then ok "$man exists, non-empty ($(stat -c '%s' "$man") bytes)"
+            else fail "$man missing or empty"; fi
+          done
+
+          # ── Shell completions ──
+          for c in \
+            /usr/share/bash-completion/completions/vigil \
+            /usr/share/zsh/site-functions/_vigil \
+            /usr/share/fish/vendor_completions.d/vigil.fish
+          do
+            if [ -f "$c" ]; then ok "$c exists"
+            else fail "$c missing"; fi
+          done
+
+          # ── Package-manager hooks (source-tree conditional) ──
+          # Pacman is out of scope for this workflow (no archlinux matrix entry).
+          if [ -d hooks/apt ] && [ "$EXT" = "deb" ]; then
+            shopt -s nullglob
+            apt_src=(hooks/apt/*)
+            shopt -u nullglob
+            if [ ${#apt_src[@]} -eq 0 ]; then
+              ok "hooks/apt/ empty -- nothing to assert"
+            else
+              for src in "${apt_src[@]}"; do
+                name=$(basename "$src")
+                installed="/etc/apt/apt.conf.d/$name"
+                if [ -f "$installed" ]; then ok "apt hook installed: $installed"
+                else fail "apt hook source $src present in tree but $installed missing"; fi
+              done
+            fi
+          fi
+          if [ -d hooks/dnf ] && [ "$EXT" = "rpm" ]; then
+            if [ -f /etc/dnf/plugins/vigil.conf ]; then ok "/etc/dnf/plugins/vigil.conf"
+            else fail "/etc/dnf/plugins/vigil.conf missing"; fi
+            shopt -s nullglob
+            py=(/usr/lib/python*/site-packages/dnf-plugins/vigil.py)
+            shopt -u nullglob
+            if [ ${#py[@]} -ge 1 ]; then ok "dnf plugin: ${py[0]}"
+            else fail "dnf-plugins/vigil.py missing under /usr/lib/python*/site-packages/"; fi
+          fi
+
+          # ── Docs ──
+          for d in /usr/share/doc/vigil/README.md /usr/share/doc/vigil/changelog.gz; do
+            if [ -f "$d" ]; then ok "$d"
+            else fail "$d missing"; fi
+          done
+          if [ "$EXT" = "deb" ]; then
+            if [ -f /usr/share/doc/vigil/copyright ]; then ok "/usr/share/doc/vigil/copyright"
+            else fail "/usr/share/doc/vigil/copyright missing (Debian policy)"; fi
+          else
+            if [ -f /usr/share/doc/vigil/LICENSE ]; then ok "/usr/share/doc/vigil/LICENSE"
+            else fail "/usr/share/doc/vigil/LICENSE missing"; fi
+          fi
+
+          # ── Runtime smoke ──
+          if [ -x /usr/bin/vigil ]; then
+            if v=$(/usr/bin/vigil --version 2>&1); then
+              if echo "$v" | grep -Fq "$ACTUAL"; then
+                ok "vigil --version contains $ACTUAL ($v)"
+              else
+                fail "vigil --version output ($v) does not contain $ACTUAL"
+              fi
+            else
+              fail "vigil --version failed: $v"
+            fi
+            if /usr/bin/vigil --help >/dev/null 2>&1; then ok "vigil --help exited 0"
+            else fail "vigil --help failed"; fi
+            # doctor: bounded; accept any exit code, just no segfault/hang
+            rc=0
+            timeout 10 /usr/bin/vigil doctor >/dev/null 2>&1 || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              ok "vigil doctor exited 0"
+            elif [ "$rc" -eq 124 ]; then
+              fail "vigil doctor hung past 10s"
+            elif [ "$rc" -gt 128 ]; then
+              fail "vigil doctor terminated by signal $((rc - 128))"
+            else
+              ok "vigil doctor exited $rc (non-zero accepted per spec)"
+            fi
+          fi
+          if [ -x /usr/bin/vigild ]; then
+            if /usr/bin/vigild --help >/dev/null 2>&1; then ok "vigild --help exited 0"
+            else fail "vigild --help failed"; fi
+          fi
+
+          echo
+          if [ "${#FAILS[@]}" -eq 0 ]; then
+            echo "installed-layout check passed."
+          else
+            echo "::error::installed-layout check found ${#FAILS[@]} failure(s):"
+            for f in "${FAILS[@]}"; do echo " - $f"; done
+            exit 1
+          fi
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vigil-${{ matrix.distro }}-${{ matrix.ext }}
+          path: out/*.${{ matrix.ext }}
+          retention-days: 14
+          if-no-files-found: error
+
+  # ──────────────────────────────────────────────────────────────
+  # Aggregate gate. The single required check for branch protection.
+  # ──────────────────────────────────────────────────────────────
+  pkg-success:
+    name: pkg-success
+    if: always()
+    needs: [lint, input-tests, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: verify all dependencies succeeded
+        run: |
+          lint_r='${{ needs.lint.result }}'
+          inp_r='${{ needs.input-tests.result }}'
+          bld_r='${{ needs.build.result }}'
+          echo "lint=$lint_r input-tests=$inp_r build=$bld_r"
+          rc=0
+          if [ "$lint_r" != "success" ]; then
+            echo "::error::lint job did not succeed ($lint_r)"
+            rc=1
+          fi
+          if [ "$inp_r" != "success" ]; then
+            echo "::error::input-tests job did not succeed ($inp_r)"
+            rc=1
+          fi
+          if [ "$bld_r" != "success" ]; then
+            echo "::error::build job did not succeed ($bld_r)"
+            rc=1
+          fi
+          exit "$rc"
