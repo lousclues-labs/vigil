@@ -234,6 +234,10 @@ ensure_toolchain() {
         export PATH="$HOME/.cargo/bin:$PATH"
     fi
     if ! command -v fpm >/dev/null 2>&1; then
+        # ostruct: removed from Ruby default gems in 4.0. fpm 1.16.0
+        # still requires it. Install explicitly so fpm loads on
+        # fedora's Ruby 4.x.
+        run gem install --no-document ostruct
         run gem install --no-document fpm --version "$FPM_VERSION"
         # Default rubygems bin dir varies; surface it for fpm calls.
         local gem_bin
