@@ -27,9 +27,11 @@ if command -v systemctl >/dev/null 2>&1 \
    && systemctl is-active --quiet vigild 2>/dev/null; then
     logger -p daemon.err -t vigil-apt \
         "vigild is running but $VIGIL is missing; maintenance window NOT entered. The post-hook will fail and Vigil will report inconsistent state. Reinstall vigil-baseline as soon as the transaction completes."
-    command -v notify-send >/dev/null 2>&1 && notify-send -u critical 'Vigil' \
-        'vigild is running but the vigil binary is missing. Reinstall vigil-baseline.' \
-        2>/dev/null || true
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -u critical 'Vigil' \
+            'vigild is running but the vigil binary is missing. Reinstall vigil-baseline.' \
+            2>/dev/null || true
+    fi
 fi
 
 exit 0

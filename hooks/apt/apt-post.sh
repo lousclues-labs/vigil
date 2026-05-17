@@ -20,9 +20,11 @@ if [ ! -x "$VIGIL" ]; then
        && systemctl is-active --quiet vigild 2>/dev/null; then
         logger -p daemon.err -t vigil-apt \
             "vigild is running but $VIGIL is missing; baseline NOT refreshed after this transaction. Vigil now reports inconsistent state. Reinstall vigil-baseline."
-        command -v notify-send >/dev/null 2>&1 && notify-send -u critical 'Vigil' \
-            'vigild is running but the vigil binary is missing. Baseline NOT refreshed; reinstall vigil-baseline.' \
-            2>/dev/null || true
+        if command -v notify-send >/dev/null 2>&1; then
+            notify-send -u critical 'Vigil' \
+                'vigild is running but the vigil binary is missing. Baseline NOT refreshed; reinstall vigil-baseline.' \
+                2>/dev/null || true
+        fi
     else
         logger -t vigil-apt \
             "vigil binary not found at $VIGIL and vigild not active; skipping refresh"
@@ -34,9 +36,11 @@ fi
 # failures correctly in the system log.
 if ! refresh_err=$("$VIGIL" baseline refresh --quiet 2>&1); then
     logger -p daemon.err -t vigil-apt "baseline refresh failed: $refresh_err"
-    command -v notify-send >/dev/null 2>&1 && notify-send -u critical 'Vigil' \
-        'Baseline refresh failed after package transaction. Run vigil doctor to investigate.' \
-        2>/dev/null || true
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -u critical 'Vigil' \
+            'Baseline refresh failed after package transaction. Run vigil doctor to investigate.' \
+            2>/dev/null || true
+    fi
 fi
 
 # Always exit the maintenance window, even if refresh failed -- otherwise
