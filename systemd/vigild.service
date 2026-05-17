@@ -26,7 +26,14 @@ MemoryMax=50M
 MemoryHigh=30M
 
 # Required capabilities
-AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+#
+# Capabilities are granted via file caps on /usr/bin/vigild
+# (set by the package post-install scriptlet: setcap
+# cap_sys_admin,cap_dac_read_search+ep). AmbientCapabilities= is
+# intentionally NOT set here: it would mask cases where the file caps
+# are missing, and would grant caps to any child processes vigild
+# spawns (vigild spawns none). CapabilityBoundingSet= remains as the
+# upper bound the process can ever hold.
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
 
 # Watchdog
