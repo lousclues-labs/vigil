@@ -127,6 +127,13 @@ install_deb_deps() {
     section "install_deb_deps"
     export DEBIAN_FRONTEND=noninteractive
     run apt-get update -qq
+    # Defensive: some bookworm container images ship with a held-back
+    # systemd dep chain. Any subsequent apt-get install then trips on
+    # 'unmet dependencies: systemd : Depends: libcryptsetup12 ...'.
+    # `install -f` (no packages) asks apt to consolidate broken state
+    # before our real install. If it can't, our install will fail the
+    # same way it would have without this line -- nothing lost.
+    apt-get install -y --no-install-recommends -f >/dev/null 2>&1 || true
     # strip-nondeterminism: post-processes .deb to scrub embedded
     # timestamps that fpm does not honour SOURCE_DATE_EPOCH for
     # (ar entry mtimes, gzip headers, tar entry mtimes/ordering).
@@ -138,19 +145,60 @@ install_deb_deps() {
 install_rpm_deps() {
     [ "${VIGIL_SKIP_DEPS:-0}" = "1" ] && { log "VIGIL_SKIP_DEPS=1; skipping dnf install"; return 0; }
     section "install_rpm_deps"
-    # strip-nondeterminism is in Fedora repos but NOT in EL9/Rocky9's
-    # default repos or EPEL9. On EL9 we rely on rpmbuild's native
-    # SOURCE_DATE_EPOCH support (rpm >= 4.16) for reproducibility.
-    local extra_pkgs=""
+    # strip-nondeterminism the binary is NOT reliably available in
+    # Fedora/EL9 repos (orphaned in fedora 44, never in EPEL9). We
+    # install the underlying File::StripNondeterminism Perl module
+    # via CPAN and ship a tiny wrapper at /usr/local/bin so the
+    # make_reproducible step finds it on PATH just like on .deb hosts.
+    #
+    # EL9 needs EPEL for perl-App-cpanminus (cpanm).
     case "$DISTRO" in
-        fedora) extra_pkgs="strip-nondeterminism" ;;
+        el9) run dnf install -y epel-release ;;
     esac
     # --allowerasing handles curl-minimal -> curl on fedora.
-    # shellcheck disable=SC2086  # $extra_pkgs intentionally unquoted (may be empty)
     run dnf install -y --allowerasing --setopt=install_weak_deps=False \
         ca-certificates curl gcc gcc-c++ pkgconf-pkg-config openssl-devel \
         ruby ruby-devel rubygems rubygem-json rpm-build python3 file \
-        $extra_pkgs
+        perl perl-devel make perl-App-cpanminus
+    # CPAN: --notest avoids each module's test suite (slow + flaky
+    # in containers without TTY/network for some tests).
+    run cpanm --notest --quiet --no-interactive File::StripNondeterminism
+    install_strip_nondeterminism_wrapper
+}
+
+# ─── 5b. Tiny strip-nondeterminism(1) wrapper for RPM hosts. ───
+# Mimics the Debian `strip-nondeterminism` binary's CLI surface for
+# the subset make_reproducible uses: --timestamp=N FILE...
+# Dispatches into File::StripNondeterminism::get_normalizer_for_file.
+install_strip_nondeterminism_wrapper() {
+    cat > /usr/local/bin/strip-nondeterminism <<'PERL_WRAPPER'
+#!/usr/bin/perl
+# Vigil wrapper for File::StripNondeterminism (CPAN). Mimics the
+# Debian strip-nondeterminism(1) CLI for the subset we use.
+use strict;
+use warnings;
+use Getopt::Long;
+use File::StripNondeterminism;
+
+my $ts = $ENV{SOURCE_DATE_EPOCH} // time();
+GetOptions("timestamp=i" => \$ts)
+    or die "usage: $0 [--timestamp=N] FILE...\n";
+
+$File::StripNondeterminism::canonical_time = $ts;
+
+my $rc = 0;
+for my $file (@ARGV) {
+    my $n = File::StripNondeterminism::get_normalizer_for_file($file);
+    if ($n) {
+        eval { $n->($file); 1 } or do {
+            warn "strip-nondeterminism: $file: $@";
+            $rc = 1;
+        };
+    }
+}
+exit $rc;
+PERL_WRAPPER
+    chmod 0755 /usr/local/bin/strip-nondeterminism
 }
 
 # ─── 6. Rust toolchain + fpm. ───
@@ -440,6 +488,8 @@ fpm_rpm() {
         --rpm-dist "$DISTRO" \
         --rpm-os linux \
         --rpm-summary 'Desktop Linux file integrity monitor (vigil + vigild)' \
+        --rpm-rpmbuild-define 'clamp_mtime_to_source_date_epoch 1' \
+        --rpm-rpmbuild-define '_buildhost reproducible.vigil-baseline.local' \
         --config-files /etc/vigil/vigil.toml.example \
         --after-install "$postinst" \
         --package "$out" \
@@ -501,16 +551,18 @@ validate_stage() {
 # in its internal tar/gzip/ar invocations -- ar entry mtimes, gzip
 # header timestamps, and tar entry ordering all vary run-to-run.
 # strip-nondeterminism is the standard tool for this (Debian
-# reproducible-builds project). Available on Debian/Ubuntu/Fedora;
-# absent on EL9, where we rely on rpmbuild's native SOURCE_DATE_EPOCH
-# support (rpm >= 4.16, EL9 ships 4.16).
+# reproducible-builds project). On .deb hosts it ships in apt repos;
+# on .rpm hosts install_rpm_deps drops a CPAN-backed wrapper at the
+# same path. If neither is reachable we log + continue; the artifact
+# will then likely fail CI's two-pass reproducibility assertion, but
+# the build itself still produces a valid package.
 make_reproducible() {
     local artifact="$1"
     section "make_reproducible"
     if command -v strip-nondeterminism >/dev/null 2>&1; then
         run strip-nondeterminism --timestamp="$SOURCE_DATE_EPOCH" "$artifact"
     else
-        log "strip-nondeterminism not available; relying on SOURCE_DATE_EPOCH alone (rpmbuild path)"
+        log "strip-nondeterminism not available; rpmbuild SOURCE_DATE_EPOCH only"
     fi
 }
 
