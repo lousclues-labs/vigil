@@ -159,18 +159,64 @@ Hooks reduce false positives during package upgrades by:
 2. refreshing baseline after transaction
 3. exiting maintenance window
 
+**If you installed via the official `.deb` / `.rpm` packages (built
+by [lousclues-pkg](PACKAGING.md)), these hooks are already in place;
+skip this section.** The manual installation below is for source
+builds.
+
 ### pacman hooks
+
+Two self-contained hook files; each is a `pacman.hook(5)` entry
+with embedded `Exec=`:
 
 ```bash
 sudo install -Dm644 hooks/pacman/vigil-pre.hook  /etc/pacman.d/hooks/vigil-pre.hook
 sudo install -Dm644 hooks/pacman/vigil-post.hook /etc/pacman.d/hooks/vigil-post.hook
 ```
 
-### apt hook config
+### apt hook (three pieces — install as a set)
+
+> **Important:** apt hooks ship as a config file *plus* two shell
+> scripts. Installing only the config without the scripts makes the
+> `test -x ... || true` guard always-false, so the hooks silently
+> no-op — passing apt's syntax check but doing nothing. Always
+> install all three together.
+
+The split exists because `apt.conf(5)` has no escape for `"` inside
+`"..."` string values, so multi-line shell with quoted log messages
+cannot live inside the `DPkg::Pre-Invoke` / `DPkg::Post-Invoke`
+directives directly.
 
 ```bash
-sudo install -Dm644 hooks/apt/99vigil /etc/apt/apt.conf.d/99vigil
+# 1. apt.conf delegator (small, no embedded shell)
+sudo install -Dm644 hooks/apt/99vigil     /etc/apt/apt.conf.d/99vigil
+
+# 2. Pre-Invoke logic: enter maintenance window
+sudo install -Dm755 hooks/apt/apt-pre.sh  /usr/lib/vigil/apt-pre.sh
+
+# 3. Post-Invoke logic: refresh baseline, exit maintenance window
+sudo install -Dm755 hooks/apt/apt-post.sh /usr/lib/vigil/apt-post.sh
 ```
+
+Verify the hook config parses cleanly:
+
+```bash
+sudo apt-get check
+```
+
+### dnf hook (Fedora / EL — DNF4)
+
+DNF4 plugin (Fedora ≤ 40, RHEL/Rocky/Alma 9):
+
+```bash
+sudo install -Dm644 hooks/dnf/vigil.conf /etc/dnf/plugins/vigil.conf
+sudo install -Dm644 hooks/dnf/vigil.py   /usr/lib/python3/dist-packages/dnf-plugins/vigil.py
+```
+
+> **Note:** DNF5 (Fedora 41+) uses a different plugin ABI than DNF4;
+> the DNF5 port is tracked separately. On Fedora 41+ the hook is
+> not installed; transactions still succeed, they just don't enter
+> a maintenance window.
 
 ---
 
@@ -183,6 +229,31 @@ fanotify requires elevated capability (`CAP_SYS_ADMIN`).
 Options:
 - run daemon as root (typical with systemd unit)
 - grant capabilities to executable (advanced deployment)
+
+#### File capabilities (recommended for non-root deployment)
+
+The official `.deb` / `.rpm` packages grant `CAP_SYS_ADMIN` and
+`CAP_DAC_READ_SEARCH` to `/usr/bin/vigild` via file caps in the
+`postinst` scriptlet — file caps are narrower than
+`AmbientCapabilities=` (they do not propagate to children, and
+fail loudly if `setcap` is missing).
+
+For source builds, the equivalent step is:
+
+```bash
+sudo setcap cap_sys_admin,cap_dac_read_search+ep /usr/local/bin/vigild
+getcap /usr/local/bin/vigild
+# expected: /usr/local/bin/vigild cap_dac_read_search,cap_sys_admin=ep
+```
+
+If `setcap` is unavailable or the binary lives on a filesystem that
+does not honour xattrs (some container overlays), fall back to
+`AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH` in the
+systemd unit. `systemd/vigild.service` ships this fallback already
+so the daemon-launched path works even when file caps had to be
+reverted. See [PACKAGING.md](PACKAGING.md) for the rationale
+(post-spec CI iteration found that file caps activate `AT_SECURE=1`
+and can break harmless invocations on minimal container images).
 
 #### Kernel version and fanotify tier (VIGIL-VULN-077)
 
@@ -260,6 +331,10 @@ sudo systemctl daemon-reload
 sudo rm -f /usr/local/bin/vigil /usr/local/bin/vigild
 sudo rm -f /etc/pacman.d/hooks/vigil-pre.hook /etc/pacman.d/hooks/vigil-post.hook
 sudo rm -f /etc/apt/apt.conf.d/99vigil
+sudo rm -f /usr/lib/vigil/apt-pre.sh /usr/lib/vigil/apt-post.sh
+sudo rmdir /usr/lib/vigil 2>/dev/null || true
+sudo rm -f /etc/dnf/plugins/vigil.conf
+sudo rm -f /usr/lib/python3/dist-packages/dnf-plugins/vigil.py
 ```
 
 Data directories are left intact by default:

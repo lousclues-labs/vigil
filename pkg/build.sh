@@ -42,7 +42,7 @@ set -euo pipefail
 case "$VERSION" in
     v*)
         echo "ERROR: VERSION must not have a leading 'v' (got: '$VERSION')" >&2
-        echo "       Pass the semver string directly, e.g. VERSION=1.11.4 not v1.11.4." >&2
+        echo "       Pass the semver string directly, e.g. VERSION=1.11.5 not v1.11.5." >&2
         exit 2
         ;;
 esac

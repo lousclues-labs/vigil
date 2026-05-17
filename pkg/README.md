@@ -107,10 +107,10 @@ it in `OUTDIR`. This is the input
 
 ```json
 {
-  "artifact": "vigil_1.11.4_amd64-noble.deb",
+  "artifact": "vigil_1.11.5_amd64-noble.deb",
   "sha256": "<64 hex chars>",
   "size_bytes": 12345678,
-  "version": "1.11.4",
+  "version": "1.11.5",
   "distro": "noble",
   "source_date_epoch": 1700000000,
   "git_commit": "<40 hex chars>"

@@ -6,7 +6,7 @@ All notable changes to Vigil Baseline will be documented in this file.
 > full checklist: fmt → clippy → test → build --release → CHANGELOG →
 > version-bump → commit → push → tag.
 
-## [1.11.5] - 2026-05-16
+## [1.11.5] - 2026-05-17
 
 ### Added
 
@@ -83,6 +83,222 @@ All notable changes to Vigil Baseline will be documented in this file.
   `CapabilityBoundingSet=` is retained as the upper bound the
   process may ever hold. The CI layout-check accepts either posture
   so the unit is back-portable.
+
+### Hardening — post-spec CI iteration (10 commits after the initial 1.11.5 work landed)
+
+The initial 1.11.5 work shipped the spec — the lousclues-pkg
+contract (`pkg/build.sh`), the merge-blocking gate
+(`.github/workflows/pkg-build.yml`), and the supporting changes
+(file-caps unit, dnf hook, `vigil man`, `vigild --help`). Running
+that gate end-to-end against five real distro containers surfaced
+nine concrete failure modes that the spec didn't anticipate. Each
+was fixed with a targeted patch, root cause documented inline, and
+locally reproduced (shim-`fpm` two-pass + shellcheck + bash -n +
+`systemd-analyze verify`) before pushing. Recording them here so
+the next packaging port has the receipts.
+
+- **`cargo build --frozen` fails on cold registries.** Symptom:
+  `error: no matching package named 'blake3' found` on a fresh
+  CI runner. Root cause: `--frozen` = `--locked --offline` and
+  refuses to populate `~/.cargo/registry/index` even though every
+  dep is pinned in `Cargo.lock`. Fix: split into
+  `cargo fetch --locked` (network allowed, lockfile pinned) +
+  `cargo build --frozen --offline` (network refused, lockfile
+  pinned). The build step retains its "this build touched no
+  network" audit property; only the fetch step is allowed to
+  populate the local mirror. **Lesson:** `--frozen` is the wrong
+  default for the first `cargo` invocation on any host; pair it
+  with an explicit `fetch` step.
+- **`apt.conf(5)` has no escape for `"` inside `"..."`.** Symptom:
+  `E: Syntax error /etc/apt/apt.conf.d/99vigil:1: Extra junk after
+  value`, exit 100 — *blocks every subsequent apt operation
+  system-wide*. Root cause: our one-liner `DPkg::Pre-Invoke
+  { "...vigil maintenance enter || true..."; }` embedded `\"`
+  inside the apt string value; apt's parser treats the first inner
+  `"` as end-of-value. Fix: split `hooks/apt/99vigil` into
+  three pieces — an apt.conf config that delegates via `test -x
+  /usr/lib/vigil/apt-{pre,post}.sh && ... || true` (no embedded
+  quotes anywhere), and two shell scripts (`apt-pre.sh`,
+  `apt-post.sh`) that hold the real logic. The `test -x` wrapper
+  also handles first-install bootstrap (apt fires Pre-Invoke
+  *before* unpacking the package). **Lesson:** if a config-file
+  format requires multi-line shell with quoted strings, the shell
+  must live in a separate file referenced by path.
+- **`fpm` does not honour `SOURCE_DATE_EPOCH`.** Symptom:
+  reproducibility check (double-build + sha256 compare) fails on
+  every distro. Root cause: fpm's internal tar/gzip/ar invocations
+  do not propagate the env var; ar entry mtimes, gzip header
+  timestamps, and tar entry ordering all vary run-to-run.
+  Additionally, the `postinst` written from `mktemp` carried
+  wall-clock mtime into `control.tar.gz`. Fix: (a) `touch -h -d
+  @SOURCE_DATE_EPOCH` the postinst tempfile before fpm reads it
+  (both deb and rpm); (b) install `strip-nondeterminism` from
+  the Debian reproducible-builds project and run it on the
+  artifact after fpm but before sha256/manifest emission.
+  **Lesson:** `SOURCE_DATE_EPOCH` is necessary but not sufficient
+  for byte-identical artifacts — post-processing with
+  `strip-nondeterminism` is the canonical Debian remedy.
+- **`strip-nondeterminism` is Debian-native and not on CPAN.**
+  Symptom: on Fedora/EL9, `dnf install strip-nondeterminism` fails
+  ("No match for argument"); falling back to `cpanm
+  File::StripNondeterminism` *also* fails ("Couldn't find module or
+  a distribution"). Root cause: the underlying
+  `File::StripNondeterminism` distribution has never been uploaded
+  to CPAN (metacpan's download_url endpoint returns 404 — the page
+  is metadata-only). Additionally, even if installed,
+  `strip-nondeterminism` has *no handler for the .rpm file format*
+  — its `handlers/` tree covers ar/cpio/gzip/zip/jar/png/etc.
+  only. Fix: don't install it on RPM hosts. RPM reproducibility
+  rides entirely on three `rpmbuild` macros passed through fpm:
+  `use_source_date_epoch_as_buildtime 1` (rpm 4.14+),
+  `clamp_mtime_to_source_date_epoch 1` (rpm 4.18+, Fedora), and
+  `_buildhost reproducible.vigil-baseline.local` (all rpm). EL9
+  (rpm 4.16) and Fedora (rpm 4.20) both produce byte-identical
+  artifacts with these in place. **Lesson:** verify a tool actually
+  handles the file format you need before adding it as a
+  cross-distro dep.
+- **Debian dep cascades survive `apt-get install -f`.** Symptom:
+  on bookworm/jammy GH Actions images,
+  `apt-get install systemd ...` failed with `systemd : Depends:
+  libcryptsetup12 (>= 2:2.4) but it is not going to be
+  installed`. Root cause: those container images ship with
+  `libsystemd0` bumped past `libcryptsetup12` / `libfdisk1` /
+  `libkmod2` / `libsystemd-shared` / `libapparmor1` / `libip4tc2`,
+  and apt's safety check refuses to downgrade `libsystemd0` to
+  match. `install -f` is too narrow — it fixes already-installed
+  broken state but won't pull held libs forward. Fix: five-step
+  remediation chain (each silenced + `|| true` so it never
+  regresses a clean state): `dpkg --configure -a` →
+  `apt-mark unhold ALL` → explicit install of the lib set →
+  `dist-upgrade --allow-downgrades --allow-change-held-packages` →
+  `install -f`. **Lesson:** Debian dep cascades on minimal CI
+  images need `dist-upgrade` with downgrades allowed; `install -f`
+  alone is insufficient.
+- **The same dep cascade re-appears in the post-smoke-install
+  step.** Symptom: after the build's own remediation finished
+  cleanly, the workflow's *layout-verify tooling install* step
+  (`apt-get install systemd coreutils libcap2-bin`) tripped on
+  the same cascade. Root cause: the preceding `dpkg -i
+  --force-depends` (used to install our package on a minimal
+  container) puts apt back in a broken-deps state. The fix
+  in `install_deb_deps` runs once during the build and does
+  not transfer to a later workflow step. Fix: inline the same
+  five-step remediation in the workflow's layout-verify tooling
+  step before any `apt-get install`. **Lesson:** dep-cascade
+  remediation is per-`apt-get-invocation`, not per-host;
+  duplicate the chain at every entry point.
+- **`setcap` activates `AT_SECURE=1` and can break `--help`.**
+  Symptom: on minimal Fedora/EL9 containers, `setcap
+  cap_sys_admin,cap_dac_read_search+ep /usr/bin/vigild` succeeds,
+  then `vigild --help` (run by the postinst smoke-test) exits
+  non-zero. Root cause: file caps put the binary in
+  secure-execution mode (`AT_SECURE=1`), which sanitises the
+  environment and applies a stricter library search policy. On
+  minimal images (incomplete `/etc/ld.so.cache`, missing locale
+  files, etc.) this can break even harmless invocations.
+  `/usr/bin/vigild` has no RPATH/RUNPATH and depends only on
+  libc/libm/libgcc_s (verified with `readelf -d`) — the failure
+  is environment-specific, not in our code. Fix: in postinst,
+  after `setcap`, smoke-test `vigild --help`. If it fails,
+  *revert* the file caps and warn. The binary is still functional
+  when systemd runs it as root (root has all caps regardless of
+  file caps); we just give up the aspirational non-root-with-caps
+  posture on those specific images. Defence in depth: re-add
+  `AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH` to
+  `vigild.service` so the unit-launched daemon gets the caps
+  even when file caps had to be reverted. **Lesson:** `setcap`
+  is a state change with non-obvious side effects; always
+  smoke-test the binary afterwards and have a rollback path.
+- **`systemd-analyze verify` shells out to `man` for `man:` URIs.**
+  Symptom: RPM matrix arms failed with `vigild.service: Command
+  'man vigild(8)' failed with code 1` on EL9/Fedora minimal
+  containers. Root cause: `systemd-analyze` invokes `man` to
+  verify a `Documentation=man:vigild(8)` URI, and on no-TTY
+  strict-glibc minimal images this exits 16 with `Can't show
+  vigild(8): Protocol error`. The man *page* itself is fine
+  (clap_mangen output, renders correctly with `man -l
+  vigild.8.gz`) — only the `man:` URI verifier is flaky. Fix:
+  `Documentation=https://github.com/lousclues-labs/vigil`. The
+  https verifier parses only (no network fetch), so it passes
+  everywhere. Operators can still find the man page via
+  `man vigild`. **Lesson:** `man:` URIs in systemd units are a
+  CI minefield on minimal containers; prefer `https:` for
+  packaging.
+- **`/bin/kill` ≠ `/usr/bin/kill` on minimal Fedora.** Symptom:
+  `systemd-analyze verify` reports `Command /bin/kill is not
+  executable: No such file or directory`. Root cause: on usrmerge
+  systems `/bin/kill` and `/usr/bin/kill` resolve to the same
+  inode, but minimal Fedora container images can have a broken
+  `/bin` symlink at verify time (the `filesystem` package is not
+  yet fully configured). Fix: `ExecReload=/usr/bin/kill -HUP
+  $MAINPID`. Canonical post-usrmerge path everywhere we target.
+  **Lesson:** in systemd unit files, prefer `/usr/bin/<tool>`
+  over `/bin/<tool>`.
+- **`kill(1)` is in `procps`, not `coreutils`.** Symptom: the
+  layout-verify tooling step installed `libcap2-bin systemd
+  coreutils` and then `systemd-analyze verify` failed on
+  `ExecReload=/usr/bin/kill ...`. Root cause: on Debian/Ubuntu,
+  `kill(1)` is shipped by `procps`, not `coreutils`. The
+  official container images include `procps` as an "Important"
+  package, but the verify path shouldn't depend on that.
+  Fix: install `procps` explicitly in the layout-verify step AND
+  add `procps` as a runtime `--depends` on the `.deb` package so
+  `systemctl reload vigild` always works on end-user systems.
+  RPM ships `kill` via `util-linux`, which systemd hard-depends
+  on, so no extra rpm dep needed. **Lesson:** `coreutils` does
+  not contain `kill(1)` on Debian; explicit dep if the unit
+  references it.
+- **Test files pinned to the old apt-hook layout.** Symptom:
+  `cargo test --test hook_failure_isolation_tests` failed two
+  tests (`apt_hook_references_real_vigil_path`,
+  `apt_hook_has_one_logger_per_failure_branch`) after the apt
+  hook was split into config + scripts. Root cause: the tests
+  read `hooks/apt/99vigil` and asserted it contains
+  `/usr/bin/vigil` and `logger -p daemon.err`, but those
+  properties moved into `apt-pre.sh` + `apt-post.sh`. Fix:
+  point the tests at the script files where the logic now
+  lives. The contract being asserted (real install-path
+  reference; loud escalation of critical failures via
+  `daemon.err`) is unchanged. **Lesson:** when contract tests
+  read a specific source file, splitting that file is a test
+  failure — even if the contract still holds. The fix is to
+  follow the contract, not pin the test to the original layout.
+- **`cargo fmt` prefers method-chain rebreaks.** Symptom: CI
+  `cargo fmt --all --check` failed on the test update above
+  with a diff that moved `.expect(...)` from a continuation
+  line onto the same line as the `let` initialiser. Trivial,
+  but it's a merge-blocking style gate. Fix: applied rustfmt's
+  preferred form. **Lesson:** run `cargo fmt` after every test
+  edit, even tiny ones.
+
+### Changed
+
+- **`docs/PACKAGING.md` — new.** Narrative companion to
+  `pkg/README.md` (which is the technical contract). Explains
+  the lousclues-pkg publishing system end-to-end from the
+  source-project perspective: source-tree → CI gate → release
+  pipeline → attestation → distribution. Includes the
+  failure-mode catalogue from the post-spec CI iteration above,
+  with the lessons cross-linked to the relevant code/config so
+  future packaging ports can search for "lesson: <keyword>" and
+  land on the patch that established the rule.
+- **`docs/INSTALL.md` — apt hook section corrected.** The old
+  text said "install `hooks/apt/99vigil` to
+  `/etc/apt/apt.conf.d/99vigil`" and stopped. Installing just
+  the config without the scripts at `/usr/lib/vigil/apt-{pre,
+  post}.sh` makes the `test -x ... || true` guard always-false,
+  so the hooks silently no-op — passing the apt syntax check
+  but doing nothing. Now documents the three-piece install
+  (config + pre + post) as an atomic set, with a note about why
+  the split exists. Also added a dnf hook subsection (the
+  feature shipped in 1.11.5 but the install doc didn't mention
+  it) and a file-caps capability posture subsection (the
+  posture the packages actually use, complementing the
+  `CAP_SYS_ADMIN` paragraph already there).
+- **Version sync.** `Cargo.toml` 1.11.4 → 1.11.5,
+  `aur/PKGBUILD` 1.11.4 → 1.11.5, `aur/.SRCINFO` 1.11.4 →
+  1.11.5, `pkg/README.md` manifest example 1.11.4 → 1.11.5,
+  `pkg/build.sh` error-message example 1.11.4 → 1.11.5.
 
 ## [1.11.4] - 2026-05-10
 
