@@ -64,6 +64,20 @@ If you'd rather configure by hand, see
 [Installation](docs/INSTALL.md) and
 [Configuration](docs/CONFIGURATION.md).
 
+### From lousclues packages
+
+Once the first release is published, this project will be installable
+via the lousclues package repository. See the install instructions at
+<https://pkg.lousclues.com/install/>.
+
+```bash
+# Ubuntu/Debian:
+sudo apt install vigil
+
+# RHEL/Fedora:
+sudo dnf install vigil
+```
+
 ## What it is
 
 Vigil Baseline is a desktop Linux file integrity monitor. One
