@@ -167,9 +167,20 @@ ensure_toolchain() {
 # ─── 7. Build the two binaries. ───
 build_binaries() {
     section "build_binaries"
-    # --locked + --frozen: refuse to touch Cargo.lock, refuse network.
-    # Together they make the build deterministic given the same source.
-    run cargo build --release --locked --frozen \
+    # Two-step pattern to keep the compile step provably offline while
+    # still tolerating a cold registry cache (the default state on a
+    # fresh GitHub Actions runner where no prior cargo invocation has
+    # populated ~/.cargo/registry/index).
+    #
+    #   1. cargo fetch --locked       network allowed, lockfile pinned
+    #   2. cargo build --frozen --offline   network refused, lockfile pinned
+    #
+    # --locked alone (no --frozen) on step 1 means: do not regenerate
+    # Cargo.lock; resolution must match the committed lock exactly.
+    # --frozen on step 2 implies --locked AND --offline, which gives
+    # us the audit-friendly "this compile touched no network" property.
+    run cargo fetch --locked --manifest-path "$REPO_ROOT/Cargo.toml"
+    run cargo build --release --frozen --offline \
         --bin vigil --bin vigild \
         --manifest-path "$REPO_ROOT/Cargo.toml"
 }
