@@ -404,9 +404,14 @@ jobs:
             dist-upgrade >/dev/null 2>&1 || true
           apt-get install -y --no-install-recommends -f >/dev/null 2>&1 || true
           apt-get install -y --no-install-recommends \
-            libcap2-bin systemd coreutils
+            libcap2-bin systemd coreutils procps
         # systemd-analyze lives in the `systemd` binary package on
-        # modern debian/ubuntu; libcap2-bin provides getcap.
+        # modern debian/ubuntu; libcap2-bin provides getcap; procps
+        # provides /usr/bin/kill referenced by ExecReload= in
+        # vigild.service (systemd-analyze verify rejects the unit
+        # if /usr/bin/kill doesn't exist at verify time, even though
+        # procps is normally part of debian:12/ubuntu:22.04/24.04
+        # default container images -- being explicit is robust).
 
       - name: install layout-verify tooling (rpm)
         if: matrix.ext == 'rpm'
@@ -472,10 +477,18 @@ jobs:
               ok "$UNIT does not reference dev-only paths"
             fi
             if command -v systemd-analyze >/dev/null 2>&1; then
-              if systemd-analyze verify "$UNIT"; then
+              # Capture the verify output so a future failure has its
+              # stderr right next to the FAIL line (the workflow log
+              # tail shows the FAIL line; without capture, the actual
+              # systemd-analyze error scrolls above and is easy to miss).
+              sa_out=$(systemd-analyze verify "$UNIT" 2>&1)
+              sa_rc=$?
+              if [ $sa_rc -eq 0 ]; then
                 ok "systemd-analyze verify $UNIT"
               else
-                fail "systemd-analyze verify $UNIT failed"
+                echo "systemd-analyze stderr:"
+                printf '%s\n' "$sa_out" | sed 's/^/  | /'
+                fail "systemd-analyze verify $UNIT failed (rc=$sa_rc)"
               fi
             else
               fail "systemd-analyze missing -- install systemd / systemd-container"

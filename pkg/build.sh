@@ -461,6 +461,7 @@ fpm_deb() {
         --depends 'libc6' \
         --depends 'libssl3 | libssl1.1' \
         --depends 'libcap2-bin' \
+        --depends 'procps' \
         --deb-recommends 'libnotify-bin' \
         --deb-suggests 'apt' \
         --deb-no-default-config-files \
