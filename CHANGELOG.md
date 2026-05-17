@@ -6,6 +6,105 @@ All notable changes to Vigil Baseline will be documented in this file.
 > full checklist: fmt → clippy → test → build --release → CHANGELOG →
 > version-bump → commit → push → tag.
 
+## [Unreleased]
+
+## [1.12.0] - 2026-05-17
+
+### Changed
+
+- **pkg/build.sh + pkg-build.yml: harmonization with sibling project
+  + high-leverage automation.** Vigil is the reference shape; the
+  shroud items below are the few cases where shroud's pattern won
+  and vigil adopts. Design reference: the cross-repo packaging
+  harmonization plan.
+- **Cargo cache in CI (biggest wall-time win).** `pkg-build.yml`
+  now uses `actions/cache@v4` for `~/.cargo/registry/{index,cache}`
+  and `~/.cargo/git/db`, keyed by `Cargo.lock` hash and shared
+  across the matrix. A separate `target/` cache is keyed
+  per-distro (`cargo-target-${{ matrix.distro }}-...`) because
+  cached `.rlib`s do not link cleanly across the glibc skew between
+  rocky, fedora, debian, and ubuntu containers. Pass 2 of the
+  reproducibility check intentionally reuses the warm cache:
+  reproducibility is a byte-compare on the artifact, not a
+  property of cargo's internal state.
+- **fpm version pin (reliability).** `pkg/build.sh` pins
+  `FPM_VERSION=1.16.0` in `ensure_toolchain`; the install path
+  passes `--version "$FPM_VERSION"` to `gem install`. fpm
+  major-version bumps have changed package metadata semantics
+  before; pinning keeps a transparent rubygems upgrade from
+  silently altering the contract.
+- **Retry wrapper on three network commands (reliability).** New
+  `retry <attempts> <initial_sleep_seconds> -- <cmd...>` helper
+  with exponential backoff. Applied to `apt-get update` (3 retries,
+  5s base), `dnf install` (3 retries, 5s base), and
+  `curl https://sh.rustup.rs` (3 retries, 10s base). Not applied
+  to `cargo fetch` (cache makes it near-instant) or `gem install`
+  (rare flake; pinning helps more than retry).
+- **jq-based manifest assertions in CI (reliability).** New
+  `verify manifest sidecar` step in `pkg-build.yml` parses
+  `<artifact>.manifest.json` with `jq` (not regex) and asserts:
+  manifest `sha256` matches the artifact, `version` matches
+  `Cargo.toml`, `distro` matches the matrix entry, and
+  `git_commit` is 40-char lowercase hex (never `"unknown"` in CI).
+  `jq` is installed in both deb and rpm arms of the
+  layout-verify-tooling step. Both build passes get
+  `VIGIL_MANIFEST_COMMIT: ${{ github.sha }}` so the manifest
+  carries the resolved commit even when the runner's git history
+  is shallow.
+- **trap EXIT INT TERM (adopted from shroud).** `pkg/build.sh`'s
+  staging-cleanup trap now fires on SIGINT and SIGTERM in addition
+  to EXIT. CI cancellations send INT/TERM; the EXIT-only trap
+  leaked `/tmp/vigil-stage.*` on cancel.
+- **Banner log at script start (adopted from shroud).**
+  `pkg/build.sh` prints distro, version, outdir, repo root,
+  `SOURCE_DATE_EPOCH`, and cargo target dir under a `section
+  "vigil package build"` header. Cheap. Makes log skimming
+  dramatically easier.
+- **Named functions: `print_summary`, `validate_artifact`,
+  `validate_git_commit_hex` (adopted from shroud).** Lifted out of
+  the inline tail of the script. `print_summary` ends with a
+  machine-readable `ARTIFACT=... SHA256=... SIZE=... MANIFEST=...`
+  line that wrapping workflows can grep. `validate_git_commit_hex`
+  is reused inside `emit_manifest` to validate every non-empty
+  commit input.
+- **Manifest `SOURCE_SHA` fallback (adopted from shroud).**
+  `emit_manifest` now follows a 4-level precedence:
+  `VIGIL_MANIFEST_COMMIT` → `SOURCE_SHA` → `git rev-parse HEAD` →
+  `"unknown"` (only when `CI` is unset; `exit 1` otherwise). Each
+  non-empty value is validated as 40-char lowercase hex with
+  `exit 2` on malformed input. Lets the lousclues-pkg orchestrator
+  set one generic env var across projects.
+- **`--no-modify-path` on rustup-init (adopted from shroud).** The
+  script already exports `PATH` manually; the flag stops
+  rustup-init from editing shell rc files in container images that
+  happen to have them.
+- **`--force` on `fpm_deb` + `fpm_rpm` (adopted from shroud).**
+  Belt-and-braces. Both functions already `rm -f "$out"` first.
+- **Per-distro dispatch refactor (adopted from shroud).** The case
+  statement now only does distro-specific work (deps, stage
+  layout, fpm builder selection). The shared post-build pipeline
+  (`make_reproducible`, `validate_artifact`, `emit_manifest`,
+  `print_summary`) runs once below the case statement.
+- **pkg-build.yml: dropped the broken "OUTDIR with nonexistent
+  parent" test.** The case's comment said "treated as VALID
+  input" but it asserted exit 1. The two were inconsistent and
+  the test only passed accidentally (failure happened later for
+  unrelated reasons). Deleted.
+- **pkg/README.md: added missing sections.** Local invocation
+  example (docker, copy-pasteable), CI gate cross-reference (the
+  three layers + what each one asserts), and "Differences from
+  sibling project (shroud)" -- the eight-item verbatim list of
+  intentional divergences (privilege model, binary count,
+  generated artifacts, package-manager hooks, desktop
+  integration, license tag, `fix-debian-deps.sh`, runtime deps).
+  Closing aphorism on its own line: *The pipeline that produces
+  the artifact is the contract. Keep them honest.*
+- **Version sync.** `Cargo.toml` 1.11.5 → 1.12.0, `Cargo.lock`
+  1.11.5 → 1.12.0, `aur/PKGBUILD` 1.11.5 → 1.12.0,
+  `aur/.SRCINFO` 1.11.5 → 1.12.0, `pkg/README.md` manifest
+  example 1.11.5 → 1.12.0, `pkg/build.sh` error-message example
+  1.11.5 → 1.12.0.
+
 ## [1.11.5] - 2026-05-17
 
 ### Added

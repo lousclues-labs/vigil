@@ -23,10 +23,21 @@
 #        OUTDIR, mismatch with Cargo.toml, unknown DISTRO, ...)
 #
 # Optional knobs:
-#   SOURCE_DATE_EPOCH      reproducible-build mtime + fpm timestamps
-#   VIGIL_SKIP_DEPS=1      skip apt-get/dnf install of system build deps
-#   VIGIL_SKIP_TOOLCHAIN=1 skip rustup + gem install fpm
-#   VIGIL_CARGO_TARGET_DIR override CARGO_TARGET_DIR (default: target)
+#   SOURCE_DATE_EPOCH        reproducible-build mtime + fpm timestamps
+#   VIGIL_SKIP_DEPS=1        skip apt-get/dnf install of system build deps
+#   VIGIL_SKIP_TOOLCHAIN=1   skip rustup + gem install fpm
+#   VIGIL_CARGO_TARGET_DIR   override CARGO_TARGET_DIR (default: target)
+#   VIGIL_KEEP_STAGE=1       preserve staging tree under /tmp on exit
+#   VIGIL_MANIFEST_COMMIT    explicit 40-hex git commit for manifest sidecar
+#                            (overrides SOURCE_SHA and `git rev-parse HEAD`)
+#   SOURCE_SHA               generic 40-hex commit set by the lousclues-pkg
+#                            orchestrator; second in the precedence chain
+#
+# Pinned tool versions (see ensure_toolchain):
+#   FPM_VERSION=1.16.0       fpm major-version bumps have changed package
+#                            metadata semantics in the past; pin so a
+#                            transparent rubygems upgrade can't silently
+#                            alter the contract this script validates
 #
 # Reference: lousclues-labs/lousclues-pkg/docs/operator-runbook-releases.md
 
@@ -42,7 +53,7 @@ set -euo pipefail
 case "$VERSION" in
     v*)
         echo "ERROR: VERSION must not have a leading 'v' (got: '$VERSION')" >&2
-        echo "       Pass the semver string directly, e.g. VERSION=1.11.5 not v1.11.5." >&2
+        echo "       Pass the semver string directly, e.g. VERSION=1.12.0 not v1.12.0." >&2
         exit 2
         ;;
 esac
@@ -108,12 +119,44 @@ fi
 
 # Staging area. Cleaned on exit; preserved on failure if VIGIL_KEEP_STAGE=1.
 STAGE="$(mktemp -d -t vigil-stage.XXXXXX)"
-trap '[ "${VIGIL_KEEP_STAGE:-0}" = "1" ] || rm -rf "$STAGE"' EXIT
+# CI cancellations send SIGINT/SIGTERM. EXIT-only would leak
+# /tmp/vigil-stage.* on cancel.
+trap '[ "${VIGIL_KEEP_STAGE:-0}" = "1" ] || rm -rf "$STAGE"' EXIT INT TERM
 
 # ─── 4. Helpers. ───
 log()    { printf '[pkg/build.sh] %s\n' "$*" >&2; }
 section(){ printf '\n[pkg/build.sh] ── %s ──\n' "$*" >&2; }
 run()    { log "+ $*"; "$@"; }
+
+# retry <attempts> <initial_sleep_seconds> -- <command...>
+# Exponential backoff. Used only for commands that touch the network.
+retry() {
+    local attempts="$1" sleep_s="$2"; shift 2
+    [ "$1" = "--" ] && shift
+    local i=1 rc=0
+    while [ "$i" -le "$attempts" ]; do
+        if "$@"; then return 0; fi
+        rc=$?
+        log "retry: attempt $i/$attempts failed (rc=$rc); sleeping ${sleep_s}s"
+        sleep "$sleep_s"
+        i=$((i + 1))
+        sleep_s=$((sleep_s * 2))
+    done
+    return "$rc"
+}
+
+# 40-char lowercase hex. Used to validate git commits at every entry point.
+validate_git_commit_hex() {
+    printf '%s' "$1" | grep -Eq '^[0-9a-f]{40}$'
+}
+
+section "vigil package build"
+log "distro: $DISTRO"
+log "version: $VERSION"
+log "outdir: $OUTDIR"
+log "repo: $REPO_ROOT"
+log "epoch: $SOURCE_DATE_EPOCH"
+log "cargo target: $CARGO_TARGET_DIR"
 
 # install_to <mode> <src> <dst-under-STAGE>
 install_to() {
@@ -126,7 +169,7 @@ install_deb_deps() {
     [ "${VIGIL_SKIP_DEPS:-0}" = "1" ] && { log "VIGIL_SKIP_DEPS=1; skipping apt-get install"; return 0; }
     section "install_deb_deps"
     export DEBIAN_FRONTEND=noninteractive
-    run apt-get update -qq
+    retry 3 5 -- apt-get update -qq
     # libsystemd0-vs-deps version skew remediation: see
     # scripts/fix-debian-deps.sh for the full rationale. Sourcing the
     # script (rather than duplicating its 5-step cascade inline) means
@@ -166,7 +209,7 @@ install_rpm_deps() {
     #   plus the SOURCE_DATE_EPOCH env var which rpm 4.14+ honours.
     #
     # --allowerasing handles curl-minimal -> curl on fedora.
-    run dnf install -y --allowerasing --setopt=install_weak_deps=False \
+    retry 3 5 -- dnf install -y --allowerasing --setopt=install_weak_deps=False \
         ca-certificates curl gcc gcc-c++ pkgconf-pkg-config openssl-devel \
         ruby ruby-devel rubygems rubygem-json rpm-build python3 file
 }
@@ -175,16 +218,23 @@ install_rpm_deps() {
 ensure_toolchain() {
     [ "${VIGIL_SKIP_TOOLCHAIN:-0}" = "1" ] && { log "VIGIL_SKIP_TOOLCHAIN=1; assuming cargo+fpm on PATH"; return 0; }
     section "ensure_toolchain"
+    # fpm major-version bumps have changed package metadata semantics
+    # in the past. Pin so a transparent rubygems upgrade can't silently
+    # alter the contract this script and pkg-build.yml validate.
+    local FPM_VERSION='1.16.0'
     if ! command -v cargo >/dev/null 2>&1; then
-        run curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        retry 3 10 -- curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             -o /tmp/rustup-init.sh
-        run sh /tmp/rustup-init.sh -y --default-toolchain stable --profile minimal
+        # --no-modify-path: the script exports PATH manually below.
+        # Prevents rustup-init from editing shell rc files in container
+        # images that happen to have them.
+        run sh /tmp/rustup-init.sh -y --default-toolchain stable --profile minimal --no-modify-path
         # shellcheck source=/dev/null
         . "$HOME/.cargo/env"
         export PATH="$HOME/.cargo/bin:$PATH"
     fi
     if ! command -v fpm >/dev/null 2>&1; then
-        run gem install --no-document fpm
+        run gem install --no-document fpm --version "$FPM_VERSION"
         # Default rubygems bin dir varies; surface it for fpm calls.
         local gem_bin
         gem_bin=$(gem environment gemdir)/bin
@@ -418,6 +468,7 @@ fpm_deb() {
 
     rm -f "$out"
     run fpm \
+        --force \
         --input-type dir \
         --output-type deb \
         --name vigil-baseline \
@@ -459,6 +510,7 @@ fpm_rpm() {
 
     rm -f "$out"
     run fpm \
+        --force \
         --input-type dir \
         --output-type rpm \
         --name vigil-baseline \
@@ -566,28 +618,37 @@ emit_manifest() {
     sha256=$(sha256sum "$artifact" | awk '{print $1}')
     local size
     size=$(stat -c '%s' "$artifact")
-    local git_commit
+    local git_commit=""
     # Resolution precedence:
-    #   1. VIGIL_MANIFEST_COMMIT  -- explicit override (lousclues-pkg
-    #      release pipeline sets this to the exact tag commit so
-    #      downstream attestation can pin to the source commit even
-    #      when this script is invoked from a non-repo working copy).
-    #   2. git rev-parse HEAD     -- the common case, deterministic
-    #      across CI re-runs of the same SHA.
-    #   3. "unknown"              -- last resort, allowed ONLY when
-    #      not running in CI. In CI a missing git_commit silently
-    #      breaks attestation reproducibility downstream, so we fail
-    #      loudly with exit 1 instead. Set VIGIL_MANIFEST_COMMIT to
-    #      override if the CI environment legitimately has no git
-    #      history (e.g. tarball-driven rebuild).
+    #   1. VIGIL_MANIFEST_COMMIT  -- project-prefixed explicit override.
+    #   2. SOURCE_SHA             -- generic, set by lousclues-pkg
+    #      orchestrator. Lets one orchestrator env apply across projects.
+    #   3. git rev-parse HEAD     -- the common case.
+    #   4. "unknown"              -- last resort, allowed ONLY when CI is
+    #      unset. In CI a missing git_commit silently breaks attestation
+    #      reproducibility downstream, so we fail loudly with exit 1.
     if [ -n "${VIGIL_MANIFEST_COMMIT:-}" ]; then
+        if ! validate_git_commit_hex "$VIGIL_MANIFEST_COMMIT"; then
+            echo "ERROR: VIGIL_MANIFEST_COMMIT must be 40-char lowercase hex (got: '$VIGIL_MANIFEST_COMMIT')" >&2
+            exit 2
+        fi
         git_commit="$VIGIL_MANIFEST_COMMIT"
+    elif [ -n "${SOURCE_SHA:-}" ]; then
+        if ! validate_git_commit_hex "$SOURCE_SHA"; then
+            echo "ERROR: SOURCE_SHA must be 40-char lowercase hex (got: '$SOURCE_SHA')" >&2
+            exit 2
+        fi
+        git_commit="$SOURCE_SHA"
     else
         git_commit=$(cd "$REPO_ROOT" && git rev-parse HEAD 2>/dev/null || echo "")
+        if [ -n "$git_commit" ] && ! validate_git_commit_hex "$git_commit"; then
+            echo "ERROR: git rev-parse HEAD returned non-hex value: '$git_commit'" >&2
+            exit 2
+        fi
         if [ -z "$git_commit" ]; then
             if [ -n "${CI:-}" ]; then
                 echo "::error::emit_manifest: git_commit unresolved in CI;" \
-                     "set VIGIL_MANIFEST_COMMIT or fix shallow-clone depth" >&2
+                     "set VIGIL_MANIFEST_COMMIT or SOURCE_SHA, or fix shallow-clone depth" >&2
                 exit 1
             fi
             git_commit="unknown"
@@ -608,24 +669,63 @@ EOF
     log "sha256: $sha256"
 }
 
-# ─── 13. Per-distro dispatch. ───
+# Post-fpm artifact contract check.
+validate_artifact() {
+    local artifact="$1" ext="$2"
+    section "validate_artifact"
+    if [ ! -f "$artifact" ]; then
+        echo "ERROR: expected artifact not produced: $artifact" >&2
+        return 1
+    fi
+    local count
+    count=$(find "$OUTDIR" -maxdepth 1 -type f -name "*.${ext}" | wc -l)
+    if [ "$count" -ne 1 ]; then
+        echo "ERROR: contract violation. Expected exactly 1 .${ext} in $OUTDIR, found $count" >&2
+        find "$OUTDIR" -maxdepth 1 -type f -name "*.${ext}" -printf '       %p\n' >&2
+        return 1
+    fi
+    log "artifact OK: $artifact"
+}
+
+# Final human + machine-readable summary. The trailing key=value line is
+# the contract wrapping workflows can grep for.
+print_summary() {
+    local artifact="$1"
+    local sha size
+    sha=$(sha256sum "$artifact" | awk '{print $1}')
+    size=$(stat -c '%s' "$artifact")
+    section "summary"
+    log "artifact: $artifact"
+    log "sha256:   $sha"
+    log "size:     $size bytes"
+    log "manifest: ${artifact}.manifest.json"
+    echo "ARTIFACT=$artifact SHA256=$sha SIZE=$size MANIFEST=${artifact}.manifest.json"
+}
+
+# ─── 13. Per-distro dispatch. Distro-specific work only; the post-build
+# pipeline (validate, repro post-process, manifest, summary) runs once
+# below the case statement so all five matrix entries share it.
 case "$DISTRO" in
     noble|jammy|bookworm)
         export FPM_TARGET=deb
+        EXT=deb
+        UNIT_DIR=/lib/systemd/system
         install_deb_deps
         ensure_toolchain
         build_binaries
-        stage_assets /lib/systemd/system
-        validate_stage  /lib/systemd/system
+        stage_assets "$UNIT_DIR"
+        validate_stage "$UNIT_DIR"
         artifact=$(fpm_deb | tail -n1)
         ;;
     el9|fedora)
         export FPM_TARGET=rpm
+        EXT=rpm
+        UNIT_DIR=/usr/lib/systemd/system
         install_rpm_deps
         ensure_toolchain
         build_binaries
-        stage_assets /usr/lib/systemd/system
-        validate_stage  /usr/lib/systemd/system
+        stage_assets "$UNIT_DIR"
+        validate_stage "$UNIT_DIR"
         artifact=$(fpm_rpm | tail -n1)
         ;;
     *)
@@ -635,11 +735,9 @@ case "$DISTRO" in
         ;;
 esac
 
-# ─── 14. Verify exactly one artifact + emit manifest sidecar. ───
-if [ ! -f "$artifact" ]; then
-    echo "ERROR: fpm reported success but $artifact is missing" >&2
-    exit 1
-fi
+# ─── 14. Shared post-build pipeline. ───
 make_reproducible "$artifact"
+validate_artifact "$artifact" "$EXT"
 emit_manifest "$artifact"
+print_summary "$artifact"
 log "done: $artifact"
