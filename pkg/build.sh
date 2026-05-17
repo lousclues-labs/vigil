@@ -31,6 +31,51 @@ set -euo pipefail
 : "${VERSION:?VERSION must be set (semver, no leading v)}"
 : "${OUTDIR:?OUTDIR must be set (absolute path; one .deb or .rpm emitted here)}"
 
+# ─── Input validation (contract pinned by .github/workflows/pkg-build.yml) ───
+# Exit code convention: 1 = missing required env (handled above by `:?`);
+# 2 = invalid value.
+
+# Reject leading 'v' in VERSION. The contract is semver only.
+case "$VERSION" in
+    v*)
+        echo "ERROR: VERSION must not have a leading 'v' (got: '$VERSION')" >&2
+        echo "       Pass the semver string directly, e.g. VERSION=1.8.1 not v1.8.1." >&2
+        exit 2
+        ;;
+esac
+
+# Reject relative OUTDIR. The release pipeline always passes an absolute
+# path; refusing relative paths prevents accidental writes into the repo
+# tree on local invocations.
+case "$OUTDIR" in
+    /*) ;;
+    *)
+        echo "ERROR: OUTDIR must be an absolute path (got: '$OUTDIR')" >&2
+        exit 2
+        ;;
+esac
+
+# VERSION must match Cargo.toml. Catches operator typos and prevents
+# producing a package whose internal version disagrees with the source
+# tree it was built from.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CARGO_TOML="$REPO_ROOT/Cargo.toml"
+if [ ! -f "$CARGO_TOML" ]; then
+    echo "ERROR: Cargo.toml not found at $CARGO_TOML" >&2
+    exit 2
+fi
+CARGO_VERSION=$(awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' "$CARGO_TOML")
+if [ -z "$CARGO_VERSION" ]; then
+    echo "ERROR: could not parse version from $CARGO_TOML" >&2
+    exit 2
+fi
+if [ "$VERSION" != "$CARGO_VERSION" ]; then
+    echo "ERROR: VERSION '$VERSION' does not match Cargo.toml version '$CARGO_VERSION'" >&2
+    echo "       The packaging pipeline must build the version the source tree advertises." >&2
+    exit 2
+fi
+
 mkdir -p "$OUTDIR"
 
 case "$DISTRO" in
