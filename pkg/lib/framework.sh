@@ -880,14 +880,22 @@ _pkg_validate_artifact() {
         return 1
     fi
 
+    # NOTE(vigil drift): framework v1.2.1 pipes `dpkg-deb -c` / `rpm -qpl`
+    # directly into `head -20`. For packages with >20 entries `head`
+    # closes the pipe early; under `set -euo pipefail` the SIGPIPE on
+    # dpkg-deb/rpm kills the script. Capture full listing first, then
+    # head. Tracked as a pkg-framework FR.
+    local listing
     case "$artifact" in
         *.deb)
             run dpkg-deb -I "$artifact"
-            run dpkg-deb -c "$artifact" | head -20
+            listing=$(dpkg-deb -c "$artifact")
+            printf '%s\n' "$listing" | head -20
             ;;
         *.rpm)
             run rpm -qpi "$artifact"
-            run rpm -qpl "$artifact" | head -20
+            listing=$(rpm -qpl "$artifact")
+            printf '%s\n' "$listing" | head -20
             ;;
     esac
 }
