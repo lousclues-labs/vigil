@@ -8,6 +8,41 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Packaging migrated to `pkg-framework`.** Vigil now vendors
+  [pkg-framework](https://github.com/lousclues-labs/pkg-integration)
+  v1.2.1 at `pkg/lib/` and declares its packaging contract through
+  `pkg/project.sh` (manifest fields + `project_*` hooks) instead of
+  a hand-rolled `pkg/build.sh`. The 747-line pre-framework
+  `pkg/build.sh` and the 748-line pre-framework
+  `.github/workflows/pkg-build.yml` are preserved at `.archive/` so
+  the diff is reviewable. The framework's vendored `pkg-build.yml`
+  workflow gates packaging on every PR.
+
+### Notes on the migration
+
+- **Artifact filenames change.** Pre-framework: `vigil_<v>_amd64-<distro>.deb`
+  with the distro embedded. Framework default:
+  `vigil-baseline_<v>_amd64.deb` (no distro suffix). Per-distro
+  uniqueness now relies on per-distro `OUTDIR` in the matrix.
+- **`PKG_PREFIX=VIGIL`** (not `VIGIL_BASELINE`) so the existing
+  lousclues-pkg orchestrator's `VIGIL_MANIFEST_COMMIT` env var
+  continues to feed the manifest sidecar.
+- **rpm reproducibility macros preserved** via
+  `project_fpm_rpm_extra_args` (`use_source_date_epoch_as_buildtime`,
+  `clamp_mtime_to_source_date_epoch`, `_buildhost`).
+- **Five vigil-specific install-time gates** (capability presence,
+  apt-hook cycle, dnf plugin pair, `systemd-analyze verify`, smoke)
+  re-encoded as `project_install_layout_check_extra`.
+- **Two follow-ups** filed against pkg-framework, not blocking this
+  PR: (a) cargo build invocation is `--release --locked` (network
+  reachable during build); vigil's prior `--frozen --offline`
+  hermetic pattern wants a framework knob; (b) the framework's
+  default `_pkg_emit_debian_copyright` truncates the license body
+  and points it at `changelog.gz`; vigil's `project_stage_extra`
+  overwrites with the correct GPL-3 form.
+
 ## [1.12.0] - 2026-05-17
 
 ### Changed
