@@ -109,20 +109,20 @@ PKG_DEB_CONFIG_FILES=(
 # project_install_layout_check_extra walks the static paths; the
 # manifest array covers the canonical handful that every CI run checks.
 PKG_LAYOUT_CHECKS=(
-    "usr/bin/vigil:0755"
-    "usr/bin/vigild:0755"
-    "etc/vigil/vigil.toml.example:0644"
-    "usr/share/man/man1/vigil.1.gz:0644"
-    "usr/share/man/man5/vigil.toml.5.gz:0644"
-    "usr/share/man/man8/vigild.8.gz:0644"
-    "usr/share/bash-completion/completions/vigil:0644"
-    "usr/share/zsh/site-functions/_vigil:0644"
-    "usr/share/fish/vendor_completions.d/vigil.fish:0644"
-    "usr/share/doc/vigil-baseline/README.md:0644"
-    "usr/share/doc/vigil-baseline/changelog.gz:0644"
-    "lib/systemd/system/vigild.service:0644"
-    "lib/systemd/system/vigil-scan.service:0644"
-    "lib/systemd/system/vigil-scan.timer:0644"
+    "usr/bin/vigil:755"
+    "usr/bin/vigild:755"
+    "etc/vigil/vigil.toml.example:644"
+    "usr/share/man/man1/vigil.1.gz:644"
+    "usr/share/man/man5/vigil.toml.5.gz:644"
+    "usr/share/man/man8/vigild.8.gz:644"
+    "usr/share/bash-completion/completions/vigil:644"
+    "usr/share/zsh/site-functions/_vigil:644"
+    "usr/share/fish/vendor_completions.d/vigil.fish:644"
+    "usr/share/doc/vigil-baseline/README.md:644"
+    "usr/share/doc/vigil-baseline/changelog.gz:644"
+    "lib/systemd/system/vigild.service:644"
+    "lib/systemd/system/vigil-scan.service:644"
+    "lib/systemd/system/vigil-scan.timer:644"
 )
 
 # Extra build-time packages on top of the framework's base set.

@@ -62,6 +62,15 @@ concurrency:
 permissions:
   contents: read
 
+# Force bash for every `run:` step. The vendored workflow uses
+# `source pkg/project.sh` in container jobs (ubuntu:24.04, debian:12-slim,
+# fedora:40); the default shell in those containers is /bin/sh (dash),
+# which has no `source` builtin. This drift from upstream pkg-framework
+# v1.2.1 fixes a CI break and is tracked as a framework FR.
+defaults:
+  run:
+    shell: bash
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
