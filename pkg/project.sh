@@ -42,14 +42,13 @@ PKG_PREFIX=VIGIL
 
 PKG_SUMMARY="Desktop Linux file integrity monitor (vigil + vigild)"
 
-PKG_DESCRIPTION="Vigil Baseline is a desktop Linux file integrity
-monitor. One operator, one workstation. Kernel-level filesystem watching
-via fanotify, BLAKE3 hashing, HMAC-chained audit trail. Silent by
-default, local by design, deeply paranoid.
-
-Ships two binaries: vigil (CLI) and vigild (the daemon). The daemon
-runs under systemd with file capabilities (cap_sys_admin +
-cap_dac_read_search), not as root."
+# IMPORTANT: single line. pkg-framework v1.2.1 builds fpm args via a
+# printf | line-read pattern that splits any multi-line field across
+# additional positional fpm args (fpm then tries to package the second
+# paragraph as a filesystem path and aborts). The framework docs say
+# "newlines preserved"; in practice they are not. Tracked as a
+# framework FR.
+PKG_DESCRIPTION="Vigil Baseline is a desktop Linux file integrity monitor. One operator, one workstation. Kernel-level filesystem watching via fanotify, BLAKE3 hashing, HMAC-chained audit trail. Silent by default, local by design, deeply paranoid. Ships two binaries: vigil (CLI) and vigild (the daemon); vigild runs under systemd with file capabilities (cap_sys_admin, cap_dac_read_search), not as root."
 
 PKG_VENDOR="lousclues-labs"
 
