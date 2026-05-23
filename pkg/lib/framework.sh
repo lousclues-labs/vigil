@@ -621,7 +621,12 @@ _pkg_fpm_common_args() {
 }
 
 _pkg_fpm_deb() {
-    section "build deb"
+    # NOTE(vigil drift): framework v1.2.1's stdout-as-return pattern
+    # captures every section/log/run line into $() via
+    # `artifact="$(_pkg_fpm_deb)"`, corrupting the artifact path.
+    # Redirect noisy commands to stderr; keep only the final printf
+    # on stdout. Tracked as a pkg-framework FR.
+    section "build deb" >&2
 
     local postinst="$STAGE/scripts/postinst"
     local prerm="$STAGE/scripts/prerm"
@@ -696,14 +701,15 @@ _pkg_fpm_deb() {
         done < <(project_fpm_deb_extra_args)
     fi
 
-    run fpm "${args[@]}" "${common_arr[@]}" .
+    run fpm "${args[@]}" "${common_arr[@]}" . >&2
 
-    log "wrote $out_file"
+    log "wrote $out_file" >&2
     printf '%s' "$out_file"
 }
 
 _pkg_fpm_rpm() {
-    section "build rpm"
+    # See _pkg_fpm_deb comment; same stdout-pollution fix here.
+    section "build rpm" >&2
 
     local postinst="$STAGE/scripts/postinst"
     local prerm="$STAGE/scripts/prerm"
@@ -774,9 +780,9 @@ _pkg_fpm_rpm() {
         done < <(project_fpm_rpm_extra_args)
     fi
 
-    run fpm "${args[@]}" "${common_arr[@]}" .
+    run fpm "${args[@]}" "${common_arr[@]}" . >&2
 
-    log "wrote $out_file"
+    log "wrote $out_file" >&2
     printf '%s' "$out_file"
 }
 
