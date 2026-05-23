@@ -303,6 +303,13 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           set -e
+          # debian:12-slim and ubuntu:24.04 ship with
+          # /etc/dpkg/dpkg.cfg.d/excludes containing
+          # `path-exclude /usr/share/{doc,man,groff,info,lintian,linda}/*`
+          # which makes dpkg drop those paths from any package at
+          # install time. Clear before installing so packaged docs
+          # and man pages actually land. Tracked as a pkg-framework FR.
+          rm -f /etc/dpkg/dpkg.cfg.d/excludes /etc/dpkg/dpkg.cfg.d/docker
           apt-get update -qq
           # apt-get install handles dep resolution; falls back to dpkg
           # + apt-get -f install if needed.
@@ -313,6 +320,10 @@ jobs:
         if: matrix.ext == 'rpm'
         run: |
           set -e
+          # fedora:40 minimal sets `tsflags=nodocs` in /etc/dnf/dnf.conf
+          # which strips /usr/share/doc and /usr/share/man from rpms at
+          # install time. Remove it so docs and man pages land.
+          sed -i '/^tsflags=/d' /etc/dnf/dnf.conf 2>/dev/null || true
           dnf -y install ./dist/*.rpm
 
       - name: verify installed layout
