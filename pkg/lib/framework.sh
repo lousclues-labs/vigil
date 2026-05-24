@@ -744,7 +744,12 @@ _pkg_fpm_deb() {
         done < <(project_fpm_deb_extra_args)
     fi
 
-    run fpm "${args[@]}" "${common_arr[@]}" .
+    # v1.2.4: redirect fpm's own stdout to stderr. fpm prints a
+    # `Created package` log line on success; if we let it flow it
+    # ends up in `artifact=$(_pkg_fpm_deb)` alongside the path we
+    # actually want to return. Stdout from this function is the
+    # return channel; everything else goes to stderr.
+    run fpm "${args[@]}" "${common_arr[@]}" . >&2
 
     log "wrote $out_file"
     printf '%s' "$out_file"
@@ -820,7 +825,8 @@ _pkg_fpm_rpm() {
         done < <(project_fpm_rpm_extra_args)
     fi
 
-    run fpm "${args[@]}" "${common_arr[@]}" .
+    # v1.2.4: redirect fpm's own stdout to stderr (see _pkg_fpm_deb).
+    run fpm "${args[@]}" "${common_arr[@]}" . >&2
 
     log "wrote $out_file"
     printf '%s' "$out_file"
