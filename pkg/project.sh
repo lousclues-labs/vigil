@@ -16,15 +16,11 @@
 # branch). Every behavior of that script is preserved either as a
 # manifest field here or as a project_* hook at the bottom of this file.
 #
-# Translation notes (gaps where the framework's defaults differ from
-# the pre-framework contract):
+# Translation notes (intentional differences from the pre-framework
+# contract):
 #   * Artifact filenames lose the per-distro suffix
 #     (vigil_<v>_amd64-noble.deb -> vigil-baseline_<v>_amd64.deb).
 #     Per-distro uniqueness now relies on per-distro OUTDIR in CI.
-#   * cargo build runs with --release --locked (framework default), not
-#     vigil's previous --frozen --offline hermetic pattern. Lockfile is
-#     still pinned; network is still reachable during build. Recover
-#     hermeticity in a follow-up via a framework FR.
 #   * VIGIL_MANIFEST_COMMIT is preserved by setting PKG_PREFIX=VIGIL
 #     (not VIGIL_BASELINE) so the lousclues-pkg orchestrator's existing
 #     env var keeps working.
@@ -42,13 +38,9 @@ PKG_PREFIX=VIGIL
 
 PKG_SUMMARY="Desktop Linux file integrity monitor (vigil + vigild)"
 
-# IMPORTANT: single line. pkg-framework v1.2.1 builds fpm args via a
-# printf | line-read pattern that splits any multi-line field across
-# additional positional fpm args (fpm then tries to package the second
-# paragraph as a filesystem path and aborts). The framework docs say
-# "newlines preserved"; in practice they are not. Tracked as a
-# framework FR.
-PKG_DESCRIPTION="Vigil Baseline is a desktop Linux file integrity monitor. One operator, one workstation. Kernel-level filesystem watching via fanotify, BLAKE3 hashing, HMAC-chained audit trail. Silent by default, local by design, deeply paranoid. Ships two binaries: vigil (CLI) and vigild (the daemon); vigild runs under systemd with file capabilities (cap_sys_admin, cap_dac_read_search), not as root."
+PKG_DESCRIPTION="Vigil Baseline is a desktop Linux file integrity monitor. One operator, one workstation. Kernel-level filesystem watching via fanotify, BLAKE3 hashing, HMAC-chained audit trail. Silent by default, local by design, deeply paranoid.
+
+Ships two binaries: vigil (CLI) and vigild (the daemon). vigild runs under systemd with file capabilities (cap_sys_admin, cap_dac_read_search), not as root."
 
 PKG_VENDOR="lousclues-labs"
 
@@ -137,7 +129,11 @@ PKG_EXTRA_RPM_BUILD_DEPS=(openssl-devel python3)
 
 # Framework pin. `pkg-framework sync` rewrites this; CI hard-fails on
 # mismatch with pkg/lib/VERSION.
-FRAMEWORK_VERSION=1.2.1
+FRAMEWORK_VERSION=1.2.2
+
+# Preserve the pre-framework hermetic compile contract: fetch with the
+# lockfile pinned, then build with --frozen --offline.
+PKG_CARGO_OFFLINE=1
 
 # =========================================================================
 # Hooks
@@ -195,8 +191,7 @@ project_post_build() {
 
 # Stage everything the framework's defaults don't cover: the generated
 # completions + man pages (from project_post_build), the example
-# config, the optional apt / dnf hook subtrees, and a corrected
-# debian/copyright.
+# config, and the optional apt / dnf hook subtrees.
 project_stage_extra() {
     local root=$1
 
@@ -262,40 +257,7 @@ project_stage_extra() {
         fi
     fi
 
-    # 5. Corrected debian/copyright. The framework's default emits a
-    # truncated header and points the license body at changelog.gz
-    # (a framework bug, filed upstream). Overwrite with vigil's
-    # full machine-readable form including the GPL-3 preamble.
-    if [[ "$root" == "$DEB_OUT" ]]; then
-        local doc_dir="$root/usr/share/doc/$PKG_NAME"
-        install -d -m 0755 "$doc_dir"
-        {
-            cat <<EOF
-Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: vigil-baseline
-Upstream-Contact: $PKG_MAINTAINER
-Source: $PKG_SOURCE_URL
-
-Files: *
-Copyright: $PKG_COPYRIGHT_YEAR $PKG_COPYRIGHT_HOLDERS
-License: GPL-3.0-only
- This program is free software: you can redistribute it and/or modify
- it under the terms of the GNU General Public License as published by
- the Free Software Foundation, version 3.
- .
- This program is distributed in the hope that it will be useful, but
- WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- General Public License for more details.
- .
- On Debian systems, the complete text of the GNU General Public
- License version 3 can be found in /usr/share/common-licenses/GPL-3.
-EOF
-        } > "$doc_dir/copyright"
-        chmod 0644 "$doc_dir/copyright"
-    fi
-
-    # 6. Pin mtimes across the stage tree so per-file timestamps don't
+    # 5. Pin mtimes across the stage tree so per-file timestamps don't
     # leak wall-clock into fpm input. SOURCE_DATE_EPOCH is set by the
     # framework's _pkg_setup_globals.
     find "$root" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +

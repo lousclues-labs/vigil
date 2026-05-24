@@ -106,7 +106,7 @@ if [[ -n "${PKG_SYSTEMD_UNITS+x}" && "${#PKG_SYSTEMD_UNITS[@]}" -gt 0 ]]; then
         if [[ -n "$found" ]]; then
             ok "$found"
             # Reject any /home or /tmp ExecStart paths (dev regression).
-            if grep -qE '^ExecStart=.*(\/home\/|\/tmp\/|target\/release\/)' "$found"; then
+            if grep -qE '^ExecStart=.*(/home/|/tmp/|target/release/)' "$found"; then
                 fail "$found contains dev path in ExecStart"
             fi
             # systemd-analyze verify is best-effort. The container may

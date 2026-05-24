@@ -62,11 +62,12 @@ concurrency:
 permissions:
   contents: read
 
-# Force bash for every `run:` step. The vendored workflow uses
-# `source pkg/project.sh` in container jobs (ubuntu:24.04, debian:12-slim,
-# fedora:40); the default shell in those containers is /bin/sh (dash),
-# which has no `source` builtin. This drift from upstream pkg-framework
-# v1.2.1 fixes a CI break and is tracked as a framework FR.
+# v1.2.2: bash is the default for every `run:` block. The workflow
+# sources `pkg/project.sh` in container jobs; the default shell
+# under containers on debian/ubuntu is dash, which does not have
+# `source`. Setting bash globally makes the sourcing work everywhere
+# and removes a class of "works on the runner but not the container"
+# bugs.
 defaults:
   run:
     shell: bash
@@ -87,7 +88,7 @@ jobs:
       version: ${{ steps.ver.outputs.version }}
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.7
 
       - name: install shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends shellcheck jq
@@ -192,7 +193,7 @@ jobs:
           fi
 
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.7
 
       - name: read PKG_NAME + PKG_PREFIX from manifest
         id: manifest
@@ -203,7 +204,7 @@ jobs:
           echo "prefix=$PKG_PREFIX" >> "$GITHUB_OUTPUT"
 
       - name: cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
         with:
           path: |
             ~/.cargo/registry/index
@@ -214,7 +215,7 @@ jobs:
             cargo-registry-${{ matrix.distro }}-
 
       - name: cache cargo target (per-distro)
-        uses: actions/cache@v4
+        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
         with:
           path: target/${{ matrix.ext }}
           key: cargo-target-${{ matrix.distro }}-${{ hashFiles('Cargo.lock', 'src/**', 'Cargo.toml') }}
@@ -238,7 +239,7 @@ jobs:
         run: ls -la dist/
 
       - name: upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@0b2256b8c012f0828dc542b3febcab082c67f72b # v4.3.4
         with:
           name: ${{ steps.manifest.outputs.name }}-${{ matrix.distro }}-${{ matrix.ext }}
           path: |
@@ -283,7 +284,7 @@ jobs:
           fi
 
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.7
 
       - name: read PKG_NAME from manifest
         id: manifest
@@ -292,7 +293,7 @@ jobs:
           echo "name=$PKG_NAME" >> "$GITHUB_OUTPUT"
 
       - name: download artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           name: ${{ steps.manifest.outputs.name }}-${{ matrix.distro }}-${{ matrix.ext }}
           path: dist
@@ -303,12 +304,14 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           set -e
-          # debian:12-slim and ubuntu:24.04 ship with
-          # /etc/dpkg/dpkg.cfg.d/excludes containing
-          # `path-exclude /usr/share/{doc,man,groff,info,lintian,linda}/*`
-          # which makes dpkg drop those paths from any package at
-          # install time. Clear before installing so packaged docs
-          # and man pages actually land. Tracked as a pkg-framework FR.
+          # v1.2.2: slim debian/ubuntu images install
+          # /etc/dpkg/dpkg.cfg.d/excludes that strips
+          # /usr/share/doc/* and /usr/share/man/* on every apt-get
+          # install. The artifact ships those paths but layout-check
+          # then sees them missing. Clear the exclusions before
+          # install so the installed layout matches what we packaged.
+          # docker-content config in some base images applies the
+          # same exclusions under a different filename.
           rm -f /etc/dpkg/dpkg.cfg.d/excludes /etc/dpkg/dpkg.cfg.d/docker
           apt-get update -qq
           # apt-get install handles dep resolution; falls back to dpkg
@@ -320,10 +323,13 @@ jobs:
         if: matrix.ext == 'rpm'
         run: |
           set -e
-          # fedora:40 minimal sets `tsflags=nodocs` in /etc/dnf/dnf.conf
-          # which strips /usr/share/doc and /usr/share/man from rpms at
-          # install time. Remove it so docs and man pages land.
-          sed -i '/^tsflags=/d' /etc/dnf/dnf.conf 2>/dev/null || true
+          # v1.2.2: fedora minimal sets tsflags=nodocs in
+          # /etc/dnf/dnf.conf which drops /usr/share/doc and
+          # /usr/share/man at install time. Strip the line so the
+          # installed layout matches what we packaged.
+          if [ -r /etc/dnf/dnf.conf ]; then
+              sed -i '/^tsflags=nodocs/d' /etc/dnf/dnf.conf
+          fi
           dnf -y install ./dist/*.rpm
 
       - name: verify installed layout
@@ -394,7 +400,7 @@ jobs:
           fi
 
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.7
 
       - name: read PKG_NAME from manifest
         id: manifest
@@ -403,7 +409,7 @@ jobs:
           echo "name=$PKG_NAME" >> "$GITHUB_OUTPUT"
 
       - name: download first-pass artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           name: ${{ steps.manifest.outputs.name }}-${{ matrix.distro }}-${{ matrix.ext }}
           path: pass1

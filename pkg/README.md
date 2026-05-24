@@ -18,7 +18,7 @@ pkg/
     framework.sh        vendored from pkg-framework
     layout-check.sh     vendored
     input-tests.sh      vendored
-    VERSION             vendored framework version (1.2.1)
+    VERSION             vendored framework version (1.2.2)
 ```
 
 `pkg/build.sh` is the source-project contract that `lousclues-pkg`
@@ -65,7 +65,7 @@ Everything vigil needs beyond the framework's defaults lives in
 |---|---|
 | `project_pre_install_deb_deps` | Runs `scripts/fix-debian-deps.sh` for the libsystemd0 version-skew remediation. |
 | `project_post_build` | Generates bash/zsh/fish completions and gzipped man pages (`vigil.1`, `vigil.toml.5`, `vigild.8`) from the freshly built `vigil` binary. |
-| `project_stage_extra` | Stages the example config, `hooks/apt/*` (deb only) and `hooks/dnf/*` (rpm only), and overwrites the framework's debian/copyright with the full GPL-3 form. |
+| `project_stage_extra` | Stages the example config, `hooks/apt/*` (deb only), `hooks/dnf/*` (rpm only), generated completions, and generated man pages. |
 | `project_postinst_body` | `setcap cap_sys_admin,cap_dac_read_search+ep` on `/usr/bin/vigild` with a `--help` self-test and a revert path. |
 | `project_fpm_rpm_extra_args` | Passes the three rpmbuild macros needed for sha256-reproducible rpms. |
 | `project_install_layout_check_extra` | Five post-install gates: capability presence, apt-hook cycle integrity, dnf-plugin pair integrity, `systemd-analyze verify`, and `vigil --version` smoke. |
