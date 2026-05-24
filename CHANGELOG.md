@@ -14,13 +14,14 @@ Packaging-only release. No source changes and no runtime behavior
 changes in either binary. The release migrates vigil's deb/rpm
 production from a hand-rolled 747-line `pkg/build.sh` to
 [pkg-framework](https://github.com/lousclues-labs/pkg-integration)
-v1.2.2. The v1.2.2 sync incorporates the framework fixes discovered
-during vigil's first real adoption, so `pkg-framework verify` is clean
-again: no vendored drift remains.
+v1.2.3. The v1.2.3 sync incorporates the framework fixes discovered
+during vigil's first real adoption plus the GitHub-rejected
+`actions/cache` v4.0.2 pin replacement, so `pkg-framework verify` is
+clean again: no vendored drift remains.
 
 ### Changed
 
-- **Packaging migrated to `pkg-framework` v1.2.2.** Vigil now vendors
+- **Packaging migrated to `pkg-framework` v1.2.3.** Vigil now vendors
   the framework at `pkg/lib/` and declares its packaging contract
   through `pkg/project.sh` (manifest fields + `project_*` hooks). The
   747-line pre-framework `pkg/build.sh` and the 748-line pre-framework
@@ -69,7 +70,7 @@ again: no vendored drift remains.
 The first v1.2.1 adoption exposed framework defects that only showed up
 when a real consumer built both deb and rpm artifacts with docs, man
 pages, systemd units, hooks, and a multi-line description. Those fixes
-now live upstream in pkg-framework v1.2.2 and are consumed by sync, not
+now live upstream in pkg-framework v1.2.3 and are consumed by sync, not
 carried as local vigil patches:
 
 1. **CLI symlink resolution.** `~/.local/bin/pkg-framework version` and
@@ -95,6 +96,11 @@ carried as local vigil patches:
   longer overwrites it locally.
 8. **Fedora grep warning.** `layout-check.sh` no longer emits cosmetic
   "stray \ before /" warnings while checking systemd unit paths.
+9. **Deprecated `actions/cache` SHA.** The vendored workflow now pins
+  both cache steps to `actions/cache` v4.3.0
+  (`0057852bfaa89a56745cba8c7296529d2fc39830`) instead of the
+  GitHub-rejected v4.0.2 SHA. Downstream CI no longer fails before
+  the workflow starts.
 
 ### Notes
 
@@ -104,12 +110,12 @@ carried as local vigil patches:
   `vigil-baseline_<v>_amd64.deb` (no distro suffix). Per-distro
   uniqueness now relies on each matrix entry writing to its own OUTDIR.
   rpm equivalent: `vigil-baseline-<v>-1.x86_64.rpm`. pkg-framework
-  v1.2.2 includes optional suffix knobs for consumers that need the old
+  v1.2.3 includes optional suffix knobs for consumers that need the old
   coexist-in-one-directory shape; vigil intentionally does not enable
   them.
 - **No vendored drift remains.** After `pkg-framework sync --bump` to
-  v1.2.2, `pkg-framework verify` reports every vendored file clean and
-  `FRAMEWORK_VERSION=1.2.2` matches `pkg/lib/VERSION`.
+  v1.2.3, `pkg-framework verify` reports every vendored file clean and
+  `FRAMEWORK_VERSION=1.2.3` matches `pkg/lib/VERSION`.
 
 ## [1.12.0] - 2026-05-17
 
