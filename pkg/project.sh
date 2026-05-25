@@ -446,3 +446,29 @@ project_install_layout_check_extra() {
         return 1
     fi
 }
+
+# =========================================================================
+# project_fpm_deb_extra_args -- per-codename Debian Version
+# =========================================================================
+# pkg-framework calls this hook before fpm to gather extra deb flags.
+# Each line printed becomes one fpm argument.
+#
+# reprepro publishes noble/jammy/bookworm into a single shared pool
+# (pool/main/v/vigil-baseline/). Without a per-codename --iteration
+# suffix every codename produces the same internal Debian Version
+# (e.g. 1.12.2-1), the bytes differ (built in different containers),
+# and reprepro rejects the second push with a sha256 mismatch.
+#
+# Surfaced by lousclues-pkg's prepare-artifacts collision pre-check
+# during the v1.12.1 publish attempt; the recipe below matches the
+# canonical fix shipped by shroud v2.4.3.
+project_fpm_deb_extra_args() {
+    local rev
+    case "${CODENAME:-}" in
+        noble)    rev="1~noble1" ;;
+        jammy)    rev="1~jammy1" ;;
+        bookworm) rev="1~bookworm1" ;;
+        *)        rev="1" ;;
+    esac
+    printf -- '--iteration\n%s\n' "$rev"
+}

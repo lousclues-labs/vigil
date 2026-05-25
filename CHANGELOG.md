@@ -8,6 +8,26 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [1.12.2] - 2026-05-25
+
+Packaging-only release. No source changes; no runtime behavior
+changes in either binary. Fixes the per-codename Debian Version
+collision that blocked the v1.12.1 publish to
+`pkg.lousclues.com`.
+
+### Fixed
+
+- `pkg/project.sh` now exports `project_fpm_deb_extra_args` so
+  pkg-framework emits a per-codename `--iteration` suffix
+  (`1~noble1` / `1~jammy1` / `1~bookworm1`). Without this hook,
+  every codename produced the same Debian Version `1.12.2-1`,
+  and reprepro -- which publishes all codenames into a single
+  shared pool at `pool/main/v/vigil-baseline/` -- rejected the
+  second push with an sha256 mismatch on the pool file. Surfaced
+  by lousclues-pkg's `prepare-artifacts` collision pre-check
+  during the v1.12.1 publish attempt; recipe matches the
+  canonical shroud v2.4.3 fix.
+
 ## [1.12.1] - 2026-05-23
 
 Packaging-only release. No source changes and no runtime behavior
