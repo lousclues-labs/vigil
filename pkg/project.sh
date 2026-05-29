@@ -129,7 +129,7 @@ PKG_EXTRA_RPM_BUILD_DEPS=(openssl-devel python3)
 
 # Framework pin. `pkg-framework sync` rewrites this; CI hard-fails on
 # mismatch with pkg/lib/VERSION.
-FRAMEWORK_VERSION=1.2.4
+FRAMEWORK_VERSION=1.2.5
 
 # Preserve the pre-framework hermetic compile contract: fetch with the
 # lockfile pinned, then build with --frozen --offline.

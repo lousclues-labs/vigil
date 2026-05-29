@@ -8,6 +8,26 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [1.12.3] - 2026-05-29
+
+Packaging-only release. No source changes; no runtime behavior
+changes in either binary. Unblocks the lousclues-pkg release-build
+matrix, whose `verify installed layout` step failed on every deb
+target with `installed version 1.12.2-1 != expected 1.12.2` (and
+`1.12.2-1~bookworm1 != 1.12.2` on the per-codename builds).
+
+### Fixed
+
+- Vendored pkg-framework bumped to v1.2.5: `pkg/lib/layout-check.sh`
+  Section D (installed-version assertion) now strips the optional
+  `[epoch:]` prefix and `-debian_revision` suffix from
+  `dpkg-query ${Version}` before comparing against `ACTUAL`. RPM was
+  unaffected because `%{VERSION}` is upstream-only. The exact-match
+  path runs first, so any operator who passes the full deb version
+  to `ACTUAL` is still satisfied. `FRAMEWORK_VERSION` and
+  `pkg/lib/VERSION` are bumped in lockstep so the framework-pin
+  guard passes.
+
 ## [1.12.2] - 2026-05-25
 
 Packaging-only release. No source changes; no runtime behavior
