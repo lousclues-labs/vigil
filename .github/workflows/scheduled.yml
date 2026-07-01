@@ -13,6 +13,12 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Least-privilege token: this job only reads the repo (checkout) and
+    # files/updates the auto-audit issue. Makes the previously-implicit
+    # issues:write explicit and drops every other scope.
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@stable
@@ -20,23 +26,65 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Run cargo audit
+        id: audit
         run: cargo audit --deny warnings
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked
       - name: Run cargo deny
+        id: deny
         run: cargo deny check
-      - name: Create issue on failure
+      - name: File or update security audit issue
         if: failure()
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          AUDIT_OUTCOME: ${{ steps.audit.outcome }}
+          DENY_OUTCOME: ${{ steps.deny.outcome }}
         with:
           script: |
-            github.rest.issues.create({
+            // Report which gate failed so the issue is actionable. cargo audit
+            // runs first and short-circuits cargo deny (outcome 'skipped'),
+            // so a skipped deny is never treated as a failure.
+            const failed = [];
+            if (process.env.AUDIT_OUTCOME === 'failure') {
+              failed.push('`cargo audit` (RustSec advisory / vulnerable dependency)');
+            }
+            if (process.env.DENY_OUTCOME === 'failure') {
+              failed.push('`cargo deny` (license / ban / source violation)');
+            }
+            const which = failed.length ? failed.join(' and ') : 'the security audit (see run for details)';
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${context.runId}`;
+            const labels = ['security', 'automated'];
+            const body = `Failing check: ${which}.\n\nThe weekly security audit failed in [this run](${runUrl}).`;
+            // De-duplicate: reuse an existing open auto-filed issue (both
+            // labels) instead of opening a fresh one every Monday. Keeps the
+            // project's silent-by-default, low-noise posture.
+            const found = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: '🔒 Security audit found vulnerabilities',
-              body: 'The weekly security audit found vulnerabilities. Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.',
-              labels: ['security', 'automated']
-            })
+              state: 'open',
+              labels: labels.join(','),
+              per_page: 100,
+            });
+            const openIssues = found.data.filter((i) => !i.pull_request);
+            if (openIssues.length > 0) {
+              const issue = openIssues[0];
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body,
+              });
+              core.info(`Commented on existing security issue #${issue.number}`);
+            } else {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: '🔒 Security audit found vulnerabilities',
+                body,
+                labels,
+              });
+              core.info(`Opened security issue #${created.data.number}`);
+            }
 
   coverage:
     name: Scheduled Coverage
