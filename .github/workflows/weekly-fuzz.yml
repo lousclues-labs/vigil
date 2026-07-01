@@ -35,13 +35,28 @@ jobs:
       - name: Run fuzz targets
         run: |
           MAX_TIME=${{ inputs.max_total_time || '300' }}
+          # Run every target regardless of individual outcomes, but record
+          # crashes instead of swallowing them with `|| true`. A libFuzzer
+          # crash exits non-zero and drops a reproducer into fuzz/artifacts/;
+          # previously that left the weekly job green. Capture each target's
+          # status and fail the job at the end if any crashed. Artifacts
+          # still upload via the always() step below.
+          failed=""
           for target in $(cargo +nightly fuzz list); do
             echo "=== Fuzzing $target (${MAX_TIME}s) ==="
-            cargo +nightly fuzz run "$target" -- \
+            if ! cargo +nightly fuzz run "$target" -- \
               -max_total_time=$MAX_TIME \
               -print_final_stats=1 \
-              -max_len=65536 || true
+              -max_len=65536; then
+              echo "::error::Fuzz target '$target' crashed; reproducer in fuzz/artifacts/$target/"
+              failed="$failed $target"
+            fi
           done
+          if [ -n "$failed" ]; then
+            echo "::error::Weekly fuzz found crashes in:$failed"
+            exit 1
+          fi
+          echo "All fuzz targets completed with no crashes."
       - name: Upload fuzz artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

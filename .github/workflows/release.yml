@@ -88,14 +88,17 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           TAG="${{ steps.version.outputs.tag }}"
-          awk "/^## \[${VERSION}\]/{found=1; next} /^## \[/{if(found) exit} found" CHANGELOG.md > /tmp/changelog.txt
+          # Extract the "## [VERSION]" Keep-a-Changelog section the project
+          # actually uses. index() matches the heading literally so dots in
+          # the version are not treated as regex wildcards; print until the
+          # next "## [" heading.
+          awk -v hdr="## [${VERSION}]" 'index($0, hdr) == 1 { grab = 1; next } grab && /^## \[/ { exit } grab { print }' CHANGELOG.md > /tmp/changelog.txt
+          # Fail loud: never ship a tagged release with empty notes by
+          # silently falling back to a raw git log. A missing section means
+          # CHANGELOG.md was not updated before tagging.
           if [ ! -s /tmp/changelog.txt ]; then
-            PREV_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]' | grep -v "^${TAG}$" | head -1)
-            if [ -n "$PREV_TAG" ]; then
-              git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" --no-merges > /tmp/changelog.txt
-            else
-              git log --pretty=format:"- %s" --no-merges -20 > /tmp/changelog.txt
-            fi
+            echo "::error::No '## [${VERSION}]' section found in CHANGELOG.md for tag ${TAG}. Add the changelog section before tagging; refusing to publish a release with empty notes."
+            exit 1
           fi
 
       - name: Attest build provenance
@@ -104,10 +107,30 @@ jobs:
           subject-path: vigil-baseline-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz
 
       - name: Publish to crates.io
-        continue-on-error: true
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --locked
+        run: |
+          # Publish must fail loudly. Previously `continue-on-error: true`
+          # let a failed crates.io upload still mint a "successful" GitHub
+          # Release, provenance attestation, and SBOM. The only tolerated
+          # failure is an idempotent re-run of a tag whose version is
+          # already on crates.io (duplicate uploads are rejected); that is
+          # treated as success. Every other failure is fatal.
+          set +e
+          OUTPUT=$(cargo publish --locked 2>&1)
+          STATUS=$?
+          set -e
+          echo "$OUTPUT"
+          if [ "$STATUS" -eq 0 ]; then
+            echo "Published to crates.io."
+            exit 0
+          fi
+          if echo "$OUTPUT" | grep -qiE 'already (uploaded|exists)|crate version .* is already'; then
+            echo "::notice::This version is already on crates.io; treating as success (idempotent re-run)."
+            exit 0
+          fi
+          echo "::error::cargo publish failed (exit ${STATUS}); see log above."
+          exit "$STATUS"
 
       - name: Generate SBOM
         run: |
