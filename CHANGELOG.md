@@ -8,6 +8,50 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [1.12.4] - 2026-07-01
+
+Maintenance and CI-hardening release. No source-logic or
+runtime-behavior change in either binary, but the compiled binary
+links a patched `memmap2` (RUSTSEC-2026-0186) and the release and
+security-audit automation is hardened.
+
+### Security
+
+- Bumped `memmap2` 0.9.10 -> 0.9.11 to resolve RUSTSEC-2026-0186
+  (unchecked pointer offset). It reaches the tree transitively
+  through `blake3`'s mmap feature. Also bumped `blake3` 1.8.4 ->
+  1.8.5 and swept accumulated transitive patch/minor drift.
+  Closes #1.
+
+### Changed
+
+- Pinned every GitHub Actions dependency in the hand-maintained
+  workflows to a full commit SHA (`actions/checkout`,
+  `upload-artifact`, `download-artifact`, `github-script`,
+  `codecov/codecov-action`, `attest-build-provenance`,
+  `softprops/action-gh-release`), closing a floating-tag
+  supply-chain gap in the attested release pipeline, and added
+  `--locked` to every `cargo install cargo-fuzz` so all CI tool
+  installs are reproducible.
+- The weekly security audit de-duplicates its auto-filed issue: it
+  comments on the existing open `security`/`automated` issue instead
+  of opening a new duplicate each week, and now reports whether
+  `cargo audit` or `cargo deny` failed.
+
+### Fixed
+
+- The release pipeline no longer masks a failed `cargo publish`.
+  Publishing runs without `continue-on-error`, failing the release
+  on any real error while still treating an already-published
+  version as an idempotent success.
+- Release-note extraction fails loudly instead of shipping empty
+  notes: it matches the literal `## [x.y.z]` changelog heading and
+  aborts the release if no section exists for the tag, rather than
+  silently falling back to a raw `git log`.
+- The weekly fuzz job surfaces crashes: it records each target's
+  exit status, runs every target, and fails the job if any crashed
+  (artifacts still upload).
+
 ## [1.12.3] - 2026-05-29
 
 Packaging-only release. No source changes; no runtime behavior
