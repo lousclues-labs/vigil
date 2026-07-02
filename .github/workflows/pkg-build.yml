@@ -88,7 +88,7 @@ jobs:
       version: ${{ steps.ver.outputs.version }}
     steps:
       - name: checkout
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.7
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
       - name: install shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends shellcheck jq
@@ -193,7 +193,7 @@ jobs:
           fi
 
       - name: checkout
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.7
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
       - name: read PKG_NAME + PKG_PREFIX from manifest
         id: manifest
@@ -284,7 +284,7 @@ jobs:
           fi
 
       - name: checkout
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.7
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
       - name: read PKG_NAME from manifest
         id: manifest
@@ -400,7 +400,7 @@ jobs:
           fi
 
       - name: checkout
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.7
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
       - name: read PKG_NAME from manifest
         id: manifest
