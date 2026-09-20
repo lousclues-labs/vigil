@@ -17,7 +17,7 @@ use crate::alert::{self, AlertSink};
 use crate::config::Config;
 use crate::error::{Result, VigilError};
 use crate::metrics::Metrics;
-use crate::types::{Alert, AlertContext, AlertFileInfo, Change, ChangeResult, Severity};
+use crate::types::{Alert, AlertContext, AlertFileInfo, Change, ChangeResult};
 
 use super::{DetectionSource, DetectionWal, WalEntry};
 
@@ -247,18 +247,17 @@ impl SinkRunner {
     }
 
     fn is_suppressed(&mut self, change: &ChangeResult, maintenance_window: bool) -> bool {
+        // Inside a maintenance window, a package-owned change is deferred at
+        // every severity. See the matching comment in `alert::AlertDispatcher`
+        // for why: ownership was never proof, per-file Critical alerts during
+        // an update buried the changes that mattered, and the verdict that
+        // replaces them comes from the post-transaction refresh, which checks
+        // each path against the digest its own package recorded.
+        //
+        // The audit log still records every one of these (Principle XIII),
+        // and refresh-time deviations carry no package attribution precisely
+        // so this branch can never silence them.
         if maintenance_window && change.package.is_some() {
-            // Inode-only changes on package-managed paths during a maintenance
-            // window are deterministically benign: package install/upgrade
-            // recreates files via open+write+rename, allocating new inodes
-            // even when content is byte-identical. Audit log still records
-            // the event (Principle XIII).
-            if is_inode_only(&change.changes) {
-                return true;
-            }
-            if change.severity >= Severity::High {
-                return false;
-            }
             return true;
         }
 
@@ -344,13 +343,6 @@ fn change_to_name(change: &Change) -> &'static str {
         Change::Deleted => "deleted",
         Change::Created => "created",
     }
-}
-
-/// Returns true iff the change set is exactly one `InodeChanged` and
-/// nothing else. Structural signature of a package manager rewriting a
-/// file via open+write+rename.
-fn is_inode_only(changes: &[Change]) -> bool {
-    matches!(changes, [Change::InodeChanged { .. }])
 }
 
 #[cfg(test)]
@@ -609,7 +601,7 @@ mod tests {
     }
 
     #[test]
-    fn inode_plus_content_change_not_suppressed_during_maintenance() {
+    fn inode_plus_content_change_on_package_path_deferred_during_maintenance() {
         let dir = tempfile::tempdir().unwrap();
         let wal = Arc::new(
             super::super::DetectionWal::open(
@@ -641,9 +633,36 @@ mod tests {
             disambiguation: None,
         };
 
+        // Inside a window a package-owned change is deferred to the refresh
+        // verdict, which checks the content against the package's own digest.
         assert!(
-            !runner.is_suppressed(&change, true),
-            "Critical content change must pass through even with inode change present"
+            runner.is_suppressed(&change, true),
+            "a package-owned content change is deferred to the refresh verdict"
+        );
+
+        // Outside a window no verdict is coming, so it has to alert now.
+        assert!(
+            !runner.is_suppressed(&change, false),
+            "outside a window a Critical content change must alert immediately"
+        );
+
+        // And deferring package writes must never defer an unowned change.
+        let unowned = ChangeResult {
+            path: Arc::new(std::path::PathBuf::from("/usr/local/bin/backdoor")),
+            changes: vec![Change::ContentModified {
+                old_hash: "aaa".into(),
+                new_hash: "bbb".into(),
+            }],
+            severity: Severity::Critical,
+            monitored_group: "system".into(),
+            process: None,
+            package: None,
+            package_update: false,
+            disambiguation: None,
+        };
+        assert!(
+            !runner.is_suppressed(&unowned, true),
+            "a change no package owns must alert even inside a maintenance window"
         );
     }
 }

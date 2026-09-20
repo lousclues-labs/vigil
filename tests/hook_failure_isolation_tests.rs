@@ -207,15 +207,19 @@ fn pacman_post_hook_has_one_logger_per_failure_branch() {
         .find(|l| l.starts_with("Exec"))
         .expect("hook must have an Exec line");
 
-    // Count logger invocations. There should be at most three, each on a
+    // Count logger invocations. There should be at most four, each on a
     // mutually-exclusive branch:
     //   1. binary missing AND vigild active (high priority -- operator alarm)
     //   2. binary missing AND vigild not active (info -- expected during install)
     //   3. baseline refresh failed (high priority)
+    //   4. refresh succeeded but reported changes no package vouches for
+    //      (warning -- one call site, fired once per unproven path, because
+    //      the system log is the durable copy and the path list is never
+    //      truncated)
     let logger_count = exec_line.matches("logger ").count();
     assert!(
-        logger_count <= 3,
-        "hook should have at most 3 logger calls (one per failure branch), found {}",
+        logger_count <= 4,
+        "hook should have at most 4 logger calls (one per branch), found {}",
         logger_count
     );
 }
@@ -235,13 +239,17 @@ fn apt_hook_has_one_logger_per_failure_branch() {
     //   1. binary missing AND vigild active (daemon.err -- operator alarm)
     //   2. binary missing AND vigild not active (info -- expected during install)
     //   3. baseline refresh failed (daemon.err)
+    //   4. refresh succeeded but reported changes no package vouches for
+    //      (daemon.warning -- one call site, fired once per unproven path,
+    //      because the system log is the durable copy and the path list is
+    //      never truncated)
     let hook =
         std::fs::read_to_string("hooks/apt/apt-post.sh").expect("apt-post.sh must exist in repo");
 
     let logger_count = hook.matches("logger ").count();
     assert!(
-        logger_count <= 3,
-        "apt-post.sh should have at most 3 logger calls (one per failure branch), found {}",
+        logger_count <= 4,
+        "apt-post.sh should have at most 4 logger calls (one per branch), found {}",
         logger_count
     );
 

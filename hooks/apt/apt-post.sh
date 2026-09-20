@@ -32,14 +32,42 @@ if [ ! -x "$VIGIL" ]; then
     exit 0
 fi
 
-# Common case: refresh the baseline. Capture stderr so we can attribute
-# failures correctly in the system log.
-if ! refresh_err=$("$VIGIL" baseline refresh --quiet 2>&1); then
-    logger -p daemon.err -t vigil-apt "baseline refresh failed: $refresh_err"
+# Common case: refresh the baseline. Capture stderr for two reasons: to
+# attribute failures correctly in the system log, and because the refresh
+# reports the changes it could not prove benign on stderr even when quiet.
+refresh_out=$("$VIGIL" baseline refresh --quiet 2>&1)
+refresh_status=$?
+
+if [ "$refresh_status" -ne 0 ]; then
+    logger -p daemon.err -t vigil-apt "baseline refresh failed: $refresh_out"
     if command -v notify-send >/dev/null 2>&1; then
         notify-send -u critical 'Vigil' \
             'Baseline refresh failed after package transaction. Run vigil doctor to investigate.' \
             2>/dev/null || true
+    fi
+else
+    # The whole point of the post-transaction refresh: apt just rewrote
+    # hundreds of files, and vigil verified each one against the digest its
+    # own package recorded. Files that matched are proven to be the package's
+    # own bytes and are absorbed silently. Anything left over is the handful
+    # the operator actually has to look at, so it gets exactly one
+    # notification instead of being buried in the flood.
+    unproven=$(printf '%s\n' "$refresh_out" | grep -c 'VIGIL UNPROVEN CHANGES' 2>/dev/null || true)
+    if [ "${unproven:-0}" -gt 0 ]; then
+        # Log every path; the system log is the durable copy.
+        printf '%s\n' "$refresh_out" \
+            | sed -n '/VIGIL UNPROVEN CHANGES/,$p' \
+            | while IFS= read -r line; do
+                  [ -n "$line" ] && logger -p daemon.warning -t vigil-apt "$line"
+              done
+
+        summary=$(printf '%s\n' "$refresh_out" \
+            | sed -n 's/^VIGIL UNPROVEN CHANGES: \(.*\)$/\1/p' | head -n 1)
+        if command -v notify-send >/dev/null 2>&1; then
+            notify-send -u critical 'Vigil' \
+                "This update left $summary that no package vouches for. Run: vigil audit show --since 5m" \
+                2>/dev/null || true
+        fi
     fi
 fi
 

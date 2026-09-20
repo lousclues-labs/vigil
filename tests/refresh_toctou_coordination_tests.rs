@@ -371,6 +371,7 @@ fn three_consecutive_authorized_refreshes_healthy_and_wal_records() {
             path: format!("/etc/refresh_test_{}", i),
             old_hash: format!("old_{}", i),
             new_hash: format!("new_{}", i),
+            package: None,
         }];
         record_unattributed_to_wal(&wal, &entries, false);
     }

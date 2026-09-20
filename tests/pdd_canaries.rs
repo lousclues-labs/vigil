@@ -717,6 +717,83 @@ fn audit_truth_suppressed_alerts_are_still_recorded() {
     );
 }
 
+/// PR18, canary C-OWNERSHIP-IS-NOT-PROOF.
+///
+/// A package owning a path says only that a package *could* have written
+/// there. Absorbing a changed file on that basis is how a tampered
+/// `/usr/bin/sudo` gets laundered into the baseline by the next routine
+/// upgrade. Only a digest the package itself recorded clears that bar, and a
+/// verification that did not run clears nothing.
+#[test]
+fn audit_truth_package_ownership_is_never_proof_of_authorship() {
+    use vigil::baseline_diff::{split_by_verification, ChangedEntry};
+    use vigil::package::PackageVerification;
+
+    let owned = |path: &str| ChangedEntry {
+        path: path.to_string(),
+        old_hash: "baseline".into(),
+        new_hash: "changed".into(),
+        package: Some("sudo".into()),
+    };
+
+    // No verdict at all. The package owns the path; that must not be enough.
+    let changes = vec![owned("/usr/bin/sudo")];
+    let split = split_by_verification(&changes, &std::collections::HashMap::new());
+    assert!(
+        split.verified.is_empty(),
+        "C-OWNERSHIP-IS-NOT-PROOF breach (PR18): a package-owned path with no \
+         verification verdict was counted as verified. Ownership is not \
+         authorship, and silence from the verifier is not a pass."
+    );
+    assert_eq!(
+        split.unproven_count(),
+        1,
+        "C-OWNERSHIP-IS-NOT-PROOF breach (PR18): an unverified package-owned \
+         change must reach the operator."
+    );
+
+    // Content that contradicts the package is a finding, never absorbed.
+    let mut verdicts = std::collections::HashMap::new();
+    verdicts.insert("/usr/bin/sudo".to_string(), PackageVerification::Mismatch);
+    let split = split_by_verification(&changes, &verdicts);
+    assert_eq!(
+        split.mismatch.len(),
+        1,
+        "C-OWNERSHIP-IS-NOT-PROOF breach (PR18): a file whose content does not \
+         match what its package shipped was not raised as a finding."
+    );
+    assert!(split.verified.is_empty());
+    assert_eq!(
+        split.mismatch[0].old_hash, "baseline",
+        "C-OWNERSHIP-IS-NOT-PROOF breach (PR18): the finding must carry the \
+         evidence, not just the path."
+    );
+
+    // Only a positive verdict is proof, and only it silences the change.
+    verdicts.insert("/usr/bin/sudo".to_string(), PackageVerification::Verified);
+    let split = split_by_verification(&changes, &verdicts);
+    assert_eq!(split.verified.len(), 1);
+    assert_eq!(
+        split.unproven_count(),
+        0,
+        "C-OWNERSHIP-IS-NOT-PROOF breach (PR18): a file matching its package's \
+         own digest is proven benign and must not be reported."
+    );
+    assert!(PackageVerification::Verified.is_proof());
+    for not_proof in [
+        PackageVerification::Mismatch,
+        PackageVerification::Conffile,
+        PackageVerification::Missing,
+        PackageVerification::Unknown,
+    ] {
+        assert!(
+            !not_proof.is_proof(),
+            "C-OWNERSHIP-IS-NOT-PROOF breach (PR18): {not_proof:?} was treated \
+             as proof of package authorship."
+        );
+    }
+}
+
 /// PR8, canary C-AUDIT-CHAIN-TAMPER.
 ///
 /// Each audit row carries the hash of the row before it. Editing a row's

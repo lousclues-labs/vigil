@@ -88,6 +88,45 @@ def _vigil(args, capture=False):
     return proc.returncode, err
 
 
+UNPROVEN_MARKER = "VIGIL UNPROVEN CHANGES"
+
+
+def _report_unproven(stderr):
+    """Surface the changes the refresh could not prove benign.
+
+    The refresh verifies every package-owned change against the digest the
+    owning package recorded. Files that match are the package's own bytes and
+    are absorbed silently. What is left is the short list the operator has to
+    look at, and it gets exactly one notification rather than one per file.
+    """
+    lines = [ln for ln in stderr.splitlines() if ln.strip()]
+    try:
+        start = next(i for i, ln in enumerate(lines) if UNPROVEN_MARKER in ln)
+    except StopIteration:
+        return
+
+    for line in lines[start:]:
+        _journal("warning", line)
+
+    summary = lines[start].split(UNPROVEN_MARKER + ":", 1)[-1].strip()
+    try:
+        subprocess.call(
+            [
+                "notify-send",
+                "-u",
+                "critical",
+                "Vigil",
+                "This update left " + summary
+                + " that no package vouches for. "
+                "Run: vigil audit show --since 5m",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+
+
 class Vigil(dnf.Plugin):
     """DNF4 plugin entry point.
 
@@ -140,4 +179,6 @@ class Vigil(dnf.Plugin):
                 "baseline refresh failed (exit " + str(rc) + "): "
                 + (err or "<no stderr>"),
             )
+        else:
+            _report_unproven(err or "")
         _vigil(["maintenance", "exit", "--quiet"])

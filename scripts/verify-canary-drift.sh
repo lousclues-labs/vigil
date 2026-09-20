@@ -23,6 +23,7 @@ TOUCHED=(
   src/types/snapshot.rs
   src/bloom.rs
   src/alert/mod.rs
+  src/baseline_diff.rs
   src/db/audit_ops.rs
   src/doctor/checks.rs
   src/metrics.rs
@@ -165,6 +166,24 @@ open(p, "w").write(s.replace(needle, inject, 1))
 PY
 expect_red audit_truth_tampering_with_an_audit_row_breaks_the_chain "chain verification made to swallow breaks"
 revert src/db/audit_ops.rs
+
+echo "== PR18 C-OWNERSHIP-IS-NOT-PROOF =="
+python3 - <<'PYX'
+p = "src/baseline_diff.rs"
+s = open(p).read()
+needle = """        let verdict = verdicts
+            .get(&entry.path)
+            .copied()
+            .unwrap_or(PackageVerification::Unknown);"""
+inject = """        let verdict = verdicts
+            .get(&entry.path)
+            .copied()
+            .unwrap_or(PackageVerification::Verified);"""
+assert needle in s, "split_by_verification anchor not found"
+open(p, "w").write(s.replace(needle, inject, 1))
+PYX
+expect_red audit_truth_package_ownership_is_never_proof_of_authorship "missing verdict treated as verified"
+revert src/baseline_diff.rs
 
 echo "== PR9 C-DEGRADED-IS-LOUD =="
 python3 - <<'PY'

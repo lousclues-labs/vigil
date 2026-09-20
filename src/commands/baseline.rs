@@ -155,6 +155,68 @@ fn is_terminal_event(event: &serde_json::Value) -> bool {
     ev == "complete" || ev == "error"
 }
 
+/// Marker line the package-manager hooks grep for. Stable contract: changing
+/// it breaks the post-transaction notification in hooks/{apt,pacman,dnf}.
+///
+/// Deliberately not prefixed `vigil:`; that prefix is reserved for audit path
+/// discriminators and is enforced by an architecture invariant test.
+pub(crate) const UNPROVEN_MARKER: &str = "VIGIL UNPROVEN CHANGES";
+
+/// Report changes the refresh could not prove benign, on stderr, always.
+///
+/// A refresh absorbs the new on-disk state into the baseline. Everything it
+/// absorbs silently becomes the new definition of "correct", so anything it
+/// could not prove has to be said out loud exactly once, here, at the moment
+/// it is absorbed. Two classes qualify:
+///
+///   - **mismatch**: a package owns the path and the content is not what that
+///     package shipped. Nothing legitimate produces this.
+///   - **unattributed**: no package owns the path at all.
+///
+/// Config files the package marks operator-editable are excluded: the operator
+/// is supposed to edit those, so reporting them would be the noise this tool
+/// exists to avoid (Principle II).
+fn report_unproven_changes(event: &serde_json::Value) {
+    let paths = |key: &str| -> Vec<String> {
+        event
+            .get(key)
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let mismatch = paths("pkg_mismatch_paths");
+    let unattributed = paths("changed_unattributed_paths");
+
+    if mismatch.is_empty() && unattributed.is_empty() {
+        return;
+    }
+
+    eprintln!(
+        "{}: {} ({} package mismatch, {} unattributed)",
+        UNPROVEN_MARKER,
+        mismatch.len() + unattributed.len(),
+        mismatch.len(),
+        unattributed.len()
+    );
+
+    // Never truncated (Principle V: Actionable).
+    for path in &mismatch {
+        eprintln!(
+            "  {}    content does not match what its package shipped",
+            path
+        );
+    }
+    for path in &unattributed {
+        eprintln!("  {}    content modified, no package owns this path", path);
+    }
+    eprintln!("  investigate: vigil audit show --since 5m");
+}
+
 fn process_event(event: &serde_json::Value, quiet: bool, is_tty: bool) -> vigil::Result<()> {
     if quiet {
         return Ok(());
@@ -207,6 +269,15 @@ fn finish_event(event: &serde_json::Value, quiet: bool, is_tty: bool) -> vigil::
         return Err(vigil::VigilError::Daemon(error.to_string()));
     }
 
+    // Findings are reported regardless of --quiet. `--quiet` means "do not
+    // narrate progress", never "hide evidence". The package-manager hooks run
+    // this command quietly and non-interactively; before this block existed,
+    // the refresh computed exactly the high-signal answer an operator needs
+    // after an update and then threw it away (AF-011).
+    if ev == "complete" {
+        report_unproven_changes(event);
+    }
+
     if ev == "complete" && !quiet {
         let total = event.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
         let duration_ms = event
@@ -235,6 +306,22 @@ fn finish_event(event: &serde_json::Value, quiet: bool, is_tty: bool) -> vigil::
                     .collect()
             })
             .unwrap_or_default();
+        let pkg_verified = event
+            .get("pkg_verified")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let pkg_conffile = event
+            .get("pkg_conffile")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let pkg_mismatch = event
+            .get("pkg_mismatch")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let pkg_unverifiable = event
+            .get("pkg_unverifiable")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         // added_paths_sample / removed_paths_sample: capped to 20
         let added_paths: Vec<String> = event
             .get("added_paths_sample")
@@ -270,11 +357,35 @@ fn finish_event(event: &serde_json::Value, quiet: bool, is_tty: bool) -> vigil::
                 eprintln!("  removed:  {}", removed);
                 if changed_pkg > 0 {
                     eprintln!(
-                        "  changed:  {} ({} from package updates, {} unattributed)",
+                        "  changed:  {} ({} in package paths, {} unattributed)",
                         changed,
                         changed_pkg,
                         changed_unattributed_paths.len()
                     );
+                    // Ownership is not proof. Show what the package manager
+                    // was actually willing to vouch for.
+                    eprintln!(
+                        "  verified: {} match the digest their package recorded",
+                        pkg_verified
+                    );
+                    if pkg_conffile > 0 {
+                        eprintln!(
+                            "  config:   {} operator-editable config files",
+                            pkg_conffile
+                        );
+                    }
+                    if pkg_unverifiable > 0 {
+                        eprintln!(
+                            "  unproven: {} the package manager could not verify",
+                            pkg_unverifiable
+                        );
+                    }
+                    if pkg_mismatch > 0 {
+                        eprintln!(
+                            "  MISMATCH: {} do NOT match what their package shipped",
+                            pkg_mismatch
+                        );
+                    }
                 } else {
                     eprintln!("  changed:  {}", changed);
                 }

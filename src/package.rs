@@ -560,6 +560,296 @@ fn build_cache_rpm_once() -> Option<HashMap<PathBuf, String>> {
     Some(cache)
 }
 
+// ===========================================================================
+// Content verification: does a file's content match what its package shipped?
+// ===========================================================================
+
+/// Timeout for a whole-package verification. Verification digests every file
+/// in the package, so it is far slower than an ownership query.
+const PKG_VERIFY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Whether a file's on-disk content is what its owning package shipped.
+///
+/// Package ownership answers "could a package have written here." It does not
+/// answer "did a package write these bytes." Every supported package manager
+/// records a digest for every file it ships, so the second question is
+/// answerable, deterministically, from local state alone (Principle VI).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackageVerification {
+    /// The package manager checked the file against its own recorded digest
+    /// and it matched. These bytes are the bytes the package shipped.
+    Verified,
+    /// A package owns this path and the content does NOT match what the
+    /// package shipped. This is the highest-signal state in the tool.
+    Mismatch,
+    /// The package marks this path a config file. The operator is expected to
+    /// edit it, so a digest difference proves nothing either way.
+    Conffile,
+    /// The package manager reports the file as absent.
+    Missing,
+    /// No digest was recorded, verification could not run, or the package
+    /// manager declined to check. Absence of proof, not proof of absence.
+    Unknown,
+}
+
+impl PackageVerification {
+    /// True when the verdict is positive proof the content came from the
+    /// package. Only `Verified` clears this bar; everything else is either a
+    /// finding or an unknown, and neither may be treated as proof.
+    pub fn is_proof(&self) -> bool {
+        matches!(self, PackageVerification::Verified)
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PackageVerification::Verified => "verified",
+            PackageVerification::Mismatch => "mismatch",
+            PackageVerification::Conffile => "conffile",
+            PackageVerification::Missing => "missing",
+            PackageVerification::Unknown => "unknown",
+        }
+    }
+}
+
+/// Verify changed paths against the digests their owning packages recorded.
+///
+/// Takes a map of package name to the changed paths owned by that package, and
+/// runs one verification per package rather than one per path. Any path the
+/// package manager does not report as a problem is `Verified`, because every
+/// supported backend reports a line for each file it could not fully check.
+///
+/// A backend failure (timeout, missing binary, non-zero exit with no parseable
+/// output) yields `Unknown` for that package's paths. Failing to verify is
+/// never reported as having verified.
+pub fn verify_changed_paths(
+    paths_by_package: &HashMap<String, Vec<String>>,
+    config: &PackageManagerConfig,
+) -> HashMap<String, PackageVerification> {
+    let backend = if config.backend == PackageBackend::Auto {
+        detect_backend()
+    } else {
+        config.backend
+    };
+
+    let mut verdicts = HashMap::new();
+
+    for (package, paths) in paths_by_package {
+        let reported = match backend {
+            PackageBackend::Dpkg => verify_package_dpkg(package),
+            PackageBackend::Rpm => verify_package_rpm(package),
+            PackageBackend::Pacman => verify_package_pacman(package),
+            PackageBackend::Auto => None,
+        };
+
+        match reported {
+            Some(problems) => {
+                for path in paths {
+                    let verdict = problems
+                        .get(path)
+                        .copied()
+                        .unwrap_or(PackageVerification::Verified);
+                    verdicts.insert(path.clone(), verdict);
+                }
+            }
+            None => {
+                // Verification did not run. Claim nothing.
+                for path in paths {
+                    verdicts.insert(path.clone(), PackageVerification::Unknown);
+                }
+            }
+        }
+    }
+
+    verdicts
+}
+
+/// `dpkg --verify <pkg>`: one line per file that did not fully check out.
+/// Files that verified clean are not printed.
+fn verify_package_dpkg(package: &str) -> Option<HashMap<String, PackageVerification>> {
+    let output = run_with_timeout(
+        Command::new(DPKG_PATH).args(["--verify", "--", package]),
+        PKG_VERIFY_TIMEOUT,
+        true,
+    )?;
+
+    let problems = parse_verify_output(&String::from_utf8_lossy(&output.stdout));
+    finalize_verify(&output, problems)
+}
+
+/// `rpm -V <pkg>`: same line shape as dpkg, with `.` for checks that passed
+/// and a letter for each that failed.
+fn verify_package_rpm(package: &str) -> Option<HashMap<String, PackageVerification>> {
+    let output = run_with_timeout(
+        Command::new(RPM_PATH).args(["-V", "--", package]),
+        PKG_VERIFY_TIMEOUT,
+        true,
+    )?;
+
+    let problems = parse_verify_output(&String::from_utf8_lossy(&output.stdout));
+    finalize_verify(&output, problems)
+}
+
+/// `pacman -Qkk <pkg>`: a different output shape from dpkg and rpm. Problems
+/// are printed as `warning: pkg: /path (Reason)`.
+fn verify_package_pacman(package: &str) -> Option<HashMap<String, PackageVerification>> {
+    let output = run_with_timeout(
+        Command::new(PACMAN_PATH).args(["-Qkk", "--", package]),
+        PKG_VERIFY_TIMEOUT,
+        true,
+    )?;
+
+    let mut problems = HashMap::new();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for line in combined.lines() {
+        if let Some((path, verdict)) = parse_pacman_verify_line(line) {
+            problems.insert(path, verdict);
+        }
+    }
+    finalize_verify(&output, problems)
+}
+
+/// Decide whether a verification run produced a usable answer.
+///
+/// The backends disagree on exit codes: `dpkg --verify` exits 0 even when it
+/// reports differences and exits non-zero when the package is unknown, while
+/// `rpm -V` exits non-zero *because* it found differences. The rule that holds
+/// for both: a non-zero exit with nothing parseable means the tool failed to
+/// run rather than found something, and a tool that did not run has proven
+/// nothing.
+///
+/// Getting this backwards is how a verifier starts laundering: a typo'd or
+/// uninstalled package name would exit non-zero, report nothing, and every
+/// path in it would fall through to `Verified` (AF-012).
+fn finalize_verify(
+    output: &std::process::Output,
+    problems: HashMap<String, PackageVerification>,
+) -> Option<HashMap<String, PackageVerification>> {
+    if !output.status.success() && problems.is_empty() {
+        return None;
+    }
+    Some(problems)
+}
+
+/// Parse one `pacman -Qkk` problem line.
+///
+/// Shapes handled:
+///   `warning: pkg: /usr/bin/x (SHA256 checksum mismatch)`
+///   `backup file: /etc/x (SHA256 checksum mismatch)`
+///   `warning: pkg: /usr/bin/x (No such file or directory)`
+fn parse_pacman_verify_line(line: &str) -> Option<(String, PackageVerification)> {
+    let start = line.find(" /")?;
+    let rest = &line[start + 1..];
+    let path_end = rest.find(" (")?;
+    let path = rest[..path_end].to_string();
+    let reason = rest[path_end..].to_lowercase();
+
+    // A backup file is pacman's conffile: the operator owns its content.
+    if line.to_lowercase().contains("backup file") {
+        return Some((path, PackageVerification::Conffile));
+    }
+    if reason.contains("no such file") {
+        return Some((path, PackageVerification::Missing));
+    }
+    if reason.contains("mismatch") {
+        // Size and checksum mismatches both mean the content is not what the
+        // package shipped. Permission and mtime differences do not.
+        if reason.contains("checksum") || reason.contains("size") {
+            return Some((path, PackageVerification::Mismatch));
+        }
+        return Some((path, PackageVerification::Unknown));
+    }
+    Some((path, PackageVerification::Unknown))
+}
+
+/// Parse `dpkg --verify` / `rpm -V` output into per-path verdicts.
+///
+/// Line shape (both tools):
+///   `<9-char attribute string> [c] <path>`
+///   `missing     [c] <path>`
+///
+/// The attribute string carries one character per checked property. Position 2
+/// (zero-indexed) is the content digest: `5` means the digest differs. dpkg
+/// writes `?` for a property it could not check (for example when not running
+/// as root), so an all-`?` line means *unverifiable*, not *failed*. Treating
+/// those as proof of tampering would be false-positive noise; treating them as
+/// proof of cleanliness would be a lie. They are `Unknown`.
+fn parse_verify_output(stdout: &str) -> HashMap<String, PackageVerification> {
+    let mut problems = HashMap::new();
+
+    for line in stdout.lines() {
+        let line = line.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+
+        let mut parts = line.split_whitespace();
+        let attrs = match parts.next() {
+            Some(a) => a,
+            None => continue,
+        };
+
+        // An optional single-character file-type flag precedes the path.
+        // `c` marks a config file.
+        let mut is_conffile = false;
+        let mut path = match parts.next() {
+            Some(token) => token,
+            None => continue,
+        };
+        if path.len() == 1 && !path.starts_with('/') {
+            is_conffile = path == "c";
+            path = match parts.next() {
+                Some(token) => token,
+                None => continue,
+            };
+        }
+
+        if !path.starts_with('/') {
+            continue;
+        }
+
+        // Trailing annotations such as `(Permission denied)` mean the tool
+        // could not read the file, so nothing was proven about it.
+        let unreadable = line.contains("(Permission denied)");
+
+        let verdict = if unreadable {
+            // The annotation overrides whatever verdict the tool printed on
+            // this line. If it could not read the file, it did not check the
+            // file, and `missing` here means "could not confirm" rather than
+            // "confirmed absent".
+            PackageVerification::Unknown
+        } else if attrs == "missing" {
+            PackageVerification::Missing
+        } else if digest_differs(attrs) {
+            if is_conffile {
+                PackageVerification::Conffile
+            } else {
+                PackageVerification::Mismatch
+            }
+        } else if is_conffile {
+            PackageVerification::Conffile
+        } else {
+            // Listed, but the digest column was not a failure: the tool could
+            // not check it. Absence of proof.
+            PackageVerification::Unknown
+        };
+
+        problems.insert(path.to_string(), verdict);
+    }
+
+    problems
+}
+
+/// True when the digest column of a dpkg/rpm attribute string reports a
+/// difference. Position 2 is the digest check; `5` is the failure character in
+/// both tools.
+fn digest_differs(attrs: &str) -> bool {
+    attrs.chars().nth(2) == Some('5')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -848,5 +1138,203 @@ mod tests {
         };
         // Just verify the function is callable and returns the right type.
         let _result: Option<HashMap<PathBuf, String>> = build_package_cache(&config);
+    }
+
+    // ── Content verification ────────────────────────────────────────────
+    //
+    // The fixtures below are verbatim `dpkg --verify` output captured from a
+    // live Debian-family system, including the awkward cases: an all-`?`
+    // attribute string (the tool could not check the file), a conffile with a
+    // real digest difference, a `missing` entry, and a `(Permission denied)`
+    // annotation.
+
+    const DPKG_VERIFY_REAL: &str = "\
+?????????   /usr/share/chrony/chrony.keys
+??5?????? c /etc/default/jellyfin
+missing     /etc/apparmor.d/disable
+missing     /var/cache/cups/rss (Permission denied)
+????????? c /etc/sudoers
+??5??????   /usr/bin/sudo
+";
+
+    #[test]
+    fn verify_parse_treats_digest_mismatch_on_a_binary_as_a_mismatch() {
+        let problems = parse_verify_output(DPKG_VERIFY_REAL);
+        assert_eq!(
+            problems.get("/usr/bin/sudo"),
+            Some(&PackageVerification::Mismatch),
+            "a `5` in the digest column on a non-conffile is the highest-signal \
+             state this tool can observe and must never be softened"
+        );
+    }
+
+    #[test]
+    fn verify_parse_treats_unreadable_and_unchecked_files_as_unknown() {
+        let problems = parse_verify_output(DPKG_VERIFY_REAL);
+
+        // An all-`?` attribute string means the tool could not check the file.
+        // Calling that a pass would be a lie; calling it a mismatch would be
+        // noise. It is neither.
+        assert_eq!(
+            problems.get("/usr/share/chrony/chrony.keys"),
+            Some(&PackageVerification::Unknown)
+        );
+        assert_eq!(
+            problems.get("/var/cache/cups/rss"),
+            Some(&PackageVerification::Unknown),
+            "a file the tool could not read proves nothing, even though the \
+             line starts with `missing`"
+        );
+        assert!(!PackageVerification::Unknown.is_proof());
+    }
+
+    #[test]
+    fn verify_parse_marks_conffiles_so_operator_edits_are_not_alarms() {
+        let problems = parse_verify_output(DPKG_VERIFY_REAL);
+
+        // /etc/default/jellyfin has a genuine digest difference, but the `c`
+        // flag says the package expects the operator to edit it. Reporting
+        // these would recreate the noise this change exists to remove.
+        assert_eq!(
+            problems.get("/etc/default/jellyfin"),
+            Some(&PackageVerification::Conffile)
+        );
+        assert_eq!(
+            problems.get("/etc/sudoers"),
+            Some(&PackageVerification::Conffile)
+        );
+    }
+
+    #[test]
+    fn verify_parse_reports_a_genuinely_absent_file_as_missing() {
+        let problems = parse_verify_output(DPKG_VERIFY_REAL);
+        assert_eq!(
+            problems.get("/etc/apparmor.d/disable"),
+            Some(&PackageVerification::Missing)
+        );
+    }
+
+    #[test]
+    fn verify_parse_handles_rpm_attribute_alphabet() {
+        // rpm -V writes `.` for a check that passed and a letter for one that
+        // failed, where dpkg writes `?` for "not checked". Position 2 is the
+        // digest in both.
+        let rpm = "\
+S.5....T.   /usr/bin/foo
+S.5....T. c /etc/foo.conf
+.M.......   /usr/lib/bar.so
+missing     /usr/bin/gone
+";
+        let problems = parse_verify_output(rpm);
+        assert_eq!(
+            problems.get("/usr/bin/foo"),
+            Some(&PackageVerification::Mismatch)
+        );
+        assert_eq!(
+            problems.get("/etc/foo.conf"),
+            Some(&PackageVerification::Conffile)
+        );
+        assert_eq!(
+            problems.get("/usr/lib/bar.so"),
+            Some(&PackageVerification::Unknown),
+            "a mode-only difference is not a content difference"
+        );
+        assert_eq!(
+            problems.get("/usr/bin/gone"),
+            Some(&PackageVerification::Missing)
+        );
+    }
+
+    #[test]
+    fn verify_parse_ignores_lines_that_are_not_file_reports() {
+        let noise = "\n\
+some preamble that is not a file line\n\
+??5??????   /usr/bin/real\n";
+        let problems = parse_verify_output(noise);
+        assert_eq!(problems.len(), 1);
+        assert_eq!(
+            problems.get("/usr/bin/real"),
+            Some(&PackageVerification::Mismatch)
+        );
+    }
+
+    #[test]
+    fn pacman_verify_lines_map_to_verdicts() {
+        assert_eq!(
+            parse_pacman_verify_line("warning: sudo: /usr/bin/sudo (SHA256 checksum mismatch)"),
+            Some(("/usr/bin/sudo".to_string(), PackageVerification::Mismatch))
+        );
+        assert_eq!(
+            parse_pacman_verify_line("backup file: /etc/sudoers (SHA256 checksum mismatch)"),
+            Some(("/etc/sudoers".to_string(), PackageVerification::Conffile)),
+            "pacman's backup files are its conffiles: the operator owns them"
+        );
+        assert_eq!(
+            parse_pacman_verify_line("warning: foo: /usr/bin/gone (No such file or directory)"),
+            Some(("/usr/bin/gone".to_string(), PackageVerification::Missing))
+        );
+        assert_eq!(
+            parse_pacman_verify_line("foo: 123 total files, 0 altered files"),
+            None,
+            "the summary line names no path"
+        );
+    }
+
+    /// Regression guard for AF-012.
+    ///
+    /// A verifier that did not run must never be read as a verifier that
+    /// passed. This was found by running the real backend against a package
+    /// name that is not installed: dpkg exited non-zero, printed nothing
+    /// parseable, and every path in that group came back `Verified`.
+    #[test]
+    fn a_failed_verifier_run_is_never_reported_as_verified() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let failed = std::process::Output {
+            status: std::process::ExitStatus::from_raw(1 << 8), // exit code 1
+            stdout: Vec::new(),
+            stderr: b"dpkg: package 'no-such-package' is not installed".to_vec(),
+        };
+        assert!(!failed.status.success(), "fixture must model a failed run");
+        assert!(
+            finalize_verify(&failed, HashMap::new()).is_none(),
+            "a non-zero exit with nothing parseable means the tool failed to \
+             run; claiming those paths verified would launder exactly the \
+             changes this feature exists to catch"
+        );
+
+        // rpm exits non-zero *because* it found differences. When there is
+        // something parseable, the findings are the answer.
+        let found = std::process::Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: b"S.5....T.   /usr/bin/foo\n".to_vec(),
+            stderr: Vec::new(),
+        };
+        let problems = parse_verify_output(&String::from_utf8_lossy(&found.stdout));
+        let finalized = finalize_verify(&found, problems).expect("findings are a usable answer");
+        assert_eq!(
+            finalized.get("/usr/bin/foo"),
+            Some(&PackageVerification::Mismatch)
+        );
+
+        // A clean run exits zero with nothing to report: everything verified.
+        let clean = std::process::Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        assert!(finalize_verify(&clean, HashMap::new()).is_some());
+    }
+
+    #[test]
+    fn a_path_the_verifier_did_not_report_is_verified() {
+        // Every backend reports a line for each file it could not fully
+        // check, so silence about a path means it checked out.
+        let problems = parse_verify_output(DPKG_VERIFY_REAL);
+        assert!(
+            !problems.contains_key("/usr/bin/ls"),
+            "unreported paths must not appear in the problem map"
+        );
+        assert!(PackageVerification::Verified.is_proof());
     }
 }

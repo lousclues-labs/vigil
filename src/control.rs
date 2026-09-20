@@ -924,12 +924,26 @@ impl ControlHandler {
                 let total = init_result.total_count;
                 let duration_ms = init_result.duration.as_millis() as u64;
 
-                // Record unattributed changes to the detection WAL
+                // Verify every package-owned change against the digest its own
+                // package recorded. Ownership says a package *could* have
+                // written the file; only the digest says it *did*. One
+                // subprocess per package, off the hot path, after the swap.
+                let verification = diff_result.as_ref().map(|diff| {
+                    let grouped = diff.changed_paths_by_package();
+                    let verdicts = if grouped.is_empty() {
+                        std::collections::HashMap::new()
+                    } else {
+                        crate::package::verify_changed_paths(&grouped, &cfg.package_manager)
+                    };
+                    crate::baseline_diff::split_by_verification(&diff.changed_pkg, &verdicts)
+                });
+
+                // Record everything that could not be proven benign
                 // (Principle XIII: Audit Trail Never Lies).
                 if let Some(ref diff) = diff_result {
-                    if !diff.changed_unattributed.is_empty() {
-                        let maintenance = self.maintenance_active.load(Ordering::Acquire);
-                        if let Some(ref wal) = self.wal {
+                    let maintenance = self.maintenance_active.load(Ordering::Acquire);
+                    if let Some(ref wal) = self.wal {
+                        if !diff.changed_unattributed.is_empty() {
                             let appended = crate::baseline_diff::record_unattributed_to_wal(
                                 wal,
                                 &diff.changed_unattributed,
@@ -939,13 +953,37 @@ impl ControlHandler {
                                 .baseline_refresh_unattributed_changes
                                 .fetch_add(appended, Ordering::Relaxed);
                         }
+
+                        // A package path whose content contradicts its package
+                        // is the loudest thing this tool can say. Before
+                        // verification existed these were absorbed silently as
+                        // "package updates" purely because a package owned the
+                        // path (AF-010).
+                        if let Some(ref split) = verification {
+                            if !split.mismatch.is_empty() {
+                                let appended = crate::baseline_diff::record_package_mismatch_to_wal(
+                                    wal,
+                                    &split.mismatch,
+                                    maintenance,
+                                );
+                                self.metrics
+                                    .baseline_refresh_package_mismatches
+                                    .fetch_add(appended, Ordering::Relaxed);
+                            }
+                            self.metrics
+                                .baseline_refresh_package_verified
+                                .fetch_add(split.verified.len() as u64, Ordering::Relaxed);
+                            self.metrics
+                                .baseline_refresh_package_unverifiable
+                                .fetch_add(split.unverifiable.len() as u64, Ordering::Relaxed);
+                        }
                     }
                 }
 
                 // Build the complete event.
                 // JSON field naming convention:
                 //   *_paths_sample  -- capped list (added/removed: max 20)
-                //   *_paths         -- complete list (changed_unattributed: never truncated)
+                //   *_paths         -- complete list (unproven changes: never truncated)
                 let mut event = match &diff_result {
                     Some(diff) => {
                         let unattr_paths: Vec<&str> = diff
@@ -977,6 +1015,22 @@ impl ControlHandler {
                         })
                     }
                 };
+
+                // Verification verdict: the part of the refresh an operator
+                // actually has to read. Mismatch and unverifiable lists are
+                // never truncated (Principle V: Actionable).
+                if let Some(ref split) = verification {
+                    let mismatch_paths: Vec<&str> =
+                        split.mismatch.iter().map(|e| e.path.as_str()).collect();
+                    let unverifiable_paths: Vec<&str> =
+                        split.unverifiable.iter().map(|e| e.path.as_str()).collect();
+                    event["pkg_verified"] = serde_json::json!(split.verified.len());
+                    event["pkg_conffile"] = serde_json::json!(split.conffile.len());
+                    event["pkg_mismatch"] = serde_json::json!(mismatch_paths.len());
+                    event["pkg_mismatch_paths"] = serde_json::json!(mismatch_paths);
+                    event["pkg_unverifiable"] = serde_json::json!(unverifiable_paths.len());
+                    event["pkg_unverifiable_paths"] = serde_json::json!(unverifiable_paths);
+                }
 
                 // Query audit log status post-refresh (Principle V: Unambiguous).
                 // The refresh never modifies existing audit entries; verify that
@@ -1546,17 +1600,24 @@ mod tests {
         let diff = BaselineDiff {
             added: (0..25).map(|i| format!("/new/{}", i)).collect(),
             removed: (0..5).map(|i| format!("/old/{}", i)).collect(),
-            changed_pkg: vec!["/pkg/a".into()],
+            changed_pkg: vec![ChangedEntry {
+                path: "/pkg/a".into(),
+                old_hash: "111".into(),
+                new_hash: "222".into(),
+                package: Some("pkg-a".into()),
+            }],
             changed_unattributed: vec![
                 ChangedEntry {
                     path: "/etc/x".into(),
                     old_hash: "aaa".into(),
                     new_hash: "bbb".into(),
+                    package: None,
                 },
                 ChangedEntry {
                     path: "/etc/y".into(),
                     old_hash: "ccc".into(),
                     new_hash: "ddd".into(),
+                    package: None,
                 },
             ],
         };

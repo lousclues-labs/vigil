@@ -78,6 +78,15 @@ pub struct Metrics {
     pub auto_rebaseline_rejected: AtomicU64,
     /// Unattributed changes recorded during baseline refresh.
     pub baseline_refresh_unattributed_changes: AtomicU64,
+    /// Package-owned changes whose content matched the digest the package
+    /// recorded. Proven to be the package's own bytes.
+    pub baseline_refresh_package_verified: AtomicU64,
+    /// Package-owned changes whose content did NOT match what the package
+    /// shipped. Recorded as Critical deviations.
+    pub baseline_refresh_package_mismatches: AtomicU64,
+    /// Package-owned changes the package manager could not vouch for either
+    /// way. Absence of proof, counted separately from proof of absence.
+    pub baseline_refresh_package_unverifiable: AtomicU64,
     /// Number of times audit retention safety check skipped deletion.
     pub audit_retention_skipped_total: AtomicU64,
     /// VIGIL-VULN-075: Full scans triggered in response to user-space event drops.
@@ -141,6 +150,9 @@ impl Metrics {
             critical_alerts_dispatched: AtomicU64::new(0),
             auto_rebaseline_rejected: AtomicU64::new(0),
             baseline_refresh_unattributed_changes: AtomicU64::new(0),
+            baseline_refresh_package_verified: AtomicU64::new(0),
+            baseline_refresh_package_mismatches: AtomicU64::new(0),
+            baseline_refresh_package_unverifiable: AtomicU64::new(0),
             audit_retention_skipped_total: AtomicU64::new(0),
             userspace_drop_scans_triggered: AtomicU64::new(0),
             fanotify_tier: AtomicU64::new(0),
@@ -218,6 +230,15 @@ impl Metrics {
             baseline_refresh_unattributed_changes: self
                 .baseline_refresh_unattributed_changes
                 .load(Ordering::Relaxed),
+            baseline_refresh_package_verified: self
+                .baseline_refresh_package_verified
+                .load(Ordering::Relaxed),
+            baseline_refresh_package_mismatches: self
+                .baseline_refresh_package_mismatches
+                .load(Ordering::Relaxed),
+            baseline_refresh_package_unverifiable: self
+                .baseline_refresh_package_unverifiable
+                .load(Ordering::Relaxed),
             audit_retention_skipped_total: self
                 .audit_retention_skipped_total
                 .load(Ordering::Relaxed),
@@ -290,6 +311,9 @@ pub struct MetricsSnapshot {
     pub critical_alerts_dispatched: u64,
     pub auto_rebaseline_rejected: u64,
     pub baseline_refresh_unattributed_changes: u64,
+    pub baseline_refresh_package_verified: u64,
+    pub baseline_refresh_package_mismatches: u64,
+    pub baseline_refresh_package_unverifiable: u64,
     pub audit_retention_skipped_total: u64,
     pub userspace_drop_scans_triggered: u64,
     pub fanotify_tier: u64,
@@ -578,6 +602,24 @@ impl MetricsSnapshot {
             "vigil_baseline_refresh_unattributed_changes_total",
             "Unattributed changes recorded during baseline refresh",
             self.baseline_refresh_unattributed_changes,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_baseline_refresh_package_verified_total",
+            "Package-owned changes whose content matched the package's recorded digest",
+            self.baseline_refresh_package_verified,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_baseline_refresh_package_mismatches_total",
+            "Package-owned changes whose content did not match what the package shipped",
+            self.baseline_refresh_package_mismatches,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_baseline_refresh_package_unverifiable_total",
+            "Package-owned changes the package manager could not verify either way",
+            self.baseline_refresh_package_unverifiable,
         );
         write_prom_counter(
             &mut out,

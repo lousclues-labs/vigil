@@ -103,6 +103,32 @@ When a maintenance window is active, every notification includes a
 `[maintenance]` prefix. Operators stop being startled by package-install
 bursts.
 
+Inside a window, changes to files a package owns are **deferred**, at every
+severity, rather than notified one by one. A single `apt upgrade` rewrites
+hundreds of files under `/usr/bin/`, `/usr/sbin/` and `/boot/`, all of which
+sit in the Critical watch group; alerting per file produced a notification
+storm that buried the handful of changes that actually mattered.
+
+Deferral is safe because it is not the end of the story. When the transaction
+finishes, the post-transaction baseline refresh asks the package manager
+whether each changed file's content matches the digest that package recorded:
+
+| Verdict | Meaning | Operator sees |
+|---------|---------|---------------|
+| verified | Content matches the package's own recorded digest | nothing; proven benign |
+| conffile | The package marks it operator-editable | nothing; you are meant to edit these |
+| mismatch | A package owns it and the content is **not** what the package shipped | Critical alert |
+| unverifiable | The package manager could not answer | reported, never assumed clean |
+
+So the flood becomes one line naming only the files no package will vouch for.
+A change to a path **no** package owns is never deferred: it alerts
+immediately, even mid-transaction, because an attacker writing to
+`/usr/local/bin` during your update is exactly the moment you need to know.
+
+Every deferred change is still written to the audit log with its `suppressed`
+flag set. Suppression decides what reaches your attention; it never decides
+what is recorded (Principle XIII).
+
 ## Webhook Channel
 
 HTTP POST to a configured URL with the same JSON envelope as other channels.

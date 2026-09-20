@@ -33,6 +33,9 @@ and the two cross-reference each other when one event is both.
 | AF-007 | Low | Closed | PR13, PR14 | C-STANDS-ALONE, C-UNSAFE-BOUNDARY |
 | AF-008 | Info | Closed | PR15, PR16, PR17 | C-CI-GATE, C-RELEASE-PROVENANCE, C-PROMISE-SET-INTEGRITY |
 | AF-009 | Medium | Closed | PR2, PR4, PR11, PR13 | C-NO-ACTUATION and the other source scans, via `strip_test_code` |
+| AF-010 | High | Closed | PR18 | C-OWNERSHIP-IS-NOT-PROOF |
+| AF-011 | Medium | Closed | PR18 | C-OWNERSHIP-IS-NOT-PROOF (reporting half), hook surfacing |
+| AF-012 | High | Closed | PR18 | `a_failed_verifier_run_is_never_reported_as_verified` |
 
 ---
 
@@ -315,6 +318,134 @@ awk block skip instead of `sed '/^#\[cfg(test)\]/q'`.
 **Canary that prevents recurrence.** The drift verification script itself. It
 is the guard on the guards: every canary must be proven to fail on a real
 breach, and the run that closed this finding proved every one of them does.
+
+---
+
+---
+
+## AF-010: A package-owned path could be tampered with and the next update would launder it
+
+- **Severity:** High
+- **Status:** Closed
+- **Principle / Promise:** P4 / PR18
+
+**What drifted.** `compute_diff` classified a changed file as a routine
+package update whenever *some* package owned the path:
+
+> Hash changed and new entry has a package owner -> changed_pkg
+
+Those changes were absorbed into the refreshed baseline with no alert and no
+path-level record; only files that no package owned were recorded. So a
+tampered `/usr/bin/sudo` was filed as a package update because the `sudo`
+package owns that path, regardless of whether `sudo` was part of the
+transaction, and regardless of whether the new bytes were anything the `sudo`
+package ever shipped. The attacker's hash became the new definition of
+"correct".
+
+This compounded with a second problem. Inside a maintenance window,
+package-owned Critical and High changes were deliberately *not* suppressed, and
+`/usr/bin/`, `/usr/sbin/` and `/boot/` are all in the Critical watch group,
+which routes as Immediate with no coalescing. A routine `apt upgrade` therefore
+fired one desktop notification per binary until the storm detector tripped. The
+flood buried the real alert, and the refresh that followed erased it.
+
+**Why it mattered.** These two together turned the most dangerous event the
+tool can observe into its quietest. The operator reported it as a usability
+problem ("vigil gets flooded when I update, and I have no way of knowing if a
+change happened before the update"), which is exactly how it presents: the
+noise is what you notice, and the laundering is what you do not.
+
+**Closing change.** Ownership is no longer treated as authorship. Every
+supported package manager records a digest for every file it ships, so the
+refresh now asks the package manager whether the content on disk is what that
+package actually shipped ([src/package.rs](src/package.rs),
+`verify_changed_paths`), one subprocess per package rather than one per path.
+Changed package files split four ways: `verified` (matches the recorded
+digest, absorbed silently), `conffile` (the package marks it operator-editable,
+so divergence proves nothing), `mismatch` (content contradicts the package,
+recorded as a **Critical** deviation), and `unverifiable` (the verifier could
+not answer, reported rather than assumed).
+
+With verification in place, per-file alerting inside a window is no longer
+needed and no longer wanted: package-owned changes are now deferred at every
+severity, and the post-transaction verdict raises exactly the changes that
+failed the digest check. That is the flood fix and the laundering fix in one
+move, and it makes the remaining alerts evidence rather than guesses.
+
+**Canary that prevents recurrence.**
+`audit_truth_package_ownership_is_never_proof_of_authorship`
+(C-OWNERSHIP-IS-NOT-PROOF) in [tests/pdd_canaries.rs](tests/pdd_canaries.rs),
+backed by [tests/package_verification_tests.rs](tests/package_verification_tests.rs)
+and the parser canaries in [src/package.rs](src/package.rs), which are pinned
+to verbatim `dpkg --verify` output captured from a live system.
+
+---
+
+## AF-011: The refresh computed the high-signal answer and threw it away
+
+- **Severity:** Medium
+- **Status:** Closed
+- **Principle / Promise:** P5, P4 / PR18
+
+**What drifted.** The refresh already computed `changed_unattributed` and
+rendered it in full, but only `if is_tty`, and only when not `--quiet`. The apt
+post-hook runs `vigil baseline refresh --quiet` from a non-interactive context,
+so on the one path where an operator most needs the answer, the answer was
+computed, formatted, and discarded. The hook captured that output solely to
+quote it back in a log line if the refresh had *failed*.
+
+**Why it mattered.** Silent degradation is a security vulnerability
+(Principle X), and this was its documentation equivalent: the tool knew
+something the operator needed and did not say it. It also meant the machinery
+for answering "did anything change that no package vouches for" existed and had
+never once reached a human.
+
+**Closing change.** Findings are now reported regardless of `--quiet`:
+`--quiet` means "do not narrate progress", never "hide evidence". The refresh
+prints a stable `VIGIL UNPROVEN CHANGES` block on stderr listing every
+mismatch and every unattributed change, untruncated. The apt, pacman, and dnf
+hooks parse that marker, log every path to the system journal, and raise a
+single critical notification naming the count.
+
+**Canary that prevents recurrence.** C-OWNERSHIP-IS-NOT-PROOF covers the
+classification; the marker itself is a documented contract in
+[src/commands/baseline.rs](src/commands/baseline.rs) consumed by all three
+hooks.
+
+---
+
+## AF-012: A verification that never ran was reported as a verification that passed
+
+- **Severity:** High
+- **Status:** Closed
+- **Principle / Promise:** P4, P8 / PR18
+
+**What drifted.** The first implementation of `verify_changed_paths` ignored
+the verifier's exit status, on the reasoning that `dpkg --verify` exits
+non-zero when it finds problems. It does not: dpkg exits 0 whether or not it
+reports differences, and exits non-zero when the *package* is unknown. So a
+package name the verifier could not resolve produced an empty problem map,
+which every requested path then fell through as `Verified`.
+
+That is the failure this whole change set exists to prevent, reproduced inside
+the fix: a claim of proof where no proof was obtained.
+
+**How it was found.** A live run against the real package manager on a
+developer machine, checking a deliberately nonexistent package alongside real
+ones. Two of three verdicts were right; `/usr/bin/whatever` under a package
+that is not installed came back `verified`.
+
+**Closing change.** `finalize_verify` in [src/package.rs](src/package.rs)
+distinguishes "the tool ran and found nothing" from "the tool did not run": a
+non-zero exit with nothing parseable returns no answer at all, and every path
+in that group is `Unknown`. The rule holds across backends that disagree about
+exit codes (`rpm -V` exits non-zero *because* it found differences, and its
+findings are still used).
+
+**Canary that prevents recurrence.**
+`a_failed_verifier_run_is_never_reported_as_verified` in
+[src/package.rs](src/package.rs), which asserts all three cases: failed run,
+non-zero-with-findings, and clean run.
 
 ---
 

@@ -1,11 +1,17 @@
 //! Baseline refresh diff computation and audit trail integration.
 //!
 //! Compares old and new baseline snapshots, classifies changes by package
-//! attribution, and records unattributed changes to the detection WAL.
+//! attribution and by content proof, and records the changes that cannot be
+//! proven benign to the detection WAL.
+//!
+//! Package *ownership* answers "could a package have written here." Content
+//! *verification* answers "did a package write these bytes." Only the second
+//! one is proof, and only proof is allowed to silence an alert.
 
 use std::collections::HashMap;
 
 use crate::error::Result;
+use crate::package::PackageVerification;
 use crate::types::{Change, Severity};
 use crate::wal::{DetectionRecord, DetectionSource, DetectionWal};
 
@@ -16,8 +22,9 @@ pub struct BaselineDiff {
     pub added: Vec<String>,
     /// Paths present in the old baseline but not the new.
     pub removed: Vec<String>,
-    /// Changed paths attributed to a package update.
-    pub changed_pkg: Vec<String>,
+    /// Changed paths owned by a package. Ownership alone is not proof, so
+    /// these still have to be verified against the package's own digests.
+    pub changed_pkg: Vec<ChangedEntry>,
     /// Changed paths with no package attribution -- high-signal.
     pub changed_unattributed: Vec<ChangedEntry>,
 }
@@ -28,6 +35,8 @@ pub struct ChangedEntry {
     pub path: String,
     pub old_hash: String,
     pub new_hash: String,
+    /// The package that owns this path, when one does.
+    pub package: Option<String>,
 }
 
 /// A snapshot entry: hash and optional package owner.
@@ -41,6 +50,76 @@ impl BaselineDiff {
     pub fn total_changed(&self) -> u64 {
         self.changed_pkg.len() as u64 + self.changed_unattributed.len() as u64
     }
+
+    /// Group package-owned changed paths by their owning package, so
+    /// verification can run once per package instead of once per path.
+    pub fn changed_paths_by_package(&self) -> HashMap<String, Vec<String>> {
+        let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
+        for entry in &self.changed_pkg {
+            if let Some(ref package) = entry.package {
+                grouped
+                    .entry(package.clone())
+                    .or_default()
+                    .push(entry.path.clone());
+            }
+        }
+        grouped
+    }
+}
+
+/// Package-owned changes split by what the package manager could prove.
+#[derive(Debug, Clone, Default)]
+pub struct VerificationSplit {
+    /// Content matches the digest the package recorded. Proven benign.
+    pub verified: Vec<String>,
+    /// A config file the package expects the operator to edit.
+    pub conffile: Vec<String>,
+    /// A package owns the path and the content is NOT what it shipped.
+    pub mismatch: Vec<ChangedEntry>,
+    /// Verification could not run or proved nothing.
+    pub unverifiable: Vec<ChangedEntry>,
+}
+
+impl VerificationSplit {
+    /// Changes that could not be proven benign and therefore have to reach
+    /// the operator: content that contradicts its package, plus anything the
+    /// package manager declined to vouch for.
+    pub fn unproven_count(&self) -> usize {
+        self.mismatch.len() + self.unverifiable.len()
+    }
+}
+
+/// Split package-owned changes by verification verdict.
+///
+/// A path missing from `verdicts` is `Unknown`, never `Verified`. Silence from
+/// the verifier is not a pass.
+pub fn split_by_verification(
+    changed_pkg: &[ChangedEntry],
+    verdicts: &HashMap<String, PackageVerification>,
+) -> VerificationSplit {
+    let mut split = VerificationSplit::default();
+
+    for entry in changed_pkg {
+        let verdict = verdicts
+            .get(&entry.path)
+            .copied()
+            .unwrap_or(PackageVerification::Unknown);
+
+        match verdict {
+            PackageVerification::Verified => split.verified.push(entry.path.clone()),
+            PackageVerification::Conffile => split.conffile.push(entry.path.clone()),
+            PackageVerification::Mismatch | PackageVerification::Missing => {
+                split.mismatch.push(entry.clone())
+            }
+            PackageVerification::Unknown => split.unverifiable.push(entry.clone()),
+        }
+    }
+
+    split.verified.sort();
+    split.conffile.sort();
+    split.mismatch.sort_by(|a, b| a.path.cmp(&b.path));
+    split.unverifiable.sort_by(|a, b| a.path.cmp(&b.path));
+    split
 }
 
 /// Compute the diff between two baseline snapshots.
@@ -52,6 +131,10 @@ impl BaselineDiff {
 ///   (includes the case where the package owner itself changed between
 ///   old and new; the change is still attributable to a package operation)
 /// - Hash changed and new entry has no package owner -> changed_unattributed
+///
+/// `changed_pkg` is a candidate set, not a verdict. Use
+/// [`split_by_verification`] to separate the changes a package can prove it
+/// made from the ones it cannot.
 pub fn compute_diff(
     old: &HashMap<String, SnapshotEntry>,
     new: &HashMap<String, SnapshotEntry>,
@@ -65,18 +148,20 @@ pub fn compute_diff(
         match old.get(path) {
             None => added.push(path.clone()),
             Some(old_entry) if old_entry.hash != new_entry.hash => {
+                let changed = ChangedEntry {
+                    path: path.clone(),
+                    old_hash: old_entry.hash.clone(),
+                    new_hash: new_entry.hash.clone(),
+                    package: new_entry.package.clone(),
+                };
                 if new_entry.package.is_some() {
                     // Package-attributed change. This includes the case where
                     // the package owner changed (e.g. path moved from package A
                     // to package B). The change is still attributable to a
                     // package operation, so it is classified as changed_pkg.
-                    changed_pkg.push(path.clone());
+                    changed_pkg.push(changed);
                 } else {
-                    changed_unattributed.push(ChangedEntry {
-                        path: path.clone(),
-                        old_hash: old_entry.hash.clone(),
-                        new_hash: new_entry.hash.clone(),
-                    });
+                    changed_unattributed.push(changed);
                 }
             }
             _ => {} // unchanged
@@ -92,7 +177,7 @@ pub fn compute_diff(
     // Sort for deterministic output
     added.sort();
     removed.sort();
-    changed_pkg.sort();
+    changed_pkg.sort_by(|a, b| a.path.cmp(&b.path));
     changed_unattributed.sort_by(|a, b| a.path.cmp(&b.path));
 
     BaselineDiff {
@@ -116,6 +201,54 @@ pub fn record_unattributed_to_wal(
     entries: &[ChangedEntry],
     maintenance_window: bool,
 ) -> u64 {
+    record_deviations(
+        wal,
+        entries,
+        maintenance_window,
+        Severity::High,
+        "baseline_refresh",
+        "unattributed change",
+    )
+}
+
+/// Record package-path changes whose content contradicts the package.
+///
+/// These are recorded at `Severity::Critical`: a file a package owns whose
+/// bytes are not the bytes that package shipped is the single highest-signal
+/// state this tool can observe. It outranks an unattributed change, because
+/// an unattributed file may simply be something the operator created, while
+/// this one is actively impersonating packaged software.
+///
+/// Returns the count of successfully appended records.
+pub fn record_package_mismatch_to_wal(
+    wal: &DetectionWal,
+    entries: &[ChangedEntry],
+    maintenance_window: bool,
+) -> u64 {
+    record_deviations(
+        wal,
+        entries,
+        maintenance_window,
+        Severity::Critical,
+        "package_mismatch",
+        "package content mismatch",
+    )
+}
+
+/// Shared WAL recording for refresh-time deviations.
+///
+/// `package` is deliberately left `None` on these records even when a package
+/// owns the path. These are refresh-time verdicts, not live file events, and
+/// the maintenance-window suppression that silences live package writes must
+/// never silence the verdict that window produced.
+fn record_deviations(
+    wal: &DetectionWal,
+    entries: &[ChangedEntry],
+    maintenance_window: bool,
+    severity: Severity,
+    group: &str,
+    what: &str,
+) -> u64 {
     let mut appended = 0u64;
     for entry in entries {
         let record = DetectionRecord {
@@ -125,8 +258,8 @@ pub fn record_unattributed_to_wal(
                 old_hash: entry.old_hash.clone(),
                 new_hash: entry.new_hash.clone(),
             }],
-            severity: Severity::High,
-            monitored_group: "baseline_refresh".to_string(),
+            severity,
+            monitored_group: group.to_string(),
             process: None,
             package: None,
             package_update: false,
@@ -142,7 +275,8 @@ pub fn record_unattributed_to_wal(
                 tracing::warn!(
                     path = %entry.path,
                     error = %e,
-                    "failed to record unattributed change to WAL; skipping"
+                    "failed to record {} to WAL; skipping",
+                    what
                 );
             }
         }
@@ -194,6 +328,10 @@ pub fn snapshot_from_conn(conn: &rusqlite::Connection) -> Result<HashMap<String,
 mod tests {
     use super::*;
 
+    fn pkg_paths(diff: &BaselineDiff) -> Vec<String> {
+        diff.changed_pkg.iter().map(|e| e.path.clone()).collect()
+    }
+
     fn entry(hash: &str, pkg: Option<&str>) -> SnapshotEntry {
         SnapshotEntry {
             hash: hash.to_string(),
@@ -225,7 +363,7 @@ mod tests {
         assert_eq!(diff.added, vec!["/usr/bin/c"]);
         assert!(diff.removed.is_empty());
         // B is package-attributed
-        assert_eq!(diff.changed_pkg, vec!["/usr/bin/b"]);
+        assert_eq!(pkg_paths(&diff), vec!["/usr/bin/b"]);
         assert!(diff.changed_unattributed.is_empty());
         assert_eq!(diff.total_changed(), 1);
     }
@@ -292,7 +430,7 @@ mod tests {
                 .collect();
 
         let diff = compute_diff(&old, &new);
-        assert_eq!(diff.changed_pkg, vec!["/usr/bin/x"]);
+        assert_eq!(pkg_paths(&diff), vec!["/usr/bin/x"]);
         assert!(diff.changed_unattributed.is_empty());
     }
 

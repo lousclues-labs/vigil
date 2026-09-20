@@ -128,6 +128,22 @@ log, with suppressed events flagged `suppressed = true`.
   and asserts both detections are present in the audit database, exactly one of
   them flagged suppressed.
 
+### PR18. Package ownership is never treated as proof of package authorship
+A changed file under a package-owned path is absorbed into the baseline
+silently only when the package manager confirms the content matches the digest
+that package recorded. Ownership alone never clears that bar. A file whose
+content contradicts its package is recorded as a Critical deviation, and a
+verification run that did not happen is `Unknown`, never `Verified`.
+
+- Falsifiable by: classifying a path as verified because a package owns it, or
+  reading a failed verifier run as a pass.
+- Canary `C-OWNERSHIP-IS-NOT-PROOF` (test):
+  `a_path_with_no_verdict_is_never_counted_as_verified` and
+  `a_failed_verifier_run_is_never_reported_as_verified` assert the negative
+  case in [tests/package_verification_tests.rs](tests/package_verification_tests.rs)
+  and [src/package.rs](src/package.rs); the parser canaries pin the verdict for
+  real `dpkg --verify` output.
+
 ### PR8. Editing or deleting an audit row is detectable
 Audit entries are chain-linked: each row carries the hash of the row before it.
 Altering a row's content or removing a row from the middle of the chain breaks

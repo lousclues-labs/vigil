@@ -107,8 +107,11 @@ is detectable after the fact.
   rate limited, or inside a maintenance window.
 - An audit log whose rows can be altered or removed without the tampering
   being detectable.
+- Treating the fact that a package owns a path as proof that the package wrote
+  the bytes now in it, or reading a verification that did not run as one that
+  passed.
 
-Spawns promises: PR7, PR8.
+Spawns promises: PR7, PR8, PR18.
 
 ---
 

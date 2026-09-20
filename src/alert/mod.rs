@@ -286,22 +286,29 @@ impl AlertDispatcher {
     }
 
     fn is_suppressed(&self, change: &ChangeResult, maintenance_window: bool) -> bool {
-        // Never fully suppress Critical/High changes, even during maintenance windows.
-        // These still dispatch to sinks but will have maintenance_window=true in the alert.
+        // Inside a maintenance window, a package-owned change is deferred at
+        // every severity, not notified per file.
+        //
+        // This used to let Critical and High through, on the reasoning that a
+        // change to /usr/bin during an update is too important to hold. In
+        // practice `/usr/bin/`, `/usr/sbin/` and `/boot/` are all in the
+        // Critical watch group and Critical routes as Immediate with no
+        // coalescing, so a routine `apt upgrade` fired one desktop
+        // notification per binary until the storm detector tripped. The few
+        // changes that mattered were buried in the ones that did not, which
+        // is the exact opposite of Principle II and Principle V.
+        //
+        // Holding them is safe because ownership was never proof of anything.
+        // The post-transaction baseline refresh verifies every one of these
+        // paths against the digest its own package recorded, and raises a
+        // Critical for each file whose content contradicts its package plus a
+        // High for each change no package will vouch for. That verdict is
+        // evidence; a per-file alert during the window was only ever a guess.
+        //
+        // The audit log still records every one of these, suppressed flag and
+        // all (Principle XIII), and a window that is never closed expires on
+        // its own cap, after which these paths alert again on the next scan.
         if maintenance_window && change.package.is_some() {
-            // Inode-only changes on package-managed paths during a maintenance
-            // window are deterministically benign: package install/upgrade
-            // recreates files via open+write+rename, allocating new inodes
-            // even when content is byte-identical. The hash already matched
-            // (otherwise a `ContentModified` would also be present and the
-            // change set would not be inode-only). Suppress notification at
-            // every severity. Audit log still records the event (Principle XIII).
-            if is_inode_only(&change.changes) {
-                return true;
-            }
-            if change.severity >= Severity::High {
-                return false;
-            }
             return true;
         }
 
@@ -449,14 +456,6 @@ fn change_to_name(change: &Change) -> &'static str {
         Change::Deleted => "deleted",
         Change::Created => "created",
     }
-}
-
-/// Returns true iff the change set is exactly one `InodeChanged` and
-/// nothing else. Content, permissions, ownership, xattrs, etc. are all
-/// unchanged. This is the structural signature of a package manager
-/// rewriting a file in place via open+write+rename.
-fn is_inode_only(changes: &[Change]) -> bool {
-    matches!(changes, [Change::InodeChanged { .. }])
 }
 
 #[cfg(test)]
@@ -623,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn critical_severity_not_suppressed_during_maintenance() {
+    fn package_owned_changes_are_deferred_during_maintenance_at_every_severity() {
         let dir = tempfile::tempdir().unwrap();
         let audit_path = dir.path().join("audit.db");
 
@@ -633,8 +632,55 @@ mod tests {
             AlertDispatcher::new(&cfg, &audit_path, metrics, None, false, "test".to_string())
                 .unwrap();
 
-        let critical_change = ChangeResult {
-            path: std::sync::Arc::new(std::path::PathBuf::from("/usr/bin/sudo")),
+        // Every severity, as long as a package owns the path. An `apt upgrade`
+        // rewrites hundreds of Critical-group binaries; alerting per file
+        // buried the handful that mattered. The post-transaction refresh
+        // verifies each of these against the package's own recorded digest
+        // and raises the ones that fail, which is evidence rather than a
+        // guess. The audit log still records all of them.
+        for (path, severity, package) in [
+            ("/usr/bin/sudo", Severity::Critical, "sudo"),
+            ("/usr/bin/passwd", Severity::High, "shadow"),
+            ("/usr/lib/libfoo.so", Severity::Medium, "libfoo"),
+            ("/usr/share/doc/readme", Severity::Low, "man-pages"),
+        ] {
+            let change = ChangeResult {
+                path: std::sync::Arc::new(std::path::PathBuf::from(path)),
+                changes: vec![Change::ContentModified {
+                    old_hash: "aaa".into(),
+                    new_hash: "bbb".into(),
+                }],
+                severity,
+                monitored_group: "system".into(),
+                process: None,
+                package: Some(package.into()),
+                package_update: true,
+                disambiguation: None,
+            };
+
+            assert!(
+                dispatcher.is_suppressed(&change, true),
+                "{path} ({severity:?}) is package-owned and must be deferred inside a maintenance window"
+            );
+        }
+    }
+
+    #[test]
+    fn unowned_changes_still_alert_during_maintenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit_path = dir.path().join("audit.db");
+
+        let cfg = crate::config::default_config();
+        let metrics = Arc::new(crate::metrics::Metrics::new());
+        let dispatcher =
+            AlertDispatcher::new(&cfg, &audit_path, metrics, None, false, "test".to_string())
+                .unwrap();
+
+        // Deferring package writes must never become deferring everything.
+        // An attacker dropping a file no package owns, during an update, is
+        // exactly the moment the operator most needs to hear about it.
+        let change = ChangeResult {
+            path: std::sync::Arc::new(std::path::PathBuf::from("/usr/local/bin/backdoor")),
             changes: vec![Change::ContentModified {
                 old_hash: "aaa".into(),
                 new_hash: "bbb".into(),
@@ -642,55 +688,14 @@ mod tests {
             severity: Severity::Critical,
             monitored_group: "system".into(),
             process: None,
-            package: Some("sudo".into()),
-            package_update: true,
+            package: None,
+            package_update: false,
             disambiguation: None,
         };
 
-        // Critical + package during maintenance should NOT be suppressed
         assert!(
-            !dispatcher.is_suppressed(&critical_change, true),
-            "Critical severity changes must not be suppressed during maintenance"
-        );
-
-        let high_change = ChangeResult {
-            path: std::sync::Arc::new(std::path::PathBuf::from("/usr/bin/passwd")),
-            changes: vec![Change::ContentModified {
-                old_hash: "ccc".into(),
-                new_hash: "ddd".into(),
-            }],
-            severity: Severity::High,
-            monitored_group: "system".into(),
-            process: None,
-            package: Some("shadow".into()),
-            package_update: true,
-            disambiguation: None,
-        };
-
-        // High + package during maintenance should NOT be suppressed
-        assert!(
-            !dispatcher.is_suppressed(&high_change, true),
-            "High severity changes must not be suppressed during maintenance"
-        );
-
-        let low_change = ChangeResult {
-            path: std::sync::Arc::new(std::path::PathBuf::from("/usr/share/doc/readme")),
-            changes: vec![Change::ContentModified {
-                old_hash: "eee".into(),
-                new_hash: "fff".into(),
-            }],
-            severity: Severity::Low,
-            monitored_group: "docs".into(),
-            process: None,
-            package: Some("man-pages".into()),
-            package_update: true,
-            disambiguation: None,
-        };
-
-        // Low + package during maintenance SHOULD be suppressed
-        assert!(
-            dispatcher.is_suppressed(&low_change, true),
-            "Low severity changes with package should be suppressed during maintenance"
+            !dispatcher.is_suppressed(&change, true),
+            "a change no package owns must alert even inside a maintenance window"
         );
     }
 
@@ -760,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    fn inode_plus_content_change_not_suppressed_during_maintenance() {
+    fn inode_plus_content_change_on_package_path_deferred_during_maintenance() {
         let dir = tempfile::tempdir().unwrap();
         let audit_path = dir.path().join("audit.db");
 
@@ -770,8 +775,9 @@ mod tests {
             AlertDispatcher::new(&cfg, &audit_path, metrics, None, false, "test".to_string())
                 .unwrap();
 
-        // Inode + content together is NOT inode-only. This must follow the
-        // standard severity rule (Critical/High passes through, Low/Medium drops).
+        // Inode + content is what a package upgrade of a binary looks like.
+        // The shape of the change set no longer decides anything inside a
+        // window; package ownership does, and the digest check decides after.
         let change = ChangeResult {
             path: std::sync::Arc::new(std::path::PathBuf::from("/usr/bin/sudo")),
             changes: vec![
@@ -790,8 +796,12 @@ mod tests {
         };
 
         assert!(
-            !dispatcher.is_suppressed(&change, true),
-            "Critical content change must pass through even with inode change present"
+            dispatcher.is_suppressed(&change, true),
+            "a package-owned content change is deferred to the refresh verdict"
+        );
+        assert!(
+            !dispatcher.is_suppressed(&change, false),
+            "outside a window there is no refresh verdict coming, so it must alert"
         );
     }
 

@@ -8,6 +8,94 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A tampered file in a package path is no longer laundered by the next
+  update, and a routine upgrade no longer floods the desktop.** These were
+  one bug wearing two faces. `vigil baseline refresh` classified a changed
+  file as a routine package update whenever *some* package owned the path,
+  then absorbed it into the new baseline with no alert and no path-level
+  record. Ownership of a path was being read as evidence that the package
+  wrote the bytes now in it, which it never was: a tampered `/usr/bin/sudo`
+  was filed as a `sudo` package update whether or not `sudo` was in the
+  transaction, and whether or not the new content was anything the `sudo`
+  package ever shipped.
+
+  Meanwhile, inside a maintenance window, package-owned Critical and High
+  changes were deliberately left unsuppressed. `/usr/bin/`, `/usr/sbin/` and
+  `/boot/` are all in the Critical watch group, and Critical routes as
+  Immediate with no coalescing, so a single `apt upgrade` fired one desktop
+  notification per binary until the storm detector tripped. The flood buried
+  the real alert and the refresh that followed erased it.
+
+  Every supported package manager records a digest for every file it ships,
+  so the question "did a package write these bytes" is answerable from local
+  state alone. The refresh now asks it, one subprocess per package rather
+  than one per path, and splits package-owned changes four ways:
+
+  | Verdict | Meaning | Operator sees |
+  |---|---|---|
+  | `verified` | content matches the package's recorded digest | nothing; proven benign |
+  | `conffile` | the package marks it operator-editable | nothing; you are meant to edit these |
+  | `mismatch` | a package owns it, the content is not what the package shipped | **Critical** alert, never absorbed silently |
+  | `unverifiable` | the package manager could not answer | reported, never assumed clean |
+
+  With proof available, per-file alerting inside a window is no longer needed:
+  package-owned changes are deferred at every severity and the
+  post-transaction verdict raises exactly the files that failed the digest
+  check. A change to a path **no** package owns is still never deferred, so
+  an attacker writing to `/usr/local/bin` during your update still alerts
+  immediately. Every deferred change is still written to the audit log with
+  its `suppressed` flag set (Principle XIII).
+
+  Closes AF-010.
+
+- **The refresh no longer computes the answer and throws it away.** The
+  unattributed-change list was rendered only when stdout was a TTY and
+  `--quiet` was absent, and the package hooks run it quietly and
+  non-interactively, so on the one path where an operator most needs it the
+  finding was formatted and discarded. Findings now print regardless of
+  `--quiet`, which means "do not narrate progress", never "hide evidence".
+  The apt, pacman, and dnf hooks parse the `VIGIL UNPROVEN CHANGES` marker,
+  log every path to the journal, and raise one critical notification naming
+  the count. Closes AF-011.
+
+- **A verification that never ran is no longer reported as one that passed.**
+  Found by running the new verifier against the real package manager with a
+  package name that is not installed: `dpkg --verify` exits non-zero for an
+  unknown package but exits *zero* when it merely reports differences, so
+  ignoring the exit status made every path in an unresolvable package fall
+  through to `verified`. `finalize_verify` now distinguishes "the tool ran and
+  found nothing" from "the tool did not run", across backends that disagree
+  about exit codes. Closes AF-012.
+
+### Added
+
+- `PackageVerification` and `verify_changed_paths` in
+  [src/package.rs](src/package.rs): content verification against
+  `dpkg --verify`, `rpm -V`, and `pacman -Qkk`, with parser canaries pinned to
+  verbatim output captured from a live system, including the awkward cases
+  (an all-`?` attribute string means *unverifiable*, not *failed*; a
+  `(Permission denied)` annotation overrides the verdict on its line).
+- PR18, "Package ownership is never treated as proof of package authorship",
+  guarded by canary `C-OWNERSHIP-IS-NOT-PROOF` and proven to fail on drift by
+  [scripts/verify-canary-drift.sh](scripts/verify-canary-drift.sh) (now 22
+  drift cases).
+- [tests/package_verification_tests.rs](tests/package_verification_tests.rs):
+  the 250-file clean upgrade produces nothing to read; one tampered binary
+  among those 250 still surfaces.
+- Metrics: `vigil_baseline_refresh_package_verified_total`,
+  `..._package_mismatches_total`, `..._package_unverifiable_total`.
+
+### Changed
+
+- [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md) documents maintenance-window
+  deferral and the verdict table;
+  [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) states the new guarantee and
+  its honest limit (dpkg records MD5, so on Debian-family systems this check
+  inherits MD5's second-preimage resistance; vigil's own baseline stays
+  BLAKE3 and the audit record is written regardless of the verdict).
+
 ## [1.13.0] - 2026-09-19
 
 Promise Driven Development (PDD) retrofit. Vigil has always made

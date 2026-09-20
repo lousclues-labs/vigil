@@ -20,11 +20,13 @@ fn baseline_refresh_records_unattributed_to_wal() {
             path: "/etc/resolv.conf".into(),
             old_hash: "aabbccdd".into(),
             new_hash: "11223344".into(),
+            package: None,
         },
         ChangedEntry {
             path: "/etc/hosts".into(),
             old_hash: "eeff0011".into(),
             new_hash: "55667788".into(),
+            package: None,
         },
     ];
 
@@ -71,6 +73,7 @@ fn baseline_refresh_wal_records_maintenance_window() {
         path: "/etc/machine-id".into(),
         old_hash: "old".into(),
         new_hash: "new".into(),
+        package: None,
     }];
 
     let appended = record_unattributed_to_wal(&wal, &entries, true);
@@ -97,6 +100,7 @@ fn baseline_refresh_wal_failure_does_not_block_others() {
             path: format!("/etc/file-{:04}", i),
             old_hash: "old".into(),
             new_hash: "new".into(),
+            package: None,
         })
         .collect();
 
@@ -162,7 +166,7 @@ fn baseline_diff_compute_roundtrip() {
     let diff = compute_diff(&old, &new);
 
     // /usr/bin/ls changed with package -> changed_pkg
-    assert!(diff.changed_pkg.contains(&"/usr/bin/ls".to_string()));
+    assert!(diff.changed_pkg.iter().any(|e| e.path == "/usr/bin/ls"));
     // /etc/resolv.conf changed without package -> unattributed
     assert_eq!(diff.changed_unattributed.len(), 1);
     assert_eq!(diff.changed_unattributed[0].path, "/etc/resolv.conf");
@@ -195,6 +199,7 @@ fn baseline_refresh_wal_with_hmac() {
         path: "/etc/shadow".into(),
         old_hash: "before".into(),
         new_hash: "after".into(),
+        package: None,
     }];
 
     let appended = record_unattributed_to_wal(&wal, &entries, false);
