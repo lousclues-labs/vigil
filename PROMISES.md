@@ -130,19 +130,34 @@ log, with suppressed events flagged `suppressed = true`.
 
 ### PR18. Package ownership is never treated as proof of package authorship
 A changed file under a package-owned path is absorbed into the baseline
-silently only when the package manager confirms the content matches the digest
-that package recorded. Ownership alone never clears that bar. A file whose
-content contradicts its package is recorded as a Critical deviation, and a
-verification run that did not happen is `Unknown`, never `Verified`.
+silently only when the package manager confirms the content matches a digest
+it actually recorded for that path. Three things are each insufficient on
+their own, and none of them may stand in for proof:
 
-- Falsifiable by: classifying a path as verified because a package owns it, or
-  reading a failed verifier run as a pass.
+- **Ownership.** A package owning a path says only that a package could have
+  written there.
+- **A quiet verifier.** Silence is a pass only for paths inside the package
+  manager's recorded digest set. dpkg holds no digest for roughly a fifth of
+  `/usr/bin` and nearly all of `/boot` on a stock Ubuntu install, and says
+  nothing about those files because it has nothing to say.
+- **A verifier that did not run.** A failed or unavailable verification is
+  `Unknown`, never `Verified`.
+
+A file whose content contradicts a digest its package did record is a Critical
+deviation, reported and never silently absorbed.
+
+- Falsifiable by: classifying a path as verified because a package owns it,
+  because the verifier was quiet about a path it holds no digest for, or
+  because a failed run returned no findings.
 - Canary `C-OWNERSHIP-IS-NOT-PROOF` (test):
-  `a_path_with_no_verdict_is_never_counted_as_verified` and
-  `a_failed_verifier_run_is_never_reported_as_verified` assert the negative
-  case in [tests/package_verification_tests.rs](tests/package_verification_tests.rs)
-  and [src/package.rs](src/package.rs); the parser canaries pin the verdict for
-  real `dpkg --verify` output.
+  `audit_truth_package_ownership_is_never_proof_of_authorship` in
+  [tests/pdd_canaries.rs](tests/pdd_canaries.rs), with
+  `a_path_with_no_verdict_is_never_counted_as_verified`,
+  `a_failed_verifier_run_is_never_reported_as_verified`, and
+  `silence_about_a_path_with_no_recorded_digest_is_not_a_pass` covering the
+  three insufficiencies in [tests/package_verification_tests.rs](tests/package_verification_tests.rs)
+  and [src/package.rs](src/package.rs). The parser canaries pin the verdict for
+  verbatim `dpkg --verify` output.
 
 ### PR8. Editing or deleting an audit row is detectable
 Audit entries are chain-linked: each row carries the hash of the row before it.

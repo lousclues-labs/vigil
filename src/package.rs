@@ -4,7 +4,7 @@
 //! builds a full-system package cache for baseline init. Three consecutive
 //! timeouts open the circuit breaker for 60 seconds.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -50,6 +50,12 @@ fn is_circuit_open() -> bool {
 const PACMAN_PATH: &str = "/usr/bin/pacman";
 const DPKG_PATH: &str = "/usr/bin/dpkg";
 const RPM_PATH: &str = "/usr/bin/rpm";
+
+/// dpkg's per-package metadata directory, where md5sums manifests live.
+const DPKG_INFO_DIR: &str = "/var/lib/dpkg/info";
+
+/// dpkg's status database, which records conffile digests.
+const DPKG_STATUS_FILE: &str = "/var/lib/dpkg/status";
 
 /// Query the system's package manager to determine which package owns a file.
 /// Returns None if the file is not owned by any package.
@@ -633,6 +639,14 @@ pub fn verify_changed_paths(
 
     let mut verdicts = HashMap::new();
 
+    // Conffile digests live in one system-wide file, so read it once for the
+    // whole batch rather than once per package.
+    let conffiles = if backend == PackageBackend::Dpkg {
+        dpkg_conffile_digest_coverage()
+    } else {
+        HashMap::new()
+    };
+
     for (package, paths) in paths_by_package {
         let reported = match backend {
             PackageBackend::Dpkg => verify_package_dpkg(package),
@@ -641,26 +655,165 @@ pub fn verify_changed_paths(
             PackageBackend::Auto => None,
         };
 
-        match reported {
-            Some(problems) => {
-                for path in paths {
-                    let verdict = problems
-                        .get(path)
-                        .copied()
-                        .unwrap_or(PackageVerification::Verified);
-                    verdicts.insert(path.clone(), verdict);
-                }
+        let Some(problems) = reported else {
+            // Verification did not run. Claim nothing.
+            for path in paths {
+                verdicts.insert(path.clone(), PackageVerification::Unknown);
             }
-            None => {
-                // Verification did not run. Claim nothing.
-                for path in paths {
-                    verdicts.insert(path.clone(), PackageVerification::Unknown);
+            continue;
+        };
+
+        // Which of this package's paths the package manager actually holds a
+        // digest for. Silence from the verifier only means "clean" for paths
+        // inside this set; for anything else it means the verifier had
+        // nothing to check against (AF-013).
+        let coverage = match backend {
+            PackageBackend::Dpkg => {
+                let mut covered = dpkg_md5sums_coverage(package).unwrap_or_default();
+                if let Some(cf) = conffiles.get(package) {
+                    covered.extend(cf.iter().cloned());
+                }
+                Some(covered)
+            }
+            // rpm records a digest for every regular file it ships and `rpm -V`
+            // reports the ones it could not check, so silence is coverage.
+            PackageBackend::Rpm => None,
+            // pacman derives digests from the package's mtree. When that is
+            // absent, `-Qkk` says so and the whole package is uncovered.
+            PackageBackend::Pacman => None,
+            PackageBackend::Auto => Some(HashSet::new()),
+        };
+
+        for path in paths {
+            verdicts.insert(
+                path.clone(),
+                verdict_for(path, &problems, coverage.as_ref()),
+            );
+        }
+    }
+
+    verdicts
+}
+
+/// Decide one path's verdict from what the verifier reported and what the
+/// package manager actually holds a digest for.
+///
+/// The subtle case is the second arm. A verifier that says nothing about a
+/// path has either checked it and found it clean, or had no digest to check
+/// it against. Those are opposite meanings and only `coverage` can tell them
+/// apart (AF-013). `coverage` of `None` means the backend reports on every
+/// file it ships, so silence there really is a pass.
+fn verdict_for(
+    path: &str,
+    problems: &HashMap<String, PackageVerification>,
+    coverage: Option<&HashSet<String>>,
+) -> PackageVerification {
+    match problems.get(path) {
+        // The verifier had something to say. Its verdict stands on its own.
+        Some(verdict) => *verdict,
+        None => match coverage {
+            Some(covered) if !covered.contains(path) => PackageVerification::Unknown,
+            _ => PackageVerification::Verified,
+        },
+    }
+}
+
+/// Absolute paths for which dpkg recorded a digest in a package's md5sums
+/// manifest. Returns None when the package ships no manifest at all, which is
+/// not rare: on a stock Ubuntu install, packages including
+/// `apport-core-dump-handler` and several kernel packages have none.
+///
+/// Manifest lines are `<md5>  <path relative to />`.
+fn dpkg_md5sums_coverage(package: &str) -> Option<HashSet<String>> {
+    let dir = Path::new(DPKG_INFO_DIR);
+
+    // The manifest is either `<pkg>.md5sums` or, for multi-arch packages,
+    // `<pkg>:<arch>.md5sums`. Ownership queries strip the arch, so try both.
+    let mut candidates = vec![dir.join(format!("{package}.md5sums"))];
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        let prefix = format!("{package}:");
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with(&prefix) && name.ends_with(".md5sums") {
+                candidates.push(entry.path());
+            }
+        }
+    }
+
+    let mut covered = HashSet::new();
+    let mut found = false;
+    for path in candidates {
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        found = true;
+        covered.extend(parse_md5sums_paths(&contents));
+    }
+
+    found.then_some(covered)
+}
+
+/// Parse the absolute paths out of a dpkg md5sums manifest.
+fn parse_md5sums_paths(contents: &str) -> HashSet<String> {
+    contents
+        .lines()
+        .filter_map(|line| {
+            let (_digest, rel) = line.split_once("  ")?;
+            let rel = rel.trim();
+            (!rel.is_empty()).then(|| format!("/{}", rel.trim_start_matches('/')))
+        })
+        .collect()
+}
+
+/// Conffile digests, which dpkg records in its status database rather than in
+/// the per-package md5sums manifest. Read once per verification batch.
+fn dpkg_conffile_digest_coverage() -> HashMap<String, HashSet<String>> {
+    match std::fs::read_to_string(DPKG_STATUS_FILE) {
+        Ok(contents) => parse_status_conffiles(&contents),
+        Err(e) => {
+            tracing::debug!(error = %e, "could not read dpkg status for conffile coverage");
+            HashMap::new()
+        }
+    }
+}
+
+/// Parse `Package:` / `Conffiles:` stanzas out of the dpkg status database.
+///
+/// Conffile lines are indented and shaped `<absolute path> <md5>[ obsolete]`.
+fn parse_status_conffiles(contents: &str) -> HashMap<String, HashSet<String>> {
+    let mut out: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut package: Option<String> = None;
+    let mut in_conffiles = false;
+
+    for line in contents.lines() {
+        if let Some(name) = line.strip_prefix("Package: ") {
+            package = Some(name.trim().to_string());
+            in_conffiles = false;
+            continue;
+        }
+        if line.starts_with("Conffiles:") {
+            in_conffiles = true;
+            continue;
+        }
+        // Any other unindented field ends the Conffiles list.
+        if !line.starts_with(' ') && !line.starts_with('\t') {
+            in_conffiles = false;
+            continue;
+        }
+        if !in_conffiles {
+            continue;
+        }
+        if let Some(ref pkg) = package {
+            if let Some(path) = line.split_whitespace().next() {
+                if path.starts_with('/') {
+                    out.entry(pkg.clone()).or_default().insert(path.to_string());
                 }
             }
         }
     }
 
-    verdicts
+    out
 }
 
 /// `dpkg --verify <pkg>`: one line per file that did not fully check out.
@@ -704,6 +857,13 @@ fn verify_package_pacman(package: &str) -> Option<HashMap<String, PackageVerific
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+
+    // Without an mtree there are no recorded digests, so pacman checked
+    // nothing and silence proves nothing (AF-013).
+    if combined.to_lowercase().contains("no mtree file") {
+        return None;
+    }
+
     for line in combined.lines() {
         if let Some((path, verdict)) = parse_pacman_verify_line(line) {
             problems.insert(path, verdict);
@@ -1324,6 +1484,103 @@ some preamble that is not a file line\n\
             stderr: Vec::new(),
         };
         assert!(finalize_verify(&clean, HashMap::new()).is_some());
+    }
+
+    /// Regression guard for AF-013.
+    ///
+    /// dpkg holds no digest for a fifth of `/usr/bin` and nearly all of
+    /// `/boot` on a stock Ubuntu install: locally generated initrds,
+    /// alternatives, diverted binaries. `dpkg --verify` says nothing about
+    /// those files because it has nothing to say, and reading that silence as
+    /// a pass reported `/usr/bin/ls` as "proven to be the package's own
+    /// bytes" when no such proof existed.
+    #[test]
+    fn silence_about_a_path_with_no_recorded_digest_is_not_a_pass() {
+        // An md5sums manifest is the coverage set. Anything outside it is
+        // unproven no matter how quiet the verifier is.
+        let manifest = "\
+35bffc2134207a22591b40843d78602d  usr/bin/covered
+0afd86d97f20c14cce6c76d1d20f054a  usr/share/doc/pkg/copyright
+";
+        let covered = parse_md5sums_paths(manifest);
+        assert!(covered.contains("/usr/bin/covered"));
+        assert!(
+            !covered.contains("/usr/bin/uncovered"),
+            "a path absent from the manifest must never be counted as covered"
+        );
+        assert_eq!(covered.len(), 2);
+
+        // The verifier reported nothing at all, which is what dpkg does for a
+        // package whose files it holds no digests for.
+        let silent: HashMap<String, PackageVerification> = HashMap::new();
+
+        assert_eq!(
+            verdict_for("/usr/bin/uncovered", &silent, Some(&covered)),
+            PackageVerification::Unknown,
+            "silence about a path with no recorded digest is not a pass"
+        );
+        assert_eq!(
+            verdict_for("/usr/bin/covered", &silent, Some(&covered)),
+            PackageVerification::Verified,
+            "silence about a path the manager does hold a digest for is a pass"
+        );
+
+        // A verdict the verifier did give stands regardless of coverage.
+        let mut reported = HashMap::new();
+        reported.insert(
+            "/usr/bin/uncovered".to_string(),
+            PackageVerification::Mismatch,
+        );
+        assert_eq!(
+            verdict_for("/usr/bin/uncovered", &reported, Some(&covered)),
+            PackageVerification::Mismatch
+        );
+
+        // A backend that reports on every file it ships has no coverage set;
+        // silence there really is a pass.
+        assert_eq!(
+            verdict_for("/anything", &silent, None),
+            PackageVerification::Verified
+        );
+    }
+
+    #[test]
+    fn conffile_digests_come_from_the_status_database_not_the_manifest() {
+        // dpkg records conffile digests separately. Without this the common
+        // case of a package updating its own config file would be reported as
+        // unproven on every upgrade.
+        let status = "\
+Package: apport-core-dump-handler
+Status: install ok installed
+Conffiles:
+ /etc/init.d/apport cfe03fd39e0f1b45972349fcb25091d4
+Description: Kernel core dump handler
+
+Package: sudo
+Conffiles:
+ /etc/sudo.conf 031f8305ee0c554fb2433a949bebe9be
+ /etc/sudo_logsrvd.conf ad0ba586da300ae3ba46312ad744a6e2
+Description: limited super user privileges
+";
+        let map = parse_status_conffiles(status);
+
+        let apport = map
+            .get("apport-core-dump-handler")
+            .expect("package present");
+        assert!(apport.contains("/etc/init.d/apport"));
+
+        let sudo = map.get("sudo").expect("package present");
+        assert!(sudo.contains("/etc/sudo.conf"));
+        assert!(sudo.contains("/etc/sudo_logsrvd.conf"));
+        assert!(
+            !sudo.contains("/etc/sudoers"),
+            "/etc/sudoers is not one of sudo's conffiles; inventing coverage \
+             for it would be the same false-proof bug in a new place"
+        );
+
+        // The Description continuation lines are indented too and must not be
+        // mistaken for conffile entries.
+        assert_eq!(sudo.len(), 2);
     }
 
     #[test]

@@ -162,6 +162,12 @@ fn is_terminal_event(event: &serde_json::Value) -> bool {
 /// discriminators and is enforced by an architecture invariant test.
 pub(crate) const UNPROVEN_MARKER: &str = "VIGIL UNPROVEN CHANGES";
 
+/// Informational marker for paths the package manager holds no digest for.
+/// Deliberately distinct from `UNPROVEN_MARKER`: these are unprovable by
+/// anyone (a locally generated initrd has no packaged content to compare
+/// against), so the hooks log them and never raise an alarm on them.
+const COVERAGE_MARKER: &str = "VIGIL DIGEST COVERAGE";
+
 /// Report changes the refresh could not prove benign, on stderr, always.
 ///
 /// A refresh absorbs the new on-disk state into the baseline. Everything it
@@ -191,17 +197,33 @@ fn report_unproven_changes(event: &serde_json::Value) {
 
     let mismatch = paths("pkg_mismatch_paths");
     let unattributed = paths("changed_unattributed_paths");
+    let unverifiable = paths("pkg_unverifiable_paths");
 
+    // Only a contradiction or an unowned file is worth interrupting someone
+    // for. A path the package manager holds no digest for is unproven, but it
+    // is unprovable *by anyone*: a locally generated initrd has no packaged
+    // content to compare against, and 98% of /boot is in that category on a
+    // stock Ubuntu install. Paging on those every kernel update would rebuild
+    // the noise this exists to remove, so they are counted, logged and shown
+    // in the summary, and they never raise an alarm on their own.
     if mismatch.is_empty() && unattributed.is_empty() {
+        if !unverifiable.is_empty() {
+            eprintln!(
+                "{}: {} changed path(s) had no recorded package digest to check against",
+                COVERAGE_MARKER,
+                unverifiable.len()
+            );
+        }
         return;
     }
 
     eprintln!(
-        "{}: {} ({} package mismatch, {} unattributed)",
+        "{}: {} ({} package mismatch, {} unattributed, {} with no recorded digest)",
         UNPROVEN_MARKER,
         mismatch.len() + unattributed.len(),
         mismatch.len(),
-        unattributed.len()
+        unattributed.len(),
+        unverifiable.len()
     );
 
     // Never truncated (Principle V: Actionable).

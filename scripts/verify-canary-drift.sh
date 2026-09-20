@@ -52,11 +52,29 @@ revert() {
   done
 }
 
-# expect_red <canary test name> <description>
+# expect_red <canary test name> <description> [cargo target args]
+#
+# Defaults to the PDD canary suite. Some canaries live in the lib's own test
+# module, so the target is overridable.
 expect_red() {
   local test_name="$1"
   local desc="$2"
-  if cargo test --test pdd_canaries -- --exact "$test_name" >/tmp/canary_drift.log 2>&1; then
+  local target="${3:---test pdd_canaries}"
+  local rc=0
+
+  # shellcheck disable=SC2086
+  cargo test $target -- --exact "$test_name" >/tmp/canary_drift.log 2>&1 || rc=$?
+
+  # A test name that matches nothing exits 0 and proves nothing. Without this
+  # check a typo in a canary name reads as a passing drift case, which would
+  # make the guard on the guards the very theater it exists to catch.
+  if grep -qE '^test result: ok\. 0 passed' /tmp/canary_drift.log; then
+    echo "  HARNESS BUG: $test_name matched no test in \`cargo test $target\`"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+
+  if [ "$rc" -eq 0 ]; then
     echo "  THEATER: $test_name stayed green through: $desc"
     FAIL=$((FAIL + 1))
   else
@@ -184,6 +202,21 @@ open(p, "w").write(s.replace(needle, inject, 1))
 PYX
 expect_red audit_truth_package_ownership_is_never_proof_of_authorship "missing verdict treated as verified"
 revert src/baseline_diff.rs
+
+echo "== PR18 C-OWNERSHIP-IS-NOT-PROOF (AF-013: silence outside coverage) =="
+python3 - <<'PYX'
+p = "src/package.rs"
+s = open(p).read()
+needle = """        None => match coverage {
+            Some(covered) if !covered.contains(path) => PackageVerification::Unknown,
+            _ => PackageVerification::Verified,
+        },"""
+inject = """        None => PackageVerification::Verified,"""
+assert needle in s, "coverage gate anchor not found"
+open(p, "w").write(s.replace(needle, inject, 1))
+PYX
+expect_red package::tests::silence_about_a_path_with_no_recorded_digest_is_not_a_pass "coverage gate removed from the verdict" "--lib"
+revert src/package.rs
 
 echo "== PR9 C-DEGRADED-IS-LOUD =="
 python3 - <<'PY'

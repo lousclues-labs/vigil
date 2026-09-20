@@ -36,6 +36,7 @@ and the two cross-reference each other when one event is both.
 | AF-010 | High | Closed | PR18 | C-OWNERSHIP-IS-NOT-PROOF |
 | AF-011 | Medium | Closed | PR18 | C-OWNERSHIP-IS-NOT-PROOF (reporting half), hook surfacing |
 | AF-012 | High | Closed | PR18 | `a_failed_verifier_run_is_never_reported_as_verified` |
+| AF-013 | High | Closed | PR18 | `silence_about_a_path_with_no_recorded_digest_is_not_a_pass` |
 
 ---
 
@@ -446,6 +447,74 @@ findings are still used).
 `a_failed_verifier_run_is_never_reported_as_verified` in
 [src/package.rs](src/package.rs), which asserts all three cases: failed run,
 non-zero-with-findings, and clean run.
+
+---
+
+---
+
+## AF-013: A quiet verifier was read as a pass for files it holds no digest for
+
+- **Severity:** High
+- **Status:** Closed
+- **Principle / Promise:** P4, P8 / PR18
+
+**What drifted.** The verification layer shipped in AF-010 treated any path the
+verifier did not complain about as `Verified`. That rule is sound only for
+paths the package manager actually holds a digest for, and it does not hold
+for a great many of them. `dpkg --verify` prints a line for every file it
+*checked* and could not confirm; it prints nothing at all for a file it has no
+recorded digest for, because there was nothing to check.
+
+Measured on the reporting operator's own machine, against the default Critical
+watch paths:
+
+| Path | Files | No recorded digest |
+|---|---|---|
+| `/usr/bin` | 2,535 | 529 (20.9%) |
+| `/usr/sbin` | 646 | 159 (24.6%) |
+| `/boot` | 336 | 328 (97.6%) |
+
+`/usr/bin/ls` is in that set on this system: it belongs to
+`coreutils-from-uutils`, whose md5sums manifest lists only two documentation
+files. So `/usr/bin/ls` would have been reported as proven to be its package's
+own bytes when dpkg holds no digest for it whatsoever. Locally generated
+initrds, `update-alternatives` symlinks, and diverted binaries are all in the
+same position, which is why nearly all of `/boot` is uncovered.
+
+**Why it mattered.** This is the same class of error as AF-012, found one
+layer further in, and it is the error this whole feature exists to prevent: a
+claim of proof where no proof was obtained. It was worse than AF-012 in reach.
+AF-012 needed an unresolvable package name to trigger; this fired on a fifth of
+the Critical watch surface during any transaction that touched those files,
+and it was reported to the operator as a positive verification.
+
+**How it was found.** Asked what to build next, the first move was to check
+whether the promise just written was actually true. Enumerating installed
+packages against `/var/lib/dpkg/info/*.md5sums` turned up seven packages with
+no manifest at all, and following that thread produced the coverage numbers
+above. No canary caught it, because every canary asserted behavior *given* a
+verdict and none asserted what the absence of a verdict was allowed to mean.
+
+**Closing change.** `Verified` now requires positive coverage:
+`dpkg_md5sums_coverage` reads the package's md5sums manifest and
+`dpkg_conffile_digest_coverage` reads the `Conffiles:` stanzas from the dpkg
+status database once per batch. A path outside that union is `Unknown` no
+matter how quiet the verifier was. pacman reports a missing mtree, which means
+no digests exist for the package at all, and that now yields `Unknown` for the
+whole package rather than a silent pass.
+
+Uncovered paths are counted, logged, and shown in the refresh summary, but they
+do not raise an alarm on their own: a locally generated initrd is unprovable by
+anyone, and paging on every kernel update would rebuild the noise AF-010
+removed. A digest that a package *did* record and that the content contradicts
+is still Critical.
+
+**Canary that prevents recurrence.**
+`silence_about_a_path_with_no_recorded_digest_is_not_a_pass` and
+`conffile_digests_come_from_the_status_database_not_the_manifest` in
+[src/package.rs](src/package.rs), and PR18 in [PROMISES.md](PROMISES.md) now
+names all three insufficiencies (ownership, a quiet verifier, a verifier that
+did not run) rather than only the first.
 
 ---
 
