@@ -8,6 +8,175 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-09-19
+
+Promise Driven Development (PDD) retrofit. Vigil has always made
+strong claims about itself in prose: it watches but never acts, it
+compares but never guesses, it is silent because nothing changed,
+it never talks to the network. Every one of those was true and
+none of them was enforced. A single well-meaning commit could have
+made any of them false with a green build, and nothing would have
+said so.
+
+This release makes each of those claims falsifiable. It adds the
+four PDD layers (**Principles -> Promises -> Canaries -> Ledger**),
+twenty canaries that fail when a promise stops being true, a
+required merge-blocking CI gate, and a script that proves the
+canaries themselves are not theater.
+
+No source-logic or runtime-behavior change in either binary. No
+change to any public API surface: CLI commands and flags, the
+`vigil.toml` schema, the `baseline` / `audit_log` / `config_state`
+schemas, and the alert event shape are all untouched. The
+boundaries this release enforces were already correct. They were
+conventions, and they are now guarded. The minor bump reflects the
+new test surface, the new required status check, and the new
+contribution contract, following the same reasoning as `1.12.0`.
+
+### Added
+
+- **`PRINCIPLES.md` (values layer).** Eight principles, each
+  written as what it *forbids* rather than what it prefers, each
+  naming the promises it spawns. A principle that guards nothing
+  was cut or sharpened until it did. The long-form philosophy in
+  [docs/PRINCIPLES.md](docs/PRINCIPLES.md) is unchanged and now
+  points at this operational form.
+- **`PROMISES.md` (commitments layer).** Seventeen narrow,
+  observable, falsifiable promises, each descending from a
+  principle and naming the canary that guards it. Claims that
+  cannot be cheaply falsified today (the seven-day quiet-run bar,
+  reproducible builds, completeness of the default watch set) are
+  stated honestly as aspirations rather than dressed up as
+  promises.
+- **`AUDIT_FINDINGS.md` (ledger layer).** Nine numbered,
+  severity-graded findings recording what shipped unguarded, why
+  it mattered, the closing change, and the canary that now
+  prevents recurrence. A finding closed without a canary is not
+  closed. This ledger is deliberately distinct from
+  [docs/VULNERABILITIES.md](docs/VULNERABILITIES.md): a finding is
+  about a promise that stopped being provable, a `VIGIL-VULN-*`
+  entry is about an attack that became possible.
+- **`tests/pdd_canaries.rs` (proof layer, twenty canaries).**
+  These are not feature tests. Each one asserts a promise, names
+  the promise id (`PRn`) and canary id (`C-...`), and fails with a
+  message that says which claim broke and why that claim exists:
+  - *Watch, never act.* Every `fanotify_init` in the tree uses
+    `FAN_CLASS_NOTIF`; no permission-class constant, permission
+    event, or response path exists anywhere in `src/`, so Vigil
+    does not hold the kernel interface that would let it block a
+    syscall. No detection path deletes, truncates, renames,
+    re-permissions, re-owns, or executes. The only `libc::kill` in
+    the tree is the liveness probe `kill(pid, 0)`, which delivers
+    no signal.
+  - *The verdict is a comparison, never a judgment.*
+    `FileSnapshot::diff` is evaluated 512 times over fixed inputs
+    and must return a byte-identical, identically ordered result
+    every time. The detection surface carries no score,
+    confidence, probability, reputation lookup, or model
+    inference, and no such crate may enter the manifest.
+  - *Silence means intact, never ignored.* The Bloom prefilter is
+    built from the real `default_config()` watch set and must
+    accept every watched path and every descendant of one, so an
+    event for a watched path can never be dropped before the
+    comparison. A real temporary file is captured, recorded, and
+    re-captured: unchanged yields no change, modified yields
+    `ContentModified`.
+  - *The audit trail never lies.* A duplicate detection inside the
+    cooldown window is driven through the real
+    `AlertDispatcher::run` loop, and both detections must appear
+    in the audit database with exactly one flagged `suppressed`.
+    Editing an audit row with direct SQL must break
+    `verify_chain`.
+  - *Degradation is announced, never silent.* The inotify-fallback
+    and reduced-event-mask branches of the doctor checks must
+    carry a non-OK status and name the reduced coverage. The
+    blind-spot counters (`events_dropped`,
+    `kernel_queue_overflows`, and the two compensating-scan
+    counters) must stay on the exported metrics snapshot.
+  - *Local by design.* No HTTP client, telemetry SDK, crash
+    reporter, cloud SDK, or update-check crate in the manifest.
+    `std::net` appears in exactly two files, both operator-
+    configured alert sinks. `default_config()` ships an empty
+    webhook URL, remote syslog disabled, and no signal socket, so
+    a default install performs no outbound network I/O at all.
+  - *Stands alone, stays small.* No dependency on, import of, or
+    state path from a sibling tool. `#![deny(unsafe_code)]` stays
+    on the crate root and the `allow(unsafe_code)` exemption set
+    is exactly the eleven enumerated Linux syscall-boundary
+    modules; a twelfth entry is now a promise review and a ledger
+    entry, not a routine commit.
+  - *The proof ships.* The gate job must depend on every canary
+    job, the release must keep publishing a SHA256 checksum and a
+    build-provenance attestation, and the promise set itself is
+    held to the methodology's rules: no principle that spawns no
+    promise, no promise that names no canary, and no canary named
+    that does not exist.
+- **`.github/workflows/pdd-canaries.yml` (CI-gate canaries).**
+  Five canary jobs plus a `PDD Canary Gate` aggregate that fails
+  if any of them did not pass. These carry the invariants no
+  single unit test can see: a tree-wide scan for permission-class
+  fanotify, an actuation scan across every detection module, a
+  manifest and source scan for network code, the sibling-coupling
+  and unsafe-allowlist checks, and a `strings` grep of the built
+  `vigil` and `vigild` binaries for telemetry hosts. The gate is
+  the status branch protection should require.
+- **`scripts/verify-canary-drift.sh` (the guard on the guards).**
+  A canary that stays green through a real breach is theater, and
+  that is the failure mode this methodology is most vulnerable to.
+  The script breaks each promise on purpose (permission-class
+  fanotify, quarantine in a detection path, `kill(pid, 9)`, a
+  clock-dependent verdict, a risk score, an ML crate, a prefilter
+  false negative, an inverted content compare, suppression that
+  skips the audit write, chain verification that swallows breaks,
+  a degraded backend reporting OK, a dropped counter, an HTTP
+  dependency, a stray socket, a webhook on by default, a sibling
+  state path, a widened unsafe allowlist, a job dropped from the
+  gate, a deleted attestation, an unguarded promise, and a canary
+  that does not exist), requires the guarding canary to go red,
+  then reverts from a pristine backup. Twenty-one drift cases, all
+  proven.
+
+### Changed
+
+- [README.md](README.md) gains a "Promise Driven Development"
+  section: the claims in that file are now each backed by a named
+  canary, and the documentation table links the three new
+  top-level documents.
+- [CONTRIBUTING.md](CONTRIBUTING.md) gains a "Promises And
+  Canaries" section with three rules for contributors: a new
+  self-claim needs a promise and a canary, a canary must live
+  where the promise lives, and drift gets recorded in the ledger
+  rather than silently fixed. The out-of-scope table now names the
+  canary that will fail for each rejected feature class, not just
+  the principle it offends, and `cargo test --test pdd_canaries`
+  joins the pre-submit checks.
+- [docs/TESTING.md](docs/TESTING.md) documents the canary suite,
+  what makes a canary different from an ordinary test, and where a
+  cross-cutting proof belongs when the test suite cannot reach it.
+- [docs/PRINCIPLES.md](docs/PRINCIPLES.md) and
+  [docs/README.md](docs/README.md) point at the operational form
+  of the principles and at the promise set and ledger.
+
+### Notes
+
+- **AF-009 is the methodology catching itself.** The first
+  implementation of the source-scanning canaries stripped
+  `#[cfg(test)]` code by truncating each file at the first
+  occurrence, which left every line after a test module unscanned.
+  Appending a sibling-tool state path to the end of
+  `src/package.rs` left the coupling canary green. The drift
+  script found it, the gap is recorded as a finding rather than
+  quietly patched, and the fix (`strip_test_code` in the suite, an
+  awk block-skip in CI) is proven by the same script that exposed
+  it.
+- **Operator action for maintainers:** set `PDD Canary Gate` as a
+  required status check for `main` in branch protection. Until
+  that is done the canaries run on every push and pull request but
+  the platform does not block a merge on them. Select only the
+  aggregate `PDD Canary Gate`, not the individual canary jobs, for
+  the same reason `pkg-success` is wired that way in
+  [docs/RELEASING.md](docs/RELEASING.md).
+
 ## [1.12.4] - 2026-07-01
 
 Maintenance and CI-hardening release. No source-logic or
