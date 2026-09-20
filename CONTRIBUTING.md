@@ -7,11 +7,11 @@ Read the principles first, then ship clean changes.
 
 ## Short Version
 
-1. Read [docs/PRINCIPLES.md](docs/PRINCIPLES.md)
+1. Read [docs/PRINCIPLES.md](docs/PRINCIPLES.md) and [PROMISES.md](PROMISES.md)
 2. Fork the repo
 3. Create a branch from `main`
 4. Make focused changes
-5. Run checks
+5. Run checks, including `cargo test --test pdd_canaries`
 6. Open a PR
 
 ## Contributor Terms
@@ -47,6 +47,44 @@ Full context: [docs/PRINCIPLES.md](docs/PRINCIPLES.md).
 
 ---
 
+## Promises And Canaries
+
+Vigil is built on Promise Driven Development. The principles above are the
+values layer; [PROMISES.md](PROMISES.md) is the part we can prove. Every
+promise there is narrow, falsifiable, and guarded by a canary that fails
+loudly when the promise stops being true.
+
+Three rules apply to contributions:
+
+1. **A new self-claim needs a promise and a canary.** If your change makes the
+   tool claim something about itself (in the README, in `--help`, in the docs),
+   either add a promise to [PROMISES.md](PROMISES.md) with a canary that fails
+   when the claim breaks, or state it as an aspiration at the bottom of that
+   file. A claim with no guard is the one failure mode this project will not
+   accept.
+2. **A canary must live where the promise lives.** A promise about the source
+   tree is a source scan. A promise about behavior is a behavioral test driving
+   the real types. A cross-cutting promise that no unit test can see belongs in
+   [.github/workflows/pdd-canaries.yml](.github/workflows/pdd-canaries.yml) as a
+   merge-blocking job.
+3. **Drift gets recorded, not just fixed.** If you find a case where a stated
+   claim had stopped being true, add a numbered finding to
+   [AUDIT_FINDINGS.md](AUDIT_FINDINGS.md): what drifted, why it mattered, the
+   closing change, and the canary that prevents recurrence. A finding closed
+   without a canary is not closed.
+
+Before opening a PR that touches a promise:
+
+```bash
+cargo test --test pdd_canaries
+bash scripts/verify-canary-drift.sh   # proves each canary fails on a real breach
+```
+
+The `PDD Canary Gate` status is required. A red canary is not a flaky test; it
+is the tool telling you a claim stopped being true.
+
+---
+
 ## Development Setup
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for full details.
@@ -70,6 +108,7 @@ All PRs should pass locally:
 cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets
+cargo test --test pdd_canaries
 ```
 
 Recommended security gates:
@@ -109,9 +148,12 @@ These are intentional non-goals.
 | Feature Request | Why Rejected |
 |-----------------|--------------|
 | GUI frontend | Vigil Baseline is CLI/systemd-first |
-| cloud integration/telemetry | violates Principle XIV |
-| behavioral analysis/ML scoring | violates Principles III and IV |
-| auto-remediation/quarantine | violates Principle I |
+| cloud integration/telemetry | violates Principle XIV, breaks PR11 and PR12 |
+| behavioral analysis/ML scoring | violates Principles III and IV, breaks PR3 and PR4 |
+| auto-remediation/quarantine | violates Principle I, breaks PR1 and PR2 |
+
+Each row on the right names the canary that will fail if the change is
+attempted, not just the principle it offends. See [PROMISES.md](PROMISES.md).
 
 ---
 

@@ -35,6 +35,7 @@ tests/
 |-- exclusion_filter_tests.rs
 |-- filter_self_paths_tests.rs
 |-- hmac_chain_tamper_tests.rs
+|-- pdd_canaries.rs                   # Promise Driven Development canaries
 |-- scan_deleted_file_tests.rs
 |-- security_hardening_v3_tests.rs
 |-- self_monitoring_tests.rs
@@ -148,8 +149,40 @@ Use this rule of thumb:
 - single function behavior: unit test in the same `src/*` module
 - cross-module behavior: new file in `tests/` named for behavior
 - integrity and tamper behavior: new file in `tests/` with explicit scope in the filename
+- a claim the project makes about itself: a canary in `tests/pdd_canaries.rs`
 
 Prefer descriptive names like `audit_chain_tests.rs` over generic buckets.
+
+---
+
+## PDD Canaries
+
+`tests/pdd_canaries.rs` is not a feature suite. Every test in it guards one
+promise from [PROMISES.md](../PROMISES.md), and a failure there means a claim
+the project makes about itself stopped being true, not that a feature
+regressed.
+
+```bash
+cargo test --test pdd_canaries
+```
+
+Two things make a canary different from an ordinary test:
+
+- It is named to a promise (`PRn`) and a canary id (`C-...`), and its failure
+  message says which promise broke and why that promise exists.
+- It is itself tested. [scripts/verify-canary-drift.sh](../scripts/verify-canary-drift.sh)
+  breaks each promise on purpose and requires the guarding canary to go red
+  before reverting the mutation. A canary that stays green through a real
+  breach is theater, and the script is what catches that.
+
+```bash
+bash scripts/verify-canary-drift.sh
+```
+
+Canaries that no single unit test can see (a cross-cutting grep over the whole
+tree, a scan of the built binary) live in
+[.github/workflows/pdd-canaries.yml](../.github/workflows/pdd-canaries.yml)
+instead, behind the required `PDD Canary Gate` status.
 
 ---
 

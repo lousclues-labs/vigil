@@ -1,0 +1,258 @@
+# PDD Canaries: required, merge-blocking gate.
+#
+# This workflow is the CI proof layer of Promise Driven Development
+# (Principles -> Promises -> Canaries -> Ledger). It guards the cross-cutting
+# invariants that no single unit test sees: a detection path that never acts
+# (PR1, PR2), a tree with no network client outside the two opt-in alert sinks
+# (PR11), independence from sibling tools and a confined unsafe boundary
+# (PR13, PR14), and a release an operator can verify (PR16). The behavioral and
+# source-scan canaries in tests/pdd_canaries.rs run here too. The final
+# `pdd-canary-gate` job is the status that branch protection should require.
+#
+# Promises: PROMISES.md. Principles: PRINCIPLES.md. Ledger: AUDIT_FINDINGS.md.
+
+name: PDD Canaries
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ===========================================================================
+  # PR1 / C-NOTIF-CLASS-ONLY and PR2 / C-NO-ACTUATION: Vigil watches, and never
+  # acts. No permission-class fanotify anywhere, no actuation in a detection
+  # path, no signal to a process Vigil did not spawn.
+  # ===========================================================================
+  watch-never-act:
+    name: Watch, never act
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: No permission-class fanotify in the tree
+        run: |
+          set -euo pipefail
+          FORBIDDEN='FAN_CLASS_CONTENT|FAN_CLASS_PRE_CONTENT|FAN_OPEN_PERM|FAN_ACCESS_PERM|FAN_OPEN_EXEC_PERM|FAN_ALLOW|FAN_DENY|fanotify_response'
+          # Strip whole-line comments so constants named in prose do not trip
+          # the net, then search the remaining code.
+          hits=$(find src -name '*.rs' -print0 \
+            | xargs -0 awk '{ l=$0; sub(/^[ \t]+/,"",l) } l ~ /^\/\// || l ~ /^\*/ { next } { print FILENAME ": " $0 }' \
+            | grep -EI "$FORBIDDEN" || true)
+          if [ -n "$hits" ]; then
+            echo "C-NOTIF-CLASS-ONLY breach (PR1): permission-class fanotify usage:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "OK: fanotify is notification class only."
+
+      - name: No actuation in any detection path
+        run: |
+          set -euo pipefail
+          FORBIDDEN='remove_file|remove_dir|set_permissions|fs::write|File::create|OpenOptions|fs::rename|set_len|fchown|libc::chmod|libc::chown|libc::unlink|libc::rename|libc::truncate|Command::new|quarantine'
+          # Shipped code only: drop #[cfg(test)] items, which build fixtures by
+          # writing files, then drop whole-line comments. Each test block is
+          # skipped individually so code after a test module is still scanned.
+          hits=""
+          for f in $(find src/monitor src/worker.rs src/scanner.rs src/detection.rs \
+                          src/baseline_diff.rs src/types/snapshot.rs src/types/change.rs \
+                          -name '*.rs'); do
+            found=$(awk '
+                /^#\[cfg\(test\)\]/ { skip = 1; next }
+                skip && /^\}/       { skip = 0; next }
+                skip                { next }
+                                    { print }
+              ' "$f" \
+              | grep -vE '^[[:space:]]*(//|\*|/\*)' \
+              | grep -EI "$FORBIDDEN" || true)
+            if [ -n "$found" ]; then
+              hits="$hits$f: $found"$'\n'
+            fi
+          done
+          if [ -n "$hits" ]; then
+            echo "C-NO-ACTUATION breach (PR2): a detection path gained the ability to act:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "OK: detection paths observe and report only."
+
+      - name: kill() is a liveness probe only
+        run: |
+          set -euo pipefail
+          hits=$(grep -rn 'libc::kill(' src --include='*.rs' | grep -v ', 0)' || true)
+          if [ -n "$hits" ]; then
+            echo "C-NO-ACTUATION breach (PR2): a kill() call delivers a real signal:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "OK: the only kill() is kill(pid, 0), which delivers nothing."
+
+  # ===========================================================================
+  # PR11 / C-NO-NETWORK-DEPS and PR12 / C-EGRESS-OFF-BY-DEFAULT: local by
+  # design, in the manifest, in the source, and in the built artifact.
+  # ===========================================================================
+  local-by-design:
+    name: Local by design (manifest + source + artifact)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: No HTTP, telemetry, or update-check dependency
+        run: |
+          set -euo pipefail
+          FORBIDDEN='^(reqwest|ureq|hyper|isahc|surf|attohttpc|curl|awc|sentry|opentelemetry|datadog|posthog|segment|mixpanel|amplitude|self_update|self-update|update-informer)[[:space:]]*='
+          hits=$(grep -E "$FORBIDDEN" Cargo.toml || true)
+          if [ -n "$hits" ]; then
+            echo "C-NO-NETWORK-DEPS breach (PR11): network or telemetry crate in the manifest:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "OK: no network or telemetry dependency."
+
+      - name: Network code is confined to the two opt-in sinks
+        run: |
+          set -euo pipefail
+          hits=$(grep -rn -E 'std::net|TcpStream|UdpSocket|TcpListener' src --include='*.rs' \
+            | grep -v '^src/alert/webhook.rs' \
+            | grep -v '^src/alert/remote_syslog.rs' || true)
+          if [ -n "$hits" ]; then
+            echo "C-NO-NETWORK-DEPS breach (PR11): network code outside the opt-in alert sinks:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "OK: sockets exist only in the webhook and remote syslog sinks."
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release artifact
+        run: cargo build --release
+
+      - name: No telemetry endpoint in the built binaries
+        run: |
+          set -euo pipefail
+          FORBIDDEN='google-analytics\.com|googletagmanager\.com|sentry\.io|mixpanel\.com|segment\.io|posthog\.com|plausible\.io|amplitude\.com|datadoghq\.com|bugsnag\.com|telemetry\.vigilbaseline\.com|analytics\.vigilbaseline\.com|api\.lousclues\.com'
+          for bin in target/release/vigil target/release/vigild; do
+            if strings "$bin" | grep -EI -i "$FORBIDDEN"; then
+              echo "C-NO-NETWORK-DEPS breach (PR11): telemetry host in $bin."
+              exit 1
+            fi
+          done
+          echo "OK: built artifacts are telemetry-free."
+
+  # ===========================================================================
+  # PR13 / C-STANDS-ALONE and PR14 / C-UNSAFE-BOUNDARY: no sibling coupling,
+  # and unsafe confined to the enumerated syscall boundary.
+  # ===========================================================================
+  stands-alone:
+    name: Stands alone, stays small
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: No sibling-tool coupling
+        run: |
+          set -euo pipefail
+          hits=$(grep -rn -E 'use (shroud|vpn_shroud|peek)::|/var/lib/(shroud|peek)|/etc/(shroud|peek)|/run/(shroud|peek)' src --include='*.rs' || true)
+          hits="$hits$(grep -E '^(shroud|vpn-shroud|peek)[[:space:]]*=' Cargo.toml || true)"
+          if [ -n "$(echo "$hits" | tr -d '[:space:]')" ]; then
+            echo "C-STANDS-ALONE breach (PR13): Vigil depends on a sibling tool:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "OK: Vigil stands alone."
+
+      - name: Unsafe stays at the syscall boundary
+        run: |
+          set -euo pipefail
+          if ! grep -q '#!\[deny(unsafe_code)\]' src/lib.rs; then
+            echo "C-UNSAFE-BOUNDARY breach (PR14): src/lib.rs no longer denies unsafe code."
+            exit 1
+          fi
+          expected=$(printf '%s\n' \
+            src/control.rs src/daemon/mod.rs src/display/term.rs src/hash.rs \
+            src/monitor/fanotify.rs src/monitor/mod.rs src/types/event.rs \
+            src/util/owned_fd.rs src/util/process.rs src/util/random.rs src/worker.rs \
+            | sort)
+          actual=$(grep -rl 'allow(unsafe_code)' src --include='*.rs' | sort)
+          if [ "$expected" != "$actual" ]; then
+            echo "C-UNSAFE-BOUNDARY breach (PR14): the unsafe allowlist changed."
+            diff <(echo "$expected") <(echo "$actual") || true
+            echo "Every entry must be a Linux syscall boundary. A new one needs a promise review and an AUDIT_FINDINGS.md entry."
+            exit 1
+          fi
+          echo "OK: unsafe is confined to the enumerated syscall boundary."
+
+  # ===========================================================================
+  # The behavioral + source-scan canaries in tests/pdd_canaries.rs.
+  # ===========================================================================
+  canary-tests:
+    name: Canary test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run PDD canaries
+        run: cargo test --test pdd_canaries -- --nocapture
+
+  # ===========================================================================
+  # PR16 / C-RELEASE-PROVENANCE: every release ships a checksum and a build
+  # provenance attestation the operator can verify offline.
+  # ===========================================================================
+  release-provenance:
+    name: Release stays operator-verifiable
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Release workflow must publish checksum and provenance
+        run: |
+          set -euo pipefail
+          missing=""
+          grep -q 'sha256sum' .github/workflows/release.yml || missing="$missing sha256sum"
+          grep -q '\.tar\.gz\.sha256' .github/workflows/release.yml || missing="$missing checksum-asset"
+          grep -q 'attest-build-provenance' .github/workflows/release.yml || missing="$missing attest-build-provenance"
+          if [ -n "$missing" ]; then
+            echo "C-RELEASE-PROVENANCE breach (PR16): release.yml no longer produces:$missing"
+            exit 1
+          fi
+          echo "OK: releases ship a checksum and a build provenance attestation."
+
+  # ===========================================================================
+  # Required gate: fails if any canary above did not pass. This is the status
+  # branch protection should require (PR15 / C-CI-GATE).
+  # ===========================================================================
+  pdd-canary-gate:
+    name: PDD Canary Gate
+    needs: [watch-never-act, local-by-design, stands-alone, canary-tests, release-provenance]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce all canaries green
+        run: |
+          set -euo pipefail
+          results='${{ needs.watch-never-act.result }} ${{ needs.local-by-design.result }} ${{ needs.stands-alone.result }} ${{ needs.canary-tests.result }} ${{ needs.release-provenance.result }}'
+          echo "canary results: $results"
+          for r in $results; do
+            if [ "$r" != "success" ]; then
+              echo "PDD canary gate: a canary did not pass. Merge is blocked."
+              exit 1
+            fi
+          done
+          echo "All PDD canaries green."

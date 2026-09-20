@@ -6,6 +6,16 @@ Every design decision, every line of code, every contribution should align
 with these values. If something contradicts a principle, either the thing
 is wrong or the principle needs updating. We should talk about it.
 
+> **This is the long-form philosophy.** The operational form lives at the
+> repository root, where Vigil's Promise Driven Development spine starts:
+> [PRINCIPLES.md](../PRINCIPLES.md) is the values layer distilled to what each
+> principle forbids, [PROMISES.md](../PROMISES.md) turns those values into
+> falsifiable commitments with a named canary for each, and
+> [AUDIT_FINDINGS.md](../AUDIT_FINDINGS.md) is the ledger of every drift and
+> repair. If a principle on this page matters, it has a promise there. If it
+> has no promise, it is still a value, but it is not yet something we can
+> prove.
+
 ---
 
 ## The Soul of Vigil Baseline

@@ -50,6 +50,9 @@ fleets. See [Principles](PRINCIPLES.md) and
 | Document | What's Inside |
 |----------|---------------|
 | [Principles](PRINCIPLES.md) | The 15 engineering principles that drive every decision |
+| [PDD Principles](../PRINCIPLES.md) | The values layer: what each principle forbids, and the promises it spawns |
+| [PDD Promises](../PROMISES.md) | The commitments layer: every falsifiable claim, matched to the canary that guards it |
+| [Audit Findings](../AUDIT_FINDINGS.md) | The ledger: every drift, its severity, and the canary that closed it |
 | [Architecture](ARCHITECTURE.md) | How it's built, why it's built that way |
 | [Threat Model](THREAT_MODEL.md) | Honest assessment of what Vigil Baseline can and cannot do |
 

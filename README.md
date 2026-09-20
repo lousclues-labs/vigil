@@ -101,6 +101,33 @@ The principles that drive every design decision are in
 [PRINCIPLES.md](docs/PRINCIPLES.md). Worth reading before you
 decide whether vigil is the right tool for your situation.
 
+## Promise Driven Development
+
+Vigil is built on Promise Driven Development (PDD): a claim the
+tool makes about itself must be something the tool can prove, and
+the proof must fail loudly when the claim stops being true. The
+spine is **Principles -> Promises -> Canaries -> Ledger.**
+
+- [PRINCIPLES.md](PRINCIPLES.md) is the values layer. Each
+  principle forbids something and spawns at least one promise.
+- [PROMISES.md](PROMISES.md) is the commitments layer. Each
+  promise is narrow and falsifiable, named to a principle and to
+  the canary that guards it.
+- Canaries are the proofs: `cargo test --test pdd_canaries`
+  ([tests/pdd_canaries.rs](tests/pdd_canaries.rs)), a required
+  merge-blocking gate
+  ([.github/workflows/pdd-canaries.yml](.github/workflows/pdd-canaries.yml)),
+  and a build-provenance attestation on every release that you can
+  verify with `gh attestation verify`.
+- [AUDIT_FINDINGS.md](AUDIT_FINDINGS.md) is the ledger. Drift is
+  recorded there and closed only by a named canary.
+
+So when this README says vigil never acts on your files, never
+guesses, and never talks to the network, those are not sentences.
+Each one is a test that fails if it stops being true, and
+[scripts/verify-canary-drift.sh](scripts/verify-canary-drift.sh)
+proves the tests themselves fail on a real breach.
+
 ## CVE-2026-31431 (copy.fail) detection
 
 Vigil hashes file content through the kernel page cache. That means it
@@ -190,6 +217,9 @@ where to start.
 | [Minimum Viable Trust](docs/MINIMUM_VIABLE.md) | Smallest deployment, what it provides |
 | [Forensics](docs/FORENSICS.md) | Offline comparison workflows |
 | [Principles](docs/PRINCIPLES.md) | Why it's built this way |
+| [PDD Principles](PRINCIPLES.md) | The values layer: what each principle forbids |
+| [PDD Promises](PROMISES.md) | The commitments layer: every falsifiable claim and its canary |
+| [Audit Findings](AUDIT_FINDINGS.md) | The ledger: every drift, its severity, and the canary that closed it |
 | [Releasing](docs/RELEASING.md) | Release process and versioning |
 | [Licensing Guide](licenses/LICENSING.md) | File-level license coverage and policy |
 | [Dependency Audit](licenses/DEPENDENCY-AUDIT.md) | Dependency license compatibility framework |
