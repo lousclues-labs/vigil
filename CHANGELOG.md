@@ -8,6 +8,18 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `aur/PKGBUILD` had drifted to `sha256sums=('SKIP')` while the package
+  published on the AUR has pinned a real digest since 1.11.x. Copying the
+  in-repo version to the AUR would have silently disabled integrity
+  verification of the release tarball for every Arch user, which is a poor
+  look on a file integrity monitor. The repo copy is now synced with what is
+  published, and an invariant test asserts the digest is a real 64-character
+  hex value, that `.SRCINFO` agrees with `PKGBUILD` on version, digest and
+  source tag, and that the declared `install=` script exists.
+
+
 ## [1.14.1] - 2026-09-20
 
 First published release since 1.12.4. Versions 1.13.0 and 1.14.0 were prepared
