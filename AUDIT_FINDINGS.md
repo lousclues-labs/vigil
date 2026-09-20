@@ -37,6 +37,8 @@ and the two cross-reference each other when one event is both.
 | AF-011 | Medium | Closed | PR18 | C-OWNERSHIP-IS-NOT-PROOF (reporting half), hook surfacing |
 | AF-012 | High | Closed | PR18 | `a_failed_verifier_run_is_never_reported_as_verified` |
 | AF-013 | High | Closed | PR18 | `silence_about_a_path_with_no_recorded_digest_is_not_a_pass` |
+| AF-014 | High | Closed | PR19 | C-WINDOW-ALWAYS-ENDS |
+| AF-015 | Medium | Closed | PR20 | C-SEAL-PRECEDES-TRANSACTION |
 
 ---
 
@@ -515,6 +517,108 @@ is still Critical.
 [src/package.rs](src/package.rs), and PR18 in [PROMISES.md](PROMISES.md) now
 names all three insufficiencies (ownership, a quiet verifier, a verifier that
 did not run) rather than only the first.
+
+---
+
+---
+
+## AF-014: A maintenance window that timed out came back on every restart
+
+- **Severity:** High
+- **Status:** Closed
+- **Principle / Promise:** P5 / PR19
+
+**What drifted.** `maintenance.max_window_seconds` exists so a window cannot
+stay open forever, and `check_maintenance_timeout` honoured it: past the cap it
+set `maintenance_active` to false. But the window is also recorded on disk, as
+a `maintenance.pending` breadcrumb, so a daemon restarted mid-transaction can
+resume it. The safety timeout cleared the in-memory flag and left the
+breadcrumb behind.
+
+`Daemon::new` then resumed from that breadcrumb unconditionally, whatever its
+age. So once a transaction was interrupted before its post-hook ran, every
+subsequent daemon start reopened the same long-expired window and held it until
+the coordinator's next tick, sixty seconds later. Nothing removed the
+breadcrumb, so it happened again on the next start, and the next, indefinitely.
+
+**Why it mattered.** This was survivable when a window only suppressed
+package-owned changes below High. AF-010 widened it: a window now defers every
+package-owned change at every severity, because the post-transaction digest
+check is what raises the real ones. That made a stuck window a silent hole in
+coverage rather than a reduction in noise, and the hole reopened on every boot
+with nothing to tell the operator. Silent degradation is a vulnerability
+(Principle X), and this one was self-renewing.
+
+**How it was found.** Auditing the blast radius of the AF-010 change. The cap
+was cited as the reason widening suppression was safe, so the next question was
+whether the cap actually held. It held in memory and not on disk.
+
+**Closing change.** The timeout is now durable: `check_maintenance_timeout`
+removes the breadcrumb when it force-closes, and increments
+`maintenance_windows_force_closed` so an interrupted transaction is a number
+the operator can see. `Daemon::new` refuses to resume a breadcrumb already
+older than the cap and deletes it instead of resuming and waiting for the
+coordinator to notice. A breadcrumb with no parseable timestamp is treated as
+expired, because a window of unknown age is not one to keep suppressing on.
+
+**Canary that prevents recurrence.** `fail_loud_a_maintenance_window_always_ends`
+(C-WINDOW-ALWAYS-ENDS) in [tests/pdd_canaries.rs](tests/pdd_canaries.rs), with
+[tests/maintenance_window_tests.rs](tests/maintenance_window_tests.rs) covering
+the durability half: a force-closed window must find nothing to resume after a
+restart.
+
+---
+
+## AF-015: Drift that predated an update was indistinguishable from drift the update brought
+
+- **Severity:** Medium
+- **Status:** Closed
+- **Principle / Promise:** P4 / PR20
+
+**What drifted.** This is the finding the whole thread started from, stated
+properly. The operator's report was "vigil gets flooded when I update, and I
+have no way of knowing if a system change was made before running an update."
+AF-010 fixed the flood. The second half was still true: a deviation reported
+after a transaction looks identical whether it arrived with the transaction or
+had been sitting there for a week, and the refresh that follows a transaction
+absorbs the new state either way. Vigil had no record of what the system looked
+like at the moment the transaction began.
+
+**Why it mattered.** Attribution is most of what makes a deviation actionable.
+"`/usr/bin/foo` changed" is a different investigation depending on whether it
+changed during an `apt upgrade` or three days earlier, and after the fact there
+was no way to tell. The audit log holds timestamps for what the daemon saw
+live, but says nothing about changes made while it was stopped, and nothing
+positive about the state being clean.
+
+**Closing change.** `vigil maintenance enter --seal`, called by all three
+package-manager pre-hooks. Before the window opens and before the package
+manager writes anything, the daemon scans the watched set and records every
+deviation it finds into the tamper-evident chain under the
+`pre_transaction_seal` group, with a timestamp that necessarily precedes the
+transaction. A clean verdict is reported too: "sealed clean before this
+transaction, N files checked" is the positive assertion that was missing.
+
+Recording goes through the daemon-owned detection WAL, not a direct insert into
+the audit table. The daemon owns the chain, and a second writer racing it on
+`get_last_chain_hash` would break the very structure this depends on. Seal
+records deliberately carry no package attribution, so the maintenance window
+they precede can never silence them.
+
+Where an attestation key is configured, the seal also writes a head-only
+`.vatt` receipt binding the audit chain head at that instant, giving the
+operator something portable and offline-verifiable. The seal is durable without
+it; the key only makes the verdict carryable off the machine.
+
+A seal whose scan fails reports the failure and never reports a clean system:
+"we could not look" and "we looked and it was fine" are opposite claims.
+
+**Canary that prevents recurrence.**
+`audit_truth_a_seal_records_pre_transaction_deviations`
+(C-SEAL-PRECEDES-TRANSACTION) in [tests/pdd_canaries.rs](tests/pdd_canaries.rs),
+which asserts the scan's own severities survive, the records are identifiable
+as seals, and they carry no package attribution a window could use to silence
+them.
 
 ---
 

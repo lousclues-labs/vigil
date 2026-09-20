@@ -25,6 +25,7 @@ TOUCHED=(
   src/alert/mod.rs
   src/baseline_diff.rs
   src/db/audit_ops.rs
+  src/coordinator/mod.rs
   src/doctor/checks.rs
   src/metrics.rs
   src/config/mod.rs
@@ -173,6 +174,22 @@ PY
 expect_red audit_truth_suppressed_alerts_are_still_recorded "suppression made to skip the audit write"
 revert src/alert/mod.rs
 
+echo "== PR20 C-SEAL-PRECEDES-TRANSACTION =="
+python3 - <<'PYX'
+p = "src/baseline_diff.rs"
+s = open(p).read()
+needle = """            monitored_group: "pre_transaction_seal".to_string(),
+            process: None,
+            package: None,"""
+inject = """            monitored_group: "pre_transaction_seal".to_string(),
+            process: None,
+            package: Some("some-package".to_string()),"""
+assert needle in s, "seal record anchor not found"
+open(p, "w").write(s.replace(needle, inject, 1))
+PYX
+expect_red audit_truth_a_seal_records_pre_transaction_deviations "seal records given package attribution a window could silence"
+revert src/baseline_diff.rs
+
 echo "== PR8 C-AUDIT-CHAIN-TAMPER =="
 python3 - <<'PY'
 p = "src/db/audit_ops.rs"
@@ -231,6 +248,24 @@ open(p, "w").write(s.replace(needle, inject, 1))
 PY
 expect_red fail_loud_degraded_backend_never_reports_ok "degraded backend made to report OK"
 revert src/doctor/checks.rs
+
+echo "== PR19 C-WINDOW-ALWAYS-ENDS =="
+python3 - <<'PYX'
+p = "src/coordinator/mod.rs"
+s = open(p).read()
+needle = """    if entered_at <= 0 {
+        return true;
+    }
+    now.saturating_sub(entered_at) > max_window_seconds as i64"""
+inject = """    if entered_at <= 0 {
+        return false;
+    }
+    now.saturating_sub(entered_at) > max_window_seconds as i64"""
+assert needle in s, "window expiry anchor not found"
+open(p, "w").write(s.replace(needle, inject, 1))
+PYX
+expect_red fail_loud_a_maintenance_window_always_ends "unreadable breadcrumb treated as an open window"
+revert src/coordinator/mod.rs
 
 echo "== PR10 C-BLIND-SPOTS-COUNTED =="
 python3 - <<'PY'

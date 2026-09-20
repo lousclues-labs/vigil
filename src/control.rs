@@ -392,6 +392,7 @@ impl ControlHandler {
             "scan" => self.handle_scan(request),
             "metrics_prometheus" => self.handle_metrics_prometheus(),
             "maintenance_enter" => self.handle_maintenance_enter(),
+            "seal" => self.handle_seal(),
             "maintenance_exit" => self.handle_maintenance_exit(),
             "baseline_refresh" => self.handle_baseline_refresh(),
             "expect_file_change" => self.handle_expect_file_change(request),
@@ -478,6 +479,18 @@ impl ControlHandler {
         serde_json::json!({
             "ok": true,
             "text": snap.to_prometheus(),
+        })
+    }
+
+    /// Record what the filesystem looks like right now, before anything is
+    /// allowed to change it. See [`crate::seal`] for why and how.
+    fn handle_seal(&self) -> serde_json::Value {
+        crate::seal::take_seal(crate::seal::SealContext {
+            config: &self.config.load(),
+            baseline_conn: &self.baseline_conn,
+            wal: self.wal.as_ref(),
+            metrics: &self.metrics,
+            maintenance_active: self.maintenance_active.load(Ordering::Acquire),
         })
     }
 
@@ -1173,7 +1186,7 @@ fn log_control_action(method: &str, metrics: &Metrics) {
             tracing::debug!(method = method, "control socket query");
         }
         "reload" | "scan" | "maintenance_enter" | "maintenance_exit" | "baseline_refresh"
-        | "recover" => {
+        | "seal" | "recover" => {
             tracing::info!(method = method, "control socket command executed");
         }
         _ => {

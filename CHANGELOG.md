@@ -8,6 +8,70 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`vigil maintenance enter --seal`: know whether you were clean *before* the
+  update.** This is the half of the original report that content verification
+  did not answer. A deviation found after a transaction looks identical
+  whether the transaction brought it or it had been sitting there for a week,
+  and the refresh that follows absorbs the new state either way. So the
+  verdict is now taken at the boundary: before the window opens and before the
+  package manager writes anything, the daemon scans the watched set and
+  records every deviation into the tamper-evident chain under the
+  `pre_transaction_seal` group, with a timestamp that necessarily precedes the
+  transaction. A clean result is reported too, because "sealed clean before
+  this transaction, 7,624 files checked" is the positive assertion that was
+  missing.
+
+  All three package-manager pre-hooks (apt, pacman, dnf) take the seal, log
+  the verdict, and raise one critical notification when the system was already
+  drifting. Recording goes through the daemon-owned detection WAL rather than
+  a direct insert, because the daemon owns the audit chain and a second writer
+  racing it on `get_last_chain_hash` would break it. Seal records deliberately
+  carry no package attribution, so the maintenance window they precede can
+  never silence them. Where `/etc/vigil/attest.key` exists, the seal also
+  writes a head-only `.vatt` receipt binding the audit chain head, giving the
+  operator something portable and offline-verifiable; the seal is durable
+  without it. A seal whose scan fails reports the failure and never reports a
+  clean system. Closes AF-015.
+
+- New module [src/seal.rs](src/seal.rs), promise PR20 guarded by canary
+  `C-SEAL-PRECEDES-TRANSACTION`, and metrics `vigil_seals_taken_total` and
+  `vigil_seals_with_deviations_total`.
+
+### Fixed
+
+- **A maintenance window that timed out came back on every restart.** The
+  safety timeout (`maintenance.max_window_seconds`) cleared the in-memory flag
+  but left the `maintenance.pending` breadcrumb on disk, and `Daemon::new`
+  resumed from that breadcrumb regardless of its age. So once a transaction
+  was interrupted before its post-hook ran, every subsequent daemon start
+  reopened the same expired window and held it until the coordinator's next
+  tick sixty seconds later — then did it again on the next start, indefinitely,
+  with nothing to tell the operator.
+
+  This was survivable when a window only suppressed package-owned changes
+  below High. The previous release widened it to every severity, which turned
+  a stuck window into a self-renewing silent hole in coverage. The timeout is
+  now durable: force-closing removes the breadcrumb and increments
+  `vigil_maintenance_windows_force_closed_total`, and a daemon start refuses
+  to resume a breadcrumb older than the cap, deleting it instead. A breadcrumb
+  with no parseable timestamp is treated as expired, because a window of
+  unknown age is not one to keep suppressing on. Guarded by PR19 /
+  `C-WINDOW-ALWAYS-ENDS`. Closes AF-014.
+
+### Changed
+
+- The seal logic lives in its own module rather than growing
+  [src/control.rs](src/control.rs) past the 1,500-line architecture limit; the
+  limit was respected by extraction, not raised.
+- [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md) documents the seal and its
+  output; [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) states both new
+  guarantees and the seal's honest limit (it proves what the filesystem looked
+  like at that instant, not that nothing changed between the seal and the
+  first package write).
+- `scripts/verify-canary-drift.sh` is now 25 drift cases, all proven.
+
 ### Fixed
 
 - **A tampered file in a package path is no longer laundered by the next

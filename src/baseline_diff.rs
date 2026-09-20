@@ -235,6 +235,49 @@ pub fn record_package_mismatch_to_wal(
     )
 }
 
+/// Record the deviations a pre-transaction seal found.
+///
+/// These keep the severity the scan assigned them, because they are ordinary
+/// deviations that happen to have been found at a transaction boundary. What
+/// makes them worth recording separately is the timestamp: written before the
+/// package manager touches anything, they are the evidence that a deviation
+/// predates the transaction rather than arriving with it.
+///
+/// Returns the count of successfully appended records.
+pub fn record_seal_deviations_to_wal(
+    wal: &DetectionWal,
+    changes: &[crate::types::ChangeResult],
+    maintenance_window: bool,
+) -> u64 {
+    let mut appended = 0u64;
+    for change in changes {
+        let record = DetectionRecord {
+            timestamp: chrono::Utc::now().timestamp(),
+            path: change.path.to_string_lossy().to_string(),
+            changes: change.changes.clone(),
+            severity: change.severity,
+            monitored_group: "pre_transaction_seal".to_string(),
+            process: None,
+            package: None,
+            package_update: false,
+            maintenance_window,
+            source: DetectionSource::BaselineRefresh,
+            disambiguation: None,
+        };
+        match wal.append(&record) {
+            Ok(_) => appended += 1,
+            Err(e) => {
+                tracing::warn!(
+                    path = %change.path.display(),
+                    error = %e,
+                    "failed to record pre-transaction deviation to WAL; skipping"
+                );
+            }
+        }
+    }
+    appended
+}
+
 /// Shared WAL recording for refresh-time deviations.
 ///
 /// `package` is deliberately left `None` on these records even when a package

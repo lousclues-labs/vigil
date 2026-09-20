@@ -87,6 +87,13 @@ pub struct Metrics {
     /// Package-owned changes the package manager could not vouch for either
     /// way. Absence of proof, counted separately from proof of absence.
     pub baseline_refresh_package_unverifiable: AtomicU64,
+    /// Maintenance windows force-closed by the safety timeout. Non-zero means
+    /// a package transaction was interrupted before its post-hook ran.
+    pub maintenance_windows_force_closed: AtomicU64,
+    /// Pre-transaction seals taken.
+    pub seals_taken: AtomicU64,
+    /// Seals that found the system already deviating before the transaction.
+    pub seals_with_deviations: AtomicU64,
     /// Number of times audit retention safety check skipped deletion.
     pub audit_retention_skipped_total: AtomicU64,
     /// VIGIL-VULN-075: Full scans triggered in response to user-space event drops.
@@ -153,6 +160,9 @@ impl Metrics {
             baseline_refresh_package_verified: AtomicU64::new(0),
             baseline_refresh_package_mismatches: AtomicU64::new(0),
             baseline_refresh_package_unverifiable: AtomicU64::new(0),
+            maintenance_windows_force_closed: AtomicU64::new(0),
+            seals_taken: AtomicU64::new(0),
+            seals_with_deviations: AtomicU64::new(0),
             audit_retention_skipped_total: AtomicU64::new(0),
             userspace_drop_scans_triggered: AtomicU64::new(0),
             fanotify_tier: AtomicU64::new(0),
@@ -239,6 +249,11 @@ impl Metrics {
             baseline_refresh_package_unverifiable: self
                 .baseline_refresh_package_unverifiable
                 .load(Ordering::Relaxed),
+            maintenance_windows_force_closed: self
+                .maintenance_windows_force_closed
+                .load(Ordering::Relaxed),
+            seals_taken: self.seals_taken.load(Ordering::Relaxed),
+            seals_with_deviations: self.seals_with_deviations.load(Ordering::Relaxed),
             audit_retention_skipped_total: self
                 .audit_retention_skipped_total
                 .load(Ordering::Relaxed),
@@ -314,6 +329,9 @@ pub struct MetricsSnapshot {
     pub baseline_refresh_package_verified: u64,
     pub baseline_refresh_package_mismatches: u64,
     pub baseline_refresh_package_unverifiable: u64,
+    pub maintenance_windows_force_closed: u64,
+    pub seals_taken: u64,
+    pub seals_with_deviations: u64,
     pub audit_retention_skipped_total: u64,
     pub userspace_drop_scans_triggered: u64,
     pub fanotify_tier: u64,
@@ -620,6 +638,24 @@ impl MetricsSnapshot {
             "vigil_baseline_refresh_package_unverifiable_total",
             "Package-owned changes the package manager could not verify either way",
             self.baseline_refresh_package_unverifiable,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_maintenance_windows_force_closed_total",
+            "Maintenance windows force-closed by the safety timeout",
+            self.maintenance_windows_force_closed,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_seals_taken_total",
+            "Pre-transaction seals taken",
+            self.seals_taken,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_seals_with_deviations_total",
+            "Seals that found the system already deviating before the transaction",
+            self.seals_with_deviations,
         );
         write_prom_counter(
             &mut out,

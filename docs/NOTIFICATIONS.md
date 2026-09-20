@@ -129,6 +129,42 @@ Every deferred change is still written to the audit log with its `suppressed`
 flag set. Suppression decides what reaches your attention; it never decides
 what is recorded (Principle XIII).
 
+### The pre-transaction seal
+
+Deferral answers "what did this update change". It does not answer "was
+anything already wrong before it started", and after the fact nothing can: a
+deviation found afterwards looks identical whether the update brought it or it
+had been sitting there for a week.
+
+So the pre-hooks take a seal first. Before the window opens and before the
+package manager writes anything, vigil scans the watched set and records what
+it finds, with a timestamp that necessarily precedes the transaction:
+
+```
+Vigil: sealed clean before this transaction (7,624 files checked)
+```
+
+or, when it is not clean:
+
+```
+VIGIL PRE-UPDATE DEVIATIONS: 2 (checked 7,624)
+  /usr/local/bin/helper    already deviating before this transaction
+  /etc/rc.local            already deviating before this transaction
+```
+
+Those go to the journal, and a non-clean seal raises one critical
+notification. Afterwards, anything reported by the post-transaction verdict
+that was not in the seal arrived with the update.
+
+Seal records are written through the daemon's detection WAL and carry no
+package attribution, so the maintenance window they precede can never silence
+them. If an attestation key is configured at `/etc/vigil/attest.key`, the seal
+also writes a signed, offline-verifiable receipt to
+`<runtime_dir>/pre-transaction.vatt` binding the audit chain head at that
+instant.
+
+A seal whose scan fails says so and never reports a clean system.
+
 ## Webhook Channel
 
 HTTP POST to a configured URL with the same JSON envelope as other channels.

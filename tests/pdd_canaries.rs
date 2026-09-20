@@ -794,6 +794,71 @@ fn audit_truth_package_ownership_is_never_proof_of_authorship() {
     }
 }
 
+/// PR20, canary C-SEAL-PRECEDES-TRANSACTION.
+///
+/// A deviation found after a package transaction looks identical whether it
+/// arrived with the transaction or was already sitting there. The seal is the
+/// only thing that can tell them apart, and only because it is written before
+/// the package manager touches anything.
+#[test]
+fn audit_truth_a_seal_records_pre_transaction_deviations() {
+    use vigil::baseline_diff::record_seal_deviations_to_wal;
+    use vigil::wal::{DetectionSource, DetectionWal};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let wal = DetectionWal::open(&dir.path().join("detections.wal"), None, 64 * 1024 * 1024)
+        .expect("open wal");
+
+    let mut critical = canary_change("/usr/bin/sudo");
+    critical.severity = Severity::Critical;
+    let mut medium = canary_change("/etc/hosts");
+    medium.severity = Severity::Medium;
+    let changes = vec![critical, medium];
+
+    let appended = record_seal_deviations_to_wal(&wal, &changes, false);
+    assert_eq!(
+        appended, 2,
+        "C-SEAL-PRECEDES-TRANSACTION breach (PR20): the seal dropped a \
+         deviation. What it does not record cannot later be shown to predate \
+         the transaction."
+    );
+
+    let entries = wal.iter_unconsumed().expect("read wal");
+    assert_eq!(entries.len(), 2);
+    let records: Vec<_> = entries.iter().map(|e| &e.record).collect();
+
+    for record in &records {
+        assert_eq!(
+            record.monitored_group, "pre_transaction_seal",
+            "C-SEAL-PRECEDES-TRANSACTION breach (PR20): a seal record must be \
+             identifiable as one."
+        );
+        assert!(
+            matches!(record.source, DetectionSource::BaselineRefresh),
+            "C-SEAL-PRECEDES-TRANSACTION breach (PR20): seal records must carry \
+             a source that marks them as daemon-recorded, not live events."
+        );
+        assert!(
+            record.package.is_none(),
+            "C-SEAL-PRECEDES-TRANSACTION breach (PR20): a seal record carrying \
+             package attribution would be silenced by the very maintenance \
+             window it was taken to precede."
+        );
+    }
+
+    // The scan's own severities must survive. Flattening them would make a
+    // tampered binary indistinguishable from a changed hosts file.
+    let severities: Vec<Severity> = records.iter().map(|r| r.severity).collect();
+    assert!(
+        severities.contains(&Severity::Critical) && severities.contains(&Severity::Medium),
+        "C-SEAL-PRECEDES-TRANSACTION breach (PR20): the seal flattened the \
+         severities the scan assigned: {severities:?}"
+    );
+
+    // An empty system seals clean without inventing anything.
+    assert_eq!(record_seal_deviations_to_wal(&wal, &[], false), 0);
+}
+
 /// PR8, canary C-AUDIT-CHAIN-TAMPER.
 ///
 /// Each audit row carries the hash of the row before it. Editing a row's
@@ -922,6 +987,74 @@ fn fail_loud_degraded_backend_never_reports_ok() {
     assert!(
         !partial.contains("CheckStatus::Ok"),
         "C-DEGRADED-IS-LOUD breach (PR9): a reduced event mask reports OK."
+    );
+}
+
+/// PR19, canary C-WINDOW-ALWAYS-ENDS.
+///
+/// A maintenance window suppresses every package-owned change at every
+/// severity. One that never closes is therefore a silent hole in coverage,
+/// and a closure that only happens in memory is not a closure: the on-disk
+/// breadcrumb outlives it and the next daemon start resumes the same expired
+/// window, on every start, forever (AF-014).
+#[test]
+fn fail_loud_a_maintenance_window_always_ends() {
+    use vigil::coordinator::maintenance_window_expired;
+
+    let cap = 1_800u64;
+    let opened = 1_000_000i64;
+
+    assert!(
+        !maintenance_window_expired(opened, opened + 1, cap),
+        "C-WINDOW-ALWAYS-ENDS breach (PR19): a window that just opened was \
+         treated as expired; package transactions would never be quiet."
+    );
+    assert!(
+        !maintenance_window_expired(opened, opened + cap as i64, cap),
+        "C-WINDOW-ALWAYS-ENDS breach (PR19): a window exactly at the cap must \
+         still be live; the cap is a ceiling, not a fence post."
+    );
+    assert!(
+        maintenance_window_expired(opened, opened + cap as i64 + 1, cap),
+        "C-WINDOW-ALWAYS-ENDS breach (PR19): a window past the cap was not \
+         expired. A window that never ends silently suppresses every \
+         package-owned change at every severity."
+    );
+    assert!(
+        maintenance_window_expired(opened, opened + 86_400, cap),
+        "C-WINDOW-ALWAYS-ENDS breach (PR19): a day-old window was not expired."
+    );
+
+    // An unreadable or corrupt breadcrumb cannot be aged. Suppressing on the
+    // strength of a timestamp we could not parse is the wrong direction to
+    // fail.
+    for unparseable in [0i64, -1, i64::MIN] {
+        assert!(
+            maintenance_window_expired(unparseable, opened, cap),
+            "C-WINDOW-ALWAYS-ENDS breach (PR19): a breadcrumb with no usable \
+             timestamp ({unparseable}) must be treated as expired, never as an \
+             open window of unknown age."
+        );
+    }
+
+    // A clock that moved backwards must not resurrect a window either.
+    assert!(
+        !maintenance_window_expired(opened, opened - 5_000, cap),
+        "C-WINDOW-ALWAYS-ENDS breach (PR19): a backwards clock produced a \
+         nonsensical expiry decision."
+    );
+
+    // The counter that makes a force-close visible to the operator.
+    let metrics = vigil::metrics::Metrics::new();
+    assert_eq!(metrics.snapshot().maintenance_windows_force_closed, 0);
+    metrics
+        .maintenance_windows_force_closed
+        .fetch_add(1, Ordering::Relaxed);
+    assert_eq!(
+        metrics.snapshot().maintenance_windows_force_closed,
+        1,
+        "C-WINDOW-ALWAYS-ENDS breach (PR19): a force-closed window is a sign a \
+         transaction was interrupted and must be countable."
     );
 }
 

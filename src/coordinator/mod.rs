@@ -1528,17 +1528,37 @@ impl Coordinator {
             return;
         }
         let cfg = self.config.load();
-        let max_seconds = cfg.maintenance.max_window_seconds as i64;
         let now = Utc::now().timestamp();
-        let elapsed_secs = now - entered_at;
-        if elapsed_secs > max_seconds {
-            tracing::warn!(
-                elapsed_secs = elapsed_secs,
-                max_seconds,
-                "maintenance window exceeded safety timeout; auto-exiting"
-            );
-            self.maintenance_active.store(false, Ordering::Release);
-            self.maintenance_entered_at.store(0, Ordering::Release);
+        if !maintenance_window_expired(entered_at, now, cfg.maintenance.max_window_seconds) {
+            return;
+        }
+
+        tracing::warn!(
+            elapsed_secs = now - entered_at,
+            max_seconds = cfg.maintenance.max_window_seconds,
+            "maintenance window exceeded safety timeout; auto-exiting"
+        );
+        self.maintenance_active.store(false, Ordering::Release);
+        self.maintenance_entered_at.store(0, Ordering::Release);
+        self.metrics
+            .maintenance_windows_force_closed
+            .fetch_add(1, Ordering::Relaxed);
+
+        // The breadcrumb has to go with it. Closing the window only in memory
+        // left the file on disk, so the next daemon start resumed a window
+        // that had already expired, and did so on every start thereafter
+        // (AF-014). A timeout that does not survive a restart is not a
+        // timeout.
+        let breadcrumb = cfg.daemon.runtime_dir.join("maintenance.pending");
+        if let Err(e) = std::fs::remove_file(&breadcrumb) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    path = %breadcrumb.display(),
+                    error = %e,
+                    "could not remove maintenance breadcrumb after safety timeout; \
+                     the next daemon start may resume an expired window"
+                );
+            }
         }
     }
 
@@ -1552,6 +1572,24 @@ impl Coordinator {
 
         // Drift velocity is a metric, not a detection (Principle III).
     }
+}
+
+/// Whether a maintenance window opened at `entered_at` has outlived the safety
+/// cap by `now`.
+///
+/// Pure so both the running daemon and the startup path decide identically. A
+/// window suppresses every package-owned change at every severity, so one that
+/// never closes is a silent hole in coverage, and silent degradation is a
+/// vulnerability (Principle X).
+///
+/// A zero or negative `entered_at` is treated as expired: the breadcrumb is
+/// unreadable or corrupt, and the fail-safe direction is to close rather than
+/// to keep suppressing.
+pub fn maintenance_window_expired(entered_at: i64, now: i64, max_window_seconds: u64) -> bool {
+    if entered_at <= 0 {
+        return true;
+    }
+    now.saturating_sub(entered_at) > max_window_seconds as i64
 }
 
 fn write_metrics_snapshot(runtime_dir: &std::path::Path, metrics: &Metrics) -> crate::Result<()> {

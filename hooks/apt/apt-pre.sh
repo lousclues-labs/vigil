@@ -13,9 +13,28 @@ set -u
 
 VIGIL=/usr/bin/vigil
 
-# Common case: vigil installed, just enter the window.
+# Common case: vigil installed. Seal the pre-transaction state, then enter
+# the window. The seal is what makes "was my system already drifting before
+# this update" answerable afterwards: a deviation found after a transaction
+# looks the same whether it arrived with the transaction or was already there.
 if [ -x "$VIGIL" ]; then
-    "$VIGIL" maintenance enter --quiet 2>/dev/null || true
+    seal_out=$("$VIGIL" maintenance enter --quiet --seal 2>&1) || true
+
+    if [ -n "$seal_out" ]; then
+        printf '%s\n' "$seal_out" | while IFS= read -r line; do
+            [ -n "$line" ] && logger -t vigil-apt "$line"
+        done
+    fi
+
+    if printf '%s\n' "$seal_out" | grep -q 'VIGIL PRE-UPDATE DEVIATIONS'; then
+        summary=$(printf '%s\n' "$seal_out" \
+            | sed -n 's/^VIGIL PRE-UPDATE DEVIATIONS: \([0-9]*\).*$/\1/p' | head -n 1)
+        if command -v notify-send >/dev/null 2>&1; then
+            notify-send -u critical 'Vigil' \
+                "${summary:-Some} file(s) were already deviating BEFORE this update started. Run: vigil audit show --since 5m" \
+                2>/dev/null || true
+        fi
+    fi
     exit 0
 fi
 

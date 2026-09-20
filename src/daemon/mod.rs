@@ -108,15 +108,38 @@ impl Daemon {
         // flagged as maintenance and the auto-timeout mechanism can clean up.
         let breadcrumb = config.daemon.runtime_dir.join("maintenance.pending");
         let (resume_maintenance, resume_ts) = if breadcrumb.exists() {
+            // A breadcrumb with no readable timestamp cannot be aged, so treat
+            // it as expired rather than resuming a window of unknown age.
             let ts = std::fs::read_to_string(&breadcrumb)
                 .ok()
                 .and_then(|s| s.trim().parse::<i64>().ok())
-                .unwrap_or_else(|| chrono::Utc::now().timestamp());
-            tracing::info!(
-                entered_at = ts,
-                "resuming maintenance window from previous session"
-            );
-            (true, ts)
+                .unwrap_or(0);
+
+            if crate::coordinator::maintenance_window_expired(
+                ts,
+                chrono::Utc::now().timestamp(),
+                config.maintenance.max_window_seconds,
+            ) {
+                // Never resume a window that has already outlived the cap.
+                // Resuming one and waiting for the coordinator to notice left
+                // a full tick of silent suppression on every single start,
+                // forever, because the stale breadcrumb was never removed
+                // (AF-014).
+                tracing::warn!(
+                    entered_at = ts,
+                    max_seconds = config.maintenance.max_window_seconds,
+                    "found an expired maintenance breadcrumb; not resuming the window. \
+                     A package transaction was interrupted before its post-hook ran."
+                );
+                let _ = std::fs::remove_file(&breadcrumb);
+                (false, 0)
+            } else {
+                tracing::info!(
+                    entered_at = ts,
+                    "resuming maintenance window from previous session"
+                );
+                (true, ts)
+            }
         } else {
             (false, 0)
         };

@@ -110,8 +110,10 @@ is detectable after the fact.
 - Treating the fact that a package owns a path as proof that the package wrote
   the bytes now in it, or reading a verification that did not run as one that
   passed.
+- Leaving the operator unable to tell drift that predates a change window from
+  drift the window brought with it.
 
-Spawns promises: PR7, PR8, PR18.
+Spawns promises: PR7, PR8, PR18, PR20.
 
 ---
 
@@ -131,8 +133,10 @@ and reported. A fallback is a warning, never an "OK."
   event mask.
 - Dropping events without counting them and without triggering the
   compensating scan.
+- Leaving a maintenance window open indefinitely, or letting a closure that
+  only happened in memory be undone by a restart.
 
-Spawns promises: PR9, PR10.
+Spawns promises: PR9, PR10, PR19.
 
 ---
 

@@ -159,6 +159,25 @@ deviation, reported and never silently absorbed.
   and [src/package.rs](src/package.rs). The parser canaries pin the verdict for
   verbatim `dpkg --verify` output.
 
+### PR20. Drift that predates a transaction is distinguishable from drift the transaction brought
+A deviation found after a package transaction looks identical whether it
+arrived with the transaction or was already there. So the verdict is taken
+before anything is written: `vigil maintenance enter --seal` scans the watched
+set, records every deviation it finds into the tamper-evident chain with a
+timestamp that precedes the transaction, and reports the count. Recording goes
+through the daemon-owned WAL, never a second writer on the audit chain. A seal
+that cannot scan reports failure and never reports a clean system.
+
+- Falsifiable by: a seal that reports clean when the scan failed, a seal that
+  records deviations under a timestamp after the transaction, or a second
+  process writing the audit chain directly.
+- Canary `C-SEAL-PRECEDES-TRANSACTION` (test):
+  `audit_truth_a_seal_records_pre_transaction_deviations` drives the real
+  `vigil::baseline_diff::record_seal_deviations_to_wal` and asserts the
+  records carry the scan's own severities, the `pre_transaction_seal` group,
+  and no package attribution that a maintenance window could later use to
+  silence them.
+
 ### PR8. Editing or deleting an audit row is detectable
 Audit entries are chain-linked: each row carries the hash of the row before it.
 Altering a row's content or removing a row from the middle of the chain breaks
@@ -187,6 +206,21 @@ branch may carry an OK status.
   [src/doctor/checks.rs](src/doctor/checks.rs) and asserts the fallback branches
   of `check_backend` and `check_realtime_coverage` carry a non-OK status and
   the coverage warning.
+
+### PR19. A maintenance window always ends
+A window suppresses every package-owned change at every severity, so one that
+never closes is a silent hole in coverage. A window that outlives
+`maintenance.max_window_seconds` is force-closed, and that closure is durable:
+the on-disk breadcrumb goes with it, and a daemon start never resumes a
+breadcrumb already older than the cap. A breadcrumb with no readable timestamp
+is treated as expired, because the fail-safe direction is to stop suppressing.
+
+- Falsifiable by: resuming an expired breadcrumb, or force-closing in memory
+  while leaving the breadcrumb on disk for the next start to pick up.
+- Canary `C-WINDOW-ALWAYS-ENDS` (test):
+  `fail_loud_a_maintenance_window_always_ends` drives the real
+  `vigil::coordinator::maintenance_window_expired` across the boundary, an
+  expired breadcrumb, and an unreadable one.
 
 ### PR10. Blind spots are counted and exported
 Dropped events, kernel queue overflows, and the compensating scans they trigger

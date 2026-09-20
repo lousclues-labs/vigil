@@ -532,11 +532,16 @@ pub enum LogAction {
 
 #[derive(Subcommand)]
 pub enum MaintenanceAction {
-    /// Enter maintenance window (suppress low-severity package alerts)
+    /// Enter maintenance window (defer package-owned change notifications)
     Enter {
         /// Suppress output
         #[arg(long)]
         quiet: bool,
+        /// Record what the filesystem looks like before the transaction, so
+        /// afterwards you can tell drift that predates the update from drift
+        /// the update brought with it.
+        #[arg(long)]
+        seal: bool,
     },
     /// Exit maintenance window
     Exit {
@@ -1067,8 +1072,26 @@ mod tests {
             .expect("parse maintenance enter --quiet");
         match cli.command {
             Some(Command::Maintenance {
-                action: MaintenanceAction::Enter { quiet },
-            }) => assert!(quiet),
+                action: MaintenanceAction::Enter { quiet, seal },
+            }) => {
+                assert!(quiet);
+                assert!(!seal, "sealing must stay opt-in");
+            }
+            _ => panic!("expected maintenance enter"),
+        }
+    }
+
+    #[test]
+    fn maintenance_enter_seal_parses() {
+        let cli = Cli::try_parse_from(["vigil", "maintenance", "enter", "--quiet", "--seal"])
+            .expect("parse maintenance enter --quiet --seal");
+        match cli.command {
+            Some(Command::Maintenance {
+                action: MaintenanceAction::Enter { quiet, seal },
+            }) => {
+                assert!(quiet);
+                assert!(seal);
+            }
             _ => panic!("expected maintenance enter"),
         }
     }

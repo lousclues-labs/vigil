@@ -88,6 +88,43 @@ def _vigil(args, capture=False):
     return proc.returncode, err
 
 
+SEAL_DIRTY_MARKER = "VIGIL PRE-UPDATE DEVIATIONS"
+
+
+def _report_seal(output):
+    """Surface the pre-transaction seal verdict.
+
+    A deviation found after a transaction looks identical whether it arrived
+    with the transaction or was already sitting there. The seal is taken
+    before anything is written, so afterwards the two can be told apart.
+    """
+    lines = [ln for ln in output.splitlines() if ln.strip()]
+    for line in lines:
+        _journal("info", line)
+
+    dirty = [ln for ln in lines if SEAL_DIRTY_MARKER in ln]
+    if not dirty:
+        return
+
+    summary = dirty[0].split(SEAL_DIRTY_MARKER + ":", 1)[-1].strip().split()
+    count = summary[0] if summary else "Some"
+    try:
+        subprocess.call(
+            [
+                "notify-send",
+                "-u",
+                "critical",
+                "Vigil",
+                count + " file(s) were already deviating BEFORE this update "
+                "started. Run: vigil audit show --since 5m",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+
+
 UNPROVEN_MARKER = "VIGIL UNPROVEN CHANGES"
 
 
@@ -154,7 +191,10 @@ class Vigil(dnf.Plugin):
                     "vigil-baseline as soon as this transaction completes.",
                 )
             return
-        _vigil(["maintenance", "enter", "--quiet"])
+        rc, out = _vigil(
+            ["maintenance", "enter", "--quiet", "--seal"], capture=True
+        )
+        _report_seal(out or "")
 
     def transaction(self):
         if not _vigil_present():
