@@ -108,8 +108,22 @@ jobs:
 
       - name: Publish to crates.io
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          # cargo reads CARGO_REGISTRY_TOKEN from the environment; the secret
+          # holding it is CRATES_TOKEN2, with the conventional name kept as a
+          # fallback so either works. An empty value here is how v1.14.1's
+          # first release attempt failed: the secret existed under a different
+          # name, so this resolved to "" and cargo exited 101 with nothing
+          # saying why.
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN2 || secrets.CARGO_REGISTRY_TOKEN }}
         run: |
+          # Fail loudly and specifically on a missing token rather than
+          # letting cargo emit a bare exit 101 that looks like a packaging
+          # problem (Principle X: the failure must name itself).
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::error::No crates.io token available. Set the CRATES_TOKEN2 repository secret (scope: publish-update, since vigil-baseline already exists)."
+            exit 1
+          fi
+
           # Publish must fail loudly. Previously `continue-on-error: true`
           # let a failed crates.io upload still mint a "successful" GitHub
           # Release, provenance attestation, and SBOM. The only tolerated

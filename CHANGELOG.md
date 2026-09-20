@@ -43,6 +43,13 @@ is a promise in the PDD set that was overstating its own enforcement.
 
 ### Fixed
 
+- The release workflow read the crates.io token from a secret name that did
+  not exist, so `CARGO_REGISTRY_TOKEN` resolved to an empty string and
+  `cargo publish` exited 101 with nothing indicating the cause. It now reads
+  `CRATES_TOKEN2` (falling back to the conventional name) and fails with an
+  explicit message when no token is present, rather than emitting a bare exit
+  code that looks like a packaging fault.
+
 - Pinned `globset` below 0.4.20, which raised its MSRV to rustc 1.88 while this
   project's MSRV is 1.85. The manifest asked for `globset = "0.4"`, and the CI
   MSRV job deletes `Cargo.lock` before checking, so it resolved to the newest
