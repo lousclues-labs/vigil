@@ -8,6 +8,19 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [1.14.1] - 2026-09-20
+
+First published release since 1.12.4. Versions 1.13.0 and 1.14.0 were prepared
+and their changelog entries stand below, but neither was ever tagged or
+published, so installing 1.14.1 gets you all three. The jump on crates.io is
+1.12.4 -> 1.14.1.
+
+Everything here is a fix. Three of them are upstream drift that turned CI red
+without any change on this side: stable clippy gained a lint that fires on code
+older than this release, two advisories were published against dependencies,
+and `globset` raised its MSRV above the one this project supports. The fourth
+is a promise in the PDD set that was overstating its own enforcement.
+
 ### Security
 
 - Bumped `lru` 0.16.4 -> 0.18.4 for **RUSTSEC-2026-0253**: `LruCache::pop()`
@@ -43,8 +56,6 @@ All notable changes to Vigil Baseline will be documented in this file.
   newer stable toolchain than the one this was last checked against locally,
   so CI caught it rather than the local gate; the tree was swept for other
   instances of the same pattern and none exist.
-
-### Fixed
 
 - **The canary gate claimed an enforcement it never had.** PR15 read "A
   required, merge-blocking gate runs the whole canary surface", ending in "so
