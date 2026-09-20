@@ -8,121 +8,141 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-09-20
+
+This release started as a usability report: vigil floods the desktop during
+an `apt upgrade`, and there is no way to tell whether something had already
+changed before the update ran. Investigating it turned up six findings,
+because the flood and a silent laundering hole were the same bug seen from
+two sides.
+
+`vigil baseline refresh` classified a changed file as a routine package
+update whenever *some* package owned the path, and absorbed it into the new
+baseline with no alert and no path-level record. Package ownership of a path
+was being read as evidence that the package wrote the bytes now in it, which
+it never was. At the same time, package-owned Critical and High changes were
+deliberately left unsuppressed inside a maintenance window, and `/usr/bin/`,
+`/usr/sbin/` and `/boot/` are all in the Critical watch group, so a routine
+upgrade fired one immediate notification per binary until the storm detector
+tripped. The flood buried the real alert and the refresh that followed erased
+it.
+
+Every supported package manager records a digest for every file it ships, so
+"did a package write these bytes" is answerable from local state alone. Vigil
+now asks, and only a positive answer is allowed to silence a change. Three
+further findings came out of holding that new guarantee to its own standard,
+and two more out of auditing what the change had widened.
+
+Promises added: PR18 (ownership is not authorship), PR19 (a maintenance
+window always ends), PR20 (drift before a transaction is distinguishable from
+drift it brought). Findings closed: AF-010 through AF-015.
+
 ### Added
 
-- **`vigil maintenance enter --seal`: know whether you were clean *before* the
-  update.** This is the half of the original report that content verification
-  did not answer. A deviation found after a transaction looks identical
-  whether the transaction brought it or it had been sitting there for a week,
-  and the refresh that follows absorbs the new state either way. So the
-  verdict is now taken at the boundary: before the window opens and before the
-  package manager writes anything, the daemon scans the watched set and
-  records every deviation into the tamper-evident chain under the
-  `pre_transaction_seal` group, with a timestamp that necessarily precedes the
-  transaction. A clean result is reported too, because "sealed clean before
-  this transaction, 7,624 files checked" is the positive assertion that was
-  missing.
+- **Content verification for package-owned changes.** `PackageVerification`
+  and `verify_changed_paths` in [src/package.rs](src/package.rs) check a
+  changed file against the digest its own package recorded, via
+  `dpkg --verify`, `rpm -V`, or `pacman -Qkk`, one subprocess per package
+  rather than one per path. Package-owned changes now split four ways:
 
-  All three package-manager pre-hooks (apt, pacman, dnf) take the seal, log
-  the verdict, and raise one critical notification when the system was already
-  drifting. Recording goes through the daemon-owned detection WAL rather than
-  a direct insert, because the daemon owns the audit chain and a second writer
-  racing it on `get_last_chain_hash` would break it. Seal records deliberately
-  carry no package attribution, so the maintenance window they precede can
-  never silence them. Where `/etc/vigil/attest.key` exists, the seal also
-  writes a head-only `.vatt` receipt binding the audit chain head, giving the
-  operator something portable and offline-verifiable; the seal is durable
-  without it. A seal whose scan fails reports the failure and never reports a
-  clean system. Closes AF-015.
+  | Verdict | Meaning | Operator sees |
+  |---|---|---|
+  | `verified` | content matches the digest the package recorded | nothing; proven benign |
+  | `conffile` | the package marks it operator-editable | nothing; you are meant to edit these |
+  | `mismatch` | a package owns it and the content is not what it shipped | **Critical**, never absorbed silently |
+  | `unverifiable` | no recorded digest, or the verifier could not run | reported, never assumed clean |
 
-- New module [src/seal.rs](src/seal.rs), promise PR20 guarded by canary
-  `C-SEAL-PRECEDES-TRANSACTION`, and metrics `vigil_seals_taken_total` and
+  Parser canaries are pinned to verbatim output captured from a live system,
+  including the cases that are easy to get backwards: an all-`?` attribute
+  string means *unverifiable*, not *failed*, and a `(Permission denied)`
+  annotation overrides the verdict on its own line.
+
+- **`vigil maintenance enter --seal`: know whether you were clean *before*
+  the update.** A deviation found after a transaction looks identical whether
+  the transaction brought it or it had been sitting there for a week, and the
+  refresh that follows absorbs the new state either way. The verdict is now
+  taken at the boundary: before the window opens and before the package
+  manager writes anything, the daemon scans the watched set and records every
+  deviation into the tamper-evident chain under the `pre_transaction_seal`
+  group, with a timestamp that necessarily precedes the transaction. A clean
+  result is reported too, because "sealed clean before this transaction, N
+  files checked" is the positive assertion that was missing.
+
+  All three package-manager pre-hooks take the seal, log the verdict, and
+  raise one critical notification when the system was already drifting.
+  Recording goes through the daemon-owned detection WAL rather than a direct
+  insert: the daemon owns the audit chain and a second writer racing it on
+  `get_last_chain_hash` would break it. Seal records carry no package
+  attribution, so the maintenance window they precede can never silence them.
+  Where `/etc/vigil/attest.key` exists, the seal also writes a head-only
+  `.vatt` receipt binding the audit chain head, giving the operator something
+  portable and offline-verifiable; the seal is durable without it. A seal
+  whose scan fails reports the failure and never reports a clean system.
+
+- New module [src/seal.rs](src/seal.rs) and
+  [tests/maintenance_window_tests.rs](tests/maintenance_window_tests.rs),
+  [tests/package_verification_tests.rs](tests/package_verification_tests.rs)
+  (a 250-file clean upgrade produces nothing to read; one tampered binary
+  among those 250 still surfaces).
+
+- Metrics: `vigil_baseline_refresh_package_verified_total`,
+  `..._package_mismatches_total`, `..._package_unverifiable_total`,
+  `vigil_maintenance_windows_force_closed_total`, `vigil_seals_taken_total`,
   `vigil_seals_with_deviations_total`.
-
-### Fixed
-
-- **A maintenance window that timed out came back on every restart.** The
-  safety timeout (`maintenance.max_window_seconds`) cleared the in-memory flag
-  but left the `maintenance.pending` breadcrumb on disk, and `Daemon::new`
-  resumed from that breadcrumb regardless of its age. So once a transaction
-  was interrupted before its post-hook ran, every subsequent daemon start
-  reopened the same expired window and held it until the coordinator's next
-  tick sixty seconds later — then did it again on the next start, indefinitely,
-  with nothing to tell the operator.
-
-  This was survivable when a window only suppressed package-owned changes
-  below High. The previous release widened it to every severity, which turned
-  a stuck window into a self-renewing silent hole in coverage. The timeout is
-  now durable: force-closing removes the breadcrumb and increments
-  `vigil_maintenance_windows_force_closed_total`, and a daemon start refuses
-  to resume a breadcrumb older than the cap, deleting it instead. A breadcrumb
-  with no parseable timestamp is treated as expired, because a window of
-  unknown age is not one to keep suppressing on. Guarded by PR19 /
-  `C-WINDOW-ALWAYS-ENDS`. Closes AF-014.
 
 ### Changed
 
+- **Package-owned changes are deferred inside a maintenance window at every
+  severity.** This is the behavioral change most likely to be noticed: where
+  a routine upgrade previously produced a burst of Critical desktop
+  notifications, it now produces one summary afterwards naming only the files
+  no package will vouch for. Deferral is safe because ownership was never
+  proof of anything; the post-transaction verdict is evidence, and a per-file
+  alert during the window was only ever a guess. A change to a path **no**
+  package owns is still never deferred and still alerts immediately,
+  mid-transaction. Every deferred change is still written to the audit log
+  with its `suppressed` flag set (Principle XIII).
+
+- **Findings print regardless of `--quiet`.** `--quiet` means "do not narrate
+  progress", never "hide evidence". The refresh emits a stable
+  `VIGIL UNPROVEN CHANGES` block on stderr listing every mismatch and every
+  unattributed change, untruncated, and a separate informational
+  `VIGIL DIGEST COVERAGE` line for paths no digest exists for.
+
+- The apt, pacman, and dnf hooks take the seal before a transaction and parse
+  the refresh markers after one, logging every path to the journal and
+  raising a single notification rather than one per file.
+
 - The seal logic lives in its own module rather than growing
-  [src/control.rs](src/control.rs) past the 1,500-line architecture limit; the
-  limit was respected by extraction, not raised.
-- [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md) documents the seal and its
-  output; [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) states both new
-  guarantees and the seal's honest limit (it proves what the filesystem looked
+  [src/control.rs](src/control.rs) past the 1,500-line architecture limit.
+  The limit was respected by extraction, not raised.
+
+- [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md) documents window deferral,
+  the verdict table, and the seal. [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)
+  states the new guarantees and their honest limits: dpkg records MD5, so on
+  Debian-family systems this check inherits MD5's second-preimage resistance
+  (vigil's own baseline stays BLAKE3 and the audit record is written
+  regardless of the verdict), and a seal proves what the filesystem looked
   like at that instant, not that nothing changed between the seal and the
-  first package write).
-- `scripts/verify-canary-drift.sh` is now 25 drift cases, all proven.
+  first package write.
+
+- `scripts/verify-canary-drift.sh` is now 25 drift cases, all proven, zero
+  theater.
 
 ### Fixed
 
 - **A tampered file in a package path is no longer laundered by the next
-  update, and a routine upgrade no longer floods the desktop.** These were
-  one bug wearing two faces. `vigil baseline refresh` classified a changed
-  file as a routine package update whenever *some* package owned the path,
-  then absorbed it into the new baseline with no alert and no path-level
-  record. Ownership of a path was being read as evidence that the package
-  wrote the bytes now in it, which it never was: a tampered `/usr/bin/sudo`
-  was filed as a `sudo` package update whether or not `sudo` was in the
-  transaction, and whether or not the new content was anything the `sudo`
-  package ever shipped.
-
-  Meanwhile, inside a maintenance window, package-owned Critical and High
-  changes were deliberately left unsuppressed. `/usr/bin/`, `/usr/sbin/` and
-  `/boot/` are all in the Critical watch group, and Critical routes as
-  Immediate with no coalescing, so a single `apt upgrade` fired one desktop
-  notification per binary until the storm detector tripped. The flood buried
-  the real alert and the refresh that followed erased it.
-
-  Every supported package manager records a digest for every file it ships,
-  so the question "did a package write these bytes" is answerable from local
-  state alone. The refresh now asks it, one subprocess per package rather
-  than one per path, and splits package-owned changes four ways:
-
-  | Verdict | Meaning | Operator sees |
-  |---|---|---|
-  | `verified` | content matches the package's recorded digest | nothing; proven benign |
-  | `conffile` | the package marks it operator-editable | nothing; you are meant to edit these |
-  | `mismatch` | a package owns it, the content is not what the package shipped | **Critical** alert, never absorbed silently |
-  | `unverifiable` | the package manager could not answer | reported, never assumed clean |
-
-  With proof available, per-file alerting inside a window is no longer needed:
-  package-owned changes are deferred at every severity and the
-  post-transaction verdict raises exactly the files that failed the digest
-  check. A change to a path **no** package owns is still never deferred, so
-  an attacker writing to `/usr/local/bin` during your update still alerts
-  immediately. Every deferred change is still written to the audit log with
-  its `suppressed` flag set (Principle XIII).
-
-  Closes AF-010.
+  update, and a routine upgrade no longer floods the desktop.** A tampered
+  `/usr/bin/sudo` was filed as a `sudo` package update whether or not `sudo`
+  was in the transaction, and whether or not the new content was anything the
+  `sudo` package ever shipped; the attacker's hash became the new definition
+  of correct. Closes AF-010.
 
 - **The refresh no longer computes the answer and throws it away.** The
   unattributed-change list was rendered only when stdout was a TTY and
-  `--quiet` was absent, and the package hooks run it quietly and
-  non-interactively, so on the one path where an operator most needs it the
-  finding was formatted and discarded. Findings now print regardless of
-  `--quiet`, which means "do not narrate progress", never "hide evidence".
-  The apt, pacman, and dnf hooks parse the `VIGIL UNPROVEN CHANGES` marker,
-  log every path to the journal, and raise one critical notification naming
-  the count. Closes AF-011.
+  `--quiet` was absent, and the hooks run it quietly and non-interactively, so
+  on the one path where an operator most needs it the finding was formatted
+  and discarded. Closes AF-011.
 
 - **A verification that never ran is no longer reported as one that passed.**
   Found by running the new verifier against the real package manager with a
@@ -133,57 +153,71 @@ All notable changes to Vigil Baseline will be documented in this file.
   found nothing" from "the tool did not run", across backends that disagree
   about exit codes. Closes AF-012.
 
-- **A quiet verifier is no longer read as a pass for files it holds no
-  digest for.** The verification above treated any path `dpkg --verify` did
-  not complain about as verified. That is sound only for paths the package
-  manager actually holds a digest for. Measured on a stock Ubuntu install
-  against the default Critical watch paths: 529 of 2,535 files in `/usr/bin`
-  (20.9%), 159 of 646 in `/usr/sbin` (24.6%), and 328 of 336 in `/boot`
-  (97.6%) have no recorded digest. `/usr/bin/ls` is among them — it belongs
-  to `coreutils-from-uutils`, whose manifest lists two documentation files
-  and nothing else — so it would have been reported as proven to be its
-  package's own bytes. `Verified` now requires positive coverage from the
-  package's md5sums manifest or the `Conffiles:` digests in dpkg's status
-  database; a missing pacman mtree yields `Unknown` for the whole package.
-  Uncovered paths are counted, logged, and shown in the summary but raise no
-  alarm on their own, because a locally generated initrd is unprovable by
-  anyone and paging on every kernel update would rebuild the noise this
-  release removes. Closes AF-013.
+- **A quiet verifier is no longer read as a pass for files it holds no digest
+  for.** Silence is a pass only for paths the package manager actually holds a
+  digest for. Measured on a stock Ubuntu install against the default Critical
+  watch paths: 529 of 2,535 files in `/usr/bin` (20.9%), 159 of 646 in
+  `/usr/sbin` (24.6%), and 328 of 336 in `/boot` (97.6%) have no recorded
+  digest. `/usr/bin/ls` is among them, since it belongs to
+  `coreutils-from-uutils`, whose manifest lists two documentation files and
+  nothing else, so it would have been reported as proven to be its package's
+  own bytes. `Verified` now requires positive coverage from the package's
+  md5sums manifest or the `Conffiles:` digests in dpkg's status database, and
+  a missing pacman mtree yields `Unknown` for the whole package. Uncovered
+  paths are counted, logged, and shown in the summary but raise no alarm on
+  their own: a locally generated initrd is unprovable by anyone, and paging on
+  every kernel update would rebuild the noise this release removes. Closes
+  AF-013.
+
+- **A maintenance window that timed out came back on every restart.** The
+  safety timeout (`maintenance.max_window_seconds`) cleared the in-memory flag
+  but left the `maintenance.pending` breadcrumb on disk, and `Daemon::new`
+  resumed from that breadcrumb regardless of its age. Once a transaction was
+  interrupted before its post-hook ran, every subsequent daemon start reopened
+  the same expired window and held it until the coordinator's next tick sixty
+  seconds later, then did it again on the next start, indefinitely, with
+  nothing to tell the operator. Tolerable when a window only suppressed below
+  High; a self-renewing silent hole in coverage once deferral widened to every
+  severity. The timeout is now durable: force-closing removes the breadcrumb
+  and increments a counter, a daemon start refuses to resume a breadcrumb
+  older than the cap and deletes it, and a breadcrumb with no parseable
+  timestamp is treated as expired, because a window of unknown age is not one
+  to keep suppressing on. Closes AF-014.
 
 - **The drift harness could pass on a name that matched no test.**
-  `scripts/verify-canary-drift.sh` ran every case against the PDD canary
-  suite only, so a canary living anywhere else matched nothing, exited 0, and
-  was recorded as proven. A typo would have read as proof. It now fails
-  loudly on a no-match and takes an optional cargo target. This is what
-  caught AF-013's drift case, which first reported `HARNESS BUG` rather than
-  a false pass.
+  `scripts/verify-canary-drift.sh` ran every case against the PDD canary suite
+  only, so a canary living anywhere else matched nothing, exited 0, and was
+  recorded as proven. A typo would have read as proof. It now fails loudly on
+  a no-match and takes an optional cargo target. This is what caught AF-013's
+  drift case, which first reported `HARNESS BUG` rather than a false pass.
 
-### Added
+### Upgrade notes
 
-- `PackageVerification` and `verify_changed_paths` in
-  [src/package.rs](src/package.rs): content verification against
-  `dpkg --verify`, `rpm -V`, and `pacman -Qkk`, with parser canaries pinned to
-  verbatim output captured from a live system, including the awkward cases
-  (an all-`?` attribute string means *unverifiable*, not *failed*; a
-  `(Permission denied)` annotation overrides the verdict on its line).
-- PR18, "Package ownership is never treated as proof of package authorship",
-  guarded by canary `C-OWNERSHIP-IS-NOT-PROOF` and proven to fail on drift by
-  [scripts/verify-canary-drift.sh](scripts/verify-canary-drift.sh) (now 23
-  drift cases).
-- [tests/package_verification_tests.rs](tests/package_verification_tests.rs):
-  the 250-file clean upgrade produces nothing to read; one tampered binary
-  among those 250 still surfaces.
-- Metrics: `vigil_baseline_refresh_package_verified_total`,
-  `..._package_mismatches_total`, `..._package_unverifiable_total`.
+- **No migration required.** No schema change, no config change, and no
+  change to the CLI, `vigil.toml`, the `baseline` / `audit_log` /
+  `config_state` schemas, or the alert event shape. The minor bump reflects
+  the new `--seal` flag and the changed default notification behavior during
+  package transactions.
 
-### Changed
+- **Reinstall the hooks to get the seal.** The pre-transaction seal lives in
+  the package-manager hook scripts, so an existing install keeps the old
+  hooks until they are refreshed:
 
-- [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md) documents maintenance-window
-  deferral and the verdict table;
-  [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) states the new guarantee and
-  its honest limit (dpkg records MD5, so on Debian-family systems this check
-  inherits MD5's second-preimage resistance; vigil's own baseline stays
-  BLAKE3 and the audit record is written regardless of the verdict).
+  ```bash
+  sudo vigil hooks verify    # compare installed hooks against canonical
+  sudo vigil hooks repair    # reinstall the canonical hook scripts
+  ```
+
+- **Expect quieter upgrades and a new post-update line.** After a package
+  transaction you should see at most one notification, naming only files that
+  contradict their package or that no package owns. Seeing `unverifiable`
+  counts after a kernel update is expected and is not an alarm: initrd images
+  are generated locally and no package digest for them exists.
+
+- **Optional: an attestation key makes the seal portable.** If
+  `/etc/vigil/attest.key` exists, each seal also writes a signed head-only
+  receipt to `<runtime_dir>/pre-transaction.vatt`, verifiable offline with
+  `vigil attest verify`. Without a key the seal still records to the chain.
 
 ## [1.13.0] - 2026-09-19
 
