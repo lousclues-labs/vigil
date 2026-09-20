@@ -8,6 +8,34 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- Bumped `lru` 0.16.4 -> 0.18.4 for **RUSTSEC-2026-0253**: `LruCache::pop()`
+  was not panic-safe, so a panicking `Drop` on a stored key could leave
+  dangling pointers in the internal linked list and cause a use-after-free on
+  a later eviction. The advisory requires >= 0.18.2, which is outside the
+  manifest's previous `0.16.x` range, so this is a deliberate major bump
+  rather than a lockfile refresh.
+
+  Vigil's own exposure was almost certainly nil: every `LruCache` in the tree
+  is keyed by `String` (`cooldowns` in the alert dispatcher and the WAL sink
+  runner, the baseline lookup cache in the worker), and `String`'s `Drop`
+  cannot panic. The upgrade is still correct — "probably not reachable" is not
+  a claim worth shipping when a patched version exists.
+
+- Bumped `crossbeam-epoch` 0.9.18 -> 0.9.21 for **RUSTSEC-2026-0204** (invalid
+  pointer dereference in the `fmt::Pointer` impl). It reaches the tree only as
+  a dev-dependency, via `criterion` -> `rayon` -> `crossbeam-deque`, so it is
+  not in either shipped binary.
+
+### Fixed
+
+- `clippy::manual_slice_fill` in [src/wal/sink_runner.rs](src/wal/sink_runner.rs):
+  the sink failure-count reset loop is now `fill(0)`. The lint ships in a
+  newer stable toolchain than the one this was last checked against locally,
+  so CI caught it rather than the local gate; the tree was swept for other
+  instances of the same pattern and none exist.
+
 ### Fixed
 
 - **The canary gate claimed an enforcement it never had.** PR15 read "A

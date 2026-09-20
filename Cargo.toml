@@ -123,7 +123,7 @@ sd-notify = "0.4"
 
 
 # LRU cache for baseline lookups
-lru = "0.16.3"
+lru = "0.18.4"  # >=0.18.2 required: RUSTSEC-2026-0253 (panic-safety UAF in pop())
 
 # Cron schedule parsing for scheduled scans
 croner = "2"

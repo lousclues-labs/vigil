@@ -196,9 +196,7 @@ impl SinkRunner {
         if self.sink_failure_window_start.elapsed()
             > Duration::from_secs(self.sink_failure_window_seconds as u64)
         {
-            for count in &mut self.sink_failure_counts {
-                *count = 0;
-            }
+            self.sink_failure_counts.fill(0);
             self.sink_failure_window_start = Instant::now();
 
             // Self-clear if previously degraded for sink failure.
