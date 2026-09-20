@@ -114,11 +114,13 @@ spine is **Principles -> Promises -> Canaries -> Ledger.**
   promise is narrow and falsifiable, named to a principle and to
   the canary that guards it.
 - Canaries are the proofs: `cargo test --test pdd_canaries`
-  ([tests/pdd_canaries.rs](tests/pdd_canaries.rs)), a required
-  merge-blocking gate
+  ([tests/pdd_canaries.rs](tests/pdd_canaries.rs)), a CI gate that
+  goes red on any breach
   ([.github/workflows/pdd-canaries.yml](.github/workflows/pdd-canaries.yml)),
-  and a build-provenance attestation on every release that you can
-  verify with `gh attestation verify`.
+  a pre-push hook that refuses to push a red canary
+  ([scripts/git-hooks/pre-push](scripts/git-hooks/pre-push)), and a
+  build-provenance attestation on every release that you can verify
+  with `gh attestation verify`.
 - [AUDIT_FINDINGS.md](AUDIT_FINDINGS.md) is the ledger. Drift is
   recorded there and closed only by a named canary.
 

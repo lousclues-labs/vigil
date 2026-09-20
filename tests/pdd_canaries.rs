@@ -1325,9 +1325,12 @@ fn stands_alone_unsafe_is_confined_to_the_syscall_boundary() {
 
 /// PR15, canary C-CI-GATE (test half; the workflow run is the other).
 ///
-/// The canary surface is worthless if it is not merge-blocking. The gate job
-/// must depend on every canary job in the workflow, so a red canary cannot be
-/// merged past.
+/// The canary surface is worthless if a breach can ship anyway. Three things
+/// have to hold: the gate depends on every canary job so nothing reports green
+/// past a breach, the workflow actually runs on a push to `main` (this project
+/// pushes straight to main, so a pull-request-only trigger would watch a door
+/// nobody uses), and the pre-push hook refuses the push, because with no merge
+/// to block the push is the only enforcement point there is (AF-016).
 #[test]
 fn proof_ships_ci_gate_depends_on_every_canary_job() {
     let workflow = read_surface(".github/workflows/pdd-canaries.yml");
@@ -1360,7 +1363,38 @@ fn proof_ships_ci_gate_depends_on_every_canary_job() {
 
     assert!(
         workflow.contains("pdd-canary-gate:"),
-        "C-CI-GATE breach (PR15): the required gate job is gone."
+        "C-CI-GATE breach (PR15): the gate job is gone."
+    );
+
+    // The gate has to watch the door this project actually uses. Changes go
+    // straight to main, so a workflow that only triggers on pull requests
+    // would never see them.
+    let on_block = workflow
+        .split("jobs:")
+        .next()
+        .expect("workflow must have a trigger block");
+    assert!(
+        on_block.contains("push:") && on_block.contains("main"),
+        "C-CI-GATE breach (PR15): the workflow no longer runs on a push to \
+         main, which is how every change reaches this repository."
+    );
+
+    // With no merge to block, the push is the enforcement point. A hook that
+    // does not run the canaries, or that cannot fail, is decoration.
+    assert!(
+        manifest().join("scripts/git-hooks/pre-push").exists(),
+        "C-CI-GATE breach (PR15): the pre-push hook is missing."
+    );
+    let hook = read_surface("scripts/git-hooks/pre-push");
+    assert!(
+        hook.contains("--test pdd_canaries"),
+        "C-CI-GATE breach (PR15): the pre-push hook no longer runs the canary \
+         suite, so nothing stops a breach leaving the machine."
+    );
+    assert!(
+        hook.contains("exit 1"),
+        "C-CI-GATE breach (PR15): the pre-push hook has no failing path; a \
+         guard that cannot refuse is not a guard."
     );
 }
 

@@ -66,7 +66,7 @@ Three rules apply to contributions:
    tree is a source scan. A promise about behavior is a behavioral test driving
    the real types. A cross-cutting promise that no unit test can see belongs in
    [.github/workflows/pdd-canaries.yml](.github/workflows/pdd-canaries.yml) as a
-   merge-blocking job.
+   gate job.
 3. **Drift gets recorded, not just fixed.** If you find a case where a stated
    claim had stopped being true, add a numbered finding to
    [AUDIT_FINDINGS.md](AUDIT_FINDINGS.md): what drifted, why it mattered, the
@@ -80,8 +80,16 @@ cargo test --test pdd_canaries
 bash scripts/verify-canary-drift.sh   # proves each canary fails on a real breach
 ```
 
-The `PDD Canary Gate` status is required. A red canary is not a flaky test; it
-is the tool telling you a claim stopped being true.
+Enable the pre-push guard once per clone, so a red canary cannot leave your
+machine by accident:
+
+```bash
+git config core.hooksPath scripts/git-hooks
+```
+
+A red canary is not a flaky test. It is the tool telling you a claim this
+project makes about itself stopped being true. Fix the drift, or if the claim
+itself changed, update [PROMISES.md](PROMISES.md) and record a finding.
 
 ---
 

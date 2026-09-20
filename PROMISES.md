@@ -11,8 +11,9 @@ aspiration at the bottom of this file, not stated as a promise.
 Canary types, matched to where each promise lives:
 - **test** runs under `cargo test --test pdd_canaries` (see
   [tests/pdd_canaries.rs](tests/pdd_canaries.rs)).
-- **ci** is a required, merge-blocking job (see
+- **ci** is a gate job that goes red on a breach (see
   [.github/workflows/pdd-canaries.yml](.github/workflows/pdd-canaries.yml)).
+  See PR15 for where that gate is enforced.
 - **release** is verifiable by the operator on the published artifact.
 
 ---
@@ -306,17 +307,31 @@ a routine commit.
 
 ## From P8: A self-claim ships with a proof that fails loud.
 
-### PR15. A required, merge-blocking gate runs the whole canary surface
-Every push and pull request runs the canary suite. A final gate job depends on
-all canary jobs and fails the check if any breach is present, so drift cannot
-merge.
+### PR15. A breach never ships silently
+Every push and pull request runs the whole canary surface, and a final gate job
+depends on every canary job so no breach can report green.
 
-- Falsifiable by: a breach that still reports a green required check.
-- Canary `C-CI-GATE` (ci + test): the `pdd-canary-gate` job in
-  [.github/workflows/pdd-canaries.yml](.github/workflows/pdd-canaries.yml) is
-  the required status, and
+Where that gate is *enforced* depends on how changes reach `main`, and the
+honest answer today is: this is a single-maintainer project with no merge to
+block. A merge-gate would be theater, because the CI run fires after the push
+has already landed. So the enforcement point is the push itself
+([scripts/git-hooks/pre-push](scripts/git-hooks/pre-push), enabled with
+`git config core.hooksPath scripts/git-hooks`), which runs the canaries and
+refuses the push on a breach. CI is the second look, and it still goes red on
+anything pushed with `--no-verify`.
+
+If the project ever takes contributors and changes start arriving by pull
+request, the same `pdd-canary-gate` job becomes the status to require in branch
+protection. The gate does not change; only where it is enforced does.
+
+- Falsifiable by: a canary job missing from the gate's `needs` list, the
+  workflow no longer running on a push to `main`, or a pre-push hook that does
+  not actually run the canaries.
+- Canary `C-CI-GATE` (ci + test):
   `proof_ships_ci_gate_depends_on_every_canary_job` asserts every canary job is
-  in that gate's `needs` list.
+  in the gate's `needs` list, that the workflow triggers on pushes to `main`,
+  and that the pre-push hook runs the canary suite and exits non-zero on a
+  breach.
 
 ### PR16. Every release ships operator-verifiable provenance
 Each tagged release publishes a SHA256 checksum alongside the tarball and a

@@ -8,6 +8,48 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The canary gate claimed an enforcement it never had.** PR15 read "A
+  required, merge-blocking gate runs the whole canary surface", ending in "so
+  drift cannot merge". The README, CONTRIBUTING, the canary-type legend and the
+  workflow's own header all repeated some form of it. None of it was enforced:
+  this is a single-maintainer project where every change goes straight to
+  `main`, so there is no pull request, no branch protection rule, no required
+  status and no merge to block. The workflow does run on pushes to `main`, so
+  the canaries fire and the gate goes red — but after the push has already
+  landed. The gate was an alarm, and the promise called it a lock.
+
+  That is the failure mode the methodology names in section 9.1: a promise that
+  reverts to prose keeps the appearance of a commitment with none of the
+  enforcement, which manufactures false confidence. It mattered more than most,
+  because PR15 is the promise the other promises lean on — every canary's
+  credibility rests on a breach not being able to ship.
+
+  PR15 is restated as "A breach never ships silently", and the enforcement
+  moved to where the promise actually lives. With no merge to block, that is
+  the push: [scripts/git-hooks/pre-push](scripts/git-hooks/pre-push) runs the
+  canary suite and refuses the push on a breach. Enable it once per clone:
+
+  ```bash
+  git config core.hooksPath scripts/git-hooks
+  ```
+
+  CI remains the second look and still goes red on anything pushed with
+  `--no-verify`. The branch-protection path is now documented as what to do
+  *if* the project takes contributors, rather than asserted as already in
+  place. Closes AF-016.
+
+### Changed
+
+- `C-CI-GATE` now asserts three things rather than one: every canary job is in
+  the gate's `needs` list, the workflow triggers on a push to `main` (a
+  pull-request-only trigger would watch a door nobody on this project uses),
+  and the pre-push hook both runs the canary suite and has a failing path. The
+  hook was verified in both directions before being committed — green tree
+  exits 0, a deliberately broken canary exits 1 and refuses the push.
+- `scripts/verify-canary-drift.sh` is now 26 drift cases, all proven.
+
 ## [1.14.0] - 2026-09-20
 
 This release started as a usability report: vigil floods the desktop during

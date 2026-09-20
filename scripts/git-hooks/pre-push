@@ -1,0 +1,68 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# Vigil pre-push canary gate.
+#
+# Enable once per clone:
+#
+#     git config core.hooksPath scripts/git-hooks
+#
+# Why this exists
+# ───────────────
+# PROMISES.md commits to a breach never shipping silently. The canary taxonomy
+# in the PDD architecture says a canary must live where the promise lives, and
+# on a project where every change goes straight to `main` there is no merge to
+# block. A merge-gate would be theater: the CI run fires *after* the push has
+# already landed, so it is an alarm, not a guard.
+#
+# The push is the boundary. So the guard lives at the push.
+#
+# This is a guard against accident and drift, not against the operator.
+# `git push --no-verify` bypasses it deliberately, which is the correct escape
+# hatch for a maintainer who knows what they are doing. What the guard must
+# never do is let a breach through *silently*.
+set -eu
+
+# Nothing to check on a branch deletion.
+if [ -t 0 ]; then
+    :
+else
+    deleting_only=1
+    while read -r _local_ref local_sha _remote_ref _remote_sha; do
+        if [ "$local_sha" != "0000000000000000000000000000000000000000" ]; then
+            deleting_only=0
+        fi
+    done
+    if [ "$deleting_only" = "1" ]; then
+        exit 0
+    fi
+fi
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+printf '%s\n' "vigil: running PDD canaries before push..."
+
+if cargo test --test pdd_canaries --quiet; then
+    printf '%s\n' "vigil: canaries green; a claim this project makes is not currently false."
+    exit 0
+fi
+
+cat >&2 <<'MSG'
+
+  ──────────────────────────────────────────────────────────────────
+  PUSH REFUSED: a PDD canary is red.
+
+  A red canary is not a flaky test. It means a claim this project
+  makes about itself stopped being true, and pushing would publish
+  that claim while it is false.
+
+  Either fix the drift, or if the claim itself changed, update
+  PROMISES.md and record a finding in AUDIT_FINDINGS.md.
+
+  To push anyway (you had better mean it):
+      git push --no-verify
+  ──────────────────────────────────────────────────────────────────
+
+MSG
+exit 1

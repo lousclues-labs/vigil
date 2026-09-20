@@ -35,6 +35,7 @@ TOUCHED=(
   PROMISES.md
   .github/workflows/pdd-canaries.yml
   .github/workflows/release.yml
+  scripts/git-hooks/pre-push
 )
 
 for f in "${TOUCHED[@]}"; do
@@ -315,6 +316,18 @@ echo "== PR15 C-CI-GATE =="
 sed -i 's|    needs: \[watch-never-act, local-by-design, stands-alone, canary-tests, release-provenance\]|    needs: [watch-never-act, local-by-design, stands-alone, canary-tests]|' .github/workflows/pdd-canaries.yml
 expect_red proof_ships_ci_gate_depends_on_every_canary_job "a canary job dropped from the gate"
 revert .github/workflows/pdd-canaries.yml
+
+echo "== PR15 C-CI-GATE (AF-016: pre-push enforcement) =="
+python3 - <<'PYX'
+p = "scripts/git-hooks/pre-push"
+s = open(p).read()
+needle = "if cargo test --test pdd_canaries --quiet; then"
+inject = "if true; then"
+assert needle in s, "pre-push hook anchor not found"
+open(p, "w").write(s.replace(needle, inject, 1))
+PYX
+expect_red proof_ships_ci_gate_depends_on_every_canary_job "pre-push hook stopped running the canaries"
+revert scripts/git-hooks/pre-push
 
 echo "== PR16 C-RELEASE-PROVENANCE =="
 sed -i 's|        uses: actions/attest-build-provenance@|        uses: actions/DISABLED-attestation@|' .github/workflows/release.yml

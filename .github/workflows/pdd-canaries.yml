@@ -1,4 +1,4 @@
-# PDD Canaries: required, merge-blocking gate.
+# PDD Canaries: the gate that goes red when a self-claim stops being true.
 #
 # This workflow is the CI proof layer of Promise Driven Development
 # (Principles -> Promises -> Canaries -> Ledger). It guards the cross-cutting
@@ -7,7 +7,13 @@
 # (PR11), independence from sibling tools and a confined unsafe boundary
 # (PR13, PR14), and a release an operator can verify (PR16). The behavioral and
 # source-scan canaries in tests/pdd_canaries.rs run here too. The final
-# `pdd-canary-gate` job is the status that branch protection should require.
+# `pdd-canary-gate` job aggregates them all.
+#
+# Enforcement: changes go straight to main on this project, so the push is the
+# boundary and scripts/git-hooks/pre-push is what refuses a breach. This run is
+# the second look, and it still goes red on anything pushed with --no-verify.
+# If the project ever takes contributors, this is the status to require in
+# branch protection. See PR15.
 #
 # Promises: PROMISES.md. Principles: PRINCIPLES.md. Ledger: AUDIT_FINDINGS.md.
 
@@ -235,8 +241,7 @@ jobs:
           echo "OK: releases ship a checksum and a build provenance attestation."
 
   # ===========================================================================
-  # Required gate: fails if any canary above did not pass. This is the status
-  # branch protection should require (PR15 / C-CI-GATE).
+  # Aggregate gate: fails if any canary above did not pass (PR15 / C-CI-GATE).
   # ===========================================================================
   pdd-canary-gate:
     name: PDD Canary Gate

@@ -39,6 +39,7 @@ and the two cross-reference each other when one event is both.
 | AF-013 | High | Closed | PR18 | `silence_about_a_path_with_no_recorded_digest_is_not_a_pass` |
 | AF-014 | High | Closed | PR19 | C-WINDOW-ALWAYS-ENDS |
 | AF-015 | Medium | Closed | PR20 | C-SEAL-PRECEDES-TRANSACTION |
+| AF-016 | High | Closed | PR15 | C-CI-GATE (pre-push enforcement + push trigger) |
 
 ---
 
@@ -619,6 +620,73 @@ A seal whose scan fails reports the failure and never reports a clean system:
 which asserts the scan's own severities survive, the records are identifiable
 as seals, and they carry no package attribution a window could use to silence
 them.
+
+---
+
+---
+
+## AF-016: The canary gate claimed an enforcement it never had
+
+- **Severity:** High
+- **Status:** Closed
+- **Principle / Promise:** P8 / PR15
+
+**What drifted.** PR15 was written as "A required, merge-blocking gate runs the
+whole canary surface", ending in the words "so drift cannot merge". The canary
+type legend called **ci** "a required, merge-blocking job", the README
+advertised "a required merge-blocking gate", CONTRIBUTING told contributors
+"The `PDD Canary Gate` status is required", and the workflow's own header named
+itself "the status that branch protection should require".
+
+None of it was enforced. This is a single-maintainer project: every change goes
+straight to `main`, there is no pull request, no branch protection rule, and
+therefore no required status and no merge to block. The workflow does run on
+pushes to `main`, so the canaries genuinely fire and the gate genuinely goes
+red, but that happens *after* the push has already landed. The gate was an
+alarm the whole time, and the promise called it a lock.
+
+**Why it mattered.** This is the exact failure mode section 9.1 of the
+methodology names: a promise that reverts to prose keeps "the *appearance* of a
+commitment with none of the enforcement, which is arguably worse than no
+promise at all, because it manufactures false confidence." It is also the same
+shape as AF-012 and AF-013 one layer up: a claim of enforcement where no
+enforcement was obtained. Worse in one respect, because PR15 is the promise the
+*other* promises lean on. Every other canary's credibility rests on the claim
+that a breach cannot ship, and that claim was false.
+
+**How it was found.** The maintainer mentioned in passing that they are a solo
+developer, do not use branch protection, and push everything to `main`. That
+sentence invalidated a promise. No canary caught it, because every canary
+asserted the gate's *internal* structure (does it depend on every job) and none
+asserted that the gate was attached to anything.
+
+**Closing change.** The promise now says what is true, and the mechanism now
+makes it true. PR15 is restated as "A breach never ships silently", and the
+enforcement point moved to where the promise actually lives. On a project with
+no merge to block, that is the push: `scripts/git-hooks/pre-push` runs the
+canary suite and refuses the push on a breach, enabled once per clone with
+`git config core.hooksPath scripts/git-hooks`. CI remains the second look and
+still goes red on anything pushed with `--no-verify`. The branch-protection
+path is documented as what to do *if* the project ever takes contributors,
+rather than asserted as something already in place.
+
+This follows the canary taxonomy rather than working around it: a canary must
+live where the promise lives, and a merge-gate on a project with no merges is
+the definition of a guard in the wrong place.
+
+**Canary that prevents recurrence.**
+`proof_ships_ci_gate_depends_on_every_canary_job` (C-CI-GATE) now asserts three
+things instead of one: every canary job is in the gate's `needs` list, the
+workflow triggers on a push to `main` (a pull-request-only trigger would watch
+a door nobody on this project uses), and the pre-push hook both runs the canary
+suite and has a failing path. The hook itself was verified in both directions
+before being committed: green tree exits 0, a deliberately broken canary exits
+1 and refuses the push.
+
+**Note on earlier findings.** AF-001 and AF-008 describe the gate as
+merge-blocking. Those entries are left as written, because a ledger that edits
+its own history to look consistent is not a memory. This finding supersedes
+that characterisation.
 
 ---
 
