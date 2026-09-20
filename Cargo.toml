@@ -101,7 +101,7 @@ sha2 = "0.10"
 hex = "0.4"
 
 # Pattern matching (compiled automaton)
-globset = "0.4"
+globset = ">=0.4, <0.4.20"  # pin below 0.4.20 which requires rustc 1.88 (MSRV is 1.85)
 
 # Lock-free config swap
 arc-swap = "1"

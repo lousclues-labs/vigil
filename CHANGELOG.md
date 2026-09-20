@@ -30,6 +30,14 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ### Fixed
 
+- Pinned `globset` below 0.4.20, which raised its MSRV to rustc 1.88 while this
+  project's MSRV is 1.85. The manifest asked for `globset = "0.4"`, and the CI
+  MSRV job deletes `Cargo.lock` before checking, so it resolved to the newest
+  0.4.x and failed on a toolchain the project still supports. Pinned as
+  `>=0.4, <0.4.20`, matching the existing `constant_time_eq` pin. The committed
+  lockfile was already on 0.4.18 and is unchanged; only a fresh resolve was
+  affected.
+
 - `clippy::manual_slice_fill` in [src/wal/sink_runner.rs](src/wal/sink_runner.rs):
   the sink failure-count reset loop is now `fill(0)`. The lint ships in a
   newer stable toolchain than the one this was last checked against locally,
