@@ -69,6 +69,31 @@ All notable changes to Vigil Baseline will be documented in this file.
   found nothing" from "the tool did not run", across backends that disagree
   about exit codes. Closes AF-012.
 
+- **A quiet verifier is no longer read as a pass for files it holds no
+  digest for.** The verification above treated any path `dpkg --verify` did
+  not complain about as verified. That is sound only for paths the package
+  manager actually holds a digest for. Measured on a stock Ubuntu install
+  against the default Critical watch paths: 529 of 2,535 files in `/usr/bin`
+  (20.9%), 159 of 646 in `/usr/sbin` (24.6%), and 328 of 336 in `/boot`
+  (97.6%) have no recorded digest. `/usr/bin/ls` is among them — it belongs
+  to `coreutils-from-uutils`, whose manifest lists two documentation files
+  and nothing else — so it would have been reported as proven to be its
+  package's own bytes. `Verified` now requires positive coverage from the
+  package's md5sums manifest or the `Conffiles:` digests in dpkg's status
+  database; a missing pacman mtree yields `Unknown` for the whole package.
+  Uncovered paths are counted, logged, and shown in the summary but raise no
+  alarm on their own, because a locally generated initrd is unprovable by
+  anyone and paging on every kernel update would rebuild the noise this
+  release removes. Closes AF-013.
+
+- **The drift harness could pass on a name that matched no test.**
+  `scripts/verify-canary-drift.sh` ran every case against the PDD canary
+  suite only, so a canary living anywhere else matched nothing, exited 0, and
+  was recorded as proven. A typo would have read as proof. It now fails
+  loudly on a no-match and takes an optional cargo target. This is what
+  caught AF-013's drift case, which first reported `HARNESS BUG` rather than
+  a false pass.
+
 ### Added
 
 - `PackageVerification` and `verify_changed_paths` in
@@ -79,7 +104,7 @@ All notable changes to Vigil Baseline will be documented in this file.
   `(Permission denied)` annotation overrides the verdict on its line).
 - PR18, "Package ownership is never treated as proof of package authorship",
   guarded by canary `C-OWNERSHIP-IS-NOT-PROOF` and proven to fail on drift by
-  [scripts/verify-canary-drift.sh](scripts/verify-canary-drift.sh) (now 22
+  [scripts/verify-canary-drift.sh](scripts/verify-canary-drift.sh) (now 23
   drift cases).
 - [tests/package_verification_tests.rs](tests/package_verification_tests.rs):
   the 250-file clean upgrade produces nothing to read; one tampered binary
