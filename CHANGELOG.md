@@ -8,6 +8,39 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [1.15.1] - 2026-09-22
+
+A presentation fix, and two release gates made satisfiable.
+
+1.15.0 shipped correlation to solve alert fatigue: an authorised `apt upgrade`
+should read as one explained event rather than dozens of apparently
+independent compromises. Run against a real desktop upgrade, it did the
+opposite. The summary was appended to the finished report instead of built
+into it, so the operator got every changed file in full, then *Next steps*,
+then the exit code, and only then a correlated block that listed all the same
+files again grouped by package — more text than printing no correlation at
+all, led by a bar chart reading `CRITICAL 24` for an upgrade they had
+authorised themselves.
+
+The code carried a comment stating the opposite of what it did:
+
+```rust
+// Event-first summary, printed above the raw detail it explains.
+output.push_str(&display::correlate::render_events(...));   // appends below
+```
+
+That is the same defect class 1.15.0 spent twenty findings correcting — a
+claim that could not be distinguished from the truth by anything that ran —
+reintroduced by the release that catalogued it. No test covered ordering or
+output volume, so nothing failed.
+
+The lesson recorded here is about fixture choice. Every synthetic fixture
+written for this feature agreed with whatever the renderer happened to do:
+they were too small for the difference between a summary and a wall to show
+up. The regression tests are now built from a real upgrade, and rebuilding
+them that way immediately failed an assertion that had been copied out of a
+single renderer run.
+
 ### Fixed
 
 - **A routine `apt upgrade` rendered as a screen of critical alerts.** The
@@ -88,6 +121,31 @@ All notable changes to Vigil Baseline will be documented in this file.
   `git -c core.hooksPath=/dev/null commit`. An earlier draft of the hook
   claimed `--no-verify` worked; testing it showed otherwise, and the claim was
   corrected rather than left as a documented escape hatch that does not exist.
+
+### Upgrade notes
+
+- No migration. No schema, config, CLI, or alert-payload change. The baseline,
+  audit log and `vigil.toml` are untouched, and a 1.15.0 install upgrades in
+  place.
+- `vigil check` output looks different. The severity histogram is now sized by
+  changes a package transaction does not account for, rather than by every
+  change observed. The totals it omits are printed beside it at their real
+  severity; `--verbose` is unchanged and still lists every path with full
+  per-event evidence.
+- Exit codes are unchanged. `vigil check` still exits 3 on critical findings
+  whether or not a transaction explains them, so scripts and timers keyed on
+  exit status behave exactly as before.
+- Contributors should re-run `git config core.hooksPath scripts/git-hooks` if
+  they have not already; it now installs the sign-off hook alongside the
+  pre-push canary guard.
+
+### Known limitations
+
+- Only `vigil check` was corrected. Desktop notification volume during a
+  package transaction goes through the WAL sink runner and the maintenance
+  window, which this release does not touch.
+- The verification line in the condensed view shows the weakest outcome only.
+  The full checklist remains in `--verbose`.
 
 ## [1.15.0] - 2026-09-22
 
