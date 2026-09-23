@@ -13,10 +13,14 @@
 //! - Untrusted text -- paths, package names, log excerpts -- is sanitized
 //!   before it reaches the terminal.
 
+use std::collections::{BTreeMap, HashSet};
+use std::path::PathBuf;
+
 use crate::correlate::{
     CheckOutcome, Confidence, CorrelatedEvent, CorrelationResult, EventKind, MemberRole,
     TransactionStatus,
 };
+use crate::types::Severity;
 
 use super::format::{sanitize_for_terminal, sanitize_path, Style, Styled};
 use super::term::TermInfo;
@@ -381,6 +385,260 @@ fn plural_es(n: usize) -> &'static str {
         ""
     } else {
         "es"
+    }
+}
+
+/// One line of triage, before any detail.
+///
+/// This is the line that decides whether the tool is usable on a desktop. An
+/// operator who runs a routine upgrade and is met with a bar chart reading
+/// CRITICAL 22 learns, correctly, that the chart does not track anything they
+/// need to act on -- and a signal that is always loud is one they will turn
+/// off. So the headline states the split: how much is accounted for by
+/// package activity, and how much still wants a human. Neither number is
+/// softened, and the severities behind them are printed in full below.
+pub fn render_triage_line(
+    result: &CorrelationResult,
+    total: usize,
+    needs_review: usize,
+    term: &TermInfo,
+) -> String {
+    if result.events.is_empty() {
+        return String::new();
+    }
+    let styled = Styled::new(term);
+    let explained = total.saturating_sub(needs_review);
+
+    let kinds: Vec<&str> = {
+        let mut k: Vec<&str> = result.events.iter().map(|e| e.kind.as_str()).collect();
+        k.sort_unstable();
+        k.dedup();
+        k
+    };
+    let source = if kinds.len() == 1 {
+        kinds[0].to_string()
+    } else {
+        "package activity".to_string()
+    };
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "  {} change{} · {} explained by {}",
+        total,
+        plural(total),
+        explained,
+        source,
+    ));
+    if needs_review == 0 {
+        out.push_str(&format!(
+            " · {}\n\n",
+            styled.paint(Style::Bold, "nothing unaccounted for")
+        ));
+    } else {
+        out.push_str(&format!(
+            " · {}\n\n",
+            styled.paint(
+                Style::BoldYellow,
+                &format!(
+                    "{} need{} review",
+                    needs_review,
+                    if needs_review == 1 { "s" } else { "" }
+                )
+            )
+        ));
+    }
+    out
+}
+
+/// Transaction window as one short line, with the actor when a log names one.
+fn event_window(event: &CorrelatedEvent) -> Option<String> {
+    let window = match (event.started_at, event.completed_at) {
+        (Some(s), Some(e)) if s != e => format!("{} – {}", format_absolute(s), format_absolute(e)),
+        (Some(s), _) => format_absolute(s),
+        _ => return None,
+    };
+    Some(match &event.actor {
+        Some(a) => format!("{} · requested by {}", window, sanitize_for_terminal(a)),
+        None => window,
+    })
+}
+
+/// The single verification result an operator most needs to see.
+///
+/// The full eight-line checklist is what `--verbose` prints. Surfacing only
+/// the weakest outcome keeps the default view honest without making a routine
+/// upgrade look like an incident report: a failure is named, and when nothing
+/// failed the line says how much was actually verified rather than implying
+/// more certainty than the evidence supports.
+fn weakest_check(event: &CorrelatedEvent) -> Option<String> {
+    let checks = &event.verification.checks;
+    if checks.is_empty() {
+        return Some("no verification checks could be performed".to_string());
+    }
+    // The unexplained-files check gets its own line below, worded for an
+    // operator rather than as a check name. Surfacing both said the same
+    // thing twice.
+    let relevant = |c: &&crate::correlate::VerificationCheck| c.name != "no unexplained files";
+    let checks: Vec<&crate::correlate::VerificationCheck> =
+        checks.iter().filter(relevant).collect();
+    if let Some(c) = checks.iter().find(|c| c.outcome == CheckOutcome::Failed) {
+        return Some(sanitize_for_terminal(&c.detail));
+    }
+    if let Some(c) = checks
+        .iter()
+        .find(|c| c.outcome == CheckOutcome::Unavailable)
+    {
+        return Some(sanitize_for_terminal(&c.detail));
+    }
+    None
+}
+
+/// Paths this correlation accounts for, as raw-detection members of an event.
+///
+/// The check renderer uses this to avoid printing a path twice: once in the
+/// raw detail list and again under the event that explains it. Unexplained
+/// members are deliberately absent, so they keep rendering in the prominent
+/// sections where they belong.
+pub fn explained_paths(result: &CorrelationResult) -> HashSet<PathBuf> {
+    result
+        .events
+        .iter()
+        .flat_map(|e| e.members.iter())
+        .map(|m| m.raw.path.clone())
+        .collect()
+}
+
+/// Compact, event-first summary: a few lines per transaction instead of a
+/// per-file wall.
+///
+/// The detailed form (`render_event`) is what `--verbose` prints. This one
+/// exists because the default view was rendering every changed file in full
+/// and *then* repeating all of them grouped by package, which was more text
+/// than printing no correlation at all -- the opposite of the point. What an
+/// operator needs by default is: something explains this, here is what, here
+/// is what it does not explain.
+pub fn render_events_summary(result: &CorrelationResult, term: &TermInfo) -> String {
+    if result.events.is_empty() {
+        return String::new();
+    }
+    let styled = Styled::new(term);
+    let mut out = String::new();
+
+    let explained: usize = result.events.iter().map(|e| e.members.len()).sum();
+    out.push_str(&styled.paint(
+        Style::Bold,
+        &format!("  ▸ Explained by package activity ({})\n\n", explained),
+    ));
+
+    for event in &result.events {
+        out.push_str(&render_event_summary(event, term));
+    }
+
+    out.push_str(&styled.paint(
+        Style::Dim,
+        "    An explanation is not a clearance, and nothing above has been\n\
+         \x20   accepted into the baseline.\n\n",
+    ));
+
+    out
+}
+
+/// One event, condensed to its headline facts.
+fn render_event_summary(event: &CorrelatedEvent, term: &TermInfo) -> String {
+    let styled = Styled::new(term);
+    let mut out = String::new();
+
+    let mut headline = format!("    {} · {}", event.confidence.label(), event.kind.as_str());
+    if !event.packages.is_empty() {
+        headline.push_str(&format!(
+            " · {} package{}",
+            event.packages.len(),
+            plural(event.packages.len())
+        ));
+    }
+    headline.push_str(&format!(
+        " · {} detection{}",
+        event.members.len(),
+        plural(event.members.len())
+    ));
+    out.push_str(&styled.paint(confidence_style(event.confidence), &headline));
+    out.push('\n');
+
+    if let Some(window) = event_window(event) {
+        out.push_str(&format!("      {}\n", styled.paint(Style::Dim, &window)));
+    }
+
+    // Package names only. The per-file list is what --verbose is for.
+    if !event.packages.is_empty() {
+        let mut names: Vec<&str> = event.packages.iter().map(|p| p.name.as_str()).collect();
+        names.sort_unstable();
+        let shown: Vec<&str> = names.iter().take(6).copied().collect();
+        let mut line = shown.join(", ");
+        if names.len() > shown.len() {
+            line.push_str(&format!(" +{} more", names.len() - shown.len()));
+        }
+        out.push_str(&format!(
+            "      {}\n",
+            styled.paint(Style::Dim, &sanitize_for_terminal(&line))
+        ));
+    }
+
+    // Raw severity is never restated as anything softer.
+    let counts = member_severity_counts(event);
+    if !counts.is_empty() {
+        let rendered: Vec<String> = counts
+            .iter()
+            .map(|(sev, n)| format!("{} {}", severity_word(*sev), n))
+            .collect();
+        out.push_str(&format!(
+            "      {}\n",
+            styled.paint(
+                Style::Dim,
+                &format!("raw severity unchanged: {}", rendered.join(" · "))
+            )
+        ));
+    }
+
+    // The one verification line that matters most, not all eight.
+    if let Some(weak) = weakest_check(event) {
+        out.push_str(&format!("      {}\n", styled.paint(Style::Yellow, &weak)));
+    }
+
+    if !event.unexplained.is_empty() {
+        out.push_str(&format!(
+            "      {}\n",
+            styled.paint(
+                Style::BoldYellow,
+                &format!(
+                    "{} change{} in this window the transaction does not account for",
+                    event.unexplained.len(),
+                    plural(event.unexplained.len())
+                )
+            )
+        ));
+    }
+
+    out.push('\n');
+    out
+}
+
+/// Severity tally across an event's members, highest first.
+fn member_severity_counts(event: &CorrelatedEvent) -> Vec<(Severity, usize)> {
+    let mut counts: BTreeMap<Severity, usize> = BTreeMap::new();
+    for m in &event.members {
+        *counts.entry(m.raw.severity).or_insert(0) += 1;
+    }
+    let mut v: Vec<(Severity, usize)> = counts.into_iter().collect();
+    v.sort_by_key(|(sev, _)| std::cmp::Reverse(*sev));
+    v
+}
+
+fn severity_word(s: Severity) -> &'static str {
+    match s {
+        Severity::Critical => "CRITICAL",
+        Severity::High => "HIGH",
+        Severity::Medium => "MEDIUM",
+        Severity::Low => "LOW",
     }
 }
 

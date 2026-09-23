@@ -8,6 +8,46 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A routine `apt upgrade` rendered as a screen of critical alerts.** The
+  1.15.0 correlation layer was appended to the finished report rather than
+  built into it, so a 25-file upgrade printed every changed file in full, then
+  *Next steps*, then the exit code, and only then the correlated summary —
+  which listed all the same files again, grouped by package. It was more text
+  than printing no correlation at all, and it led with a bar chart reading
+  `CRITICAL 24` for an upgrade the operator had authorised themselves.
+
+  That is the failure the feature existed to prevent. A signal that is loud
+  for ordinary activity teaches the operator that the signal tracks nothing
+  they need to act on, and a tool that has taught that lesson gets switched
+  off. Alert fatigue is not a cosmetic problem; it is how a monitor stops
+  being a monitor.
+
+  The default view now reads in the order an operator uses it. One line states
+  the split — how many changes there are, how many a package transaction
+  accounts for, how many still want a human. The severity histogram is scoped
+  to that last group, so the bar measures what is actionable rather than what
+  merely happened. Changes the transaction does not explain come next, in
+  full. The explanation for the rest follows as context, condensed to a few
+  lines naming the packages, the window, the actor, and the raw severities it
+  covers.
+
+  Nothing is softened to achieve this. Severity is never rewritten, the exit
+  code is unchanged, every detection is still recorded individually and
+  audited, and `--verbose` still prints every path with its full per-event
+  evidence. What changed is which of those facts the default view spends the
+  operator's attention on.
+
+  Four regression tests cover it, built from a real desktop upgrade rather
+  than a synthetic fixture: the correlated view must be shorter than the
+  uncorrelated one, the histogram must be sized by what is unaccounted for,
+  unexplained changes must stay prominent, and `--verbose` must still list
+  everything. The fixture carries the cases a synthetic one kept missing —
+  symlink aliases whose own objects never moved, a package-owned config file
+  at a different severity, boot files no package in the transaction owns, and
+  an unrelated keyring write that merely coincided with the window.
+
 ### Changed
 
 - **`SECURITY.md` moved from `docs/` to the repository root.** It was already

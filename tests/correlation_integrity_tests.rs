@@ -521,8 +521,16 @@ fn raw_check_output_neutralizes_control_characters_in_paths() {
         supports_color: false,
     };
 
+    let correlation = vigil::correlate::CorrelationResult::default();
     for verbose in [false, true] {
-        let out = render_check(&report, OutputFormat::Human, &term, verbose, false);
+        let out = render_check(
+            &report,
+            OutputFormat::Human,
+            &term,
+            verbose,
+            false,
+            &correlation,
+        );
         assert!(
             !out.contains('\x1b'),
             "no raw escape byte may reach the terminal (verbose={verbose})"
@@ -586,4 +594,501 @@ fn a_pre_v3_baseline_is_still_readable_without_migrating() {
         .expect("lookup must succeed")
         .expect("entry present");
     assert_eq!(one.content.size, 42);
+}
+
+// ── 9. The default view must reduce volume, not add to it ──
+
+/// The apt upgrade an operator actually reported, reproduced as a fixture.
+///
+/// Synthetic fixtures kept agreeing with whatever the renderer happened to
+/// do. This one is taken from a real `apt upgrade` on a desktop, and carries
+/// the parts that made the original output unusable: enough package-owned
+/// files to bury everything else, symlink aliases whose own objects never
+/// changed, a package-owned config file at a different severity, boot files
+/// no package in the transaction owns, and an unrelated change that happened
+/// to land in the same window.
+fn upgrade_scenario() -> (
+    vigil::display::CheckReport,
+    vigil::correlate::CorrelationResult,
+) {
+    use vigil::display::{CheckReport, CheckReportMeta};
+    use vigil::scanner::ScanResult;
+    use vigil::types::ScanMode;
+
+    // package -> (old, new, owned paths)
+    let pkgs: Vec<(&str, &str, &str, Vec<&str>)> = vec![
+        (
+            "sudo",
+            "1.9.17p2-1ubuntu3",
+            "1.9.17p2-1ubuntu3.1",
+            vec![
+                "/usr/bin/cvtsudoers.ws",
+                "/usr/bin/sudo.ws",
+                "/usr/bin/sudoreplay.ws",
+                "/usr/sbin/sudo_sendlog.ws",
+                "/usr/sbin/visudo.ws",
+                "/usr/lib/sudo/sudoers.so",
+            ],
+        ),
+        (
+            "linux-tools-common",
+            "7.0.0-31.31",
+            "7.0.0-34.34",
+            vec![
+                "/usr/bin/acpidbg",
+                "/usr/bin/cpupower",
+                "/usr/bin/rtla",
+                "/usr/bin/bpftrace",
+                "/usr/bin/usbipd",
+                "/usr/bin/turbostat",
+                "/usr/bin/x86_energy_perf_policy",
+            ],
+        ),
+        (
+            "google-chrome-stable",
+            "153.0.8010.52-1",
+            "154.0.8037.57-1",
+            vec!["/opt/google/chrome/google-chrome"],
+        ),
+        (
+            "linux-perf",
+            "7.0.0-31.31",
+            "7.0.0-34.34",
+            vec!["/usr/bin/perf"],
+        ),
+        (
+            "bpftool",
+            "7.7.0+7.0.0-31.31",
+            "7.7.0+7.0.0-34.34",
+            vec!["/usr/sbin/bpftool"],
+        ),
+    ];
+
+    let mut changes: Vec<ChangeResult> = Vec::new();
+    let mut input = CorrelationInput::new();
+    let mut tx = TransactionRecord::new(TransactionSource::Apt, T0);
+    tx.end = Some(T0 + 18);
+    tx.status = TransactionStatus::Completed;
+    tx.actor = Some("ghost (1000)".into());
+
+    for (name, from, to, paths) in &pkgs {
+        let mut t = PackageTransition::new(*name, PackageAction::Upgrade)
+            .with_versions(Some(*from), Some(*to));
+        t.installed_complete = Some(true);
+        tx.packages.push(t);
+        input.installed.insert(name.to_string(), to.to_string());
+        for path in paths {
+            changes.push(detection(path));
+            input
+                .ownership
+                .insert(PathBuf::from(*path), vec![name.to_string()]);
+            input
+                .observed_change_time
+                .insert(PathBuf::from(*path), T0 + 3);
+        }
+    }
+
+    // A package-owned config file: same transaction, different severity.
+    let cron = "/etc/cron.daily/google-chrome";
+    let mut cron_change = detection(cron);
+    cron_change.severity = Severity::High;
+    changes.push(cron_change);
+    input.ownership.insert(
+        PathBuf::from(cron),
+        vec!["google-chrome-stable".to_string()],
+    );
+    input
+        .observed_change_time
+        .insert(PathBuf::from(cron), T0 + 3);
+
+    // Two symlinks whose own objects never moved; only their shared target
+    // was replaced. These must attach to the target's package, not read as
+    // two more independent critical replacements.
+    for alias in ["/usr/bin/google-chrome", "/usr/bin/gnome-www-browser"] {
+        changes.push(ChangeResult {
+            path: Arc::new(PathBuf::from(alias)),
+            changes: vec![Change::SymlinkTargetReplaced {
+                target: PathBuf::from("/opt/google/chrome/google-chrome"),
+                old_target_inode: 17_861_045,
+                new_target_inode: 17_828_087,
+            }],
+            severity: Severity::Critical,
+            monitored_group: "system".into(),
+            process: None,
+            package: None,
+            package_update: false,
+            disambiguation: None,
+        });
+        input
+            .observed_change_time
+            .insert(PathBuf::from(alias), T0 + 3);
+    }
+
+    // Boot files no package in this transaction owns. A kernel postinst
+    // regenerates these, so they land in the window without being explained
+    // by it -- exactly the case that must stay visible.
+    for p in [
+        "/boot/grub/grub.cfg",
+        "/boot/initrd.img",
+        "/boot/initrd.img.old",
+        "/boot/vmlinuz",
+        "/boot/vmlinuz.old",
+    ] {
+        changes.push(detection(p));
+        input.observed_change_time.insert(PathBuf::from(p), T0 + 5);
+    }
+
+    // Unrelated activity that merely coincided with the window.
+    let gpg = "/home/ghost/.gnupg/reader_0.status";
+    let mut gpg_change = detection(gpg);
+    gpg_change.severity = Severity::Medium;
+    changes.push(gpg_change);
+    input
+        .observed_change_time
+        .insert(PathBuf::from(gpg), T0 + 9);
+
+    input.transactions.push(tx);
+
+    let correlation = correlate(&changes, &input);
+    let scan = ScanResult {
+        total_checked: 12_481,
+        changes_found: changes.len() as u64,
+        errors: 0,
+        warnings: Vec::new(),
+        changes,
+        duration_ms: 1_200,
+    };
+    let report = CheckReport::from_scan(
+        scan,
+        CheckReportMeta {
+            mode: ScanMode::Incremental,
+            baseline_fingerprint: Some("fp".into()),
+            baseline_established: Some(T0 - 200_000),
+            hmac_signed: true,
+            total_baseline_entries: 12_481,
+            previous_check_at: None,
+            previous_check_changes: None,
+            db_path: PathBuf::from("/tmp/x.db"),
+        },
+    );
+    (report, correlation)
+}
+
+fn wide_term() -> vigil::display::term::TermInfo {
+    vigil::display::term::TermInfo {
+        width: 100,
+        height: 40,
+        is_tty: false,
+        supports_color: false,
+    }
+}
+
+/// Order the report the way an operator reads it.
+///
+/// The first implementation appended the explanation to the rendered report,
+/// putting it below every raw change, below "Next steps" and below the exit
+/// code -- an afterthought to a report already scrolled past. The correction
+/// is not simply to move it to the top: what needs a human comes first, and
+/// the activity that explains the rest is context that follows it.
+#[test]
+fn triage_leads_and_explained_activity_follows_what_needs_review() {
+    use vigil::display::render_check;
+    use vigil::types::OutputFormat;
+
+    let (report, correlation) = upgrade_scenario();
+    let out = render_check(
+        &report,
+        OutputFormat::Human,
+        &wide_term(),
+        false,
+        false,
+        &correlation,
+    );
+
+    let triage = out
+        .find("need review")
+        .expect("the default view must lead with how much needs a human");
+    let detail = out
+        .find("Explained by package activity")
+        .expect("the default view must carry an event summary");
+    let next_steps = out
+        .find("Next steps")
+        .expect("next steps must still render");
+    let unexplained = out
+        .find("/boot/vmlinuz")
+        .expect("an unexplained change must still be listed");
+
+    assert!(
+        triage < unexplained,
+        "the triage line states the split and must come before any detail"
+    );
+    assert!(
+        unexplained < detail,
+        "what needs review must precede explained activity; an operator reads \
+         for what to act on first and for context second"
+    );
+    assert!(
+        detail < next_steps,
+        "the explanation must sit inside the report, not after its closing \
+         guidance"
+    );
+}
+
+/// Correlation must cost less text than it saves.
+#[test]
+fn the_default_view_collapses_explained_changes() {
+    use vigil::display::render_check;
+    use vigil::types::OutputFormat;
+
+    let (report, correlation) = upgrade_scenario();
+    let term = wide_term();
+    let plain = render_check(
+        &report,
+        OutputFormat::Human,
+        &term,
+        false,
+        false,
+        &vigil::correlate::CorrelationResult::default(),
+    );
+    let correlated = render_check(
+        &report,
+        OutputFormat::Human,
+        &term,
+        false,
+        false,
+        &correlation,
+    );
+
+    assert!(
+        correlated.lines().count() < plain.lines().count(),
+        "correlation made the default view longer ({} lines vs {}); it is meant \
+         to replace a per-file wall with a summary, not print both",
+        correlated.lines().count(),
+        plain.lines().count()
+    );
+
+    assert!(
+        !correlated.contains("/usr/bin/sudo.ws"),
+        "an explained path was expanded in the default view as well as being \
+         represented in the summary above it"
+    );
+}
+
+/// Collapsing is only safe because nothing is lost.
+#[test]
+fn unexplained_changes_stay_prominent_and_verbose_shows_everything() {
+    use vigil::display::render_check;
+    use vigil::types::OutputFormat;
+
+    let (report, correlation) = upgrade_scenario();
+    let term = wide_term();
+
+    let default = render_check(
+        &report,
+        OutputFormat::Human,
+        &term,
+        false,
+        false,
+        &correlation,
+    );
+    for p in ["/boot/vmlinuz", "/boot/initrd.img"] {
+        assert!(
+            default.contains(p),
+            "{p} is explained by nothing and must never be collapsed"
+        );
+    }
+
+    let verbose = render_check(
+        &report,
+        OutputFormat::Human,
+        &term,
+        true,
+        false,
+        &correlation,
+    );
+    for p in [
+        "/usr/bin/sudo.ws",
+        "/usr/bin/cvtsudoers.ws",
+        "/usr/sbin/visudo.ws",
+        "/usr/bin/perf",
+        "/boot/vmlinuz",
+        "/boot/initrd.img",
+    ] {
+        assert!(verbose.contains(p), "--verbose must still list {p}");
+    }
+}
+
+/// Raw severity must survive the summary intact.
+#[test]
+fn raw_severity_totals_are_unchanged_by_collapsing() {
+    use vigil::display::render_check;
+    use vigil::types::OutputFormat;
+
+    let (report, correlation) = upgrade_scenario();
+    let out = render_check(
+        &report,
+        OutputFormat::Human,
+        &wide_term(),
+        false,
+        false,
+        &correlation,
+    );
+    assert!(
+        out.contains("CRITICAL") && out.contains("raw severity unchanged"),
+        "the summary must restate raw severity rather than soften it"
+    );
+}
+
+/// A routine upgrade must not look like an incident.
+///
+/// This is the constraint the whole feature exists to satisfy. If an
+/// authorised `apt upgrade` renders as a screen of CRITICAL, the operator
+/// learns that CRITICAL does not track anything they must act on -- and a
+/// signal that is always loud is one they turn off. Severity is never
+/// rewritten to achieve this; prominence is allocated to what is unaccounted
+/// for, and the explained remainder is stated at its real severity without
+/// the visual weight.
+#[test]
+fn a_routine_upgrade_does_not_render_as_a_wall_of_critical() {
+    use vigil::display::render_check;
+    use vigil::types::OutputFormat;
+
+    let (report, correlation) = upgrade_scenario();
+    let out = render_check(
+        &report,
+        OutputFormat::Human,
+        &wide_term(),
+        false,
+        false,
+        &correlation,
+    );
+
+    // Derive what the bar *should* read from the correlation itself, so the
+    // assertion tracks the fixture rather than a number copied out of one
+    // run of the renderer.
+    let explained = vigil::display::correlate::explained_paths(&correlation);
+    let unexplained_critical = report
+        .scan
+        .changes
+        .iter()
+        .filter(|c| !explained.contains(c.path.as_ref()))
+        .filter(|c| c.severity == Severity::Critical)
+        .count() as u64;
+    let total_critical = report
+        .scan
+        .changes
+        .iter()
+        .filter(|c| c.severity == Severity::Critical)
+        .count() as u64;
+    assert!(
+        unexplained_critical < total_critical,
+        "fixture must contain explained critical changes for this to mean \
+         anything"
+    );
+
+    let bar = out
+        .lines()
+        .find(|l| l.contains("CRITICAL") && l.contains('█'))
+        .expect("a severity bar must still be drawn for what needs review");
+    let shown: u64 = bar
+        .split_whitespace()
+        .find_map(|t| t.parse::<u64>().ok())
+        .expect("the bar must carry a count");
+    assert_eq!(
+        shown, unexplained_critical,
+        "the severity bar reads {shown}, but {unexplained_critical} of \
+         {total_critical} critical changes are unaccounted for. Sizing it by \
+         the explained total is what trains an operator to ignore it: {bar}"
+    );
+
+    // Severity is restated, not softened.
+    assert!(
+        out.contains("raw severity unchanged"),
+        "the explained block must still name the severities it covers"
+    );
+
+    // One line must say how much needs a human, before any detail.
+    assert!(
+        out.contains("need review") || out.contains("needs review"),
+        "the report must lead with how much actually needs attention"
+    );
+}
+
+/// The two Chrome symlinks must attach to the package that replaced their
+/// target, not read as two more independent critical replacements.
+///
+/// This is the case that produced six HIGH deletions for one Snap refresh and
+/// three spurious criticals for one Chrome upgrade: the link objects never
+/// moved, only the file they both point at.
+#[test]
+fn unchanged_symlink_aliases_attach_to_the_package_that_moved_their_target() {
+    use vigil::display::render_check;
+    use vigil::types::OutputFormat;
+
+    let (report, correlation) = upgrade_scenario();
+
+    let explained = vigil::display::correlate::explained_paths(&correlation);
+    for alias in ["/usr/bin/google-chrome", "/usr/bin/gnome-www-browser"] {
+        assert!(
+            explained.contains(&PathBuf::from(alias)),
+            "{alias} is an unchanged link to a replaced target and must be \
+             accounted for by the transaction that replaced it"
+        );
+    }
+
+    // And they must not be presented as things needing review.
+    let out = render_check(
+        &report,
+        OutputFormat::Human,
+        &wide_term(),
+        false,
+        false,
+        &correlation,
+    );
+    let review_section = out
+        .split("Explained by package activity")
+        .next()
+        .unwrap_or("");
+    for alias in ["/usr/bin/google-chrome", "/usr/bin/gnome-www-browser"] {
+        assert!(
+            !review_section.contains(alias),
+            "{alias} was presented as needing review despite its link object \
+             being unchanged"
+        );
+    }
+}
+
+/// An unrelated change that merely lands inside the window must not be
+/// absorbed by it.
+///
+/// Timestamp proximity is not causation. The GPG keyring write happened
+/// during the upgrade and is owned by no package in it, so it has to survive
+/// as something the operator sees.
+#[test]
+fn coincidental_activity_in_the_window_is_not_absorbed() {
+    use vigil::display::render_check;
+    use vigil::types::OutputFormat;
+
+    let (report, correlation) = upgrade_scenario();
+    let gpg = PathBuf::from("/home/ghost/.gnupg/reader_0.status");
+
+    let explained = vigil::display::correlate::explained_paths(&correlation);
+    assert!(
+        !explained.contains(&gpg),
+        "a change owned by no package in the transaction was absorbed by it \
+         on timing alone"
+    );
+
+    let out = render_check(
+        &report,
+        OutputFormat::Human,
+        &wide_term(),
+        false,
+        false,
+        &correlation,
+    );
+    assert!(
+        out.contains("reader_0.status"),
+        "unrelated activity must remain visible in the default view"
+    );
 }

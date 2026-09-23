@@ -262,12 +262,22 @@ pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
         vigil::correlate::CorrelationResult::default()
     };
 
-    // Render output
+    // Render output. The correlation goes *into* the renderer rather than
+    // being appended to its result: it belongs above the detail it explains,
+    // not below the exit code.
     let term = display::term::TermInfo::detect();
-    let mut output = display::render_check(&report, opts.format, &term, opts.verbose, opts.brief);
+    let mut output = display::render_check(
+        &report,
+        opts.format,
+        &term,
+        opts.verbose,
+        opts.brief,
+        &correlation,
+    );
 
-    // Event-first summary, printed above the raw detail it explains.
-    if opts.format == OutputFormat::Human && !opts.brief {
+    // Verbose keeps the full per-event evidence: every check, every member
+    // path, every collector error.
+    if opts.format == OutputFormat::Human && !opts.brief && opts.verbose {
         output.push_str(&display::correlate::render_events(
             &correlation,
             &term,

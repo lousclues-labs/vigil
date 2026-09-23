@@ -119,7 +119,6 @@ impl CheckReport {
     pub fn from_scan(scan: ScanResult, meta: CheckReportMeta) -> Self {
         check::build_check_report(scan, meta)
     }
-
     /// Exit code based on highest severity detected.
     /// 0 = clean, 1 = low/medium, 2 = high, 3 = critical.
     pub fn exit_code(&self) -> i32 {
@@ -136,13 +135,14 @@ pub fn render_check(
     term: &TermInfo,
     verbose: bool,
     brief: bool,
+    correlation: &crate::correlate::CorrelationResult,
 ) -> String {
     if brief || format == OutputFormat::Brief {
         return check::render_brief(report, term);
     }
     match format {
         OutputFormat::Json => check::render_json(report),
-        _ => check::render_human(report, term, verbose),
+        _ => check::render_human(report, term, verbose, correlation),
     }
 }
 

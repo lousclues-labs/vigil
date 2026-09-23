@@ -188,6 +188,7 @@ pub fn render_human(
     report: &CheckReport,
     term: &crate::display::term::TermInfo,
     verbose: bool,
+    correlation: &crate::correlate::CorrelationResult,
 ) -> String {
     let styled = Styled::new(term);
     let mut out = String::new();
@@ -257,43 +258,105 @@ pub fn render_human(
         out.push_str(&super::widgets::render_clean_box(term));
         out.push('\n');
     } else {
-        out.push_str(&render_histogram(&report.severity_counts, term));
-        out.push_str("\n\n");
+        // Paths an event already accounts for are represented in the summary
+        // rather than expanded here. Expanding each of them as well is what
+        // turned a routine upgrade into a screen of red: the same files
+        // printed twice, once per file and once per package. `--verbose`
+        // still lists every one.
+        let explained = if verbose {
+            std::collections::HashSet::new()
+        } else {
+            super::correlate::explained_paths(correlation)
+        };
 
-        let change_count = report.scan.changes.len();
+        // Severity is never rewritten, but prominence is earned. A bar chart
+        // reading CRITICAL 22 for an upgrade the operator authorised teaches
+        // them the chart tracks nothing they must act on, and a signal that
+        // is always loud is one they will switch off. The chart is therefore
+        // scoped to what still needs a human; the explained remainder is
+        // stated beside it at its real severity, without the visual weight.
+        if explained.is_empty() {
+            out.push_str(&render_histogram(&report.severity_counts, term));
+            out.push_str("\n\n");
+        } else {
+            let mut left: std::collections::BTreeMap<Severity, u64> = Default::default();
+            for c in report
+                .scan
+                .changes
+                .iter()
+                .filter(|c| !explained.contains(c.path.as_ref()))
+            {
+                *left.entry(c.severity).or_insert(0) += 1;
+            }
+            out.push_str(&super::correlate::render_triage_line(
+                correlation,
+                report.scan.changes.len(),
+                left.values().sum::<u64>() as usize,
+                term,
+            ));
+            if !left.is_empty() {
+                out.push_str(&render_histogram(&left, term));
+                out.push_str("\n\n");
+            }
+        }
+        let shown = |c: &&ChangeResult| !explained.contains(c.path.as_ref());
+
+        let investigate: Vec<&ChangeResult> = report.investigate.iter().filter(shown).collect();
+        let attention: Vec<&ChangeResult> = report.attention.iter().filter(shown).collect();
+        let benign_ungrouped: Vec<&ChangeResult> =
+            report.benign_ungrouped.iter().filter(shown).collect();
+
+        let change_count = investigate.len()
+            + attention.len()
+            + benign_ungrouped.len()
+            + report
+                .benign
+                .iter()
+                .map(|g| g.changes.iter().filter(shown).count())
+                .sum::<usize>();
         let full_detail_all = verbose || change_count <= 5;
         let medium_detail = verbose || change_count <= 20;
 
         if full_detail_all {
-            out.push_str(
-                &styled.paint(Style::Bold, &format!("  ▸ Changes ({})\n\n", change_count)),
-            );
-            for c in &report.scan.changes {
+            // When an event above already accounted for some changes, the
+            // ones left are precisely those it did not explain. Calling that
+            // section "Changes" invites the reader to think it is everything.
+            let heading = if explained.is_empty() {
+                format!("  ▸ Changes ({})\n\n", change_count)
+            } else {
+                format!("  ▸ Not explained by the above ({})\n\n", change_count)
+            };
+            out.push_str(&styled.paint(Style::Bold, &heading));
+            for c in report.scan.changes.iter().filter(shown) {
                 render_change_entry(&mut out, c, term, true);
             }
         } else {
-            if !report.investigate.is_empty() {
+            if !investigate.is_empty() {
                 out.push_str(&styled.paint(
                     Style::BoldRed,
-                    &format!("  ▸ Investigate ({})\n\n", report.investigate.len()),
+                    &format!("  ▸ Investigate ({})\n\n", investigate.len()),
                 ));
-                for c in &report.investigate {
+                for c in &investigate {
                     render_change_entry(&mut out, c, term, true);
                 }
             }
 
-            if !report.attention.is_empty() {
+            if !attention.is_empty() {
                 out.push_str(&styled.paint(
                     Style::BoldYellow,
-                    &format!("  ▸ Attention ({})\n\n", report.attention.len()),
+                    &format!("  ▸ Attention ({})\n\n", attention.len()),
                 ));
-                for c in &report.attention {
+                for c in &attention {
                     render_change_entry(&mut out, c, term, medium_detail);
                 }
             }
 
-            let benign_total: usize = report.benign.iter().map(|g| g.changes.len()).sum::<usize>()
-                + report.benign_ungrouped.len();
+            let benign_total: usize = report
+                .benign
+                .iter()
+                .map(|g| g.changes.iter().filter(shown).count())
+                .sum::<usize>()
+                + benign_ungrouped.len();
             if benign_total > 0 {
                 out.push_str(&styled.paint(
                     Style::Dim,
@@ -301,15 +364,19 @@ pub fn render_human(
                 ));
 
                 for group in &report.benign {
+                    let kept: Vec<&ChangeResult> = group.changes.iter().filter(shown).collect();
+                    if kept.is_empty() {
+                        continue;
+                    }
                     out.push_str(&format!(
                         "    {} {:<30} {} files\n",
                         styled.paint(Style::Dim, "○"),
                         styled.paint(Style::Dim, &group.package_name),
-                        group.changes.len(),
+                        kept.len(),
                     ));
 
                     if verbose {
-                        for change in &group.changes {
+                        for change in &kept {
                             out.push_str(&format!(
                                 "      {}\n",
                                 truncate_path(
@@ -326,11 +393,15 @@ pub fn render_human(
                     }
                 }
 
-                for c in &report.benign_ungrouped {
+                for c in &benign_ungrouped {
                     render_change_entry(&mut out, c, term, verbose);
                 }
             }
         }
+
+        // Explained activity last: it is context for what was already shown,
+        // not the first thing an operator needs to read.
+        out.push_str(&super::correlate::render_events_summary(correlation, term));
     }
 
     render_scan_issues(report, &styled, &mut out);
