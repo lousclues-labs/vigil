@@ -9,7 +9,11 @@ use crate::types::{FileType, Severity};
 
 /// A single detected change -- one variant per detection dimension.
 /// Adding a new detection dimension = adding one variant. Zero impact on existing code.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `PartialEq` matters: the acceptance guard re-diffs a path immediately before
+/// writing it to the baseline and requires the resulting change list to equal
+/// the one the operator reviewed. Equality of this type is that check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Change {
     ContentModified {
@@ -38,6 +42,27 @@ pub enum Change {
         old: PathBuf,
         new: PathBuf,
     },
+    /// The raw `readlink(2)` text of a symlink changed. Distinct from
+    /// `SymlinkTargetChanged`, which compares fully resolved canonical targets:
+    /// link text can change (`../a` to `/x/a`) while resolving identically, and
+    /// the canonical target can change while the link text stays put.
+    LinkTextChanged {
+        old: PathBuf,
+        new: PathBuf,
+    },
+    /// The symlink object itself is unchanged -- same link text, same `lstat`
+    /// inode -- but the file it resolves to was replaced.
+    ///
+    /// This is an alias reference to a target change, not an independent
+    /// replacement of the symlink. The underlying target observations
+    /// (content, size, inode) are still recorded alongside this variant; this
+    /// variant only states who actually changed.
+    SymlinkTargetReplaced {
+        /// Canonical path of the target that was replaced.
+        target: PathBuf,
+        old_target_inode: u64,
+        new_target_inode: u64,
+    },
     CapabilitiesChanged {
         old: Option<String>,
         new: Option<String>,
@@ -63,23 +88,40 @@ pub enum Change {
     Created,
 }
 
+impl Change {
+    /// The canonical wire name for this change dimension.
+    ///
+    /// Single source of truth. The audit log, the alert sinks, the WAL
+    /// consumers and `Display` all read from here, because they must agree:
+    /// a detection recorded as `content_modified` in the audit chain and
+    /// announced as something else by a sink is one event wearing two names,
+    /// and anything correlating the two would silently fail to match.
+    ///
+    /// Adding a `Change` variant is a compile error here until it is named.
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Change::ContentModified { .. } => "content_modified",
+            Change::PermissionsChanged { .. } => "permissions_changed",
+            Change::OwnerChanged { .. } => "owner_changed",
+            Change::InodeChanged { .. } => "inode_changed",
+            Change::TypeChanged { .. } => "type_changed",
+            Change::SymlinkTargetChanged { .. } => "symlink_target_changed",
+            Change::LinkTextChanged { .. } => "link_text_changed",
+            Change::SymlinkTargetReplaced { .. } => "symlink_target_replaced",
+            Change::CapabilitiesChanged { .. } => "capabilities_changed",
+            Change::XattrChanged { .. } => "xattr_changed",
+            Change::SecurityContextChanged { .. } => "security_context_changed",
+            Change::SizeChanged { .. } => "size_changed",
+            Change::DeviceChanged { .. } => "device_changed",
+            Change::Deleted => "deleted",
+            Change::Created => "created",
+        }
+    }
+}
+
 impl std::fmt::Display for Change {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Change::ContentModified { .. } => write!(f, "content_modified"),
-            Change::PermissionsChanged { .. } => write!(f, "permissions_changed"),
-            Change::OwnerChanged { .. } => write!(f, "owner_changed"),
-            Change::InodeChanged { .. } => write!(f, "inode_changed"),
-            Change::TypeChanged { .. } => write!(f, "type_changed"),
-            Change::SymlinkTargetChanged { .. } => write!(f, "symlink_target_changed"),
-            Change::CapabilitiesChanged { .. } => write!(f, "capabilities_changed"),
-            Change::XattrChanged { .. } => write!(f, "xattr_changed"),
-            Change::SecurityContextChanged { .. } => write!(f, "security_context_changed"),
-            Change::SizeChanged { .. } => write!(f, "size_changed"),
-            Change::DeviceChanged { .. } => write!(f, "device_changed"),
-            Change::Deleted => write!(f, "deleted"),
-            Change::Created => write!(f, "created"),
-        }
+        f.write_str(self.name())
     }
 }
 
@@ -123,26 +165,29 @@ impl ChangeResult {
         }
     }
 
+    /// Returns the canonical target path when this detection is an alias
+    /// reference: a symlink whose own object did not change, recorded because
+    /// the file it resolves to was replaced.
+    ///
+    /// Callers use this to present the detection beneath the target's own
+    /// change instead of as an independent replacement. The detection itself is
+    /// unaffected -- it is still recorded, still carries its raw severity, and
+    /// still lists every observed dimension.
+    pub fn symlink_alias_target(&self) -> Option<&std::path::Path> {
+        self.changes.iter().find_map(|c| match c {
+            Change::SymlinkTargetReplaced { target, .. } => Some(target.as_path()),
+            _ => None,
+        })
+    }
+
     /// Returns the primary change type for display/logging.
-    pub fn primary_change_name(&self) -> &str {
-        self.changes
-            .first()
-            .map(|c| match c {
-                Change::ContentModified { .. } => "modified",
-                Change::PermissionsChanged { .. } => "permissions_changed",
-                Change::OwnerChanged { .. } => "owner_changed",
-                Change::InodeChanged { .. } => "inode_changed",
-                Change::TypeChanged { .. } => "type_changed",
-                Change::SymlinkTargetChanged { .. } => "symlink_target_changed",
-                Change::CapabilitiesChanged { .. } => "capabilities_changed",
-                Change::XattrChanged { .. } => "xattr_changed",
-                Change::SecurityContextChanged { .. } => "security_context_changed",
-                Change::SizeChanged { .. } => "size_changed",
-                Change::DeviceChanged { .. } => "device_changed",
-                Change::Deleted => "deleted",
-                Change::Created => "created",
-            })
-            .unwrap_or("unknown")
+    ///
+    /// Delegates to [`Change::name`]. This previously carried its own mapping
+    /// that returned `"modified"` for a content change where every other
+    /// mapping said `"content_modified"` -- two names for one dimension. The
+    /// divergence went unnoticed because nothing called this.
+    pub fn primary_change_name(&self) -> &'static str {
+        self.changes.first().map(Change::name).unwrap_or("unknown")
     }
 }
 

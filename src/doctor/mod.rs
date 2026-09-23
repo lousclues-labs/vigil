@@ -171,10 +171,14 @@ pub struct RuntimeMetrics {
     pub scan_duration_ms: u64,
     #[serde(default)]
     pub uptime_start: i64,
+    // Optional rather than `default`: 0 is the all-clear value for
+    // `reduced_coverage`, so defaulting a field that an older daemon never
+    // wrote would assert full event coverage from data that does not exist.
+    // That is the same defect as defaulting the whole file, one level down.
     #[serde(default)]
-    pub fanotify_mark_reduced_coverage: u64,
+    pub fanotify_mark_reduced_coverage: Option<u64>,
     #[serde(default)]
-    pub fanotify_tier: u64,
+    pub fanotify_tier: Option<u64>,
 }
 
 /// Lightweight health snapshot produced by the privileged daemon.

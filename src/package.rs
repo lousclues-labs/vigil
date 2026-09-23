@@ -76,6 +76,47 @@ pub fn query_package_owner(path: &Path, config: &PackageManagerConfig) -> Option
     }
 }
 
+/// Normalize the owner field of a `dpkg -S` line into comparable package names.
+///
+/// Two real shapes need handling, and neither is hypothetical:
+///
+/// - **Architecture qualifiers.** `dpkg -S` reports multi-arch packages as
+///   `libc6:amd64`, while `/var/log/apt/history.log` and `/var/lib/dpkg/status`
+///   both use the bare `libc6`. Comparing the two forms directly never matches,
+///   which on a normal Debian-family system means every shared-library package
+///   in an upgrade fails to correlate.
+/// - **Multiple owners.** A path owned by several packages is reported as
+///   `bluez, libvirt-daemon-common, ...: /etc/init.d`. Taking the whole field
+///   as one name yields a package that exists nowhere.
+///
+/// Returns every candidate owner, arch-stripped, in the order reported.
+///
+/// Candidates that cannot be package names are dropped. A package name never
+/// contains whitespace, so this also rejects `dpkg -S` diversion prose
+/// (`diversion by libc6 from`) as a second layer behind the parser's own skip.
+pub fn normalize_owner_field(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(strip_arch_qualifier)
+        .filter(|s| !s.is_empty() && !s.contains(char::is_whitespace))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Strip a multi-arch qualifier from a package name: `libc6:amd64` -> `libc6`.
+///
+/// One definition, because every source names packages differently and they
+/// must be reduced to a common form before any of them are compared:
+/// `dpkg -S` and the `/var/lib/dpkg/info/*.list` filenames carry the
+/// qualifier, while `/var/lib/dpkg/status` and `/var/log/apt/history.log` do
+/// not. On a stock Ubuntu install just over half the installed packages are
+/// arch-qualified, so an unnormalized name fails to match more often than it
+/// succeeds.
+pub fn strip_arch_qualifier(name: &str) -> &str {
+    name.split_once(':').map(|(n, _)| n).unwrap_or(name).trim()
+}
+
 /// Detect which package manager is available on the system.
 pub fn detect_backend() -> PackageBackend {
     if Path::new(PACMAN_PATH).is_file() {
@@ -116,12 +157,47 @@ fn query_dpkg(path: &str) -> Option<String> {
         true,
     )?;
 
-    if output.status.success() {
-        let line = String::from_utf8_lossy(&output.stdout);
-        line.split(':').next().map(|s| s.trim().to_string())
-    } else {
-        None
+    if !output.status.success() {
+        return None;
     }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    owner_from_dpkg_search(&stdout, path)
+}
+
+/// Extract the owning package for `path` from `dpkg -S` output.
+///
+/// Three real shapes make naive parsing wrong, and all three were observed on
+/// a stock Debian-family host:
+///
+/// - **Diversion records.** `dpkg -S /usr/bin/luit` prints two
+///   `diversion by luit from:` / `to:` lines *before* the real owner line.
+///   Taking the first line yields the package name `diversion by luit from`,
+///   which is then persisted in the baseline and later rejected outright by
+///   `dpkg --verify` ("character ' ' not allowed"), so the path degrades to
+///   `Unknown` forever.
+/// - **Multiple owners.** `dpkg -S /etc/init.d` lists 35 packages before a
+///   single trailing colon.
+/// - **`dpkg -S` is a pattern matcher, not a path lookup.** A filename
+///   containing `*`, `?` or `[` — an attacker's free choice — makes dpkg
+///   return entries for *other* paths. Matching on the path dpkg echoes back
+///   is what prevents attributing a file to an unrelated package.
+fn owner_from_dpkg_search(stdout: &str, requested: &str) -> Option<String> {
+    for line in stdout.lines() {
+        if line.starts_with("diversion by ") {
+            continue;
+        }
+        let Some((owners, echoed)) = line.rsplit_once(": ") else {
+            continue;
+        };
+        // Only trust a line that is about the path we asked for.
+        if echoed.trim() != requested {
+            continue;
+        }
+        if let Some(first) = normalize_owner_field(owners).into_iter().next() {
+            return Some(first);
+        }
+    }
+    None
 }
 
 fn query_rpm(path: &str) -> Option<String> {
@@ -245,6 +321,19 @@ fn batch_query_dpkg(paths: &[String]) -> HashMap<String, String> {
         // dpkg -S output: "package: /path/to/file" per line
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
+            // `dpkg -S` interleaves diversion records, and for a path diverted
+            // away there is no owner line at all:
+            //
+            //   diversion by libc6 from: /lib64/ld-linux-x86-64.so.2
+            //   diversion by libc6 to: /lib64/ld-linux-x86-64.so.2.usr-is-merged
+            //
+            // Splitting those on ": " stores the prose as the package name,
+            // which matches no transaction and is rendered to the operator
+            // verbatim. Skip them: an owner line, when one exists, is printed
+            // separately.
+            if line.starts_with("diversion by ") {
+                continue;
+            }
             if let Some((pkg, path)) = line.split_once(": ") {
                 results.insert(path.trim().to_string(), pkg.trim().to_string());
             }
@@ -490,7 +579,10 @@ fn build_cache_dpkg_once() -> Option<HashMap<PathBuf, String>> {
                 if !name_str.ends_with(".list") {
                     continue;
                 }
-                let pkg = name_str.trim_end_matches(".list");
+                // `libc6:amd64.list` names the package `libc6`. Without
+                // stripping, the baseline records a package name that no
+                // other source uses.
+                let pkg = strip_arch_qualifier(name_str.trim_end_matches(".list"));
                 if let Ok(content) = std::fs::read_to_string(entry.path()) {
                     for line in content.lines() {
                         let line = line.trim();
@@ -580,7 +672,8 @@ const PKG_VERIFY_TIMEOUT: Duration = Duration::from_secs(60);
 /// answer "did a package write these bytes." Every supported package manager
 /// records a digest for every file it ships, so the second question is
 /// answerable, deterministically, from local state alone (Principle VI).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PackageVerification {
     /// The package manager checked the file against its own recorded digest
     /// and it matched. These bytes are the bytes the package shipped.
@@ -1593,5 +1686,116 @@ Description: limited super user privileges
             "unreported paths must not appear in the problem map"
         );
         assert!(PackageVerification::Verified.is_proof());
+    }
+}
+
+#[cfg(test)]
+mod owner_field_tests {
+    use super::normalize_owner_field;
+
+    /// Verified against real `dpkg -S` output on a Debian-family system:
+    /// `dpkg -S /usr/lib/x86_64-linux-gnu/libc.so.6` prints `libc6:amd64: ...`.
+    #[test]
+    fn architecture_qualifier_is_stripped() {
+        assert_eq!(normalize_owner_field("libc6:amd64"), vec!["libc6"]);
+        assert_eq!(normalize_owner_field("zlib1g:amd64"), vec!["zlib1g"]);
+    }
+
+    #[test]
+    fn unqualified_names_pass_through() {
+        assert_eq!(normalize_owner_field("ghostscript"), vec!["ghostscript"]);
+        assert_eq!(
+            normalize_owner_field("libxml2-utils"),
+            vec!["libxml2-utils"]
+        );
+    }
+
+    /// Verified against real output: `dpkg -S /etc/init.d` lists dozens of
+    /// packages separated by `, `.
+    #[test]
+    fn multiple_owners_become_multiple_candidates() {
+        let owners = normalize_owner_field("bluez, libvirt-daemon-common, apparmor");
+        assert_eq!(owners, vec!["bluez", "libvirt-daemon-common", "apparmor"]);
+    }
+
+    #[test]
+    fn mixed_qualified_and_unqualified_multiple_owners() {
+        let owners = normalize_owner_field("libc6:amd64, ghostscript, zlib1g:i386");
+        assert_eq!(owners, vec!["libc6", "ghostscript", "zlib1g"]);
+    }
+
+    #[test]
+    fn empty_and_degenerate_fields_yield_nothing() {
+        assert!(normalize_owner_field("").is_empty());
+        assert!(normalize_owner_field("  ,  ").is_empty());
+        assert!(normalize_owner_field(":amd64").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod dpkg_search_tests {
+    use super::owner_from_dpkg_search;
+
+    /// Captured verbatim: `dpkg -S -- /usr/bin/luit`.
+    #[test]
+    fn the_real_owner_is_found_past_diversion_records() {
+        let real = "\
+diversion by luit from: /usr/bin/luit
+diversion by luit to: /usr/bin/luit.x11-utils
+luit: /usr/bin/luit
+";
+        assert_eq!(
+            owner_from_dpkg_search(real, "/usr/bin/luit"),
+            Some("luit".to_string())
+        );
+    }
+
+    /// A path diverted away has no owner line at all.
+    #[test]
+    fn a_path_with_only_diversion_records_has_no_owner() {
+        let real = "\
+diversion by libc6 from: /lib64/ld-linux-x86-64.so.2
+diversion by libc6 to: /lib64/ld-linux-x86-64.so.2.usr-is-merged
+";
+        assert_eq!(
+            owner_from_dpkg_search(real, "/lib64/ld-linux-x86-64.so.2"),
+            None,
+            "prose must never become a package name"
+        );
+    }
+
+    /// Captured verbatim: `dpkg -S -- /etc/init.d` lists many owners.
+    #[test]
+    fn a_multi_owner_path_yields_a_single_real_package() {
+        let real = "bluez, libvirt-daemon-common, apparmor: /etc/init.d\n";
+        assert_eq!(
+            owner_from_dpkg_search(real, "/etc/init.d"),
+            Some("bluez".to_string())
+        );
+    }
+
+    #[test]
+    fn the_arch_qualifier_is_stripped() {
+        let real = "libc6:amd64: /usr/lib/x86_64-linux-gnu/libc.so.6\n";
+        assert_eq!(
+            owner_from_dpkg_search(real, "/usr/lib/x86_64-linux-gnu/libc.so.6"),
+            Some("libc6".to_string())
+        );
+    }
+
+    /// `dpkg -S` treats its argument as a glob. A filename containing a
+    /// wildcard makes it answer about other paths entirely; those answers must
+    /// not be attributed to the queried file.
+    #[test]
+    fn output_about_other_paths_is_not_attributed_to_the_queried_path() {
+        let real = "\
+netpbm: /usr/bin/pnmtopng
+coreutils: /usr/bin/ls
+";
+        assert_eq!(
+            owner_from_dpkg_search(real, "/usr/bin/*"),
+            None,
+            "a pattern match must not borrow another path's package"
+        );
     }
 }

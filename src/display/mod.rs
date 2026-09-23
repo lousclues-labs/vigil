@@ -10,6 +10,7 @@
 //! - `time.rs`   -- time formatting helpers
 
 mod check;
+pub mod correlate;
 pub mod explain;
 pub mod format;
 pub mod term;

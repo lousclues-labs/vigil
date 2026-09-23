@@ -128,3 +128,111 @@ fn wal_disabled_uses_current_path() {
         "WAL file should not be created when detection_wal=false"
     );
 }
+
+/// An authentic WAL entry whose payload this build cannot decode must be
+/// retained, not erased.
+///
+/// The entry has already passed CRC and HMAC: it is undamaged and genuine,
+/// and only its schema is unreadable -- exactly what a `DetectionRecord`
+/// change across an upgrade looks like. The scanner previously skipped it
+/// with a bare `continue`, and because `truncate_consumed` rebuilds the WAL
+/// from whatever the scanner returns, the record was then deleted from disk
+/// within the minute. A real detection would disappear from the audit log and
+/// every alert sink with nothing logged and no counter moved.
+///
+/// The CRC must be recomputed after corrupting the payload. Without that the
+/// entry fails the CRC check first and takes the gap-recovery path, which is
+/// a different branch that was already announced -- a test that skips this
+/// step passes against the broken code and proves nothing.
+#[test]
+fn an_undecodable_entry_is_retained_not_erased() {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    const WAL_HEADER_SIZE: usize = 64;
+
+    let dir = tempfile::tempdir().unwrap();
+    let wal_path = dir.path().join("detections.wal");
+
+    let record = |seq: u64| vigil::wal::DetectionRecord {
+        timestamp: 1_700_000_000 + seq as i64,
+        path: format!("/etc/target{seq}"),
+        changes: vec![vigil::types::Change::ContentModified {
+            old_hash: "old".into(),
+            new_hash: "new".into(),
+        }],
+        severity: vigil::types::Severity::Critical,
+        monitored_group: "system".to_string(),
+        process: None,
+        package: None,
+        package_update: false,
+        maintenance_window: false,
+        source: vigil::wal::DetectionSource::ScheduledScan,
+        disambiguation: None,
+    };
+
+    {
+        let wal = vigil::wal::DetectionWal::open(&wal_path, None, 1024 * 1024).unwrap();
+        for seq in 0..3 {
+            wal.append(&record(seq)).unwrap();
+        }
+    }
+
+    // Corrupt the middle entry's payload and repair its CRC, so it reaches the
+    // decode path rather than the gap-recovery path.
+    let mut buf = Vec::new();
+    std::fs::File::open(&wal_path)
+        .unwrap()
+        .read_to_end(&mut buf)
+        .unwrap();
+
+    let marker = b"/etc/target1";
+    let marker_pos = buf
+        .windows(marker.len())
+        .position(|w| w == marker)
+        .expect("payload marker present");
+
+    // Walk the entry framing to find the entry containing that offset.
+    let mut entry_start = WAL_HEADER_SIZE;
+    let (victim_start, victim_size) = loop {
+        let size =
+            u32::from_le_bytes(buf[entry_start..entry_start + 4].try_into().unwrap()) as usize;
+        assert!(
+            size > 0 && entry_start + size <= buf.len(),
+            "walked off the WAL"
+        );
+        if marker_pos < entry_start + size {
+            break (entry_start, size);
+        }
+        entry_start += size;
+    };
+
+    // 0xC1 is the MessagePack "never used" byte: valid framing, invalid payload.
+    buf[marker_pos] = 0xC1;
+    let recomputed = crc32fast::hash(&buf[victim_start..victim_start + victim_size - 4]);
+    buf[victim_start + victim_size - 4..victim_start + victim_size]
+        .copy_from_slice(&recomputed.to_le_bytes());
+
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&wal_path)
+            .unwrap();
+        f.seek(SeekFrom::Start(0)).unwrap();
+        f.write_all(&buf).unwrap();
+        f.sync_all().unwrap();
+    }
+
+    let before = std::fs::metadata(&wal_path).unwrap().len();
+
+    // Compaction, which the audit writer runs every 60 seconds.
+    {
+        let wal = vigil::wal::DetectionWal::open(&wal_path, None, 1024 * 1024).unwrap();
+        wal.truncate_consumed().unwrap();
+    }
+
+    let after = std::fs::metadata(&wal_path).unwrap().len();
+    assert_eq!(
+        after, before,
+        "compaction must carry every unconsumed entry forward, including one this          build cannot decode. {before} -> {after} bytes means a genuine,          integrity-verified detection was erased from disk."
+    );
+}

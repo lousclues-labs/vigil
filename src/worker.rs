@@ -291,7 +291,21 @@ impl WorkerContext {
             Ok(Ok(Some(cr))) => Some(cr),
             Ok(Ok(None)) => None,
             Ok(Err(e)) => {
-                tracing::warn!(error = %e, "event processing error");
+                // Not clean, not changed: not examined. This was counted under
+                // `events_processed` with nothing recorded anywhere else, so
+                // `vigil status` showed the event as handled with zero errors
+                // and zero detections -- indistinguishable from a file that
+                // was checked and found intact. The scheduled-scan path has
+                // always counted these (`result.errors += 1` plus a
+                // ScanWarning); the realtime path had no analogue.
+                self.metrics
+                    .evaluation_errors
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(
+                    path = %event.path.display(),
+                    error = %e,
+                    "event could not be evaluated; the file was NOT checked"
+                );
                 None
             }
             Err(_) => {

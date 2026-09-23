@@ -112,11 +112,20 @@ impl AuditWriter {
             let previous = self.last_chain_hash.clone();
             let hmac = build_entry_hmac(&self.hmac_key, &entry.record, &previous)?;
 
+            // The audit row must record the suppression verdict, not a
+            // hardcoded false. Only the deterministic part is knowable here:
+            // cooldown and rate limiting are timing-dependent decisions the
+            // sink runner makes later. Recording the maintenance deferral is
+            // what the documented contract ("the audit log records every one
+            // of these, suppressed flag and all") actually asks for.
+            let suppressed =
+                crate::alert::deferred_by_maintenance_window(&cr, entry.record.maintenance_window);
+
             let new_hash = insert_with_timestamp(
                 &self.audit_conn,
                 &cr,
                 entry.record.maintenance_window,
-                false,
+                suppressed,
                 hmac.as_deref(),
                 &previous,
                 entry.record.timestamp,
@@ -244,11 +253,14 @@ impl AuditWriter {
         let previous = self.last_chain_hash.clone();
         let hmac = build_entry_hmac(&self.hmac_key, &entry.record, &previous)?;
 
+        let suppressed =
+            crate::alert::deferred_by_maintenance_window(&cr, entry.record.maintenance_window);
+
         let new_hash = insert_with_timestamp(
             &self.audit_conn,
             &cr,
             entry.record.maintenance_window,
-            false,
+            suppressed,
             hmac.as_deref(),
             &previous,
             entry.record.timestamp,
@@ -348,7 +360,7 @@ fn build_entry_hmac(
     let primary = record
         .changes
         .first()
-        .map(change_to_name)
+        .map(Change::name)
         .unwrap_or("unknown");
 
     let (old_hash, new_hash) = record
@@ -374,24 +386,6 @@ fn build_entry_hmac(
     );
 
     Ok(Some(crate::hmac::compute_hmac(key, &data)?))
-}
-
-fn change_to_name(change: &Change) -> &'static str {
-    match change {
-        Change::ContentModified { .. } => "content_modified",
-        Change::PermissionsChanged { .. } => "permissions_changed",
-        Change::OwnerChanged { .. } => "owner_changed",
-        Change::InodeChanged { .. } => "inode_changed",
-        Change::TypeChanged { .. } => "type_changed",
-        Change::SymlinkTargetChanged { .. } => "symlink_target_changed",
-        Change::CapabilitiesChanged { .. } => "capabilities_changed",
-        Change::XattrChanged { .. } => "xattr_changed",
-        Change::SecurityContextChanged { .. } => "security_context_changed",
-        Change::SizeChanged { .. } => "size_changed",
-        Change::DeviceChanged { .. } => "device_changed",
-        Change::Deleted => "deleted",
-        Change::Created => "created",
-    }
 }
 
 #[cfg(test)]

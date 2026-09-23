@@ -123,7 +123,9 @@ fn build_initial_baseline_impl<P: BaselineProgress>(
         for group in config.watch.values() {
             let roots = crate::config::expand_user_paths(&group.paths);
             for root in &roots {
-                walk_files(root, &exclusions, &mut |_path| {
+                // Estimation pass only; unreadable paths are reported by the
+                // real walk below.
+                let _ = walk_files(root, &exclusions, &mut |_path| {
                     estimated_total += 1;
                     Ok(())
                 })?;
@@ -163,7 +165,10 @@ fn build_initial_baseline_impl<P: BaselineProgress>(
             let mut group_errors = 0u64;
             let roots = crate::config::expand_user_paths(&group.paths);
             for root in roots {
-                walk_files(&root, &exclusions, &mut |path| {
+                // A path the walk could not read is a file that will not be
+                // monitored, so it belongs in the same count the operator sees
+                // as "capture errors".
+                group_errors += walk_files(&root, &exclusions, &mut |path| {
                     processed += 1;
                     progress.entry_processed(processed, estimated_total);
 
@@ -250,16 +255,36 @@ fn build_initial_baseline_impl<P: BaselineProgress>(
     baseline_ops::set_config_state(conn, "last_baseline_refresh", &now.to_string())?;
 
     if config.security.hmac_signing {
-        if let Ok(key) = crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
-            match baseline_ops::compute_baseline_hmac(conn, &key) {
+        // A key that will not load means no baseline HMAC is stored, and the
+        // daemon then has nothing to verify against. `validate_config` only
+        // checks that the key file exists; `load_hmac_key` additionally
+        // rejects group- or world-readable permissions, so a key at mode 0644
+        // passes validation and fails here. Falling through silently left
+        // tamper detection off while the config said it was on.
+        match crate::hmac::load_hmac_key(&config.security.hmac_key_path) {
+            Ok(key) => match baseline_ops::compute_baseline_hmac(conn, &key) {
                 Ok(hmac) => {
                     if let Err(e) = baseline_ops::set_config_state(conn, "baseline_hmac", &hmac) {
-                        tracing::warn!(error = %e, "failed to store baseline HMAC");
+                        tracing::error!(
+                            error = %e,
+                            "failed to store baseline HMAC; baseline tamper detection is \
+                             NOT active"
+                        );
+                    } else {
+                        tracing::info!("baseline HMAC computed and stored");
                     }
-                    tracing::info!("baseline HMAC computed and stored");
                 }
-                Err(e) => tracing::warn!(error = %e, "failed to compute baseline HMAC"),
-            }
+                Err(e) => tracing::error!(
+                    error = %e,
+                    "failed to compute baseline HMAC; baseline tamper detection is NOT active"
+                ),
+            },
+            Err(e) => tracing::error!(
+                error = %e,
+                path = %config.security.hmac_key_path.display(),
+                "hmac_signing is enabled but the key could not be loaded; no baseline \
+                 HMAC was stored and baseline tamper detection is NOT active"
+            ),
         }
     }
     if crate::coordinator::is_notify_socket_safe() {
@@ -380,18 +405,27 @@ where
     Ok(result)
 }
 
+/// Walk `root`, calling `visit` for each file.
+///
+/// Returns the number of paths that could not be walked. A directory that
+/// cannot be opened prunes its whole subtree, so those files are never
+/// baselined and therefore never monitored. Reporting zero errors in that case
+/// told the operator the opposite of what happened: `vigil init` would print
+/// "1,284 files baselined" with no capture errors while an unreadable
+/// `/etc/ssl/private` went entirely unprotected.
 fn walk_files<F>(
     root: &Path,
     exclusions: &crate::filter::exclusion::ExclusionFilter,
     visit: &mut F,
-) -> Result<()>
+) -> Result<u64>
 where
     F: FnMut(&Path) -> Result<()>,
 {
     if !root.exists() {
-        return Ok(());
+        return Ok(0);
     }
 
+    let mut unreadable = 0u64;
     let mut stack = vec![root.to_path_buf()];
 
     while let Some(path) = stack.pop() {
@@ -403,7 +437,12 @@ where
         let meta = match std::fs::symlink_metadata(&path) {
             Ok(m) => m,
             Err(e) => {
-                tracing::debug!(path = %path.display(), error = %e, "baseline walk metadata error");
+                unreadable += 1;
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "baseline walk could not stat path; it will NOT be monitored"
+                );
                 continue;
             }
         };
@@ -434,10 +473,11 @@ where
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    tracing::debug!(
+                    unreadable += 1;
+                    tracing::warn!(
                         path = %path.display(),
                         error = %e,
-                        "baseline walk symlink target error"
+                        "baseline walk could not resolve symlink; it will NOT be monitored"
                     );
                 }
             }
@@ -453,7 +493,15 @@ where
             let entries = match std::fs::read_dir(&path) {
                 Ok(e) => e,
                 Err(e) => {
-                    tracing::debug!(path = %path.display(), error = %e, "baseline walk read_dir error");
+                    // Prunes the entire subtree: nothing beneath this is
+                    // visited, counted as a file, or counted as an error.
+                    unreadable += 1;
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "baseline walk could not read directory; NOTHING beneath it \
+                         will be monitored"
+                    );
                     continue;
                 }
             };
@@ -462,12 +510,18 @@ where
                 match entry {
                     Ok(ent) => stack.push(ent.path()),
                     Err(e) => {
-                        tracing::debug!(path = %path.display(), error = %e, "baseline walk dir entry error");
+                        unreadable += 1;
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "baseline walk could not read directory entry; it will NOT \
+                             be monitored"
+                        );
                     }
                 }
             }
         }
     }
 
-    Ok(())
+    Ok(unreadable)
 }

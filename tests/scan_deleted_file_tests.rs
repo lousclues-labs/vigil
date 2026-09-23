@@ -29,6 +29,7 @@ fn test_scan_handles_deleted_file_gracefully() {
             device: meta.dev(),
             file_type: FileType::Regular,
             symlink_target: None,
+            ..Default::default()
         },
         content: ContentFingerprint {
             hash: blake3::hash(b"test content").to_hex().to_string(),
@@ -72,4 +73,69 @@ fn test_scan_handles_deleted_file_gracefully() {
         cr.path.as_ref() == &watched_file && cr.changes.iter().any(|c| matches!(c, Change::Deleted))
     });
     assert!(has_deletion, "should produce a deletion ChangeResult");
+}
+
+/// An unreadable directory must be counted as an error, not silently pruned.
+///
+/// `walk_files` discarded its own failures at `debug` level and never touched
+/// the operator-facing error count. A `read_dir` failure prunes the entire
+/// subtree — nothing beneath it is visited, counted as a file, *or* counted as
+/// an error — so `vigil init` reported "N files baselined" with no capture
+/// errors while a whole watched subtree went unmonitored.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_directory_is_reported_as_a_capture_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Root can read anything, so this cannot be exercised as root.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipping: running as root, permissions do not apply");
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let watched = dir.path().join("watched");
+    let secret = watched.join("secret");
+    std::fs::create_dir_all(&secret).unwrap();
+    std::fs::write(secret.join("key.pem"), b"private").unwrap();
+    std::fs::write(watched.join("visible.conf"), b"ok").unwrap();
+
+    // Make the subtree unreadable.
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let mut cfg = vigil::config::default_config();
+    cfg.daemon.db_path = dir.path().join("baseline.db");
+    // The tempdir lives under /tmp/, which the shipped defaults exclude.
+    cfg.exclusions.system_exclusions.clear();
+    cfg.exclusions.patterns.clear();
+    cfg.watch.clear();
+    cfg.watch.insert(
+        "test".to_string(),
+        vigil::config::WatchGroup {
+            severity: vigil::types::Severity::High,
+            paths: vec![watched.to_string_lossy().into_owned()],
+            mode: Default::default(),
+            expect_present: false,
+        },
+    );
+
+    let conn = vigil::db::open_db_at(&cfg.daemon.db_path, false).unwrap();
+    let result = vigil::scanner::build_initial_baseline(&conn, &cfg).unwrap();
+
+    // Restore so tempdir cleanup can proceed.
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let group = result
+        .groups
+        .iter()
+        .find(|g| g.name == "test")
+        .expect("group present");
+    assert!(
+        group.errors > 0,
+        "an unreadable subtree must be counted as a capture error, got {} errors \
+         for {} files. Reporting zero errors states the files were fine when they \
+         were never examined.",
+        group.errors,
+        group.file_count
+    );
 }

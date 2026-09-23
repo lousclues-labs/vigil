@@ -15,6 +15,7 @@ fn baseline_entry() -> BaselineEntry {
             device: 1,
             file_type: FileType::Regular,
             symlink_target: None,
+            ..Default::default()
         },
         content: ContentFingerprint {
             hash: "old_hash".into(),
@@ -51,6 +52,7 @@ fn diff_detects_multiple_dimensions() {
             device: 1,
             file_type: FileType::Regular,
             symlink_target: None,
+            ..Default::default()
         },
         content: ContentFingerprint {
             hash: "new_hash".into(),

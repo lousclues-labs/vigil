@@ -152,6 +152,64 @@ pub fn format_age(seconds: i64) -> String {
     }
 }
 
+// ── Untrusted Text ─────────────────────────────────────────
+
+/// Neutralize terminal control sequences in text that Vigil did not author.
+///
+/// Paths, package names, log excerpts, and unit names all originate outside
+/// Vigil and can contain anything a filesystem or a log writer allows. Printed
+/// raw, a crafted name can clear the screen, reposition the cursor, or reorder
+/// surrounding text so a CRITICAL line reads as a clean one.
+///
+/// Escaped:
+/// - C0 controls and DEL (`\x00..=\x1f`, `\x7f`), including newline, carriage
+///   return, and tab, because each one can restructure a rendered report.
+/// - C1 controls (`U+0080..=U+009F`).
+/// - Bidirectional overrides and isolates (`U+202A..=U+202E`,
+///   `U+2066..=U+2069`), the Trojan Source reordering attack.
+///
+/// Everything else passes through, so ordinary non-ASCII filenames stay
+/// readable. Output is always printable UTF-8; expansion is bounded at roughly
+/// 8 bytes per escaped codepoint.
+pub fn sanitize_for_terminal(text: &str) -> String {
+    // Fast path: the overwhelming majority of paths need no rewriting.
+    if !text.chars().any(needs_escaping) {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len() + 8);
+    for c in text.chars() {
+        match c {
+            '\x00'..='\x1f' | '\x7f' => out.push_str(&format!("\\x{:02x}", c as u32)),
+            '\u{0080}'..='\u{009f}' => out.push_str(&format!("\\x{:02x}", c as u32)),
+            '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => {
+                out.push_str(&format!("\\u{{{:04x}}}", c as u32))
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn needs_escaping(c: char) -> bool {
+    matches!(c,
+        '\x00'..='\x1f'
+        | '\x7f'
+        | '\u{0080}'..='\u{009f}'
+        | '\u{202a}'..='\u{202e}'
+        | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// Render a path for terminal output with control characters neutralized.
+///
+/// Uses lossy UTF-8 conversion so a path with invalid byte sequences is still
+/// shown rather than dropped, then escapes anything that could rewrite the
+/// terminal.
+pub fn sanitize_path(path: &std::path::Path) -> String {
+    sanitize_for_terminal(&path.to_string_lossy())
+}
+
 // ── Hash & Fingerprint ─────────────────────────────────────
 
 /// Truncate a hash to 16 hex chars for display.

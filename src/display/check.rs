@@ -14,8 +14,8 @@ use crate::types::ScanMode;
 
 use super::explain;
 use super::format::{
-    exit_code_description, format_age, format_count, format_size, severity_marker, severity_style,
-    truncate_path, Style, Styled,
+    exit_code_description, format_age, format_count, format_size, sanitize_for_terminal,
+    sanitize_path, severity_marker, severity_style, truncate_path, Style, Styled,
 };
 use super::widgets::{render_change_oneline, render_change_table, render_histogram};
 use super::{CheckReport, CheckReportMeta, InitReport, PackageGroup};
@@ -127,13 +127,10 @@ fn summarize_paths(changes: &[ChangeResult]) -> String {
         return String::new();
     }
     if changes.len() == 1 {
-        return changes[0].path.display().to_string();
+        return sanitize_path(&changes[0].path);
     }
 
-    let paths: Vec<String> = changes
-        .iter()
-        .map(|c| c.path.display().to_string())
-        .collect();
+    let paths: Vec<String> = changes.iter().map(|c| sanitize_path(&c.path)).collect();
     let prefix = common_path_prefix(&paths);
     if prefix.is_empty() {
         format!("{} files", changes.len())
@@ -316,7 +313,7 @@ pub fn render_human(
                             out.push_str(&format!(
                                 "      {}\n",
                                 truncate_path(
-                                    &change.path.display().to_string(),
+                                    &sanitize_path(&change.path),
                                     term.width as usize - 8,
                                 )
                             ));
@@ -389,8 +386,8 @@ fn render_scan_issues(report: &CheckReport, styled: &Styled<'_>, out: &mut Strin
         out.push_str(&format!(
             "  {} {}: {} ({})\n",
             marker,
-            warning.path.display(),
-            warning.detail,
+            sanitize_path(&warning.path),
+            sanitize_for_terminal(&warning.detail),
             match warning.severity {
                 WarningSeverity::Info => "info",
                 WarningSeverity::Warning => "warning",
@@ -445,7 +442,7 @@ fn render_change_entry(
     let styled = Styled::new(term);
     let (marker, label) = severity_marker(&change.severity);
     let style = severity_style(&change.severity);
-    let path_display = truncate_path(&change.path.display().to_string(), term.width as usize - 20);
+    let path_display = truncate_path(&sanitize_path(&change.path), term.width as usize - 20);
 
     out.push_str(&format!(
         "    {} {} {}\n",

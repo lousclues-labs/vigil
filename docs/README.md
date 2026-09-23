@@ -26,6 +26,7 @@ fleets. See [Principles](PRINCIPLES.md) and
 | Document | What's Inside |
 |----------|---------------|
 | [Architecture](ARCHITECTURE.md) | System design, data flow, module structure |
+| [Correlation](CORRELATION.md) | Explaining package-transaction changes without weakening detection |
 | [Notifications](NOTIFICATIONS.md) | Alert routing policy, coalescing, storm suppression, escalation |
 | [Threat Model](THREAT_MODEL.md) | What Vigil Baseline detects, what it doesn't, adversary assumptions |
 | [Acknowledgments](ACKNOWLEDGMENTS.md) | Doctor acknowledgment model, recurrence rules, and operator workflows |
@@ -54,6 +55,7 @@ fleets. See [Principles](PRINCIPLES.md) and
 | [PDD Promises](../PROMISES.md) | The commitments layer: every falsifiable claim, matched to the canary that guards it |
 | [Audit Findings](../AUDIT_FINDINGS.md) | The ledger: every drift, its severity, and the canary that closed it |
 | [Architecture](ARCHITECTURE.md) | How it's built, why it's built that way |
+| [Correlation](CORRELATION.md) | Raw detection vs correlated explanation, confidence levels, evidence |
 | [Threat Model](THREAT_MODEL.md) | Honest assessment of what Vigil Baseline can and cannot do |
 
 ## Contributing & Development

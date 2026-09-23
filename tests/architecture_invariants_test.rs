@@ -331,3 +331,79 @@ fn aur_package_pins_a_real_checksum_and_srcinfo_agrees() {
         );
     }
 }
+
+/// One name per change dimension, defined once.
+///
+/// `Change::name()` is the single source of truth. Three byte-identical
+/// `change_to_name` helpers previously existed in `src/alert/mod.rs`,
+/// `src/wal/audit_writer.rs` and `src/wal/sink_runner.rs`, so adding a
+/// `Change` variant required editing all three. Missing one would make the
+/// audit log and an alert sink disagree about what a detection was, and
+/// anything correlating the two would silently fail to match.
+#[test]
+fn change_dimension_names_are_defined_once() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let canonical = "src/types/change.rs";
+
+    // The literal wire names may appear only where they are defined, plus the
+    // audit module that maps legacy stored discriminators back to them.
+    let legacy_mapper = "src/db/audit_ops.rs";
+
+    // The vocabulary Change::name() owns.
+    const WIRE_NAMES: &[&str] = &[
+        "content_modified",
+        "permissions_changed",
+        "owner_changed",
+        "inode_changed",
+        "type_changed",
+        "symlink_target_changed",
+        "link_text_changed",
+        "symlink_target_replaced",
+        "capabilities_changed",
+        "xattr_changed",
+        "security_context_changed",
+        "size_changed",
+        "device_changed",
+    ];
+
+    let mut offenders = Vec::new();
+    for file in collect_rs_files(&src) {
+        let rel = file
+            .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+            .unwrap_or(&file)
+            .display()
+            .to_string();
+        let rel = rel.trim_start_matches('/').to_string();
+        if rel.ends_with(canonical) || rel.ends_with(legacy_mapper) {
+            continue;
+        }
+
+        let content = fs::read_to_string(&file).expect("read file");
+        for (i, line) in content.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            // A match arm mapping a Change variant to one of the canonical
+            // wire names. Arms mapping to some other label (a human-facing
+            // dimension name such as "mode") are a different vocabulary and
+            // are not duplication of this one.
+            if trimmed.starts_with("Change::") {
+                if let Some(rest) = trimmed.split("=> \"").nth(1) {
+                    let value = rest.split('"').next().unwrap_or("");
+                    if WIRE_NAMES.contains(&value) {
+                        offenders.push(format!("{}:{}: {}", rel, i + 1, trimmed));
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "change dimension names must come from Change::name(), not a local \
+         mapping. Duplicates drift, and a drifted name means the audit log and \
+         the alert sinks describe the same detection differently:\n  {}",
+        offenders.join("\n  ")
+    );
+}

@@ -72,6 +72,27 @@ struct PendingAuditEntry {
     suppressed: bool,
 }
 
+/// Whether a maintenance window defers this change.
+///
+/// The one deterministic, stateless part of suppression, kept in a single
+/// place because three components need the same answer: the alert dispatcher,
+/// the WAL sink runner, and the audit writer, which records the verdict in the
+/// `suppressed` column.
+///
+/// Inside a maintenance window a package-owned change is deferred at every
+/// severity. Ownership was never proof of anything; the post-transaction
+/// baseline refresh verifies each path against the digest its own package
+/// recorded and raises a Critical for any file whose content contradicts it.
+/// A per-file alert during the window was only ever a guess, and on a stock
+/// system `/usr/bin/`, `/usr/sbin/` and `/boot/` are all Critical, so a
+/// routine upgrade fired one notification per binary until the storm detector
+/// tripped.
+///
+/// A change to a path no package owns is never deferred.
+pub fn deferred_by_maintenance_window(change: &ChangeResult, maintenance_window: bool) -> bool {
+    maintenance_window && change.package.is_some()
+}
+
 impl AlertDispatcher {
     pub fn new(
         config: &Config,
@@ -111,7 +132,15 @@ impl AlertDispatcher {
             }
         }
 
-        if config.alerts.desktop_notifications {
+        if config.alerts.desktop_notifications && !dbus::notification_channel_available() {
+            tracing::warn!(
+                "desktop_notifications is enabled but no session bus or display is \
+                 reachable; desktop alerts will NOT be delivered. Set \
+                 alerts.desktop_notifications = false on headless hosts, or configure \
+                 another sink."
+            );
+        }
+        if config.alerts.desktop_notifications && dbus::notification_channel_available() {
             sinks.push(Box::new(dbus::DbusSink::new(
                 config.alerts.notification_rate_limit,
                 config.alerts.notification_rate_window_secs,
@@ -255,7 +284,25 @@ impl AlertDispatcher {
                                     retry_ok += 1;
                                 }
                             }
-                            if retry_count > 0 {
+                            let lost = retry_count as u64 - retry_ok;
+                            if lost > 0 {
+                                // A retry that fails again drops the entry for
+                                // good. The buffer-full path already counts
+                                // this class of loss; without the same
+                                // accounting here `vigil_audit_entries_lost_total`
+                                // read zero while entries were being discarded,
+                                // and the only trace was an `info` line.
+                                self.metrics
+                                    .audit_entries_lost
+                                    .fetch_add(lost, Ordering::Relaxed);
+                                tracing::error!(
+                                    retried = retry_count,
+                                    succeeded = retry_ok,
+                                    lost,
+                                    "buffered audit entries could not be written and are \
+                                     permanently lost"
+                                );
+                            } else if retry_count > 0 {
                                 tracing::info!(
                                     retried = retry_count,
                                     succeeded = retry_ok,
@@ -308,7 +355,7 @@ impl AlertDispatcher {
         // The audit log still records every one of these, suppressed flag and
         // all (Principle XIII), and a window that is never closed expires on
         // its own cap, after which these paths alert again on the next scan.
-        if maintenance_window && change.package.is_some() {
+        if deferred_by_maintenance_window(change, maintenance_window) {
             return true;
         }
 
@@ -353,7 +400,7 @@ impl AlertDispatcher {
                 let primary = change
                     .changes
                     .first()
-                    .map(change_to_name)
+                    .map(Change::name)
                     .unwrap_or("unknown");
 
                 // Extract content hashes from the first ContentModified change, if any
@@ -401,7 +448,7 @@ impl AlertDispatcher {
         let change_type = change
             .changes
             .first()
-            .map(change_to_name)
+            .map(Change::name)
             .unwrap_or("unknown")
             .to_string();
 
@@ -437,24 +484,6 @@ impl AlertDispatcher {
                 maintenance_window: payload.maintenance_window,
             },
         }
-    }
-}
-
-fn change_to_name(change: &Change) -> &'static str {
-    match change {
-        Change::ContentModified { .. } => "content_modified",
-        Change::PermissionsChanged { .. } => "permissions_changed",
-        Change::OwnerChanged { .. } => "owner_changed",
-        Change::InodeChanged { .. } => "inode_changed",
-        Change::TypeChanged { .. } => "type_changed",
-        Change::SymlinkTargetChanged { .. } => "symlink_target_changed",
-        Change::CapabilitiesChanged { .. } => "capabilities_changed",
-        Change::XattrChanged { .. } => "xattr_changed",
-        Change::SecurityContextChanged { .. } => "security_context_changed",
-        Change::SizeChanged { .. } => "size_changed",
-        Change::DeviceChanged { .. } => "device_changed",
-        Change::Deleted => "deleted",
-        Change::Created => "created",
     }
 }
 

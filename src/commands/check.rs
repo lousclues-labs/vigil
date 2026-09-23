@@ -25,6 +25,9 @@ pub(crate) struct CheckOpts {
     pub brief: bool,
     pub no_pager: bool,
     pub since: Option<String>,
+    /// Correlate detections against local package-transaction evidence.
+    /// Enrichment only: it never suppresses a detection or alters severity.
+    pub correlate: bool,
     pub reason: bool,
     /// When true, every detected content mismatch triggers a forensic
     /// disambiguation re-read after dropping the file's page cache.
@@ -244,12 +247,33 @@ pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
         },
     );
 
-    // Compute exit code before rendering
+    // Compute exit code before rendering.
+    //
+    // Correlation is deliberately not an input here: the exit code reflects the
+    // raw severities observed, whether or not a transaction explains them.
     let code = report.exit_code();
+
+    // Correlate against local package-transaction evidence. Enrichment only --
+    // it runs after detection, reads only local sources, and cannot remove,
+    // reorder, or re-grade anything in `report.scan.changes`.
+    let correlation = if opts.correlate && !report.scan.changes.is_empty() {
+        vigil::correlate::explain_changes(&report.scan.changes, &cfg.package_manager)
+    } else {
+        vigil::correlate::CorrelationResult::default()
+    };
 
     // Render output
     let term = display::term::TermInfo::detect();
     let mut output = display::render_check(&report, opts.format, &term, opts.verbose, opts.brief);
+
+    // Event-first summary, printed above the raw detail it explains.
+    if opts.format == OutputFormat::Human && !opts.brief {
+        output.push_str(&display::correlate::render_events(
+            &correlation,
+            &term,
+            opts.verbose,
+        ));
+    }
 
     // Verbose mode: append recent audit activity timeline.
     if opts.verbose && opts.format == OutputFormat::Human {
@@ -384,9 +408,11 @@ pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
             let now = chrono::Utc::now().timestamp();
             let mut accepted = 0u64;
             let mut failed = 0u64;
+            let mut stale = 0u64;
+            let mut accepted_paths: Vec<String> = Vec::new();
 
             for change in &changes_to_accept {
-                let opts = vigil::types::CaptureOpts {
+                let capture_opts = vigil::types::CaptureOpts {
                     force_hash: true,
                     max_file_size: cfg.scanner.max_file_size,
                     mmap_threshold: cfg.scanner.mmap_threshold,
@@ -394,8 +420,18 @@ pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
                     baseline_hash: None,
                 };
 
-                match vigil::types::FileSnapshot::from_path(&change.path, &opts) {
-                    Ok(vigil::types::SnapshotOrDeleted::Snapshot(snapshot)) => {
+                // Re-validate immediately before writing. The operator approved
+                // a specific state; if the path moved since the report was
+                // rendered, that approval does not cover what is there now.
+                // The entry the scan compared against. Revalidation re-runs
+                // that same comparison, so it needs the same baseline.
+                let baseline_entry =
+                    vigil::db::baseline_ops::get_by_path(&conn, &change.path.to_string_lossy())
+                        .unwrap_or(None);
+
+                match vigil::acceptance::revalidate(change, baseline_entry.as_ref(), &capture_opts)
+                {
+                    vigil::acceptance::Revalidation::Confirmed(snapshot) => {
                         let entry = vigil::types::BaselineEntry {
                             id: None,
                             path: change.path.as_ref().clone(),
@@ -410,34 +446,62 @@ pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
                             updated_at: now,
                         };
                         match vigil::db::baseline_ops::upsert(&conn, &entry) {
-                            Ok(()) => accepted += 1,
+                            Ok(()) => {
+                                accepted += 1;
+                                accepted_paths.push(change.path.to_string_lossy().into_owned());
+                            }
                             Err(e) => {
                                 eprintln!("    failed to accept {}: {}", change.path.display(), e);
                                 failed += 1;
                             }
                         }
                     }
-                    Ok(vigil::types::SnapshotOrDeleted::Deleted) => {
+                    vigil::acceptance::Revalidation::ConfirmedDeleted => {
                         match vigil::db::baseline_ops::remove_by_path(
                             &conn,
                             &change.path.to_string_lossy(),
                         ) {
-                            Ok(_) => accepted += 1,
+                            Ok(_) => {
+                                accepted += 1;
+                                accepted_paths.push(change.path.to_string_lossy().into_owned());
+                            }
                             Err(e) => {
                                 eprintln!("    failed to remove {}: {}", change.path.display(), e);
                                 failed += 1;
                             }
                         }
                     }
-                    Err(e) => {
-                        eprintln!("    failed to snapshot {}: {}", change.path.display(), e);
+                    vigil::acceptance::Revalidation::Stale { differences } => {
+                        stale += 1;
+                        eprintln!(
+                            "    REFUSED {}: changed since you reviewed it",
+                            change.path.display()
+                        );
+                        for diff in &differences {
+                            eprintln!("            {}", diff);
+                        }
+                    }
+                    vigil::acceptance::Revalidation::Failed(e) => {
+                        eprintln!(
+                            "    failed to re-read {} before accepting: {}",
+                            change.path.display(),
+                            e
+                        );
                         failed += 1;
                     }
                 }
             }
 
             println!();
-            println!("  ● {} accepted, {} failed", accepted, failed);
+            println!(
+                "  ● {} accepted, {} refused as stale, {} failed",
+                accepted, stale, failed
+            );
+            if stale > 0 {
+                println!();
+                println!("  Refused entries were NOT written to the baseline.");
+                println!("  Re-run `vigil check` to review their current state before accepting.");
+            }
             println!();
             println!("  Baseline updated. Next scan will treat accepted files as expected.");
             println!("  Audit log preserved. The original detections are permanent.");
@@ -470,8 +534,22 @@ pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
             println!("  Accept receipt:");
             println!(
                 "    Baseline fingerprint: {} → {}",
-                old_fingerprint.unwrap_or_else(|| "(none)".into()),
-                new_fingerprint.unwrap_or_else(|| "(none)".into())
+                old_fingerprint.clone().unwrap_or_else(|| "(none)".into()),
+                new_fingerprint.clone().unwrap_or_else(|| "(none)".into())
+            );
+
+            // Record which raw detections were accepted, and the correlated
+            // events that explained them, in the permanent audit chain.
+            // Correlation is referenced as evidence; it is never the authority
+            // for the write, which remains this explicit operator action.
+            record_acceptance(
+                &cfg,
+                &accepted_paths,
+                &changes_to_accept,
+                &correlation,
+                old_fingerprint.as_deref(),
+                new_fingerprint.as_deref(),
+                stale,
             );
 
             let not_accepted = report.scan.changes.len() - changes_to_accept.len();
@@ -511,6 +589,116 @@ pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
     }
 
     Ok(code)
+}
+
+/// Record an acceptance in the permanent audit chain.
+///
+/// The receipt names the exact raw detections that were written, the ones
+/// refused as stale, and the correlated events that were on screen when the
+/// operator decided. Correlation appears here as *evidence the operator saw*,
+/// never as the authority for the write: the authority is the explicit
+/// `--accept` invocation this function is recording.
+///
+/// A failure to record is reported and never silently swallowed, but it does
+/// not roll back a baseline write that already succeeded; the warning tells the
+/// operator the chain is incomplete.
+#[allow(clippy::too_many_arguments)]
+fn record_acceptance(
+    cfg: &vigil::config::Config,
+    accepted_paths: &[String],
+    considered: &[&vigil::types::ChangeResult],
+    correlation: &vigil::correlate::CorrelationResult,
+    old_fingerprint: Option<&str>,
+    new_fingerprint: Option<&str>,
+    stale: u64,
+) {
+    if accepted_paths.is_empty() {
+        return;
+    }
+
+    let accepted_set: std::collections::HashSet<&str> =
+        accepted_paths.iter().map(String::as_str).collect();
+
+    // Exactly which detections were accepted, with the dimensions observed.
+    let detections: Vec<serde_json::Value> = considered
+        .iter()
+        .filter(|c| accepted_set.contains(c.path.to_string_lossy().as_ref()))
+        .map(|c| {
+            serde_json::json!({
+                "path": c.path.to_string_lossy(),
+                "severity": c.severity.to_string(),
+                "group": c.monitored_group,
+                "changes": c.changes.iter().map(|ch| ch.to_string()).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
+    // Evidence summary for each event that touched an accepted path.
+    let events: Vec<serde_json::Value> = correlation
+        .events
+        .iter()
+        .filter(|e| {
+            e.members
+                .iter()
+                .any(|m| accepted_set.contains(m.raw.path.to_string_lossy().as_ref()))
+        })
+        .map(|e| {
+            serde_json::json!({
+                "event_id": e.event_id,
+                "kind": e.kind.as_str(),
+                "confidence": e.confidence.as_str(),
+                "transaction_status": e.status.to_string(),
+                "transaction_id": e.transaction_id,
+                "packages": e.packages.iter().map(|p| serde_json::json!({
+                    "name": p.name,
+                    "versions": p.version_summary(),
+                })).collect::<Vec<_>>(),
+                "evidence_sources": e.evidence_sources
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>(),
+                "collector_errors": e.collector_errors.len(),
+                "unexplained": e.unexplained.len(),
+            })
+        })
+        .collect();
+
+    let payload = serde_json::json!({
+        "accepted_count": accepted_paths.len(),
+        "refused_stale_count": stale,
+        "accepted_detections": detections,
+        "correlated_events": events,
+        "baseline_fingerprint_before": old_fingerprint,
+        "baseline_fingerprint_after": new_fingerprint,
+    });
+
+    match vigil::db::audit_ops::record_operator_action(
+        cfg,
+        vigil::db::audit_path::AuditEventPath::BaselineAcceptance,
+        payload,
+    ) {
+        Ok(seq) => {
+            println!("    Acceptance recorded in audit chain (sequence {})", seq);
+            if !events.is_empty() {
+                println!(
+                    "    Correlated event{} referenced: {}",
+                    if events.len() == 1 { "" } else { "s" },
+                    events
+                        .iter()
+                        .filter_map(|e| e["event_id"].as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "  warning: baseline was updated but the acceptance could not be \
+                 recorded in the audit chain: {}",
+                e
+            );
+        }
+    }
 }
 
 pub(crate) fn cmd_check_live(config_path: Option<&Path>, full: bool) -> vigil::Result<()> {
@@ -756,6 +944,36 @@ fn render_recent_activity(cfg: &vigil::config::Config, opts: &CheckOpts) -> Stri
 
 /// Extract a short human-readable description from changes_json.
 fn short_change_description(json: &str) -> &'static str {
+    // Substring matching on PascalCase variant names stopped working when
+    // `Change` became internally tagged and snake_case: current rows contain
+    // "content_modified", never "ContentModified", so every real detection
+    // fell through to "changed". Decode the type instead.
+    if let Ok(changes) = serde_json::from_str::<Vec<vigil::types::Change>>(json) {
+        if let Some(first) = changes.first() {
+            return match first {
+                vigil::types::Change::ContentModified { .. } => "content modified",
+                vigil::types::Change::Created => "created",
+                vigil::types::Change::Deleted => "deleted",
+                vigil::types::Change::PermissionsChanged { .. } => "permissions changed",
+                vigil::types::Change::OwnerChanged { .. } => "owner changed",
+                vigil::types::Change::SizeChanged { .. } => "size changed",
+                other => match other.name() {
+                    "inode_changed" => "inode changed",
+                    "type_changed" => "type changed",
+                    "symlink_target_changed" => "symlink target changed",
+                    "link_text_changed" => "link text changed",
+                    "symlink_target_replaced" => "target replaced",
+                    "capabilities_changed" => "capabilities changed",
+                    "xattr_changed" => "xattr changed",
+                    "security_context_changed" => "security context changed",
+                    "device_changed" => "device changed",
+                    _ => "changed",
+                },
+            };
+        }
+    }
+
+    // Legacy externally-tagged rows.
     if json.contains("ContentModified") {
         "content modified"
     } else if json.contains("Created") {
@@ -839,10 +1057,30 @@ mod tests {
 
     #[test]
     fn short_change_description_detects_content_modified() {
+        // Legacy externally-tagged row.
         assert_eq!(
             short_change_description(r#"[{"ContentModified":{"old":"a","new":"b"}}]"#),
             "content modified"
         );
+    }
+
+    /// Round-trips a real `Change` rather than hand-writing a fixture.
+    ///
+    /// The hand-written legacy fixture above kept passing after `Change`
+    /// became internally tagged, while the function returned "changed" for
+    /// every real row. A fixture that cannot drift with the type is the only
+    /// kind that proves anything here.
+    #[test]
+    fn short_change_description_handles_the_format_actually_written() {
+        let changes = vec![vigil::types::Change::ContentModified {
+            old_hash: "a".into(),
+            new_hash: "b".into(),
+        }];
+        let json = serde_json::to_string(&changes).expect("serialize");
+        assert_eq!(short_change_description(&json), "content modified");
+
+        let deleted = serde_json::to_string(&vec![vigil::types::Change::Deleted]).unwrap();
+        assert_eq!(short_change_description(&deleted), "deleted");
     }
 
     #[test]

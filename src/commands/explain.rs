@@ -224,19 +224,32 @@ fn path_matches(target: &str, pattern: &str) -> bool {
 }
 
 fn summarize_changes(changes_json: &str) -> String {
-    let changes: Vec<serde_json::Value> = serde_json::from_str(changes_json).unwrap_or_default();
-    if changes.is_empty() {
+    // Decode into the real type rather than reading JSON keys. `Change` is
+    // internally tagged, so `obj.keys().next()` returned the alphabetically
+    // first *field* name -- "new_hash" for a content change, "type" for a
+    // creation -- which was then printed to the operator as the change kind.
+    if let Ok(changes) = serde_json::from_str::<Vec<vigil::types::Change>>(changes_json) {
+        if changes.is_empty() {
+            return "unknown".to_string();
+        }
+        return changes
+            .iter()
+            .map(|c| c.name())
+            .collect::<Vec<_>>()
+            .join(", ");
+    }
+
+    // Legacy externally-tagged rows, still present in older audit logs.
+    let values: Vec<serde_json::Value> = serde_json::from_str(changes_json).unwrap_or_default();
+    if values.is_empty() {
         return "unknown".to_string();
     }
-    changes
+    values
         .iter()
-        .filter_map(|c| {
-            // Changes are serialized as enum variants
-            if let Some(obj) = c.as_object() {
-                obj.keys().next().map(|k| k.to_string())
-            } else {
-                c.as_str().map(|s| s.to_string())
-            }
+        .filter_map(|c| match c {
+            serde_json::Value::String(s) => Some(s.clone()),
+            serde_json::Value::Object(obj) => obj.keys().next().cloned(),
+            _ => None,
         })
         .collect::<Vec<_>>()
         .join(", ")

@@ -97,7 +97,21 @@ impl ExclusionFilter {
             return false;
         }
 
-        // Find insertion point, then verify closest predecessor/successor.
+        // Find the insertion point, then walk backwards.
+        //
+        // Checking only the two adjacent entries is not correct prefix
+        // matching: a non-matching entry can sort *between* the matching
+        // prefix and the path, taking the `idx - 1` slot and hiding the real
+        // match. With `["/var/", "/var/cache/"]`, the path `/var/log/syslog`
+        // has insertion point 2, so `idx - 1` is `/var/cache/` (no match) and
+        // `idx == len` -- `/var/` was never tested. Adding a *narrower*
+        // exclusion rule silently disabled a *broader* one, so paths the
+        // operator had excluded were scanned and alerted on anyway.
+        //
+        // Any prefix of `path` sorts at or before it, so scanning back from
+        // the insertion point finds every candidate. The walk stops as soon as
+        // an entry can no longer be a prefix: entries are sorted, so once one
+        // fails to share `path`'s first byte, nothing earlier can match either.
         let idx = match self
             .system_prefixes
             .binary_search_by(|probe| probe.as_str().cmp(path))
@@ -106,17 +120,20 @@ impl ExclusionFilter {
             Err(i) => i,
         };
 
-        if idx > 0 {
-            let prev = &self.system_prefixes[idx - 1];
-            if path.starts_with(prev) {
-                return true;
-            }
+        // `idx` itself can match when the path equals a prefix exactly.
+        if idx < self.system_prefixes.len() && path.starts_with(&self.system_prefixes[idx]) {
+            return true;
         }
 
-        if idx < self.system_prefixes.len() {
-            let cur = &self.system_prefixes[idx];
-            if path.starts_with(cur) {
+        let first_byte = path.as_bytes().first().copied();
+        for candidate in self.system_prefixes[..idx].iter().rev() {
+            if path.starts_with(candidate) {
                 return true;
+            }
+            // Sorted order means everything earlier starts with something
+            // smaller still; once the first byte diverges, stop.
+            if candidate.as_bytes().first().copied() != first_byte {
+                break;
             }
         }
 

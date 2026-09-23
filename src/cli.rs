@@ -88,6 +88,10 @@ pub enum Command {
         #[arg(long)]
         since: Option<String>,
 
+        /// Skip package-transaction correlation and report only raw detections
+        #[arg(long = "no-correlate")]
+        no_correlate: bool,
+
         /// Record a verification receipt in the audit chain
         #[arg(long)]
         reason: bool,

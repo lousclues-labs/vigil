@@ -58,12 +58,32 @@ impl SinkRunner {
         }
 
         if !config.alerts.log_file.as_os_str().is_empty() {
-            if let Ok(sink) = alert::json_log::JsonFileSink::new(&config.alerts.log_file) {
-                sinks.push(Box::new(sink));
+            // An explicitly configured sink that fails to build must be
+            // announced. Silently omitting it leaves the operator's chosen
+            // alert destination absent for the life of the process, and an
+            // empty alert file reads exactly like "nothing was detected".
+            // `AlertDispatcher::new` has always warned here; this is the
+            // constructor the daemon actually runs once the WAL is enabled.
+            match alert::json_log::JsonFileSink::new(&config.alerts.log_file) {
+                Ok(sink) => sinks.push(Box::new(sink)),
+                Err(e) => tracing::warn!(
+                    path = %config.alerts.log_file.display(),
+                    error = %e,
+                    "JSON alert log sink could not be initialised; alerts will NOT be \
+                     written to it"
+                ),
             }
         }
 
-        if config.alerts.desktop_notifications {
+        if config.alerts.desktop_notifications && !alert::dbus::notification_channel_available() {
+            tracing::warn!(
+                "desktop_notifications is enabled but no session bus or display is \
+                 reachable; desktop alerts will NOT be delivered. Set \
+                 alerts.desktop_notifications = false on headless hosts, or configure \
+                 another sink."
+            );
+        }
+        if config.alerts.desktop_notifications && alert::dbus::notification_channel_available() {
             sinks.push(Box::new(alert::dbus::DbusSink::new(
                 config.alerts.notification_rate_limit,
                 config.alerts.notification_rate_window_secs,
@@ -77,10 +97,13 @@ impl SinkRunner {
         }
 
         if config.alerts.remote_syslog.enabled {
-            if let Ok(sink) =
-                alert::remote_syslog::RemoteSyslogSink::new(&config.alerts.remote_syslog)
-            {
-                sinks.push(Box::new(sink));
+            match alert::remote_syslog::RemoteSyslogSink::new(&config.alerts.remote_syslog) {
+                Ok(sink) => sinks.push(Box::new(sink)),
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "remote syslog sink could not be initialised; alerts will NOT be \
+                     forwarded"
+                ),
             }
         }
 
@@ -255,7 +278,7 @@ impl SinkRunner {
         // The audit log still records every one of these (Principle XIII),
         // and refresh-time deviations carry no package attribution precisely
         // so this branch can never silence them.
-        if maintenance_window && change.package.is_some() {
+        if crate::alert::deferred_by_maintenance_window(change, maintenance_window) {
             return true;
         }
 
@@ -286,7 +309,7 @@ impl SinkRunner {
         let change_type = change
             .changes
             .first()
-            .map(change_to_name)
+            .map(Change::name)
             .unwrap_or("unknown")
             .to_string();
 
@@ -322,24 +345,6 @@ impl SinkRunner {
                 maintenance_window: entry.record.maintenance_window,
             },
         }
-    }
-}
-
-fn change_to_name(change: &Change) -> &'static str {
-    match change {
-        Change::ContentModified { .. } => "content_modified",
-        Change::PermissionsChanged { .. } => "permissions_changed",
-        Change::OwnerChanged { .. } => "owner_changed",
-        Change::InodeChanged { .. } => "inode_changed",
-        Change::TypeChanged { .. } => "type_changed",
-        Change::SymlinkTargetChanged { .. } => "symlink_target_changed",
-        Change::CapabilitiesChanged { .. } => "capabilities_changed",
-        Change::XattrChanged { .. } => "xattr_changed",
-        Change::SecurityContextChanged { .. } => "security_context_changed",
-        Change::SizeChanged { .. } => "size_changed",
-        Change::DeviceChanged { .. } => "device_changed",
-        Change::Deleted => "deleted",
-        Change::Created => "created",
     }
 }
 

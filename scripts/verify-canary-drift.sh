@@ -6,7 +6,9 @@
 # guards it, require a FAILURE, then revert. Run from the repo root.
 set -uo pipefail
 
-cd "$(dirname "$0")/.."
+# Every case below rewrites a source file and reverts it, so landing in the
+# wrong directory would mutate whatever is there instead.
+cd "$(dirname "$0")/.." || exit 1
 
 PASS=0
 FAIL=0
@@ -27,10 +29,15 @@ TOUCHED=(
   src/db/audit_ops.rs
   src/coordinator/mod.rs
   src/doctor/checks.rs
+  src/doctor/mod.rs
   src/metrics.rs
   src/config/mod.rs
   src/scanner.rs
   src/package.rs
+  src/correlate/engine.rs
+  src/acceptance.rs
+  src/db/audit_ops.rs
+  src/commands/audit.rs
   Cargo.toml
   PROMISES.md
   .github/workflows/pdd-canaries.yml
@@ -353,6 +360,109 @@ echo "== PR17 C-PROMISE-SET-INTEGRITY (canary that does not exist) =="
 sed -i 's|`C-CLEAN-IS-SILENT`|`C-IMAGINARY-GUARD`|' PROMISES.md
 expect_red proof_ships_promise_set_has_no_unguarded_claims "promise pointing at a canary that does not exist"
 revert PROMISES.md
+
+echo "== PR21 C-EXPLANATION-IS-NOT-ACCEPTANCE =="
+printf '\nfn absorb_into_baseline(conn: &rusqlite::Connection, e: &crate::types::BaselineEntry) {\n    let _ = crate::db::baseline_ops::upsert(conn, e);\n}\n' >> src/correlate/engine.rs
+expect_red witness_explanation_never_becomes_acceptance "baseline write added to the correlation layer"
+revert src/correlate/engine.rs
+
+echo "== PR22 C-ACCEPT-REVALIDATES =="
+python3 - <<'PYX'
+p = "src/acceptance.rs"
+s = open(p).read()
+# Make revalidation always confirm, which is the shape of the pre-1.15.0 bug:
+# accept whatever the second read found, rather than what was reviewed.
+anchor = "    if current == change.changes {"
+inject = "    if true {"
+assert anchor in s, "revalidate anchor not found"
+open(p, "w").write(s.replace(anchor, inject, 1))
+PYX
+expect_red witness_acceptance_refuses_state_the_operator_did_not_review "revalidation reduced to always-confirm"
+revert src/acceptance.rs
+
+echo "== PR8 C-AUDIT-HMAC-VERIFIABLE =="
+python3 - <<'PYX'
+p = "src/db/audit_ops.rs"
+s = open(p).read()
+# Restore the key-guessing decoder: the shape that made every untampered
+# entry verify as broken.
+anchor = '''    // Current representation.
+    if let Some(changes) = decode_changes(json) {
+        return changes
+            .first()
+            .map(Change::name)
+            .unwrap_or("unknown")
+            .to_string();
+    }
+'''
+assert anchor in s, "primary-type decoder anchor not found"
+open(p, "w").write(s.replace(anchor, "", 1))
+PYX
+expect_red audit_truth_hmac_verifies_on_the_format_actually_written "verifier reverted to guessing the change type from JSON keys"
+revert src/db/audit_ops.rs
+
+echo "== PR8 C-AUDIT-HMAC-CHECKED =="
+python3 - <<'PYX'
+p = "src/commands/audit.rs"
+s = open(p).read()
+anchor = "            let detail = vigil::db::audit_ops::verify_chain_detail(\n                &conn,\n                hmac_key.as_ref().map(|k| k.as_slice()),\n            )?;"
+assert anchor in s, "verify call anchor not found"
+inject = "            let detail = vigil::db::audit_ops::verify_chain_detail(&conn, None)?;"
+open(p, "w").write(s.replace(anchor, inject, 1))
+PYX
+expect_red audit_truth_verify_command_checks_signatures "audit verify reverted to skipping signature checks"
+revert src/commands/audit.rs
+
+echo "== PR23 C-UNKNOWN-IS-NOT-OK (absent metrics file) =="
+python3 - <<'PYX'
+p = "src/doctor/checks.rs"
+s = open(p).read()
+# Pre-1.15.0 shape: an unreadable metrics.json defaulted the degraded-mount
+# counter to 0, which is exactly the all-clear value.
+old = "            status: CheckStatus::Unknown,\n            detail: \"metrics.json not available"
+new = "            status: CheckStatus::Ok,\n            detail: \"metrics.json not available"
+assert old in s, "absent-metrics anchor not found"
+open(p, "w").write(s.replace(old, new, 1))
+PYX
+expect_red fail_loud_absent_evidence_is_never_reported_as_ok "an unreadable metrics file reported as a clean result"
+revert src/doctor/checks.rs
+
+echo "== PR23 C-UNKNOWN-IS-NOT-OK (absent coverage counter) =="
+python3 - <<'PYX'
+p = "src/doctor/mod.rs"
+s = open(p).read()
+# Defaulting a counter an older daemon never wrote to its all-clear value.
+old = "    pub fanotify_mark_reduced_coverage: Option<u64>,"
+assert old in s, "coverage counter anchor not found"
+open(p, "w").write(s.replace(old, "    pub fanotify_mark_reduced_coverage: u64,", 1))
+PYX
+expect_red fail_loud_absent_evidence_is_never_reported_as_ok "absent coverage counter defaulted to the all-clear value"
+revert src/doctor/mod.rs
+
+echo "== PR23 C-UNKNOWN-IS-NOT-OK (unreadable hook verdict) =="
+python3 - <<'PYX'
+p = "src/doctor/checks.rs"
+s = open(p).read()
+old = "        HookTriggerResult::Unknown => (\n            CheckStatus::Unknown,"
+assert old in s, "hook Unknown arm anchor not found"
+new = "        HookTriggerResult::Unknown => (\n            CheckStatus::Ok,"
+open(p, "w").write(s.replace(old, new, 1))
+PYX
+expect_red fail_loud_absent_evidence_is_never_reported_as_ok "an unreadable hook verdict reported as a passing hook"
+revert src/doctor/checks.rs
+
+echo "== PR23 C-UNKNOWN-IS-NOT-OK (notify-send existence as health) =="
+python3 - <<'PYX'
+p = "src/doctor/checks.rs"
+s = open(p).read()
+# Pre-1.15.0 shape: the binary existing on disk was reported as a working
+# desktop alert channel.
+old = "        if !crate::alert::dbus::notification_channel_available() {"
+assert old in s, "notify channel anchor not found"
+open(p, "w").write(s.replace(old, "        if false {", 1))
+PYX
+expect_red fail_loud_absent_evidence_is_never_reported_as_ok "notify-send existing on disk reported as a reachable channel"
+revert src/doctor/checks.rs
 
 echo
 echo "canaries proven to fail on drift: $PASS"

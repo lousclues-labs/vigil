@@ -129,14 +129,24 @@ the audit DB is write-heavy (every detection appends). WAL
 mode and separate files prevent readers from blocking
 writers across the two workloads.
 
-**Baseline table.** The v2 flattened schema stores each
-file attribute as a direct column (replacing the v1 JSON
-blob format). Twenty columns capture path, identity (inode,
-device, file_type, symlink_target), content (hash, size),
+**Baseline table.** The flattened schema stores each file
+attribute as a direct column (replacing the v1 JSON blob
+format). Twenty-two columns capture path, identity (inode,
+device, file_type, symlink_target), symlink object identity
+(link_text, link_inode, link_device), content (hash, size),
 permissions (mode, uid, gid, capabilities), security
 (xattrs_json, security_context), and metadata (mtime,
 package, source, timestamps). The `source` CHECK constraint
 limits values to three known origins.
+
+The three `link_*` columns were added in schema v3 and
+describe the symlink *object* as `lstat` sees it, distinct
+from `symlink_target`, which describes what it points at.
+They are NULL on non-symlinks and on entries written before
+v3. They sit deliberately **outside** the HMAC field set, so
+a pre-v3 signed baseline still verifies and is never
+resigned; a semantic retarget still moves the signed
+`symlink_target`.
 
 **config_state table.** Key-value store for integrity and
 operational state. The `baseline_hmac` key holds the HMAC

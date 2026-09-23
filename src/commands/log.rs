@@ -1,20 +1,11 @@
 //! `vigil log` subcommand: view journald entries for vigild.
 
-use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 
 use vigil::cli::LogAction;
-
-/// Resolve the absolute path to `journalctl` to avoid PATH-injection.
-fn journalctl_binary() -> PathBuf {
-    for cand in ["/usr/bin/journalctl", "/bin/journalctl"] {
-        let p = PathBuf::from(cand);
-        if p.is_file() {
-            return p;
-        }
-    }
-    PathBuf::from("journalctl")
-}
+// One resolver for the whole tree: `util::journald` owns journalctl access,
+// including the absolute-path lookup that keeps PATH out of the decision.
+use vigil::util::journald::journalctl_binary;
 
 pub(crate) fn cmd_log(action: LogAction) -> vigil::Result<()> {
     match action {

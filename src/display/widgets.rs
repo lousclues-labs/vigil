@@ -187,6 +187,20 @@ fn change_values(change: &Change) -> (&'static str, String, String) {
             old.display().to_string(),
             new.display().to_string(),
         ),
+        Change::LinkTextChanged { old, new } => (
+            "link text",
+            old.display().to_string(),
+            new.display().to_string(),
+        ),
+        Change::SymlinkTargetReplaced {
+            target,
+            old_target_inode,
+            new_target_inode,
+        } => (
+            "target inode",
+            format!("{} (of {})", old_target_inode, target.display()),
+            format!("{} (of {})", new_target_inode, target.display()),
+        ),
         Change::CapabilitiesChanged { old, new } => (
             "capabilities",
             old.as_deref().unwrap_or("none").to_string(),

@@ -124,6 +124,19 @@ impl DetectionRecord {
     }
 }
 
+/// Entries rejected because they carried no HMAC in an HMAC-mandatory WAL.
+///
+/// A forged-injection signal. These counters are process-global rather than
+/// fields because the rejections happen inside the free-function scanner,
+/// which has no `Metrics` handle; `Metrics::snapshot` folds them in. They were
+/// exported to Prometheus with no increment site at all, so a monitoring rule
+/// of the form `vigil_wal_entries_rejected_hmac_total > 0` could never fire
+/// while the scanner was actively rejecting forged entries.
+pub static WAL_ENTRIES_TAMPERED: AtomicU64 = AtomicU64::new(0);
+
+/// Entries rejected because their HMAC did not verify.
+pub static WAL_ENTRIES_REJECTED_HMAC: AtomicU64 = AtomicU64::new(0);
+
 pub struct DetectionWal {
     /// The file handle is wrapped in a Mutex (separate from `write_lock`) because
     /// `truncate_consumed()` needs to atomically replace the handle after compaction.
@@ -816,6 +829,7 @@ fn scan_entries_from(
                 offset = offset,
                 "WAL entry has zero HMAC but HMAC is required; rejecting forged entry"
             );
+            WAL_ENTRIES_TAMPERED.fetch_add(1, Ordering::Relaxed);
             offset += entry_size as u64;
             continue;
         }
@@ -826,6 +840,7 @@ fn scan_entries_from(
                     offset = offset,
                     "WAL entry HMAC verification failed"
                 );
+                WAL_ENTRIES_REJECTED_HMAC.fetch_add(1, Ordering::Relaxed);
                 offset += entry_size as u64;
                 continue;
             }
@@ -841,9 +856,32 @@ fn scan_entries_from(
         } else {
             match rmp_serde::from_slice::<DetectionRecord>(payload) {
                 Ok(r) => Some(r),
-                Err(_) => {
-                    offset += entry_size as u64;
-                    continue;
+                Err(e) => {
+                    // This entry passed CRC and, where enabled, HMAC. It is
+                    // authentic and undamaged; only its payload schema is
+                    // unreadable to this build -- which is what a
+                    // `DetectionRecord` change across an upgrade looks like.
+                    //
+                    // Skipping it was the only unannounced rejection in this
+                    // function, and it was not merely a skip:
+                    // `truncate_consumed` rebuilds the WAL from what this
+                    // scanner returns, so an entry omitted here is erased from
+                    // disk within the minute. A real detection would vanish
+                    // from the audit log and every sink, with nothing logged.
+                    //
+                    // Retain it instead: emitted with `record: None` so no
+                    // consumer can act on a payload it cannot read, but with
+                    // its bytes and unconsumed flags intact so compaction
+                    // copies it forward for a build that can.
+                    tracing::error!(
+                        sequence,
+                        offset,
+                        error = %e,
+                        "WAL entry passed integrity checks but its payload could not be \
+                         decoded; retaining the raw entry rather than discarding it. This \
+                         usually means the record was written by a different version."
+                    );
+                    None
                 }
             }
         };

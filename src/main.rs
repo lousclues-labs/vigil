@@ -100,6 +100,7 @@ fn run(cli: Cli) -> vigil::Result<i32> {
             brief,
             no_pager,
             since,
+            no_correlate,
             reason,
             disambiguate_cause,
         } => {
@@ -130,6 +131,7 @@ fn run(cli: Cli) -> vigil::Result<i32> {
                     brief,
                     no_pager,
                     since,
+                    correlate: !no_correlate,
                     reason,
                     disambiguate_cause,
                 })

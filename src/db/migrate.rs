@@ -7,10 +7,56 @@ use rusqlite::Connection;
 
 use crate::error::Result;
 
+/// Baseline schema version written to `config_state` after a successful
+/// migration. v1 stored JSON blobs; v2 flattened them into native columns;
+/// v3 added the symlink object identity columns;
+/// v3 added the symlink object columns (`link_text`, `link_inode`,
+/// `link_device`).
+pub const BASELINE_SCHEMA_VERSION: u32 = 3;
+
+/// Columns added by the v2 to v3 migration live in `schema.rs` alongside the
+/// table definition, so a fresh database and a migrated one cannot drift.
+///
 /// Run schema creation/migrations for baseline and audit databases.
 pub fn migrate_all(baseline_conn: &Connection, audit_conn: &Connection) -> Result<()> {
     crate::db::schema::create_baseline_tables(baseline_conn)?;
     crate::db::schema::create_audit_tables(audit_conn)?;
+    Ok(())
+}
+
+/// Migrate an existing v2 baseline to v3 by adding the symlink object columns.
+///
+/// Additive only. No existing value is rewritten, no row is deleted, and the
+/// baseline HMAC is deliberately left alone: it covers the same 13 fields it
+/// always has, so a baseline signed before this migration still verifies after
+/// it, and nothing is silently resigned. See `docs/ARCHITECTURE.md` for why
+/// the new columns sit outside that signature.
+pub fn migrate_v2_to_v3(conn: &Connection) -> Result<()> {
+    // A database without a baseline table has nothing to migrate.
+    if conn.prepare("SELECT 1 FROM baseline LIMIT 0").is_err() {
+        return Ok(());
+    }
+
+    let added = crate::db::schema::ensure_baseline_v3_columns(conn)?;
+    if !added.is_empty() {
+        tracing::info!(
+            columns = ?added,
+            "baseline migrated to schema v3: symlink object columns added; \
+             existing entries carry NULL until their next scan and are \
+             compared with pre-v3 semantics in the meantime"
+        );
+    }
+
+    record_schema_version(conn, BASELINE_SCHEMA_VERSION)?;
+    Ok(())
+}
+
+/// Persist the baseline schema version in `config_state`.
+fn record_schema_version(conn: &Connection, version: u32) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO config_state (key, value, updated_at) VALUES ('schema_version', ?1, ?2)",
+        rusqlite::params![version.to_string(), chrono::Utc::now().timestamp()],
+    )?;
     Ok(())
 }
 
@@ -198,18 +244,16 @@ pub fn migrate_v1_to_v2(conn: &Connection) -> Result<()> {
         ",
     )?;
 
-    // Record migration version
-    let now = chrono::Utc::now().timestamp();
-    conn.execute(
-        "INSERT OR REPLACE INTO config_state (key, value, updated_at) VALUES ('schema_version', '2', ?1)",
-        rusqlite::params![now],
-    )?;
-
     tracing::info!(
         migrated = migrated,
         errors = errors,
         "baseline schema migration v1→v2 complete"
     );
+
+    // Continue to the current schema. A migration must always land on the
+    // version this build reads, whichever entry point invoked it, so that no
+    // caller can be left holding a half-migrated table.
+    migrate_v2_to_v3(conn)?;
 
     Ok(())
 }
@@ -262,7 +306,8 @@ mod tests {
         assert_eq!(mode, 420);
         assert_eq!(owner_uid, 0);
 
-        // Verify schema version was recorded
+        // Verify the schema version was recorded. A v1 database migrates all
+        // the way to the current version, not just to the next one.
         let version: String = conn
             .query_row(
                 "SELECT value FROM config_state WHERE key = 'schema_version'",
@@ -270,7 +315,66 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, "2");
+        assert_eq!(version, BASELINE_SCHEMA_VERSION.to_string());
+
+        // And the v3 symlink object columns exist, so a subsequent read of the
+        // migrated table does not fail on a missing column.
+        assert!(conn
+            .prepare("SELECT link_text, link_inode, link_device FROM baseline LIMIT 0")
+            .is_ok());
+    }
+
+    #[test]
+    fn migrate_v2_to_v3_is_additive_and_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Build a v2 table by hand: the shape that shipped before v3.
+        conn.execute_batch(
+            "CREATE TABLE baseline (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT NOT NULL UNIQUE,
+                inode INTEGER NOT NULL,
+                device INTEGER NOT NULL,
+                file_type TEXT NOT NULL DEFAULT 'regular',
+                symlink_target TEXT,
+                hash TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                mode INTEGER NOT NULL,
+                owner_uid INTEGER NOT NULL,
+                owner_gid INTEGER NOT NULL,
+                capabilities TEXT,
+                xattrs_json TEXT NOT NULL DEFAULT '{}',
+                security_context TEXT NOT NULL DEFAULT '',
+                mtime INTEGER NOT NULL,
+                package TEXT,
+                source TEXT NOT NULL DEFAULT 'auto_scan',
+                added_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE config_state (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL
+            );
+            INSERT INTO baseline (path, inode, device, hash, size, mode, owner_uid,
+                                  owner_gid, mtime, added_at, updated_at)
+            VALUES ('/etc/passwd', 7, 1, 'keepme', 99, 420, 0, 0, 5, 5, 5);",
+        )
+        .unwrap();
+
+        migrate_v2_to_v3(&conn).unwrap();
+        // Idempotent: running it again must not error or duplicate columns.
+        migrate_v2_to_v3(&conn).unwrap();
+
+        // The pre-existing row is untouched, and the new columns read as NULL.
+        let (hash, size, link_text): (String, i64, Option<String>) = conn
+            .query_row(
+                "SELECT hash, size, link_text FROM baseline WHERE path = '/etc/passwd'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(hash, "keepme", "existing data must survive byte for byte");
+        assert_eq!(size, 99);
+        assert_eq!(link_text, None, "pre-v3 rows carry no link data");
     }
 
     #[test]

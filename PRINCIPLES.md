@@ -40,7 +40,7 @@ would let Vigil block a syscall is one we refuse to hold.
 - Signalling, stopping, or killing another process. A liveness probe
   (`kill(pid, 0)`, which sends nothing) is the only permitted use of `kill`.
 
-Spawns promises: PR1, PR2.
+Spawns promises: PR1, PR2, PR21, PR22.
 
 ---
 
@@ -135,8 +135,11 @@ and reported. A fallback is a warning, never an "OK."
   compensating scan.
 - Leaving a maintenance window open indefinitely, or letting a closure that
   only happened in memory be undone by a restart.
+- Rendering absent evidence as a clean result. "I could not determine this"
+  and "this is fine" are different answers, and a check that cannot tell them
+  apart is reporting a degradation it cannot see.
 
-Spawns promises: PR9, PR10, PR19.
+Spawns promises: PR9, PR10, PR19, PR23.
 
 ---
 

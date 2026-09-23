@@ -16,7 +16,7 @@ use rusqlite::{params, Connection};
 
 use crate::db::audit_path::AuditEventPath;
 use crate::error::Result;
-use crate::types::ChangeResult;
+use crate::types::{Change, ChangeResult};
 
 #[derive(Debug, Clone)]
 pub struct AuditEntry {
@@ -470,59 +470,119 @@ fn extract_checkpoint_previous_chain_hash(changes_json: &str) -> Option<String> 
         .and_then(|v| v.get("previous_chain_hash")?.as_str().map(String::from))
 }
 
+/// Decode `changes_json` into typed changes.
+///
+/// # Why this is not a JSON key lookup
+///
+/// [`Change`] is `#[serde(tag = "type", rename_all = "snake_case")]`, so it
+/// serializes *internally tagged*:
+///
+/// ```json
+/// [{"type":"content_modified","old_hash":"aaa","new_hash":"bbb"}]
+/// ```
+///
+/// These consumers previously looked at `obj.keys().next()`, expecting the
+/// older externally-tagged `{"ContentModified":{...}}` shape. `serde_json`'s
+/// `Map` is a `BTreeMap` here, so that call returns the alphabetically first
+/// key -- `"new_hash"` -- which was then used as the change type. The audit
+/// HMAC verifier recomputes its input from this value while the writer builds
+/// it from the typed enum, so the two could never agree and verification
+/// failed on entries that were never tampered with.
+///
+/// Decoding into the real type instead makes every consumer inherit
+/// [`Change::name`], and makes a future variant a compile error rather than a
+/// silent `"unknown"`.
+fn decode_changes(json: &str) -> Option<Vec<Change>> {
+    serde_json::from_str::<Vec<Change>>(json).ok()
+}
+
+/// Map a legacy externally-tagged variant key to its wire name.
+///
+/// Rows written before the tag representation changed are still in the audit
+/// log and must keep verifying. This path is reached only when the current
+/// representation fails to decode, never as a guess about ambiguous input.
+fn legacy_variant_key_to_name(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "ContentModified" => "content_modified",
+        "PermissionsChanged" => "permissions_changed",
+        "OwnerChanged" => "owner_changed",
+        "InodeChanged" => "inode_changed",
+        "TypeChanged" => "type_changed",
+        "SymlinkTargetChanged" => "symlink_target_changed",
+        "LinkTextChanged" => "link_text_changed",
+        "SymlinkTargetReplaced" => "symlink_target_replaced",
+        "CapabilitiesChanged" => "capabilities_changed",
+        "XattrChanged" => "xattr_changed",
+        "SecurityContextChanged" => "security_context_changed",
+        "SizeChanged" => "size_changed",
+        "DeviceChanged" => "device_changed",
+        "Deleted" => "deleted",
+        "Created" => "created",
+        _ => return None,
+    })
+}
+
 /// Extract the primary change type from changes_json.
 fn changes_json_to_primary_type(json: &str) -> String {
+    // Current representation.
+    if let Some(changes) = decode_changes(json) {
+        return changes
+            .first()
+            .map(Change::name)
+            .unwrap_or("unknown")
+            .to_string();
+    }
+
+    // Legacy representations, in the order they shipped.
     if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(json) {
         if let Some(first) = arr.first() {
-            if first.is_string() {
-                return first.as_str().unwrap_or("unknown").to_string();
+            // Oldest: a bare string.
+            if let Some(name) = first.as_str() {
+                return name.to_string();
             }
-            // Handle tagged enum format: {"ContentModified": {...}}
+            // Externally tagged: {"ContentModified": {...}}.
             if let Some(obj) = first.as_object() {
-                if let Some(key) = obj.keys().next() {
-                    return match key.as_str() {
-                        "ContentModified" => "content_modified",
-                        "PermissionsChanged" => "permissions_changed",
-                        "OwnerChanged" => "owner_changed",
-                        "InodeChanged" => "inode_changed",
-                        "TypeChanged" => "type_changed",
-                        "SymlinkTargetChanged" => "symlink_target_changed",
-                        "CapabilitiesChanged" => "capabilities_changed",
-                        "XattrChanged" => "xattr_changed",
-                        "SecurityContextChanged" => "security_context_changed",
-                        "SizeChanged" => "size_changed",
-                        "DeviceChanged" => "device_changed",
-                        "Deleted" => "deleted",
-                        "Created" => "created",
-                        _ => "unknown",
+                for key in obj.keys() {
+                    if let Some(name) = legacy_variant_key_to_name(key) {
+                        return name.to_string();
                     }
-                    .to_string();
                 }
             }
         }
     }
+
     "unknown".to_string()
 }
 
 /// Extract old_hash and new_hash from changes_json if a ContentModified change exists.
 fn changes_json_extract_hashes(json: &str) -> (Option<String>, Option<String>) {
+    // Current representation.
+    if let Some(changes) = decode_changes(json) {
+        for change in &changes {
+            if let Change::ContentModified { old_hash, new_hash } = change {
+                return (Some(old_hash.clone()), Some(new_hash.clone()));
+            }
+        }
+        return (None, None);
+    }
+
+    // Legacy externally-tagged representation.
     if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(json) {
         for item in &arr {
-            if let Some(obj) = item.as_object() {
-                if let Some(cm) = obj.get("ContentModified") {
-                    let old = cm
-                        .get("old_hash")
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
-                    let new = cm
-                        .get("new_hash")
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
-                    return (old, new);
-                }
+            if let Some(cm) = item.as_object().and_then(|o| o.get("ContentModified")) {
+                let old = cm
+                    .get("old_hash")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let new = cm
+                    .get("new_hash")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                return (old, new);
             }
         }
     }
+
     (None, None)
 }
 

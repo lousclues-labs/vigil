@@ -54,6 +54,11 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<BaselineEntry> {
             device: row.get::<_, i64>(3)? as u64,
             file_type: parse_file_type(&file_type_str),
             symlink_target: row.get::<_, Option<String>>(5)?.map(PathBuf::from),
+            // NULL on entries written before schema v3. Kept as None so
+            // comparison treats them as unknown rather than as unchanged.
+            link_text: row.get::<_, Option<String>>(19)?.map(PathBuf::from),
+            link_inode: row.get::<_, Option<i64>>(20)?.map(|v| v as u64),
+            link_device: row.get::<_, Option<i64>>(21)?.map(|v| v as u64),
         },
         content: ContentFingerprint {
             hash: row.get(6)?,
@@ -80,7 +85,47 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<BaselineEntry> {
 const SELECT_COLS: &str = "id, path, inode, device, file_type, symlink_target,
      hash, size, mode, owner_uid, owner_gid, capabilities,
      xattrs_json, security_context, mtime, package,
-     source, added_at, updated_at";
+     source, added_at, updated_at,
+     link_text, link_inode, link_device";
+
+/// The same projection for a baseline that predates schema v3, with the
+/// symlink object columns supplied as NULL.
+///
+/// A read-only connection cannot run the v3 migration -- it cannot write -- so
+/// a reader that opens a not-yet-migrated baseline must still be able to read
+/// it. `vigil attest create` and `vigil attest diff` both open read-only, and
+/// hard-failing them on `no such column: link_text` would block attestation
+/// until something else happened to open the database for writing.
+const SELECT_COLS_PRE_V3: &str = "id, path, inode, device, file_type, symlink_target,
+     hash, size, mode, owner_uid, owner_gid, capabilities,
+     xattrs_json, security_context, mtime, package,
+     source, added_at, updated_at,
+     NULL, NULL, NULL";
+
+/// True when a failure is specifically the absence of the v3 symlink columns.
+fn missing_link_columns(e: &rusqlite::Error) -> bool {
+    e.to_string().contains("no such column: link_")
+}
+
+/// Prepare a baseline SELECT, falling back to the pre-v3 projection.
+///
+/// The v3 statement is tried first and cached, so a migrated database pays
+/// nothing for this. The fallback is reached only on an unmigrated one.
+fn prepare_select<'c>(conn: &'c Connection, tail: &str) -> Result<rusqlite::CachedStatement<'c>> {
+    let query = format!("SELECT {} {}", SELECT_COLS, tail);
+    match conn.prepare_cached(&query) {
+        Ok(stmt) => Ok(stmt),
+        Err(e) if missing_link_columns(&e) => {
+            tracing::debug!(
+                "baseline predates schema v3; reading without symlink object columns. \
+                 They populate on the next write-capable open and rescan."
+            );
+            let fallback = format!("SELECT {} {}", SELECT_COLS_PRE_V3, tail);
+            Ok(conn.prepare_cached(&fallback)?)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
 
 /// Insert or update a baseline entry by path.
 pub fn upsert(conn: &Connection, entry: &BaselineEntry) -> Result<()> {
@@ -90,8 +135,9 @@ pub fn upsert(conn: &Connection, entry: &BaselineEntry) -> Result<()> {
         "INSERT INTO baseline (path, inode, device, file_type, symlink_target,
                                hash, size, mode, owner_uid, owner_gid, capabilities,
                                xattrs_json, security_context, mtime, package, source,
-                               added_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                               added_at, updated_at, link_text, link_inode, link_device)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+                 ?19, ?20, ?21)
          ON CONFLICT(path) DO UPDATE SET
              inode = excluded.inode,
              device = excluded.device,
@@ -108,7 +154,10 @@ pub fn upsert(conn: &Connection, entry: &BaselineEntry) -> Result<()> {
              mtime = excluded.mtime,
              package = excluded.package,
              source = excluded.source,
-             updated_at = excluded.updated_at",
+             updated_at = excluded.updated_at,
+             link_text = excluded.link_text,
+             link_inode = excluded.link_inode,
+             link_device = excluded.link_device",
     )?
     .execute(params![
         entry.path.to_string_lossy().as_ref(),
@@ -133,6 +182,13 @@ pub fn upsert(conn: &Connection, entry: &BaselineEntry) -> Result<()> {
         entry.source.to_string(),
         entry.added_at,
         entry.updated_at,
+        entry
+            .identity
+            .link_text
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
+        entry.identity.link_inode.map(|v| v as i64),
+        entry.identity.link_device.map(|v| v as i64),
     ])?;
 
     Ok(())
@@ -161,8 +217,7 @@ pub fn batch_upsert(conn: &Connection, entries: &[BaselineEntry]) -> Result<u64>
 
 /// Get baseline entry by absolute path.
 pub fn get_by_path(conn: &Connection, path: &str) -> Result<Option<BaselineEntry>> {
-    let query = format!("SELECT {} FROM baseline WHERE path = ?1", SELECT_COLS);
-    conn.prepare_cached(&query)?
+    prepare_select(conn, "FROM baseline WHERE path = ?1")?
         .query_row(params![path], row_to_entry)
         .optional()
         .map_err(Into::into)
@@ -174,8 +229,7 @@ pub fn for_each_entry<F>(conn: &Connection, mut f: F) -> Result<()>
 where
     F: FnMut(BaselineEntry) -> Result<()>,
 {
-    let query = format!("SELECT {} FROM baseline ORDER BY path", SELECT_COLS);
-    let mut stmt = conn.prepare_cached(&query)?;
+    let mut stmt = prepare_select(conn, "FROM baseline ORDER BY path")?;
     let rows = stmt.query_map([], row_to_entry)?;
 
     for row in rows {
@@ -187,8 +241,7 @@ where
 
 /// Get all baseline entries ordered by path.
 pub fn get_all(conn: &Connection) -> Result<Vec<BaselineEntry>> {
-    let query = format!("SELECT {} FROM baseline ORDER BY path", SELECT_COLS);
-    let mut stmt = conn.prepare_cached(&query)?;
+    let mut stmt = prepare_select(conn, "FROM baseline ORDER BY path")?;
     let mut out = Vec::new();
     let rows = stmt.query_map([], row_to_entry)?;
 
@@ -349,6 +402,7 @@ mod tests {
                 device: 1,
                 file_type: FileType::Regular,
                 symlink_target: None,
+                ..Default::default()
             },
             content: ContentFingerprint {
                 hash: "abc123def456".into(),

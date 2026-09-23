@@ -364,7 +364,39 @@ pub(crate) fn cmd_audit(
             println!();
         }
         vigil::cli::AuditAction::Verify { verbose } => {
-            let detail = vigil::db::audit_ops::verify_chain_detail(&conn, None)?;
+            // Load the key and actually check signatures. This passed `None`
+            // unconditionally, so no shipping code path ever verified an HMAC:
+            // every entry was signed and stored, and nothing checked one.
+            // Chain-hash linkage still caught content tampering, but the
+            // authenticity guarantee HMAC exists for -- detecting an attacker
+            // who rewrites audit.db into a self-consistent chain -- was never
+            // exercised, contrary to docs/CLI.md.
+            let cfg_for_key = vigil::config::load_config(None)
+                .unwrap_or_else(|_| vigil::config::default_config());
+            let hmac_key = if cfg_for_key.security.hmac_signing {
+                match vigil::hmac::load_hmac_key(&cfg_for_key.security.hmac_key_path) {
+                    Ok(key) => Some(key),
+                    Err(e) => {
+                        eprintln!();
+                        eprintln!(
+                            "  \x1b[1;31mWARNING: hmac_signing is enabled but the key \
+                             could not be loaded:\x1b[0m {}",
+                            e
+                        );
+                        eprintln!(
+                            "  Signatures were NOT verified; only chain linkage was checked."
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            let detail = vigil::db::audit_ops::verify_chain_detail(
+                &conn,
+                hmac_key.as_ref().map(|k| k.as_slice()),
+            )?;
 
             if format == OutputFormat::Json {
                 let out = serde_json::json!({

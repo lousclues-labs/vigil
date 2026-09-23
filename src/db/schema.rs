@@ -1,12 +1,12 @@
 //! Database schema definitions and table creation.
 //!
-//! Baseline (v2 flattened) and audit tables are created here.
+//! Baseline (flattened, currently v3) and audit tables are created here.
 //! Called from `migrate::ensure_schema` on first open.
 
 use crate::error::Result;
 use rusqlite::Connection;
 
-/// Create baseline tables (baseline.db), v2 flattened schema.
+/// Create baseline tables (baseline.db), flattened schema at v3.
 pub fn create_baseline_tables(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "
@@ -18,6 +18,11 @@ pub fn create_baseline_tables(conn: &Connection) -> Result<()> {
             device          INTEGER NOT NULL,
             file_type       TEXT NOT NULL DEFAULT 'regular',
             symlink_target  TEXT,
+            -- symlink object identity (v3), distinct from the target above.
+            -- NULL on non-symlinks and on entries written before v3.
+            link_text       TEXT,
+            link_inode      INTEGER,
+            link_device     INTEGER,
             -- content (was content_json)
             hash            TEXT NOT NULL,
             size            INTEGER NOT NULL,
@@ -47,10 +52,63 @@ pub fn create_baseline_tables(conn: &Connection) -> Result<()> {
         );
         ",
     )?;
+    // A baseline created before v3 already exists at this point and
+    // CREATE TABLE IF NOT EXISTS leaves it untouched, so add the symlink
+    // object columns explicitly.
+    ensure_baseline_v3_columns(conn)?;
     Ok(())
 }
 
-/// Create baseline tables with the old v1 JSON blob schema (for migration).
+/// Columns added by baseline schema v3, with their SQLite types.
+///
+/// Purely additive. Existing rows keep every byte they had and receive NULL
+/// for the new columns, which comparison logic reads as "unknown", never as
+/// "unchanged".
+const V3_SYMLINK_COLUMNS: &[(&str, &str)] = &[
+    ("link_text", "TEXT"),
+    ("link_inode", "INTEGER"),
+    ("link_device", "INTEGER"),
+];
+
+/// Return true when `table` already has a column named `column`.
+///
+/// `PRAGMA table_info` cannot bind its table name, and every call site passes
+/// a compile-time constant. Non-identifier names are rejected outright so this
+/// cannot become an injection point if that ever changes.
+fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    if table.is_empty() || !table.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(crate::error::VigilError::Baseline(format!(
+            "refusing to inspect table with non-identifier name: {table}"
+        )));
+    }
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Add any missing v3 symlink object columns to an existing baseline table.
+///
+/// Idempotent. Returns the columns it actually added.
+pub fn ensure_baseline_v3_columns(conn: &Connection) -> Result<Vec<&'static str>> {
+    let mut added = Vec::new();
+    for (column, sql_type) in V3_SYMLINK_COLUMNS {
+        if has_column(conn, "baseline", column)? {
+            continue;
+        }
+        conn.execute(
+            &format!("ALTER TABLE baseline ADD COLUMN {column} {sql_type}"),
+            [],
+        )?;
+        added.push(*column);
+    }
+    Ok(added)
+}
 pub fn create_baseline_v1_tables(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "

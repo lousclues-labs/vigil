@@ -48,6 +48,7 @@ fn mk_entry(path: &str, hash: &str, inode: u64) -> BaselineEntry {
             device: 1,
             file_type: FileType::Regular,
             symlink_target: None,
+            ..Default::default()
         },
         content: ContentFingerprint {
             hash: hash.to_string(),

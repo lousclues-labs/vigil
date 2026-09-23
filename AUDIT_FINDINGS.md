@@ -40,6 +40,9 @@ and the two cross-reference each other when one event is both.
 | AF-014 | High | Closed | PR19 | C-WINDOW-ALWAYS-ENDS |
 | AF-015 | Medium | Closed | PR20 | C-SEAL-PRECEDES-TRANSACTION |
 | AF-016 | High | Closed | PR15 | C-CI-GATE (pre-push enforcement + push trigger) |
+| AF-017 | High | Closed | PR22 | C-ACCEPT-REVALIDATES |
+| AF-018 | High | Closed | PR8 | C-AUDIT-HMAC-VERIFIABLE, C-AUDIT-HMAC-CHECKED |
+| AF-019 | High | Closed | PR23 | C-UNKNOWN-IS-NOT-OK |
 
 ---
 
@@ -690,6 +693,216 @@ that characterisation.
 
 ---
 
+## AF-017: Acceptance signed whatever was on disk, not what the operator reviewed
+
+- **Severity:** High
+- **Status:** Closed
+- **Principle / Promise:** P1, P4 / PR22
+- **Vulnerability:** [VIGIL-VULN-078](docs/VULNERABILITIES.md)
+
+**What shipped unguarded.** `vigil check --accept` made two separate
+observations of every path it accepted. The first was the scan that produced
+the report the operator read. The second happened later, inside the accept
+loop, which called `FileSnapshot::from_path` with `force_hash: true` and wrote
+whatever that returned into the baseline. Nothing compared the two. The
+operator reviewed one state and the tool signed another, and no promise said
+otherwise.
+
+**Why it mattered.** The interval between those reads is operator-shaped: it
+spans reading a report, deciding, and confirming. An attacker able to write to
+a monitored path during it had their content recorded as the new known-good
+state, signed into the baseline HMAC, and reported clean by every subsequent
+scan. This inverts the tool's purpose at the one moment it is most trusted:
+the acceptance is the operator's assertion that they looked, and it was
+recording something they had not seen.
+
+It is the same shape as AF-010 one layer up. There, package ownership was read
+as evidence that a package wrote the bytes now in the file. Here, an operator's
+approval of a reviewed state was read as approval of whatever state existed at
+write time. In both cases a narrow claim was silently widened into a general
+one.
+
+**How it was found.** While adding the correlation layer, which groups
+detections into package-transaction events. Reading the accept path to work
+out where an event identifier should be recorded made the second, unchecked
+read obvious. No canary caught it: every existing acceptance test asserted that
+accepting worked, and none asserted what it was allowed to accept.
+
+**Closing change.** New module [src/acceptance.rs](src/acceptance.rs).
+`ReviewedState::from_change` reconstructs what the operator actually reviewed
+from the detection itself -- each `Change` variant carries the new value the
+scan observed, which is the value that appeared in the report -- covering
+content hash, size, mode, owner, inode and link text. `revalidate` re-reads the
+path immediately before the write and returns `Stale` with the specific
+differences if anything moved. Refused paths are reported and not written.
+
+The verified snapshot is returned to the caller and committed directly rather
+than the caller taking a third read, because a guard that validates one
+observation and writes another has moved the window rather than closed it.
+
+A correlated explanation does not relax the check. A fully verified package
+transaction still cannot license accepting bytes nobody reviewed, which is
+asserted directly rather than left as an implication.
+
+**Canary that prevents recurrence.** `C-ACCEPT-REVALIDATES`:
+`witness_acceptance_refuses_state_the_operator_did_not_review` in
+[tests/pdd_canaries.rs](tests/pdd_canaries.rs) performs the substitution --
+review one content, write another, accept -- and requires a refusal that names
+the difference. It also asserts unchanged state is still acceptable, so the
+canary cannot be satisfied by breaking acceptance outright.
+`a_verified_explanation_does_not_bypass_revalidation` in
+[tests/correlation_integrity_tests.rs](tests/correlation_integrity_tests.rs)
+holds the correlation boundary, and the per-dimension cases in
+[src/acceptance.rs](src/acceptance.rs) cover content, mode, inode, deletion,
+resurrection and link text individually.
+
+---
+
+## AF-018: The audit HMAC was signed by one representation and verified against another
+
+- **Severity:** High
+- **Status:** Closed
+- **Principle / Promise:** P4, P8 / PR8
+
+**What drifted.** `Change` is declared
+`#[serde(tag = "type", rename_all = "snake_case")]`, so it serializes
+internally tagged:
+
+```json
+[{"type":"content_modified","old_hash":"aaa","new_hash":"bbb"}]
+```
+
+Five consumers still read the older externally-tagged
+`{"ContentModified":{...}}` shape by taking `obj.keys().next()`. `serde_json`
+here has no `indexmap` feature, so its `Map` is a `BTreeMap` and that call
+returns the alphabetically first *field* name — `"new_hash"` — which was then
+used as the change type.
+
+The severe instance is the audit chain. The writer builds its HMAC input from
+the typed enum; `verify_chain_detail` rebuilt it from that JSON guess. The two
+could never agree, so **every untampered entry verified as broken**.
+
+**Why it mattered.** Two defects were hiding each other. The verifier was
+wrong, *and* no shipping code path ever called it with a key: every production
+caller passed `None`, so signatures were computed, stored, and never checked.
+Chain-hash linkage still caught content tampering, so the audit log was not
+defenceless — but the specific guarantee HMAC exists to provide, detecting an
+attacker who rewrites `audit.db` into a self-consistent chain, was never
+exercised. `docs/CLI.md` stated that `vigil audit verify` checks signatures
+when signing is enabled. It did not.
+
+Fixing either alone would have made things worse: correcting the caller while
+the decoder was still wrong would have reported 100% chain breaks on healthy
+databases.
+
+The same root cause silently corrupted four operator-facing outputs —
+`summarize_changes` printing `"new_hash"` as a change kind, `short_change_description`
+returning `"changed"` for every variant, and `vigil why` emitting one bogus row
+per JSON field.
+
+**How it was found.** A deep audit for duplicated logic. `changes_json_to_primary_type`
+was the fifth `Change`→string mapping in the tree, and the one that had already
+drifted — it was also missing `LinkTextChanged` and `SymlinkTargetReplaced`
+entirely. Consolidating the other four into `Change::name()` is what made the
+fifth visible.
+
+No test caught it because the only test exercising the keyed verification path
+hand-writes the legacy fixture
+`r#"[{"ContentModified":{...}}]"#` — it fed the verifier the one format it
+still understood. `short_change_description`'s unit test does the same. That
+fixture style is what let a serialization format change out from under five
+consumers without a single failure.
+
+**Closing change.** All five consumers decode into `Vec<Change>` and read
+`Change::name()`, inheriting the single source of truth; a future variant is
+now a compile error rather than a silent `"unknown"`. Legacy rows keep
+verifying through an explicit fallback that is reached only when the current
+representation fails to decode, never as a guess about ambiguous input.
+`vigil audit verify` loads the key when `hmac_signing` is enabled, and says so
+plainly when it cannot.
+
+**Canaries that prevent recurrence.** `C-AUDIT-HMAC-VERIFIABLE`
+(`audit_truth_hmac_verifies_on_the_format_actually_written`) signs a
+*serialized real `Change`* and requires it to verify, so the fixture cannot
+drift away from the producer. `C-AUDIT-HMAC-CHECKED`
+(`audit_truth_verify_command_checks_signatures`) asserts the verify command
+loads the key and does not pass `None`. Both have drift cases in
+`scripts/verify-canary-drift.sh` proving they go red when the defect is
+reintroduced.
+
+---
+
 *Findings are the memory layer. The values they defend are in
 [PRINCIPLES.md](PRINCIPLES.md); the commitments they enforce are in
 [PROMISES.md](PROMISES.md).*
+
+---
+
+## AF-019: Four diagnostics could not tell "I could not check" from "nothing is wrong"
+
+- **Severity:** High
+- **Status:** Closed
+- **Principle / Promise:** P5 / PR23
+
+**What drifted.** P5 forbids reporting OK for a *degraded* backend, and
+`C-DEGRADED-IS-LOUD` guards exactly that. Nothing guarded the adjacent case:
+a check that could not read its evidence at all. Four had independently
+collapsed "unknown" into "clean", because in each one the all-clear value and
+the no-data value are the same value.
+
+- **Real-time coverage.** `read_metrics()` returning `None` defaulted the
+  degraded-mount counter to `0` — the all-clear value — so doctor printed
+  `full event coverage on all mounts (tier: unknown)`, asserting coverage from
+  the same absent data that produced the "unknown". The same defect existed one
+  level down: both counters were `#[serde(default)]`, so a `metrics.json`
+  written by an older daemon (what is on disk right after an upgrade, until the
+  coordinator's next 60-second tick) produced the same false all-clear from a
+  file that read perfectly.
+- **Hook status.** `journalctl` exits 0 with empty output when it cannot read
+  the journal — the normal case for an operator outside `adm`/`systemd-journal`,
+  and after a reboot under `Storage=volatile`. Empty output was read as "never
+  triggered" and rendered `Ok`.
+- **Hook verdict parsing.** The parser decided success or failure by scanning
+  *message text* rather than the entry's `PRIORITY` field, so a hook that
+  logged a failure at `daemon.err` without the expected wording was reported
+  as `ok`.
+- **Notification channel.** The `Notify` check reported `Ok` on the strength of
+  `notify-send` existing on disk. A root daemon has no session bus, so on a
+  headless host that check described a channel that had delivered nothing since
+  boot as healthy — while `DbusSink` separately returned `Ok(())` for every
+  failed delivery, making it the one sink that could not report itself broken.
+
+**Why it mattered.** These are the outputs an operator uses to decide whether
+Vigil is working. P5 exists because "a monitor running with half its coverage
+and a green status line is worse than no monitor, because the operator budgets
+their attention against a lie." Each of these produced precisely that green
+line, and the most common trigger was not an exotic failure but an ordinary
+unprivileged `vigil doctor`.
+
+**How it was found.** A pre-commit audit of the 1.15.0 changes, prompted by
+the observation that the release's own theme — evidence that is absent must not
+be rendered as evidence that is clean — had been applied to the new correlation
+code but never turned back on the existing diagnostics.
+
+No test caught any of them. Worse, a grep-based check for "does a test file
+mention this code" reported all four as covered; only reverting each fix and
+watching the suite stay green showed otherwise. The lesson is recorded here
+because the measurement error is more durable than the bugs: **coverage is what
+fails when the fix is removed, not what greps near it.**
+
+**Closing change.** Each no-evidence path now reports `Unknown` with a detail
+naming what could not be read. The two coverage counters are `Option<u64>`, so
+an absent counter is distinguishable from a zeroed one. Hook verdicts are read
+from `PRIORITY` via `--output=json`. The desktop sink is not registered when no
+session bus or display exists — a structurally absent channel is reported once
+at startup and by `doctor`, rather than counted as a per-alert failure that
+would push every headless deployment into `AlertSinkFailing`; a channel that
+*is* present and fails is a real error.
+
+**Canaries that prevent recurrence.** `C-UNKNOWN-IS-NOT-OK`
+(`fail_loud_absent_evidence_is_never_reported_as_ok`) asserts each no-evidence
+branch carries a non-OK status, identified by the detail text it emits rather
+than by counting `Unknown` occurrences — the first draft of this canary counted
+them, and `scripts/verify-canary-drift.sh` caught it staying green when a
+branch was flipped, because two others remained. Four drift cases now prove it
+goes red for each instance.

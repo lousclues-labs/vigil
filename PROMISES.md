@@ -51,6 +51,58 @@ file, and no call that spawns a process. Across the whole tree, the only use of
   `watch_never_act_kill_is_liveness_probe_only` asserts every `kill(` call
   site in `src/` passes signal `0`.
 
+### PR21. An explanation never becomes an acceptance
+Vigil correlates raw detections against local package-manager evidence and
+reports a routine update as one event rather than forty incidents. That layer
+explains; it never acts. Correlation cannot write the baseline, cannot
+recompute its signature, and cannot mark anything accepted, whatever verdict
+it reached. The strongest statement it makes -- "verified package transaction"
+-- is a claim about provenance and is still followed by "not accepted".
+
+Raw severity is never rewritten by an explanation, correlation is not an input
+to the exit code, and no detection is dropped: an event references its raw
+detections by identity and every one of them remains individually reportable.
+
+- Falsifiable by: a baseline write reachable from the correlation layer, an
+  explanation that changes a detection's severity, or a detection that an
+  event absorbs and the raw view no longer shows.
+- Canary `C-EXPLANATION-IS-NOT-ACCEPTANCE` (test):
+  `witness_explanation_never_becomes_acceptance` in
+  [tests/pdd_canaries.rs](tests/pdd_canaries.rs) scans
+  [src/correlate](src/correlate) and
+  [src/display/correlate.rs](src/display/correlate.rs) for any baseline-write
+  capability, with `correlation_never_writes_to_the_baseline`,
+  `correlation_does_not_mutate_raw_detections` and
+  `every_detection_is_either_in_an_event_or_in_uncorrelated` covering the
+  behavioural half in
+  [tests/correlation_integrity_tests.rs](tests/correlation_integrity_tests.rs)
+  and [tests/correlation_engine_tests.rs](tests/correlation_engine_tests.rs).
+
+### PR22. What enters the baseline is what the operator reviewed
+Acceptance observes a path twice: once in the scan that produced the report,
+and once when it writes. Between those two reads anything can happen, and
+whatever the second read found used to be what got signed. Acceptance now
+revalidates against the state the operator actually reviewed -- content hash,
+size, mode, owner, inode and link text, as reconstructed from the detection
+itself -- and refuses any path that moved, naming what moved. The snapshot
+that passed revalidation is the one committed, so no third read can slip
+between the check and the write.
+
+A verified correlated explanation does not relax this. Explanation and
+acceptance are independent dimensions.
+
+- Falsifiable by: accepting a path whose reviewed dimensions no longer match,
+  taking a fresh snapshot after revalidation instead of committing the
+  validated one, or letting a correlation verdict stand in for the operator's
+  decision.
+- Canary `C-ACCEPT-REVALIDATES` (test):
+  `witness_acceptance_refuses_state_the_operator_did_not_review` in
+  [tests/pdd_canaries.rs](tests/pdd_canaries.rs), with
+  `acceptance_refuses_state_that_changed_after_review` and
+  `a_verified_explanation_does_not_bypass_revalidation` in
+  [tests/correlation_integrity_tests.rs](tests/correlation_integrity_tests.rs)
+  and the per-dimension cases in [src/acceptance.rs](src/acceptance.rs).
+
 ---
 
 ## From P2: The verdict is a comparison, never a judgment.
@@ -190,6 +242,20 @@ verification, and `verify_chain` reports the break.
   through the real API, mutates one row with direct SQL, and asserts
   `vigil::db::audit_ops::verify_chain` reports a break.
 
+- Canary `C-AUDIT-HMAC-VERIFIABLE` (test):
+  `audit_truth_hmac_verifies_on_the_format_actually_written` in
+  [tests/pdd_canaries.rs](tests/pdd_canaries.rs) signs a *serialized real
+  `Change`* and requires it to verify. The verifier previously rebuilt its
+  signing input by reading raw JSON keys, expecting a representation `Change`
+  no longer emits, so every untampered entry verified as broken. A
+  hand-written legacy fixture was the only thing exercising that path, which
+  is why nothing failed.
+- Canary `C-AUDIT-HMAC-CHECKED` (test):
+  `audit_truth_verify_command_checks_signatures` asserts `vigil audit verify`
+  loads the key and does not pass `None`. Every production caller passed
+  `None`, so no shipping path ever checked a signature: chain linkage caught
+  content tampering, but the authenticity guarantee HMAC exists for was never
+  exercised.
 ---
 
 ## From P5: Degradation is announced, never silent.
@@ -222,6 +288,23 @@ is treated as expired, because the fail-safe direction is to stop suppressing.
   `fail_loud_a_maintenance_window_always_ends` drives the real
   `vigil::coordinator::maintenance_window_expired` across the boundary, an
   expired breadcrumb, and an unreadable one.
+
+### PR23. Absent evidence is never reported as a clean result
+A diagnostic that could not read its evidence reports `Unknown`, not `Ok`. This
+is distinct from PR9, which forbids an OK status on a *degraded* branch: here
+the branch is not degraded, it is uninformed, and the danger is that the
+all-clear value and the no-data value are frequently the same value. A counter
+defaulting to 0, an empty command output, a binary existing on disk, and a
+missing struct field all read as "nothing wrong" unless the code distinguishes
+them.
+
+- Falsifiable by: mapping an unreadable, absent, or unparseable evidence source
+  to `CheckStatus::Ok`, or defaulting an absent counter to its all-clear value.
+- Canary `C-UNKNOWN-IS-NOT-OK` (test):
+  `fail_loud_absent_evidence_is_never_reported_as_ok` asserts that the
+  no-evidence branches of the realtime-coverage, hook-status and notification
+  checks carry a non-OK status, and that the fanotify coverage counters are
+  `Option` rather than `#[serde(default)]` integers.
 
 ### PR10. Blind spots are counted and exported
 Dropped events, kernel queue overflows, and the compensating scans they trigger

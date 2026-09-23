@@ -437,6 +437,24 @@ impl Daemon {
                         )?;
                     }
                 }
+            } else {
+                // hmac_signing is on but no key was loaded at startup, so the
+                // whole verify/mismatch/degrade block above is unreachable.
+                // Skipping it quietly left the daemon reporting Healthy with
+                // baseline tamper detection switched off -- the one state that
+                // must never be silent, because the config says it is on.
+                tracing::error!(
+                    path = %config.security.hmac_key_path.display(),
+                    "hmac_signing is enabled but no HMAC key is loaded; baseline \
+                     verification was SKIPPED and baseline tamper detection is NOT active"
+                );
+                let mut s = self.state.write();
+                if matches!(*s, DaemonState::Healthy) {
+                    *s = DaemonState::Degraded {
+                        reason: DegradedReason::BaselineHmacMismatch,
+                        since: chrono::Utc::now(),
+                    };
+                }
             }
         }
 

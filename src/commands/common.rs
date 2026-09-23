@@ -57,6 +57,22 @@ pub(crate) fn print_change_detail(change: &Change) {
         Change::SymlinkTargetChanged { old, new } => {
             println!("    symlink: {} → {}", old.display(), new.display());
         }
+        Change::LinkTextChanged { old, new } => {
+            println!("    link text: {} → {}", old.display(), new.display());
+        }
+        Change::SymlinkTargetReplaced {
+            target,
+            old_target_inode,
+            new_target_inode,
+        } => {
+            println!(
+                "    alias of replaced target {}: inode {} → {}",
+                target.display(),
+                old_target_inode,
+                new_target_inode
+            );
+            println!("    symlink object itself unchanged (same link text and inode)");
+        }
         Change::CapabilitiesChanged { old, new } => {
             println!(
                 "    capabilities: {} → {}",

@@ -179,6 +179,8 @@ fn open_db_internal(
         // Run v1→v2 migration if the old JSON blob schema is present
         migrate::migrate_v1_to_v2(&conn)?;
         schema::create_baseline_tables(&conn)?;
+        // Additive v2→v3: symlink object columns on pre-existing baselines.
+        migrate::migrate_v2_to_v3(&conn)?;
     } else {
         schema::create_audit_tables(&conn)?;
     }

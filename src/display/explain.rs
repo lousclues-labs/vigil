@@ -62,6 +62,15 @@ pub fn explain(change: &Change, path: &Path) -> Option<String> {
             Some("mandatory access control label changed".into())
         }
 
+        Change::LinkTextChanged { .. } => {
+            Some("symlink was repointed; the link object itself was rewritten".into())
+        }
+
+        Change::SymlinkTargetReplaced { target, .. } => Some(format!(
+            "alias of {}; the symlink object is unchanged and its target was replaced",
+            target.display()
+        )),
+
         _ => None,
     }
 }

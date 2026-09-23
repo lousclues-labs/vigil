@@ -87,6 +87,81 @@ struct WhyChange {
     detail: String,
 }
 
+/// Render one typed change as an operator-facing row.
+fn why_change_row(change: &vigil::types::Change) -> WhyChange {
+    use vigil::types::Change;
+    let (field, detail) = match change {
+        Change::ContentModified { .. } => ("content", "BLAKE3 hash differs".to_string()),
+        Change::PermissionsChanged { old, new } => {
+            ("permissions", format!("{:04o} -> {:04o}", old, new))
+        }
+        Change::OwnerChanged {
+            old_uid, new_uid, ..
+        } => ("owner", format!("uid {} -> {}", old_uid, new_uid)),
+        Change::SizeChanged { old, new } => ("size", format!("{} -> {} bytes", old, new)),
+        Change::InodeChanged { old, new } => ("inode", format!("{} -> {}", old, new)),
+        Change::TypeChanged { old, new } => ("type", format!("{} -> {}", old, new)),
+        Change::SymlinkTargetChanged { old, new } => {
+            ("symlink", format!("{} -> {}", old.display(), new.display()))
+        }
+        Change::LinkTextChanged { old, new } => (
+            "link text",
+            format!("{} -> {}", old.display(), new.display()),
+        ),
+        Change::SymlinkTargetReplaced { target, .. } => {
+            ("target", format!("{} was replaced", target.display()))
+        }
+        Change::CapabilitiesChanged { old, new } => (
+            "capabilities",
+            format!(
+                "{} -> {}",
+                old.as_deref().unwrap_or("none"),
+                new.as_deref().unwrap_or("none")
+            ),
+        ),
+        Change::XattrChanged { key, .. } => ("xattr", format!("{} changed", key)),
+        Change::SecurityContextChanged { old, new } => {
+            ("security context", format!("{} -> {}", old, new))
+        }
+        Change::DeviceChanged { old, new } => ("device", format!("{} -> {}", old, new)),
+        Change::Deleted => ("file", "deleted".to_string()),
+        Change::Created => ("file", "created".to_string()),
+    };
+    WhyChange {
+        field: field.to_string(),
+        detail,
+    }
+}
+
+/// Render a legacy externally-tagged entry, if the key names a known variant.
+fn legacy_why_change_row(key: &str, val: &serde_json::Value) -> Option<WhyChange> {
+    let (field, detail) = match key {
+        "ContentModified" => ("content", "BLAKE3 hash differs".to_string()),
+        "PermissionsChanged" => {
+            let old = val.get("old").and_then(|v| v.as_u64()).unwrap_or(0);
+            let new = val.get("new").and_then(|v| v.as_u64()).unwrap_or(0);
+            ("permissions", format!("{:04o} -> {:04o}", old, new))
+        }
+        "OwnerChanged" => {
+            let old_uid = val.get("old_uid").and_then(|v| v.as_u64()).unwrap_or(0);
+            let new_uid = val.get("new_uid").and_then(|v| v.as_u64()).unwrap_or(0);
+            ("owner", format!("uid {} -> {}", old_uid, new_uid))
+        }
+        "SizeChanged" => {
+            let old = val.get("old").and_then(|v| v.as_u64()).unwrap_or(0);
+            let new = val.get("new").and_then(|v| v.as_u64()).unwrap_or(0);
+            ("size", format!("{} -> {} bytes", old, new))
+        }
+        "Deleted" => ("file", "deleted".to_string()),
+        "Created" => ("file", "created".to_string()),
+        _ => return None,
+    };
+    Some(WhyChange {
+        field: field.to_string(),
+        detail,
+    })
+}
+
 fn print_why(entry: &WhyEntry, _cfg: &vigil::config::Config) {
     let path = &entry.path;
     eprintln!("{} changed at {}.", path, entry.timestamp_human);
@@ -305,45 +380,22 @@ fn parse_changes(change_type: &str, changes_json: Option<&str>) -> Vec<WhyChange
     let mut out = Vec::new();
 
     if let Some(json) = changes_json {
-        if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(json) {
+        // Decode into the real type. Iterating raw JSON object keys produced
+        // one bogus row per *field* ("type", "old_hash", ...) once `Change`
+        // became internally tagged, because every key was treated as a variant
+        // name.
+        if let Ok(changes) = serde_json::from_str::<Vec<vigil::types::Change>>(json) {
+            for change in &changes {
+                out.push(why_change_row(change));
+            }
+        } else if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(json) {
+            // Legacy externally-tagged rows.
             for item in &arr {
                 if let Some(obj) = item.as_object() {
                     for (key, val) in obj {
-                        let (field, detail) = match key.as_str() {
-                            "ContentModified" => {
-                                ("content".to_string(), "BLAKE3 hash differs".to_string())
-                            }
-                            "PermissionsChanged" => {
-                                let old = val.get("old").and_then(|v| v.as_u64()).unwrap_or(0);
-                                let new = val.get("new").and_then(|v| v.as_u64()).unwrap_or(0);
-                                (
-                                    "permissions".to_string(),
-                                    format!("{:04o} -> {:04o}", old, new),
-                                )
-                            }
-                            "OwnerChanged" => {
-                                let old_uid =
-                                    val.get("old_uid").and_then(|v| v.as_u64()).unwrap_or(0);
-                                let new_uid =
-                                    val.get("new_uid").and_then(|v| v.as_u64()).unwrap_or(0);
-                                (
-                                    "owner".to_string(),
-                                    format!("uid {} -> {}", old_uid, new_uid),
-                                )
-                            }
-                            "InodeChanged" => {
-                                let old = val.get("old").and_then(|v| v.as_u64()).unwrap_or(0);
-                                let new = val.get("new").and_then(|v| v.as_u64()).unwrap_or(0);
-                                ("inode".to_string(), format!("{} -> {}", old, new))
-                            }
-                            "Deleted" => ("status".to_string(), "deleted".to_string()),
-                            "Created" => ("status".to_string(), "created".to_string()),
-                            _ => (
-                                key.to_lowercase().replace("changed", ""),
-                                "changed".to_string(),
-                            ),
-                        };
-                        out.push(WhyChange { field, detail });
+                        if let Some(row) = legacy_why_change_row(key, val) {
+                            out.push(row);
+                        }
                     }
                 }
             }

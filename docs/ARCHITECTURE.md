@@ -118,6 +118,7 @@ src/
 |-- display/
 |   |-- mod.rs              # Display API: CheckReport, InitReport, render dispatch.
 |   |-- check.rs            # Check/init report construction + human/brief/JSON renderers.
+|   |-- correlate.rs        # Event-first rendering of correlated detections.
 |   |-- explain.rs          # Structural change explanations ("why" lines).
 |   |-- format.rs           # ANSI colors, number/size/age/hash/path formatting.
 |   |-- term.rs             # Terminal capability detection (TermInfo).
@@ -161,6 +162,15 @@ src/
 |-- coordinator/
 |   |-- mod.rs              # Guardian/maintenance loops and housekeeping.
 |   `-- expectation.rs      # FileChangeExpectation + registry.
+|-- correlate/
+|   |-- mod.rs              # Public API; gathers local evidence and correlates a scan.
+|   |-- event.rs            # CorrelatedEvent, Confidence, VerificationResult, RawRef.
+|   |-- transaction.rs      # Normalized APT/dpkg/snap TransactionRecord.
+|   |-- apt.rs              # APT history + dpkg log/status parsers (pure) and collector.
+|   |-- snap.rs             # snapd change/task parsers (pure) and collector.
+|   |-- engine.rs           # Maps raw detections onto transactions; grades confidence.
+|   `-- error.rs            # CollectorError / EvidenceSource (fail visibly).
+|-- acceptance.rs           # AcceptanceGuard: revalidates reviewed state before baseline writes.
 |-- daemon/
 |   `-- mod.rs              # Daemon struct, startup, shutdown, runtime.
 |-- vigild.rs               # vigild binary entrypoint.
@@ -190,10 +200,12 @@ src/
 
 These modules are easy to miss. They are core to the runtime.
 
-- `src/display/` is the consolidated rendering layer for all CLI output (~1,960 lines across 6 files). `mod.rs` defines the public API: `CheckReport`, `CheckReportMeta`, `InitReport`, `BaselineProfile` structs and `render_check()`/`render_init()` dispatch functions. `check.rs` builds `CheckReport` from `ScanResult` + metadata, renders human/brief/JSON output for both check and init commands, with severity triage, progressive disclosure, and package grouping. `format.rs` provides the shared ANSI color system (`Style`/`Styled`), number formatting (`format_count`, `format_size`, `format_age`), hash/fingerprint display, smart path truncation, and exit code descriptions. `time.rs` provides centralized timestamp formatting helpers (`format_absolute`, `format_iso`, `format_local`, `format_compact_duration`, `format_relative_timestamp`). `explain.rs` maps structural changes to human-readable "why" lines (e.g. setuid bit to "setuid bit added, investigate"). Pure function, no heuristics (Principle III). `term.rs` detects terminal capabilities (`TermInfo`): TTY status, `NO_COLOR`, width/height via ioctl with env fallback. `widgets.rs` renders the severity histogram and change comparison tables. Doctor and `commands/` delegate formatting to display via re-exports (`fmt_count`, `fmt_size`, `truncate_hash`, `format_fingerprint`).
+- `src/display/` is the consolidated rendering layer for all CLI output (~2,400 lines across 7 files). `mod.rs` defines the public API: `CheckReport`, `CheckReportMeta`, `InitReport`, `BaselineProfile` structs and `render_check()`/`render_init()` dispatch functions. `check.rs` builds `CheckReport` from `ScanResult` + metadata, renders human/brief/JSON output for both check and init commands, with severity triage, progressive disclosure, and package grouping. `format.rs` provides the shared ANSI color system (`Style`/`Styled`), number formatting (`format_count`, `format_size`, `format_age`), hash/fingerprint display, smart path truncation, and exit code descriptions. `time.rs` provides centralized timestamp formatting helpers (`format_absolute`, `format_iso`, `format_local`, `format_compact_duration`, `format_relative_timestamp`). `explain.rs` maps structural changes to human-readable "why" lines (e.g. setuid bit to "setuid bit added, investigate"). Pure function, no heuristics (Principle III). `term.rs` detects terminal capabilities (`TermInfo`): TTY status, `NO_COLOR`, width/height via ioctl with env fallback. `widgets.rs` renders the severity histogram and change comparison tables. `correlate.rs` renders correlated package-transaction events above the raw detail they explain, keeping raw severity counts, explanation status, and baseline acceptance state as three separate vocabularies; it renders only and never mutates evidence. Untrusted text reaching the terminal (paths, package names, log excerpts) is neutralized by `format::sanitize_for_terminal`. Doctor and `commands/` delegate formatting to display via re-exports (`fmt_count`, `fmt_size`, `truncate_hash`, `format_fingerprint`).
 
 - `src/commands/` is the CLI command implementation layer (~3,500 lines across 16 files). Each command handler lives in its own file (e.g. `check.rs`, `audit.rs`, `update.rs`, `recover.rs`). `config.rs` implements `vigil config show/validate/watch add/watch remove/set/get` with atomic config writes, validation, and daemon reload. `recover.rs` implements `vigil recover --reason` for guided recovery from degraded states. `common.rs` provides shared helpers: `print_header`, `format_count`, `truncate_hash`, `print_change_detail`, `pipe_to_pager`, `parse_time_filter`/`parse_time_filter_strict`, `resolve_config_path`, `update_config_toml`, `format_audit_timestamp`, and `query_control_socket`/`query_control_socket_authenticated`. `main.rs` is now ~130 lines: `init_tracing()` + the `run()` match dispatch calling into `commands::*`.
 
+- `src/correlate/` is the correlation layer (~2,400 lines across 7 files). It explains raw detections without weakening them: it maps filesystem changes onto local package-manager transactions and grades how well the evidence accounts for them. `event.rs` defines the derived `CorrelatedEvent` (deterministic id, `Confidence`, `VerificationResult`, `RawRef` pointers to detections). `transaction.rs` normalizes APT, dpkg, and snap transactions into one `TransactionRecord`. `apt.rs` and `snap.rs` hold pure parsers over log/CLI text plus thin collectors, so the engine is testable from fixtures with no package manager present. `engine.rs` is a pure function from evidence to events. Three invariants hold throughout: raw detections are read-only inputs (never edited, never re-graded), missing evidence lowers confidence and never becomes a pass, and package ownership alone is never sufficient attribution. Correlation is **not** persisted into the baseline, is **not** an input to baseline verification or the exit code, and never runs in the daemon, watcher, or incremental scanner — the only call site is `commands/check.rs`. See `docs/CORRELATION.md`.
+- `src/acceptance.rs` is the acceptance guard. `vigil check --accept` makes two separate observations of a path: the scan that produced the report and the read that writes the baseline. `ReviewedState::from_change()` distills what the operator actually reviewed from the detection itself, and `revalidate()` re-reads the path immediately before the write and refuses it if anything moved. The verified snapshot is handed back to the caller and written directly, so no third read can slip in between the check and the commit.
 - `src/detection.rs` provides `dispatch_detection()`, the shared WAL-or-alert dispatch helper. Tries WAL append first (incrementing `detections_wal_appends`), falls back to alert channel on WAL failure (incrementing `detections_wal_full` and logging at error), logs at error level if the alert channel is disconnected (detection would be lost). Used by `worker.rs` (realtime events), `scan_scheduler.rs` (on-demand and scheduled scans). The `drain_debounced` path in `worker.rs` uses inline logic instead because it collects alerts into a local `Vec` rather than sending directly to the channel.
 
 - `src/lib.rs` defines `Daemon` (config, connections, startup) and `DaemonRuntime` (thread ownership, channel lifecycle). `Daemon::run()` is ~11 lines: harden, record binary hash, start runtime, wait, drain. `DaemonRuntime::start()` wires all channels, spawns all threads (including WAL AuditWriter and SinkRunner when `detection_wal = true`), runs WAL self-test, calls `AuditWriter::recover()`, emits `sd_notify(Ready)`. `DaemonRuntime::drain()` joins threads in dependency order: workers → baseline_writer → audit_writer → sink_runner → alert → coordinator → scan_scheduler → final WAL truncation. A `send_watchdog_heartbeat()` helper sends `sd_notify(Watchdog)` guarded by `is_notify_socket_safe()` and is called throughout pre-flight and startup to prevent systemd from killing the daemon before the coordinator thread exists.
@@ -211,7 +223,7 @@ These modules are easy to miss. They are core to the runtime.
 - `src/metrics.rs` stores counters. Coordinator writes `metrics.json`. Doctor writes `health.json`.
 - `src/hmac.rs` signs and verifies audit entries with HMAC-SHA256. Audit HMAC data includes the previous chain hash for deletion detection.
 - `src/config/diff.rs` reports config changes on SIGHUP reload.
-- `src/db/migrate.rs` migrates baseline schema from v1 blobs to v2 flattened columns.
+- `src/db/migrate.rs` migrates baseline schema from v1 blobs to v2 flattened columns, then to v3 symlink object identity columns. A v1 baseline chains through both steps so any migration lands on the current version.
 - `src/alert/remote_syslog.rs` sends RFC5424 alerts to remote syslog.
 
 ---
@@ -345,7 +357,7 @@ Vigil Baseline uses two SQLite files in practice.
 - baseline data in `baseline.db`
 - audit data in `audit.db`
 
-### `baseline` table (v2 flattened)
+### `baseline` table (flattened, v3)
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -354,7 +366,10 @@ Vigil Baseline uses two SQLite files in practice.
 | `inode` | INTEGER NOT NULL | inode number |
 | `device` | INTEGER NOT NULL | device number |
 | `file_type` | TEXT NOT NULL | default `regular` |
-| `symlink_target` | TEXT | nullable |
+| `symlink_target` | TEXT | nullable; what the link points at |
+| `link_text` | TEXT | v3; nullable; the link's own text as `readlink` returns it |
+| `link_inode` | INTEGER | v3; nullable; inode of the link object per `lstat` |
+| `link_device` | INTEGER | v3; nullable; device of the link object per `lstat` |
 | `hash` | TEXT NOT NULL | BLAKE3 hex |
 | `size` | INTEGER NOT NULL | bytes |
 | `mode` | INTEGER NOT NULL | permission bits |
@@ -373,6 +388,14 @@ Constraints and indexes:
 - `UNIQUE(path)`
 - `CHECK(source IN ('package_manager', 'manual', 'auto_scan'))`
 - index `idx_baseline_path` on `path`
+
+The three `link_*` columns describe the symlink *object* as `lstat` sees it,
+which is what makes an alias distinguishable from an independently replaced
+link. They are NULL on non-symlinks and on entries written before v3, and they
+are deliberately **outside** the HMAC field set: a pre-v3 signed baseline
+therefore still verifies and is never resigned. A semantic retarget still moves
+the signed `symlink_target`, so the exclusion does not create a route around
+baseline verification.
 
 ### `audit_log` table
 

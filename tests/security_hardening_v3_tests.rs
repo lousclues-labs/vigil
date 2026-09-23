@@ -73,6 +73,7 @@ fn baseline_hmac_covers_all_security_fields() {
             device: 1,
             file_type: vigil::types::FileType::Regular,
             symlink_target: None,
+            ..Default::default()
         },
         content: vigil::types::ContentFingerprint {
             hash: "abc123".into(),

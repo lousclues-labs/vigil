@@ -5,6 +5,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod acceptance;
 pub mod ack;
 pub mod alert;
 pub mod attest;
@@ -14,6 +15,7 @@ pub mod cli;
 pub mod config;
 pub mod control;
 pub mod coordinator;
+pub mod correlate;
 pub mod daemon;
 pub mod db;
 pub mod detection;

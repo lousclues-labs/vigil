@@ -121,17 +121,42 @@ pub(super) fn check_realtime_coverage(config: &Config, daemon_running: bool) -> 
     }
 
     let metrics = read_metrics(config);
-    let reduced = metrics
-        .as_ref()
-        .map(|m| m.fanotify_mark_reduced_coverage)
-        .unwrap_or(0);
-    let tier = metrics.as_ref().map(|m| m.fanotify_tier).unwrap_or(0);
+
+    // An unreadable metrics file is not a clean bill of health. Defaulting the
+    // counter to 0 made "we could not look" indistinguishable from "no mount
+    // is degraded", and 0 is exactly the all-clear value -- so a doctor run
+    // that could not open metrics.json printed "full event coverage on all
+    // mounts (tier: unknown)", asserting coverage from the same absent data
+    // that produced the "unknown".
+    let Some(metrics) = metrics else {
+        return DiagnosticCheck {
+            name: "Real-time coverage".to_string(),
+            status: CheckStatus::Unknown,
+            detail: "metrics.json not available; event coverage could not be determined"
+                .to_string(),
+            recovery: Recovery::None,
+        };
+    };
+
+    // A metrics.json written before these counters existed carries neither
+    // field. Treating that as 0 would assert full coverage from absent data.
+    let Some(reduced) = metrics.fanotify_mark_reduced_coverage else {
+        return DiagnosticCheck {
+            name: "Real-time coverage".to_string(),
+            status: CheckStatus::Unknown,
+            detail: "metrics.json does not report event coverage (written by an \
+                     older daemon?); coverage could not be determined"
+                .to_string(),
+            recovery: Recovery::None,
+        };
+    };
+    let tier = metrics.fanotify_tier;
 
     if reduced == 0 {
         let tier_label = match tier {
-            3 => "fid_dfid_name",
-            2 => "fid",
-            1 => "legacy_fd",
+            Some(3) => "fid_dfid_name",
+            Some(2) => "fid",
+            Some(1) => "legacy_fd",
             _ => "unknown",
         };
         DiagnosticCheck {
@@ -154,6 +179,83 @@ pub(super) fn check_realtime_coverage(config: &Config, daemon_running: bool) -> 
             ),
             recovery: Recovery::Documentation("docs/ARCHITECTURE.md § Fanotify tier system".into()),
         }
+    }
+}
+
+/// Naming for one package backend's hook, so the trigger-verdict mapping can
+/// live in exactly one place.
+#[derive(Clone, Copy)]
+pub(super) struct HookLabels {
+    /// Parenthetical describing what is installed, e.g. "pacman pre/post".
+    installed: &'static str,
+    /// Key used to look up an operator acknowledgement.
+    ack_key: &'static str,
+    /// Command an operator runs to read the hook's own log.
+    journal_cmd: &'static str,
+}
+
+pub(super) const HOOK_LABELS_PACMAN: HookLabels = HookLabels {
+    installed: "pacman pre/post",
+    ack_key: "pacman",
+    journal_cmd: "journalctl -t vigil-pacman",
+};
+
+pub(super) const HOOK_LABELS_APT: HookLabels = HookLabels {
+    installed: "apt hook",
+    ack_key: "apt",
+    journal_cmd: "journalctl -t vigil-apt",
+};
+
+/// Map a hook's last-trigger verdict to a diagnostic status.
+///
+/// The pacman and apt call sites were byte-identical apart from three
+/// strings, which meant the `Unknown` mapping had to be corrected twice and
+/// could drift apart silently.
+pub(super) fn hook_trigger_check(
+    config: &Config,
+    trigger: HookTriggerResult,
+    labels: HookLabels,
+) -> (CheckStatus, String, Recovery) {
+    let installed = labels.installed;
+    match trigger {
+        HookTriggerResult::NeverTriggered => (
+            CheckStatus::Ok,
+            format!("installed ({}); never triggered", installed),
+            Recovery::None,
+        ),
+        HookTriggerResult::Success(ts) => (
+            CheckStatus::Ok,
+            format!("installed ({}); last trigger {} ok", installed, ts),
+            Recovery::None,
+        ),
+        HookTriggerResult::Failure(ts, _tag) => {
+            if let Some(ack) = hook_failure_ack_state(config, labels.ack_key, &ts) {
+                (
+                    CheckStatus::Unknown,
+                    format!("installed ({}); last trigger {} failed", installed, ts),
+                    acknowledged_hook_recovery(
+                        ack.ack_timestamp,
+                        ack.operator_uid,
+                        ack.note,
+                        labels.journal_cmd,
+                    ),
+                )
+            } else {
+                (
+                    CheckStatus::Warning,
+                    format!("installed ({}); last trigger {} failed", installed, ts),
+                    unacked_hook_recovery(labels.journal_cmd),
+                )
+            }
+        }
+        // The hook's own verdict could not be read. That is not the same as a
+        // passing one, and reporting Ok here made an unreadable journal look
+        // like a healthy hook.
+        HookTriggerResult::Unknown => (
+            CheckStatus::Unknown,
+            format!("installed ({}); last trigger status unavailable", installed),
+            Recovery::None,
+        ),
     }
 }
 
@@ -916,43 +1018,8 @@ pub(super) fn check_package_hooks(config: &Config) -> DiagnosticCheck {
             let post = Path::new("/etc/pacman.d/hooks/vigil-post.hook").exists();
             if pre && post {
                 let trigger = hook_last_trigger_parsed("vigil-pacman");
-                let (status, detail, recovery) = match trigger {
-                    HookTriggerResult::NeverTriggered => (
-                        CheckStatus::Ok,
-                        "installed (pacman pre/post); never triggered".to_string(),
-                        Recovery::None,
-                    ),
-                    HookTriggerResult::Success(ts) => (
-                        CheckStatus::Ok,
-                        format!("installed (pacman pre/post); last trigger {} ok", ts),
-                        Recovery::None,
-                    ),
-                    HookTriggerResult::Failure(ts, _tag) => {
-                        if let Some(ack_state) = hook_failure_ack_state(config, "pacman", &ts) {
-                            (
-                                CheckStatus::Unknown,
-                                format!("installed (pacman pre/post); last trigger {} failed", ts,),
-                                acknowledged_hook_recovery(
-                                    ack_state.ack_timestamp,
-                                    ack_state.operator_uid,
-                                    ack_state.note,
-                                    "journalctl -t vigil-pacman",
-                                ),
-                            )
-                        } else {
-                            (
-                                CheckStatus::Warning,
-                                format!("installed (pacman pre/post); last trigger {} failed", ts,),
-                                unacked_hook_recovery("journalctl -t vigil-pacman"),
-                            )
-                        }
-                    }
-                    HookTriggerResult::Unknown => (
-                        CheckStatus::Ok,
-                        "installed (pacman pre/post)".to_string(),
-                        Recovery::None,
-                    ),
-                };
+                let (status, detail, recovery) =
+                    hook_trigger_check(config, trigger, HOOK_LABELS_PACMAN);
                 DiagnosticCheck {
                     name: "Hooks".to_string(),
                     status,
@@ -980,43 +1047,8 @@ pub(super) fn check_package_hooks(config: &Config) -> DiagnosticCheck {
             let apt_hook = Path::new("/etc/apt/apt.conf.d/99vigil").exists();
             if apt_hook {
                 let trigger = hook_last_trigger_parsed("vigil-apt");
-                let (status, detail, recovery) = match trigger {
-                    HookTriggerResult::NeverTriggered => (
-                        CheckStatus::Ok,
-                        "installed (apt hook); never triggered".to_string(),
-                        Recovery::None,
-                    ),
-                    HookTriggerResult::Success(ts) => (
-                        CheckStatus::Ok,
-                        format!("installed (apt hook); last trigger {} ok", ts),
-                        Recovery::None,
-                    ),
-                    HookTriggerResult::Failure(ts, _tag) => {
-                        if let Some(ack_state) = hook_failure_ack_state(config, "apt", &ts) {
-                            (
-                                CheckStatus::Unknown,
-                                format!("installed (apt hook); last trigger {} failed", ts,),
-                                acknowledged_hook_recovery(
-                                    ack_state.ack_timestamp,
-                                    ack_state.operator_uid,
-                                    ack_state.note,
-                                    "journalctl -t vigil-apt",
-                                ),
-                            )
-                        } else {
-                            (
-                                CheckStatus::Warning,
-                                format!("installed (apt hook); last trigger {} failed", ts,),
-                                unacked_hook_recovery("journalctl -t vigil-apt"),
-                            )
-                        }
-                    }
-                    HookTriggerResult::Unknown => (
-                        CheckStatus::Ok,
-                        "installed (apt hook)".to_string(),
-                        Recovery::None,
-                    ),
-                };
+                let (status, detail, recovery) =
+                    hook_trigger_check(config, trigger, HOOK_LABELS_APT);
                 DiagnosticCheck {
                     name: "Hooks".to_string(),
                     status,
@@ -1057,6 +1089,21 @@ pub(super) fn check_package_hooks(config: &Config) -> DiagnosticCheck {
 
 pub(super) fn check_notify_send() -> DiagnosticCheck {
     if command_exists("notify-send") {
+        // The binary existing says nothing about whether it can deliver.
+        // Reporting Ok from `command_exists` alone described a channel that
+        // may have delivered nothing since boot as healthy.
+        if !crate::alert::dbus::notification_channel_available() {
+            return DiagnosticCheck {
+                name: "Notify".to_string(),
+                status: CheckStatus::Warning,
+                detail: "notify-send present but no session bus or display is reachable; \
+                         desktop alerts cannot be delivered"
+                    .to_string(),
+                recovery: Recovery::Manual(
+                    "set alerts.desktop_notifications = false, or use another sink".into(),
+                ),
+            };
+        }
         DiagnosticCheck {
             name: "Notify".to_string(),
             status: CheckStatus::Ok,
@@ -1516,3 +1563,7 @@ pub(super) fn query_control_socket_quick(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "checks_tests.rs"]
+mod checks_tests;

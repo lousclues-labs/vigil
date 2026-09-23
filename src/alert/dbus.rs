@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 
 use crate::alert::AlertSink;
-use crate::error::Result;
+use crate::error::{Result, VigilError};
 use crate::types::{Alert, Severity};
 
 /// Resolve the absolute path to `notify-send` once at startup. The daemon
@@ -37,6 +37,26 @@ pub struct DbusSink {
     limit: u32,
     window: Duration,
     state: Mutex<NotifyRate>,
+}
+
+/// Whether a desktop notification channel is plausibly reachable.
+///
+/// A root daemon started by systemd normally has no session bus and no
+/// display, so `notify-send` cannot deliver anything. That is a *structural*
+/// absence, not a failure: the sink is not broken, it has nowhere to send.
+///
+/// The distinction matters because the sink runner degrades the daemon after
+/// `sink_failure_threshold` consecutive sink errors. Treating an absent
+/// channel as an error would put every headless deployment into
+/// `AlertSinkFailing` -- the desktop sink is enabled by default -- which
+/// devalues a state that should mean something is genuinely wrong. Treating a
+/// *failing* channel as success is the defect this replaced. So: absent
+/// channels are reported once and not registered; present channels that fail
+/// are real errors.
+pub fn notification_channel_available() -> bool {
+    ["DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "WAYLAND_DISPLAY"]
+        .iter()
+        .any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
 }
 
 impl DbusSink {
@@ -103,21 +123,111 @@ impl AlertSink for DbusSink {
 
         body.push_str(&format!("\nvigil why {}", alert.file.path.display()));
 
-        let status = Command::new(notify_send_binary())
+        // `.output()` rather than `.status()`: a notify-send that *runs* and
+        // exits non-zero is the case that matters -- the notification was not
+        // shown. Returning Ok there made the desktop channel the one sink that
+        // could never report itself broken, so a machine that had delivered
+        // zero notifications since boot still looked healthy: `SinkRunner`
+        // keys its failure accounting, and the `AlertSinkFailing` degraded
+        // state, entirely off `Err`.
+        //
+        // Structurally undeliverable channels never reach here -- the sink is
+        // not registered when no bus or display exists -- so a failure at this
+        // point means a channel that should work did not.
+        let output = Command::new(notify_send_binary())
             .arg("--app-name=Vigil Baseline")
             .arg(format!("--urgency={}", urgency))
             .arg(&title)
             .arg(&body)
-            .status();
+            .output();
 
-        if let Err(e) = status {
-            tracing::debug!(error = %e, "desktop notification failed");
-        }
-
-        Ok(())
+        classify_notify_output(output)
     }
 
     fn min_severity(&self) -> Severity {
         Severity::Medium
+    }
+}
+
+/// Decide whether a `notify-send` invocation actually delivered.
+///
+/// Split out from `dispatch` so the non-zero-exit path is reachable in a test
+/// without a session bus: the defect this guards was a silent `Ok(())` on
+/// every failed delivery.
+fn classify_notify_output(output: std::io::Result<std::process::Output>) -> Result<()> {
+    match output {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => {
+            let detail = String::from_utf8_lossy(&out.stderr);
+            let detail = detail.lines().next().unwrap_or("no detail").trim();
+            tracing::warn!(
+                status = ?out.status.code(),
+                detail = %detail,
+                "desktop notification was not shown"
+            );
+            Err(VigilError::Alert(format!(
+                "notify-send exited {}: {}",
+                out.status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".into()),
+                detail
+            )))
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "could not run notify-send");
+            Err(VigilError::Alert(format!("notify-send failed to run: {e}")))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+
+    fn output(code: i32, stderr: &str) -> std::io::Result<Output> {
+        Ok(Output {
+            status: ExitStatus::from_raw(code << 8),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        })
+    }
+
+    #[test]
+    fn successful_delivery_is_ok() {
+        assert!(classify_notify_output(output(0, "")).is_ok());
+    }
+
+    #[test]
+    fn nonzero_exit_is_an_error_not_a_silent_ok() {
+        // The sink runner's failure accounting and the AlertSinkFailing
+        // degraded state key entirely off Err. Returning Ok here made a
+        // desktop channel that delivered nothing look permanently healthy.
+        let err = classify_notify_output(output(1, "cannot autolaunch d-bus"))
+            .expect_err("failed delivery reported as success");
+        let msg = err.to_string();
+        assert!(msg.contains('1'), "exit status not surfaced: {msg}");
+        assert!(
+            msg.contains("cannot autolaunch"),
+            "stderr detail not surfaced: {msg}"
+        );
+    }
+
+    #[test]
+    fn spawn_failure_is_an_error() {
+        let err = classify_notify_output(Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no such file",
+        )));
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn missing_stderr_still_reports_the_failure() {
+        let err =
+            classify_notify_output(output(3, "")).expect_err("failed delivery reported as success");
+        assert!(err.to_string().contains("no detail"));
     }
 }

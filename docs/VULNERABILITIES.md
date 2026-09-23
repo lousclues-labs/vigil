@@ -98,6 +98,8 @@ Use this as a reference when assessing Vigil Baseline's security posture or audi
 | VIGIL-VULN-075 | Medium | 1.7.3 | User-space event channel drops created silent blind spots without compensating scan |
 | VIGIL-VULN-076 | High | 1.7.3 | Audit HMAC delimiter collision — pipe-separated input could be forged for paths containing the delimiter |
 | VIGIL-VULN-077 | High | 1.7.3 | Directory-modification events silently dropped under FAN_MARK_MOUNT without FID-mode init |
+| VIGIL-VULN-078 | High | 1.15.0 | Baseline acceptance signed the filesystem state at write time, not the state the operator reviewed |
+| VIGIL-VULN-079 | High | 1.15.0 | Audit HMAC signatures were never verified by any shipping code path, and the verifier could not have validated them |
 
 ---
 
@@ -880,3 +882,33 @@ The `SendTimeoutError::Timeout` path in `fanotify.rs` dropped events when the us
 `fanotify_init` was called with `FAN_CLOEXEC | FAN_CLASS_NOTIF | FAN_NONBLOCK` without FID-mode flags. On Linux 5.1+ kernels, directory-modification events (`FAN_CREATE`, `FAN_DELETE`, `FAN_MOVED_FROM`, `FAN_MOVED_TO`) under `FAN_MARK_MOUNT` deliver `fanotify_event_info_fid` records with `event.fd == FAN_NOFD (-1)`. The code's `if event.fd >= 0` branch silently skipped these events, meaning the threat-model claim that closed-set directory watches detect persistence via unknown filenames was not honored for FID-capable kernels.
 
 **Remediation:** (1) Capability probe `detect_fanotify_tier()` in `src/monitor/mod.rs` tries init flags in order: `FidDfidName` (Linux 5.9+), `Fid` (Linux 5.1+), `LegacyFd`, `Inotify`. Each probe fd is closed immediately. (2) Tier surfaced in `vigil status` JSON (`metrics.fanotify_tier` gauge), `vigil doctor` output, and logged at `info` at startup. (3) Config override `monitor.fanotify_tier` (default `"auto"`) allows operators to pin a tier. (4) New metrics: `fanotify_tier` (gauge), `fanotify_open_by_handle_at_failures` (counter). Code paths: `src/monitor/mod.rs`, `src/monitor/fanotify.rs`, `src/config/mod.rs`, `src/metrics.rs`.
+
+---
+
+### VIGIL-VULN-078 -- Baseline acceptance signed the state at write time, not the state the operator reviewed (High)
+
+**Fixed in:** 1.15.0
+
+`vigil check --accept` observed each accepted path twice with no comparison between the reads. The first observation was the scan that produced the report the operator reviewed. The second happened inside the accept loop, which called `FileSnapshot::from_path` with `force_hash: true` and wrote the result into the baseline. An attacker able to modify a monitored path in the interval between those reads -- an interval bounded only by how long the operator spends reading the report and confirming -- had their content written into the baseline as the new known-good state, covered by the baseline HMAC, and reported as clean by every subsequent scan.
+
+The window is reachable by any local process that can write the path being accepted, and requires no elevated privilege beyond write access to that path. It is most exploitable where an operator is accepting a batch of changes after a package update, which is exactly when acceptance is most likely to be used and least likely to be scrutinised per path.
+
+**Reproduction:** Run `vigil check` so a modified file appears in the report. Before confirming `vigil check --accept`, overwrite that file with different content. Pre-fix, the substituted content is written to the baseline and the next `vigil check` reports no deviation.
+
+**Remediation:** New module `src/acceptance.rs`. `ReviewedState::from_change` reconstructs the dimensions the operator actually reviewed from the detection itself -- each `Change` variant carries the new value the scan observed, which is the value rendered in the report -- covering content hash, size, mode, owner uid/gid, inode, and symlink link text. `revalidate` re-reads the path immediately before the baseline write and returns `Stale` with the specific differences when anything moved; refused paths are reported to the operator and not written. The snapshot that passed revalidation is returned to the caller and committed directly, rather than the caller taking a third read, so the check and the write observe the same bytes. A path reviewed as deleted that has reappeared is refused rather than treated as a deletion to confirm. Correlated package-transaction explanations are explicitly barred from relaxing the check (PR21, PR22). Code paths: `src/acceptance.rs`, `src/commands/check.rs`.
+
+---
+
+### VIGIL-VULN-079 -- Audit HMAC signatures were never verified, and the verifier could not have validated them (High)
+
+**Fixed in:** 1.15.0
+
+Two defects concealed each other. First, `verify_chain_detail` reconstructed its HMAC input by reading raw JSON keys out of `changes_json`, expecting the externally-tagged `{"ContentModified":{...}}` representation. `Change` is declared `#[serde(tag = "type", rename_all = "snake_case")]` and serializes internally tagged, and `serde_json`'s `Map` is a `BTreeMap` in this build, so `obj.keys().next()` returned the alphabetically first field name (`"new_hash"`) and used it as the change type. The writer builds its signing input from the typed enum, so writer and verifier could never agree: every untampered entry verified as broken.
+
+Second, no shipping code path ever invoked verification with a key. `verify_chain_with_hmac(_, Some(..))` appeared only in tests; `commands/audit.rs`, `control.rs`, `doctor/checks.rs`, `attest/create.rs`, `commands/selftest.rs` and `commands/status.rs` all passed `None`. Signatures were computed and stored on every entry and checked by nothing, while `docs/CLI.md` stated that `vigil audit verify` "also verifies HMAC signatures" when signing is enabled.
+
+The BLAKE3 chain-hash linkage was verified throughout, so content tampering with an individual row was still detected. What was not detected is the threat HMAC exists for and that `docs/SECURITY.md` claims coverage of: an attacker with write access to `audit.db` rewriting the log into a *self-consistent* chain. Such a forgery passes linkage verification and is distinguishable only by signature.
+
+**Reproduction:** Write an entry through the normal path with `hmac_signing` enabled, then call `verify_chain_detail(&conn, Some(key))`. Pre-fix it reports a chain break for every entry. Separately, `vigil audit verify` never reaches that path at all, because it passes `None`.
+
+**Remediation:** All five `changes_json` consumers now decode into `Vec<Change>` and read `Change::name()`, inheriting the single source of truth in `src/types/change.rs`; adding a variant is a compile error rather than a silent `"unknown"`. Rows written under the older representation keep verifying through an explicit fallback reached only when the current representation fails to decode. `vigil audit verify` loads the key when `security.hmac_signing` is set, passes it, and reports plainly when the key cannot be loaded rather than silently checking less. Two PDD canaries (`C-AUDIT-HMAC-VERIFIABLE`, `C-AUDIT-HMAC-CHECKED`) pin both halves, each with a drift case proving it fails when the defect returns. Cross-referenced as AF-018. Code paths: `src/db/audit_ops.rs`, `src/commands/audit.rs`, `src/commands/explain.rs`, `src/commands/check.rs`, `src/commands/why.rs`.

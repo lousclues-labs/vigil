@@ -18,6 +18,14 @@ pub struct Metrics {
     pub db_writes: AtomicU64,
     pub db_errors: AtomicU64,
     pub panics_caught: AtomicU64,
+    /// Events the worker could not evaluate.
+    ///
+    /// A file that could not be hashed, opened, or stat'd is neither clean nor
+    /// changed: it was not examined. Without this counter such events were
+    /// tallied under `events_processed` with no error recorded anywhere, so
+    /// "we checked it and it was fine" and "we could not look at it" were
+    /// indistinguishable in `vigil status`.
+    pub evaluation_errors: AtomicU64,
     pub scan_duration_ms: AtomicU64,
     pub last_scan_total: AtomicU64,
     pub cache_hits: AtomicU64,
@@ -121,6 +129,7 @@ impl Metrics {
             db_writes: AtomicU64::new(0),
             db_errors: AtomicU64::new(0),
             panics_caught: AtomicU64::new(0),
+            evaluation_errors: AtomicU64::new(0),
             scan_duration_ms: AtomicU64::new(0),
             last_scan_total: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
@@ -194,6 +203,7 @@ impl Metrics {
             db_writes: self.db_writes.load(Ordering::Relaxed),
             db_errors: self.db_errors.load(Ordering::Relaxed),
             panics_caught: self.panics_caught.load(Ordering::Relaxed),
+            evaluation_errors: self.evaluation_errors.load(Ordering::Relaxed),
             scan_duration_ms: self.scan_duration_ms.load(Ordering::Relaxed),
             last_scan_total: self.last_scan_total.load(Ordering::Relaxed),
             cache_hits: self.cache_hits.load(Ordering::Relaxed),
@@ -221,13 +231,17 @@ impl Metrics {
                 .load(Ordering::Relaxed),
             detections_wal_replayed: self.detections_wal_replayed.load(Ordering::Relaxed),
             detections_wal_full: self.detections_wal_full.load(Ordering::Relaxed),
-            detections_wal_tampered: self.detections_wal_tampered.load(Ordering::Relaxed),
+            // Folded from the WAL scanner's process-global counters: the
+            // rejection sites are in a free function with no Metrics handle.
+            detections_wal_tampered: self.detections_wal_tampered.load(Ordering::Relaxed)
+                + crate::wal::WAL_ENTRIES_TAMPERED.load(Ordering::Relaxed),
             detections_wal_gaps: self.detections_wal_gaps.load(Ordering::Relaxed),
             detections_wal_bytes: self.detections_wal_bytes.load(Ordering::Relaxed),
             detections_wal_pending: self.detections_wal_pending.load(Ordering::Relaxed),
             detections_wal_audit_lag: self.detections_wal_audit_lag.load(Ordering::Relaxed),
             detections_wal_sink_lag: self.detections_wal_sink_lag.load(Ordering::Relaxed),
-            wal_entries_rejected_hmac: self.wal_entries_rejected_hmac.load(Ordering::Relaxed),
+            wal_entries_rejected_hmac: self.wal_entries_rejected_hmac.load(Ordering::Relaxed)
+                + crate::wal::WAL_ENTRIES_REJECTED_HMAC.load(Ordering::Relaxed),
             inode_changes_recovered: self.inode_changes_recovered.load(Ordering::Relaxed),
             inode_changes_rejected: self.inode_changes_rejected.load(Ordering::Relaxed),
             fanotify_thread_restarts: self.fanotify_thread_restarts.load(Ordering::Relaxed),
@@ -290,6 +304,7 @@ pub struct MetricsSnapshot {
     pub db_writes: u64,
     pub db_errors: u64,
     pub panics_caught: u64,
+    pub evaluation_errors: u64,
     pub scan_duration_ms: u64,
     pub last_scan_total: u64,
     pub cache_hits: u64,
@@ -428,6 +443,12 @@ impl MetricsSnapshot {
             "vigil_panics_caught_total",
             "Worker panics caught",
             self.panics_caught,
+        );
+        write_prom_counter(
+            &mut out,
+            "vigil_evaluation_errors_total",
+            "Events the worker could not evaluate (file unreadable, too large, hash failure)",
+            self.evaluation_errors,
         );
         write_prom_gauge(
             &mut out,

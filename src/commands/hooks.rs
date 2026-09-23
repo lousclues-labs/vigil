@@ -34,17 +34,44 @@ fn register_file_expectation(config_path: Option<&Path>, path: &Path) {
 const CANONICAL_PACMAN_PRE: &str = include_str!("../../hooks/pacman/vigil-pre.hook");
 const CANONICAL_PACMAN_POST: &str = include_str!("../../hooks/pacman/vigil-post.hook");
 const CANONICAL_APT: &str = include_str!("../../hooks/apt/99vigil");
+/// The apt loader delegates all of its logic to these two scripts, wrapped in
+/// `test -x ... || true` so a missing or modified one fails silently.
+/// Verifying only the loader therefore verified almost nothing: the pacman
+/// hooks carry their logic inline in the `Exec =` line, so comparing the file
+/// really does check behaviour there, and the same check was applied to apt
+/// unchanged.
+const CANONICAL_APT_PRE: &str = include_str!("../../hooks/apt/apt-pre.sh");
+const CANONICAL_APT_POST: &str = include_str!("../../hooks/apt/apt-post.sh");
 
 /// Installed hook locations.
 const PACMAN_PRE_PATH: &str = "/etc/pacman.d/hooks/vigil-pre.hook";
 const PACMAN_POST_PATH: &str = "/etc/pacman.d/hooks/vigil-post.hook";
 const APT_PATH: &str = "/etc/apt/apt.conf.d/99vigil";
+const APT_PRE_PATH: &str = "/usr/lib/vigil/apt-pre.sh";
+const APT_POST_PATH: &str = "/usr/lib/vigil/apt-post.sh";
 
 struct HookSpec {
     label: &'static str,
     installed_path: &'static str,
     canonical: &'static str,
     backend: PackageBackend,
+    /// Whether the installed file must be executable.
+    ///
+    /// The apt loader invokes its scripts behind `test -x`, so a script that
+    /// exists but has lost its executable bit is a silent no-op: apt runs,
+    /// the hook does nothing, and nothing reports a problem.
+    requires_exec: bool,
+}
+
+/// Whether a path carries any execute bit.
+///
+/// Unreadable metadata counts as not executable: the loader's `test -x` would
+/// fail too, and guessing "probably fine" is how the silent no-op survived.
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
 
 fn hook_specs() -> Vec<HookSpec> {
@@ -54,18 +81,35 @@ fn hook_specs() -> Vec<HookSpec> {
             installed_path: PACMAN_PRE_PATH,
             canonical: CANONICAL_PACMAN_PRE,
             backend: PackageBackend::Pacman,
+            requires_exec: false,
         },
         HookSpec {
             label: "pacman post-hook",
             installed_path: PACMAN_POST_PATH,
             canonical: CANONICAL_PACMAN_POST,
             backend: PackageBackend::Pacman,
+            requires_exec: false,
         },
         HookSpec {
             label: "apt hook",
             installed_path: APT_PATH,
             canonical: CANONICAL_APT,
             backend: PackageBackend::Dpkg,
+            requires_exec: false,
+        },
+        HookSpec {
+            label: "apt pre-script",
+            installed_path: APT_PRE_PATH,
+            canonical: CANONICAL_APT_PRE,
+            backend: PackageBackend::Dpkg,
+            requires_exec: true,
+        },
+        HookSpec {
+            label: "apt post-script",
+            installed_path: APT_POST_PATH,
+            canonical: CANONICAL_APT_POST,
+            backend: PackageBackend::Dpkg,
+            requires_exec: true,
         },
     ]
 }
@@ -109,6 +153,19 @@ fn cmd_hooks_verify() -> vigil::Result<i32> {
         if !path.exists() {
             println!(
                 "  {:<18} ⚠ {}    not installed",
+                spec.label, spec.installed_path,
+            );
+            drift_count += 1;
+            checked += 1;
+            continue;
+        }
+
+        // A script the loader invokes behind `test -x` is a silent no-op if
+        // it is not executable: apt runs, the hook does nothing, and nothing
+        // reports a problem.
+        if spec.requires_exec && !is_executable(path) {
+            println!(
+                "  {:<18} ⚠ {}    present but NOT executable (hook silently does nothing)",
                 spec.label, spec.installed_path,
             );
             drift_count += 1;
@@ -452,4 +509,46 @@ fn hooks_disabled_from_audit(config_path: Option<&Path>) -> vigil::Result<bool> 
         latest.ok().as_deref(),
         Some(s) if s == vigil::db::audit_path::AuditEventPath::HooksDisable.as_str()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn non_executable_script_is_detected() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("apt-pre.sh");
+        std::fs::write(&path, "#!/bin/sh\n").expect("write");
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        assert!(
+            !is_executable(&path),
+            "a script apt invokes behind `test -x` was treated as runnable \
+             without its execute bit; the hook would silently do nothing"
+        );
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        assert!(is_executable(&path));
+    }
+
+    #[test]
+    fn unreadable_path_is_not_assumed_executable() {
+        assert!(!is_executable(Path::new("/nonexistent/vigil/apt-pre.sh")));
+    }
+
+    #[test]
+    fn apt_scripts_require_the_execute_bit() {
+        // The apt loader gates these two behind `test -x`; the pacman hooks
+        // and the apt.conf fragment are parsed, not executed.
+        for spec in hook_specs() {
+            let expected = spec.installed_path.ends_with(".sh");
+            assert_eq!(
+                spec.requires_exec, expected,
+                "{} has the wrong exec requirement",
+                spec.label
+            );
+        }
+    }
 }

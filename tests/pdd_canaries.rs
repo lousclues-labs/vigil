@@ -276,10 +276,13 @@ fn watch_never_act_detection_paths_contain_no_actuation() {
 /// PR2, canary C-NO-ACTUATION (process half).
 ///
 /// Vigil never signals a process it did not spawn. The single `libc::kill`
-/// call site is a liveness probe: signal 0 delivers nothing. Reaping a
-/// subprocess Vigil itself started (the package-manager query, killed on
-/// timeout) is the only other `kill` in the tree, and it lives in
-/// `src/package.rs`.
+/// call site is a liveness probe: signal 0 delivers nothing.
+///
+/// Reaping a subprocess Vigil itself started, after that subprocess exceeds its
+/// own timeout, is the only other permitted `kill`. It acts on Vigil's own
+/// child, never on the watched system, so it does not touch the promise. Every
+/// file allowed to do this must spawn the process it reaps; the allowlist below
+/// is exhaustive so a new actuation path cannot appear unnoticed.
 #[test]
 fn watch_never_act_kill_is_liveness_probe_only() {
     let mut external_signals = Vec::new();
@@ -303,12 +306,20 @@ fn watch_never_act_kill_is_liveness_probe_only() {
          Only the liveness probe kill(pid, 0) is permitted. Breaches: {external_signals:#?}"
     );
 
+    child_reaps.sort();
     child_reaps.dedup();
+    // Each entry reaps only a subprocess it spawned itself after that process
+    // overran its timeout: the package-manager query, the snapd query, and the
+    // journald query. None of them signals a process on the watched system.
     assert_eq!(
         child_reaps,
-        vec!["src/package.rs".to_string()],
+        vec![
+            "src/correlate/snap.rs".to_string(),
+            "src/package.rs".to_string(),
+            "src/util/journald.rs".to_string(),
+        ],
         "C-NO-ACTUATION breach (PR2): process termination appeared outside the \
-         package-query timeout path in src/package.rs."
+         subprocess-timeout paths that spawn the process they reap."
     );
 }
 
@@ -328,6 +339,7 @@ fn fixture_baseline() -> BaselineEntry {
             device: 66,
             file_type: FileType::Regular,
             symlink_target: None,
+            ..Default::default()
         },
         content: ContentFingerprint {
             hash: "baseline-hash".into(),
@@ -363,6 +375,7 @@ fn fixture_snapshot_changed() -> FileSnapshot {
             device: 66,
             file_type: FileType::Regular,
             symlink_target: None,
+            ..Default::default()
         },
         content: ContentFingerprint {
             hash: "tampered-hash".into(),
@@ -941,12 +954,116 @@ fn rust_function_body(src: &str, name: &str) -> Option<String> {
     None
 }
 
+/// Extract a Rust struct body by name: the brace-delimited field list.
+/// Returns None if the struct is absent.
+fn struct_body(src: &str, name: &str) -> Option<String> {
+    let needle = format!("struct {name} ");
+    let start = src
+        .find(&needle)
+        .or_else(|| src.find(&format!("struct {name}{{")))?;
+    let after = &src[start..];
+    let open = after.find('{')?;
+    let close = after[open..].find('}')? + open;
+    Some(after[open + 1..close].to_string())
+}
+
 /// PR9, canary C-DEGRADED-IS-LOUD.
 ///
 /// A fallback backend or a reduced event mask must be reported as a warning
 /// that names the reduced coverage. Silent degradation is the failure that
 /// turns a monitor into a liability, so the degraded branch may never carry an
 /// OK status.
+/// C-UNKNOWN-IS-NOT-OK (PR23): a check that could not read its evidence
+/// reports `Unknown`, not `Ok`.
+///
+/// Distinct from C-DEGRADED-IS-LOUD, which guards *degraded* branches. The
+/// hazard here is that the all-clear value and the no-data value are usually
+/// the same value: a counter defaulting to 0, an empty command output, a
+/// binary merely existing on disk. Four checks independently collapsed the
+/// two and reported the clean answer.
+#[test]
+fn fail_loud_absent_evidence_is_never_reported_as_ok() {
+    let checks = code_only(&read_surface("src/doctor/checks.rs"));
+
+    // 1. An unreadable or pre-counter metrics.json must not assert coverage.
+    let coverage = rust_function_body(&checks, "check_realtime_coverage").expect(
+        "C-UNKNOWN-IS-NOT-OK breach (PR23): check_realtime_coverage is gone; the \
+         canary can no longer see how absent metrics are reported.",
+    );
+    // Counting Unknown branches is not enough: the function has three, so
+    // flipping any one still leaves two. Each no-evidence branch is checked
+    // by the detail text it carries.
+    for (detail, what) in [
+        ("metrics.json not available", "an unreadable metrics file"),
+        (
+            "does not report event coverage",
+            "a metrics file predating the counters",
+        ),
+    ] {
+        let at = coverage.find(detail).unwrap_or_else(|| {
+            panic!(
+                "C-UNKNOWN-IS-NOT-OK breach (PR23): check_realtime_coverage no longer \
+                 has a branch for {what}; that case has stopped being reported at all."
+            )
+        });
+        let branch = &coverage[at.saturating_sub(200)..at];
+        assert!(
+            branch.contains("CheckStatus::Unknown"),
+            "C-UNKNOWN-IS-NOT-OK breach (PR23): {what} no longer reports Unknown. \
+             0 degraded mounts is itself the all-clear value, so defaulting this \
+             case asserts full event coverage from data that does not exist."
+        );
+    }
+
+    // 2. An unreadable hook verdict must not render as a passing hook.
+    let hook = rust_function_body(&checks, "hook_trigger_check").expect(
+        "C-UNKNOWN-IS-NOT-OK breach (PR23): hook_trigger_check is gone; the canary \
+         can no longer see how an unreadable hook verdict is reported.",
+    );
+    let unknown_arm = hook
+        .split("HookTriggerResult::Unknown")
+        .nth(1)
+        .expect("hook_trigger_check must keep an explicit Unknown arm");
+    let unknown_arm = &unknown_arm[..unknown_arm.len().min(200)];
+    assert!(
+        unknown_arm.contains("CheckStatus::Unknown"),
+        "C-UNKNOWN-IS-NOT-OK breach (PR23): an unreadable hook verdict no longer \
+         reports Unknown. journalctl exits 0 with empty output when it cannot read \
+         the journal, so this arm is the normal case for an operator outside \
+         adm/systemd-journal -- not a passing hook."
+    );
+
+    // 3. `notify-send` existing on disk is not deliverability.
+    let notify = rust_function_body(&checks, "check_notify_send")
+        .expect("C-UNKNOWN-IS-NOT-OK breach (PR23): check_notify_send is gone.");
+    assert!(
+        notify.contains("notification_channel_available"),
+        "C-UNKNOWN-IS-NOT-OK breach (PR23): the Notify check reports on the binary \
+         existing rather than on a channel being reachable. A root daemon with no \
+         session bus would be told its desktop alerts are healthy."
+    );
+
+    // 4. The counters themselves must not default to their all-clear value.
+    let metrics = code_only(&read_surface("src/doctor/mod.rs"));
+    let runtime = struct_body(&metrics, "RuntimeMetrics").expect(
+        "C-UNKNOWN-IS-NOT-OK breach (PR23): RuntimeMetrics is gone; the canary can \
+         no longer see whether absent counters are distinguishable from zero.",
+    );
+    for field in ["fanotify_mark_reduced_coverage", "fanotify_tier"] {
+        let decl = runtime
+            .lines()
+            .find(|l| l.contains(field))
+            .unwrap_or_else(|| panic!("RuntimeMetrics lost the {field} field"));
+        assert!(
+            decl.contains("Option<"),
+            "C-UNKNOWN-IS-NOT-OK breach (PR23): {field} is no longer Option. A \
+             metrics.json written before this counter existed -- exactly what is on \
+             disk right after an upgrade -- would deserialise to the all-clear value \
+             and produce a false full-coverage report."
+        );
+    }
+}
+
 #[test]
 fn fail_loud_degraded_backend_never_reports_ok() {
     let checks = code_only(&read_surface("src/doctor/checks.rs"));
@@ -1548,4 +1665,259 @@ fn proof_ships_promise_set_has_no_unguarded_claims() {
              that traces back to nothing is how promise inflation starts."
         );
     }
+}
+
+// ===========================================================================
+// P1 / PR21, PR22: an explanation is not an acceptance.
+// ===========================================================================
+
+/// PR21, canary C-EXPLANATION-IS-NOT-ACCEPTANCE.
+///
+/// The correlation layer exists to explain detections, not to act on them. It
+/// reads local package-manager evidence and groups raw detections into events;
+/// it must never be able to write the baseline, recompute its signature, or
+/// mark anything accepted. If it could, "verified transaction" would quietly
+/// become "absorbed into the baseline", which is the exact laundering hole
+/// AF-010 closed one layer down.
+///
+/// Guarded as a source scan rather than a behavioural test because the promise
+/// is about capability, not about one code path: a write that exists anywhere
+/// in the module can be reached eventually.
+#[test]
+fn witness_explanation_never_becomes_acceptance() {
+    const FORBIDDEN: &[&str] = &[
+        "baseline_ops::upsert",
+        "baseline_ops::remove_by_path",
+        "baseline_ops::set_config_state",
+        "compute_baseline_hmac",
+        "open_baseline_db",
+        "record_operator_action",
+    ];
+
+    let correlate_dir = manifest().join("src/correlate");
+    let mut files = rs_files_under(&correlate_dir);
+    files.push(manifest().join("src/display/correlate.rs"));
+
+    let mut breaches = Vec::new();
+    for file in &files {
+        if !file.exists() {
+            continue;
+        }
+        let code = shipped_code(file);
+        for token in FORBIDDEN {
+            if code.contains(token) {
+                breaches.push(format!("{}: {token}", rel(file)));
+            }
+        }
+    }
+
+    assert!(
+        !files.is_empty(),
+        "C-EXPLANATION-IS-NOT-ACCEPTANCE breach (PR21): the correlation surface \
+         vanished; this canary is guarding nothing."
+    );
+    assert!(
+        breaches.is_empty(),
+        "C-EXPLANATION-IS-NOT-ACCEPTANCE breach (PR21): the correlation layer \
+         gained the ability to write the baseline. Correlation explains; only an \
+         explicit operator action accepts. Breaches: {breaches:#?}"
+    );
+}
+
+/// PR22, canary C-ACCEPT-REVALIDATES.
+///
+/// `vigil check --accept` observes a path twice: once in the scan that produced
+/// the report the operator read, and once when it writes the baseline. Whatever
+/// the second read finds is what gets signed. This canary asserts the gap is
+/// closed: a path whose content moved between the two is refused, not accepted.
+///
+/// Without this, an attacker who writes to a file after the report is rendered
+/// and before the operator confirms has their bytes recorded as the new
+/// known-good state, and the next scan calls the system clean.
+#[test]
+fn witness_acceptance_refuses_state_the_operator_did_not_review() {
+    use std::sync::Arc;
+    use vigil::acceptance::{revalidate, Revalidation};
+    use vigil::types::{
+        BaselineEntry, BaselineSource, CaptureOpts, ChangeResult, FileSnapshot, Severity,
+        SnapshotOrDeleted,
+    };
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("reviewed-binary");
+
+    let opts = CaptureOpts {
+        force_hash: true,
+        max_file_size: 1024 * 1024,
+        mmap_threshold: 1024 * 1024,
+        baseline_mtime: None,
+        baseline_hash: None,
+    };
+    let snapshot_of =
+        |p: &std::path::Path| match FileSnapshot::from_path(p, &opts).expect("capture") {
+            SnapshotOrDeleted::Snapshot(s) => s,
+            SnapshotOrDeleted::Deleted => panic!("unexpected deletion"),
+        };
+
+    // Baseline: the state before the change the operator will review.
+    std::fs::write(&file, b"the previous known-good content").expect("write");
+    let before = snapshot_of(&file);
+    let baseline = BaselineEntry {
+        id: None,
+        path: file.clone(),
+        identity: before.identity.clone(),
+        content: before.content.clone(),
+        permissions: before.permissions.clone(),
+        security: before.security.clone(),
+        mtime: before.mtime,
+        package: None,
+        source: BaselineSource::AutoScan,
+        added_at: 0,
+        updated_at: 0,
+    };
+
+    // The change the operator reads in the report.
+    std::fs::write(&file, b"what the operator reviewed").expect("write");
+    let change = ChangeResult {
+        path: Arc::new(file.clone()),
+        changes: snapshot_of(&file).diff(&baseline),
+        severity: Severity::Critical,
+        monitored_group: "system".into(),
+        process: None,
+        package: None,
+        package_update: false,
+        disambiguation: None,
+    };
+
+    assert!(
+        revalidate(&change, Some(&baseline), &opts).is_confirmed(),
+        "C-ACCEPT-REVALIDATES breach (PR22): unchanged state must still be acceptable, \
+         otherwise the guard has broken acceptance rather than secured it."
+    );
+
+    // The substitution the guard exists to catch.
+    std::fs::write(&file, b"what an attacker substituted").expect("overwrite");
+
+    let verdict = revalidate(&change, Some(&baseline), &opts);
+    assert!(
+        !verdict.is_confirmed(),
+        "C-ACCEPT-REVALIDATES breach (PR22): content that changed after review was \
+         accepted into the baseline. The operator approved different bytes."
+    );
+    match verdict {
+        Revalidation::Stale { differences } => assert!(
+            differences.iter().any(|d| d.contains("content hash")),
+            "C-ACCEPT-REVALIDATES breach (PR22): refusal must name what moved, \
+             got {differences:?}"
+        ),
+        _ => panic!(
+            "C-ACCEPT-REVALIDATES breach (PR22): substituted content must be reported \
+             as stale, naming the difference"
+        ),
+    }
+}
+
+// ===========================================================================
+// P4 / PR8: the audit trail never lies.
+// ===========================================================================
+
+/// PR8, canary C-AUDIT-HMAC-VERIFIABLE.
+///
+/// An audit entry's HMAC must verify against the key it was signed with. The
+/// writer builds its signing input from the typed `Change` enum; the verifier
+/// rebuilt it by reading raw JSON keys, expecting an externally-tagged shape
+/// that `Change` stopped emitting when it became internally tagged. On a
+/// `BTreeMap`, `obj.keys().next()` then returned the alphabetically first
+/// *field* name -- `"new_hash"` -- which was used as the change type, so the
+/// two sides could never agree and every untampered entry verified as broken.
+///
+/// This serializes a real `Change` rather than a hand-written fixture. The
+/// only existing test of the keyed path used a legacy fixture, which is why a
+/// format change slipped past five consumers without a single failure.
+#[test]
+fn audit_truth_hmac_verifies_on_the_format_actually_written() {
+    use vigil::db;
+    use vigil::types::Change;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let conn = db::open_db_at(&dir.path().join("audit.db"), false).expect("open audit db");
+    db::schema::create_audit_tables(&conn).expect("create tables");
+
+    let key = b"c-audit-hmac-verifiable-canary-key";
+    let mut prev = blake3::hash(b"vigil-audit-chain-genesis")
+        .to_hex()
+        .to_string();
+
+    let changes = serde_json::to_string(&vec![Change::ContentModified {
+        old_hash: "aaa".to_string(),
+        new_hash: "bbb".to_string(),
+    }])
+    .expect("serialize");
+
+    let ts = 1_700_000_000;
+    let path = "/etc/shadow";
+    let severity = "critical";
+    let chain_hash = db::audit_ops::compute_chain_hash(&prev, ts, path, &changes, severity);
+    let data = vigil::hmac::build_audit_hmac_data_v2(
+        ts,
+        path,
+        "content_modified",
+        severity,
+        Some("aaa"),
+        Some("bbb"),
+        &prev,
+    );
+    let hmac = vigil::hmac::compute_hmac(key, &data).expect("compute hmac");
+
+    conn.execute(
+        "INSERT INTO audit_log (
+            timestamp, path, changes_json, severity, hmac, chain_hash,
+            maintenance, suppressed, encoding_version
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, 2)",
+        rusqlite::params![ts, path, changes, severity, hmac, chain_hash],
+    )
+    .expect("insert");
+    prev = chain_hash;
+    let _ = prev;
+
+    let detail = db::audit_ops::verify_chain_detail(&conn, Some(key)).expect("verify");
+    assert!(
+        detail.breaks.is_empty(),
+        "C-AUDIT-HMAC-VERIFIABLE breach (PR8): an untampered entry failed HMAC \
+         verification ({:?}). The verifier and the writer disagree about what was \
+         signed, so every audit entry reads as tampered and the tamper signal is \
+         worthless.",
+        detail.breaks
+    );
+    assert_eq!(detail.valid, 1);
+}
+
+/// PR8, canary C-AUDIT-HMAC-CHECKED.
+///
+/// Signing an entry nobody verifies is theatre. Every production caller passed
+/// `None` for the key, so no shipping code path ever checked a signature:
+/// chain linkage caught content tampering, but the authenticity guarantee HMAC
+/// exists for -- an attacker rewriting `audit.db` into a self-consistent chain
+/// -- was never exercised, while docs/CLI.md said it was.
+#[test]
+fn audit_truth_verify_command_checks_signatures() {
+    let src = read_surface("src/commands/audit.rs");
+    let verify_block = src
+        .split("AuditAction::Verify")
+        .nth(1)
+        .expect("audit verify arm present");
+    // Bound the search to the arm itself.
+    let verify_block: String = verify_block.chars().take(3000).collect();
+
+    assert!(
+        verify_block.contains("load_hmac_key"),
+        "C-AUDIT-HMAC-CHECKED breach (PR8): `vigil audit verify` does not load the \
+         HMAC key, so it cannot check a signature. Signing entries that nothing \
+         verifies provides no tamper evidence."
+    );
+    assert!(
+        !verify_block.contains("verify_chain_detail(&conn, None)"),
+        "C-AUDIT-HMAC-CHECKED breach (PR8): `vigil audit verify` passes None for the \
+         key, skipping signature verification entirely."
+    );
 }

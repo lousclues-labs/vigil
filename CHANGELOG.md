@@ -8,16 +8,735 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+
+## [1.15.0] - 2026-09-22
+
+Two pieces of work, one release.
+
+The first was planned: `vigil check` rendered a single authorized package
+update as dozens of unrelated incidents, and this release adds a correlation
+layer that explains them as one event without weakening the observation
+underneath.
+
+The second was not. Auditing that new layer against a live system found it was
+inert — it passed every test and produced nothing on a real machine. Widening
+the same audit to the rest of the tree found the pattern was not confined to
+new code. Twenty defects were closed in total, and the majority share one
+shape: **a failure that could not be distinguished from a clean result.**
+
+### The reports that started it
+
+- A Snap auto-refresh took `desktop-security-center` from revision 150 to 188
+  and `prompting-client` from 204 to 228. snapd removed the two obsolete
+  revisions, which deletes their generated systemd mount units and the
+  `multi-user.target.wants` and `snapd.mounts.target.wants` symlinks pointing
+  at them. **Six HIGH deletions for one completed transaction.**
+- An authorized `apt upgrade` of 22 packages produced **42 alerts**: 39
+  package-owned files at CRITICAL, and three HIGH detections on `/etc/systemd`
+  symlinks. Every subsequent check agreed the system was fine — apt and dpkg
+  logs matched, `dpkg -V` was silent, installed versions matched the
+  repositories, rsyslog was healthy.
+
+Every one of those detections was a correct raw observation. The presentation
+was the defect. Forty-two independent critical incidents is not a more careful
+report than one explained transaction; it is a less usable one, and an operator
+who learns to dismiss the batch will dismiss the one that matters.
+
+Investigating the three `/etc/systemd` alerts turned up the reason they looked
+independent, and it was not cosmetic: Vigil opens files with symlinks followed,
+so a symlink's inode and content fields described its *target*. Replacing the
+target gave every symlink pointing at it a new inode, and each one was reported
+as though the symlink itself had been rewritten. The same defect reported a
+symlink with a missing target as a **deletion of the symlink**, and could not
+see a symlink being repointed at all when the new link text resolved to the
+same file.
+
+The governing rule for the new layer: **reduce alert fatigue by adding verified
+causality, never by weakening observation or silently trusting updates.** No
+detection is dropped, no severity is rewritten, and nothing reaches the
+baseline without an explicit operator decision. PR18 ("package ownership is
+never treated as proof of package authorship") governs it as much as it
+governed the 1.14.0 verification work: a path mapping to a package remains one
+signal among several, never a conclusion.
+
+### The audit that followed
+
+The correlation layer shipped inert on its first pass. `snap changes` prints
+relative timestamps ("yesterday at 13:24 EDT") unless `--abs-time` is passed —
+four whitespace tokens where the parser expected one — so every column shifted
+and no snap transaction was ever built. Every unit test passed, because the
+fixtures encoded what the author assumed the tool emits rather than what it
+does.
+
+Auditing for that specific shape found more of it, and not only in new code:
+
+- The APT window was compared against a file's **mtime**, but dpkg restores the
+  mtime recorded in the package archive — the upstream build date. Measured on
+  a live host, **0 of 42** files shipped by a freshly upgraded package fell
+  inside the transaction window by mtime; **42 of 42** did by ctime. The window
+  is a hard filter, so the entire APT path produced nothing.
+- `vigil doctor` decided package-hook outcomes by grepping the journal message
+  for "failed" or "error". The hooks' most serious message — *"vigild is
+  running but the vigil binary is missing; baseline NOT refreshed … Vigil now
+  reports inconsistent state"* — contains neither, and is logged at
+  `daemon.err`. Doctor reported **"last trigger ok"**.
+- The audit HMAC was built by the writer from the typed `Change` enum and
+  rebuilt by the verifier from raw JSON keys, expecting a representation
+  `Change` had stopped emitting. The two could never agree, so **every
+  untampered entry verified as broken** — concealed by the fact that no
+  shipping code path ever passed a key, so no signature was ever checked at
+  all.
+
+A third theme emerged late, during a pre-commit audit: the release's own
+principle — absent evidence must not be rendered as clean evidence — had been
+applied to the new correlation code but never turned back on the existing
+diagnostics. Four of them could not distinguish "I could not check" from
+"nothing is wrong", because in each the all-clear value and the no-data value
+are the same value: a counter defaulting to 0, an empty `journalctl` output, a
+binary merely existing on disk. An unprivileged `vigil doctor` was the common
+trigger, not an exotic failure.
+
+None of the four was caught by a test, and a grep-based coverage check
+reported all four as covered. Only reverting each fix and watching the suite
+stay green showed otherwise — the same technique that then caught a newly
+written canary passing through a breach it was written to catch. That
+measurement error is recorded in AF-019 because it is more durable than the
+bugs it hid: coverage is what fails when the fix is removed, not what greps
+near it.
+
+Promises added: PR21 (an explanation never becomes an acceptance), PR22 (what
+enters the baseline is what the operator reviewed), PR23 (absent evidence is
+never reported as a clean result). PR8 gained two canaries it had always
+claimed. Findings closed: AF-017, AF-018 and AF-019; the first two are also
+recorded as VIGIL-VULN-078 and VIGIL-VULN-079. The drift suite that proves
+every canary fails on breach grew from 26 cases to 34, with zero theater.
+
+---
+
+### Added
+
+- **A derived correlation-event model.** New module
+  [src/correlate/](src/correlate/) (seven files) maps raw detections onto local
+  package-manager transactions. A `CorrelatedEvent` records the transaction
+  window, identifier, initiating actor where a log states one, affected
+  packages with their version or revision transitions, completion status,
+  verification results, evidence sources, collector failures, and a reference
+  to every raw detection it covers.
+
+  It is *derived* data. Events are recomputed from evidence rather than stored,
+  reference detections by identity instead of containing them, and are never
+  written into the baseline or the audit chain as a substitute for the original
+  records. Event identifiers are deterministic length-prefixed BLAKE3 over the
+  evidence, so the same evidence yields the same 16-character id on any
+  machine — which is what lets an acceptance receipt name the event an operator
+  acted on.
+
+- **APT/dpkg transaction correlation.** [src/correlate/apt.rs](src/correlate/apt.rs)
+  parses `/var/log/apt/history.log` and `/var/log/dpkg.log` (plus the most
+  recent uncompressed rotation of each) for transaction windows and per-package
+  completion, and `/var/lib/dpkg/status` for installed state. Only
+  `Status: install ok installed` counts as a complete install;
+  `half-configured` does not. A high-confidence APT event requires the changes
+  to fall inside the transaction window, each explained path to be owned by a
+  package the transaction touched or be a known alias to one, the package to
+  have reached a complete state, the transaction to have completed, content to
+  match installed package metadata where a digest exists, versions to agree
+  with the transaction record, and nothing else in the window to be
+  unaccounted for.
+
+- **Snap transaction correlation.** [src/correlate/snap.rs](src/correlate/snap.rs)
+  reads `snap changes --abs-time` and `snap tasks --abs-time`, and the on-disk
+  revision state under `/snap/<name>`. Generated mount-unit names are decoded
+  through systemd's path escaping — `snap-desktop\x2dsecurity\x2dcenter-150.mount`
+  is the mount point `/snap/desktop-security-center/150` — which identifies
+  both the snap and the revision that was removed, including from a
+  `*.target.wants` symlink. The Snap refresh above now reads as one event
+  covering all six deletions, with each deletion retained individually beneath
+  it.
+
+  `--abs-time` is required, not cosmetic: snapd otherwise prints relative times
+  ("yesterday at 13:24 EDT"), four whitespace tokens where one is expected,
+  shifting every later column. A row in that shape is rejected and reported
+  rather than accepted as a transaction dated to the epoch. A snap artifact's
+  name proves which revision it belongs to, not when it changed, so a surviving
+  timestamp is checked against the transaction window and a deleted artifact's
+  window check is reported unavailable rather than passed.
+
+- **An event-first presentation layer.**
+  [src/display/correlate.rs](src/display/correlate.rs) renders a concise event
+  summary above the raw detail it explains. Raw severity counts appear on every
+  event under a heading that says what they are:
+
+  ```
+  Raw impact (unchanged by correlation)
+    CRITICAL  39
+    HIGH       3
+
+  Disposition
+    Explanation: verified package transaction
+    Baseline:    not accepted — correlation never updates the baseline
+  ```
+
+  Three vocabularies are kept deliberately separate: raw filesystem severity,
+  transaction verification, and baseline acceptance state. The verbose view
+  still lists every raw detection.
+
+- **Confidence as a separate dimension**, with no value meaning "safe":
+  `verified package transaction`, `strongly correlated`, `partially explained`,
+  `unverified`, `conflicting evidence`. Events needing attention sort first and
+  conflicting evidence outranks everything. A check that could not run renders
+  `?`, never `+`, because "we could not check" and "we checked and it was fine"
+  are opposite statements.
+
+  Confidence accounts for *which dimension* changed, not just whether content
+  verified. `dpkg --verify` compares md5sums and never examines mode, owner,
+  capabilities, xattrs or file type, and `chmod` moves ctime rather than mtime
+  — so a setuid bit added to a package binary after an upgrade would otherwise
+  present as a verified package change. A changed metadata dimension caps an
+  event at `partially explained`; a moved privilege boundary (setuid/setgid or
+  world-writable gained, capabilities altered, ownership involving root, file
+  type changed) forces `conflicting evidence` and names the path. A
+  content-only change to a package file is unaffected and still reads as one
+  verified event.
+
+- **Symlink object tracking.** `FileIdentity` gains `link_text`, `link_inode`
+  and `link_device` — the raw `readlink(2)` text and the `lstat(2)` identity of
+  the symlink itself — alongside the existing canonical target and the
+  target-derived identity. Two `Change` variants carry the distinction:
+  `LinkTextChanged` (the link was rewritten) and `SymlinkTargetReplaced` (the
+  link object is unchanged and the file it resolves to was replaced).
+
+- **An acceptance guard.** New module [src/acceptance.rs](src/acceptance.rs).
+  `revalidate` re-reads the path immediately before the baseline write and
+  re-runs the same comparison the scan ran, against the same baseline entry,
+  requiring the resulting change list to equal the one the operator reviewed.
+  Checking only the dimensions the detection happened to report would leave
+  every other dimension open: a detection of a changed xattr would let an
+  attacker swap the file's *contents* in the meantime, and the fresh snapshot
+  is what gets written. A path with no baseline entry cannot be re-diffed
+  against anything and is refused rather than accepted.
+
+- `vigil check --no-correlate` skips correlation and reports raw detections
+  only.
+
+- `AuditEventPath::BaselineAcceptance` (`vigil:baseline_acceptance`): every
+  acceptance now writes an HMAC-chained audit record naming the exact raw
+  detections accepted, the count refused as stale, the correlated event ids
+  that were on screen with their confidence and evidence sources, and the
+  baseline fingerprint before and after.
+
+- `vigil_evaluation_errors_total`: events the realtime worker could not
+  evaluate. See the corresponding fix below.
+
+- [docs/CORRELATION.md](docs/CORRELATION.md): raw detection versus correlated
+  explanation, why a verified transaction is not a trusted one, confidence
+  semantics, how APT and Snap evidence is gathered, behaviour on incomplete
+  evidence, symlink object versus target semantics, acceptance and stale-scan
+  protection, privacy, performance, and a troubleshooting table for collector
+  failures. Both worked examples above are documented end to end.
+
+- Tests: [tests/correlation_engine_tests.rs](tests/correlation_engine_tests.rs)
+  (35, fixture-driven, no package manager required),
+  [tests/correlation_integrity_tests.rs](tests/correlation_integrity_tests.rs)
+  (15, the boundary correlation must not cross),
+  [tests/symlink_semantics_tests.rs](tests/symlink_semantics_tests.rs) (12,
+  against a real filesystem), and
+  [tests/external_format_contracts.rs](tests/external_format_contracts.rs)
+  (22), which pins the exact argument vectors sent to external tools alongside
+  fixtures captured verbatim from real tool output.
+
+  That last file exists because fixture tests proved insufficient: they verify
+  a parser handles the input it is *given*, not that the code asks the tool for
+  that input. Invocation and format are now pinned together, and each fixture
+  records where it was captured from.
+
+- Benchmarks `correlate_apt_22pkg_42detections`,
+  `correlate_apt_500pkg_2000detections` and `symlink_alias_diff`.
+
+### Changed
+
+- **Baseline schema v3.** Three nullable columns — `link_text`, `link_inode`,
+  `link_device` — are added by an additive migration that runs on open. No
+  existing value is rewritten and no row is dropped.
+
+  **The baseline HMAC field set is unchanged.** The new columns sit outside the
+  thirteen signed fields, so a baseline signed before v3 still verifies
+  afterwards and nothing is silently resigned. This is a deliberate boundary,
+  not an oversight: a symlink's *canonical target* is signed, and any semantic
+  retarget moves it, so the new columns add attribution granularity on top of a
+  field that remains covered. `migrate_v1_to_v2` now continues to v3, so a
+  migration always lands on the version the running build reads rather than
+  leaving a caller holding a half-migrated table. Read-only openers cannot
+  migrate, so they fall back to a pre-v3 projection rather than failing with
+  `no such column`.
+
+- A symlink whose object is provably unchanged and whose target was replaced is
+  now reported as an alias of that target's change rather than as an
+  independent replacement. The alias claim requires positive evidence on every
+  point: both sides are symlinks, both carry link data, link text and link
+  identity are identical, the canonical target is unchanged, and the target
+  inode actually moved. Entries carried over from a pre-v3 baseline have no
+  link data and are reported with the older semantics — absence of evidence is
+  never read as sameness.
+
+- `vigil check --accept` reports refusals explicitly:
+
+  ```
+  REFUSED /usr/bin/gs: changed since you reviewed it
+          content hash 9f2a1c4e8b31 -> 04ff1a9e7c22
+
+  ● 38 accepted, 1 refused as stale, 0 failed
+  ```
+
+- `vigil audit verify` now loads the HMAC key when `security.hmac_signing` is
+  enabled and actually checks signatures, and says so plainly when the key
+  cannot be loaded rather than silently checking less.
+
+- `vigil hooks verify` checks the apt payload scripts, not only the loader, and
+  reports a script that has lost its executable bit.
+
+- The correlated view never uses green and never says "safe", "clean",
+  "trusted" or "harmless". A verified transaction is a statement about
+  provenance, not about whether the delivered software is benign, and a test
+  asserts the output does not drift into safety language.
+
+- Correlation is not an input to the exit code. `vigil check` still exits on
+  raw severity, so an explained transaction does not turn a CRITICAL scan into
+  a clean one.
+
+- **One name per change dimension.** `Change::name()` is now the single source
+  of truth for the wire vocabulary. Three byte-identical `change_to_name`
+  helpers existed in `src/alert/mod.rs`, `src/wal/audit_writer.rs` and
+  `src/wal/sink_runner.rs`, so adding a `Change` variant required editing all
+  three; missing one would make the audit log and an alert sink describe the
+  same detection differently. A fourth mapping, `primary_change_name`, was dead
+  code that returned `"modified"` where every other mapping said
+  `"content_modified"` — the divergence went unnoticed precisely because
+  nothing called it. A fifth, in the audit decoder, had already drifted and is
+  the subject of AF-018 below. An architecture invariant now fails if the
+  vocabulary is duplicated again.
+
+- The deterministic half of alert suppression (a package-owned change inside a
+  maintenance window) has one definition, shared by the alert dispatcher, the
+  WAL sink runner, and the audit writer.
+
+- `journalctl` is resolved to an absolute path and run with a timeout.
+  `src/util/journald.rs` invoked it through `PATH` and without one, so anything
+  earlier on `PATH` could answer a question Vigil asks about its own health,
+  and a blocked journald could hang a doctor run. The resolver that already
+  existed in `src/commands/log.rs` is now shared rather than duplicated.
+
+- `PackageVerification` gains `Ord`, `Hash` and `Serialize`. The correlation
+  layer reuses it verbatim rather than inventing a second vocabulary, so
+  `unknown` keeps meaning "no digest to check against" (AF-013) everywhere.
+
+- The `C-NO-ACTUATION` canary's allowlist now names the three files that reap a
+  subprocess they spawned themselves on timeout. The promise is "Vigil never
+  signals a process it did not spawn"; the canary previously encoded that as a
+  single filename, and its doc comment now states the rule instead.
+
 ### Fixed
 
-- `aur/PKGBUILD` had drifted to `sha256sums=('SKIP')` while the package
-  published on the AUR has pinned a real digest since 1.11.x. Copying the
-  in-repo version to the AUR would have silently disabled integrity
-  verification of the release tarball for every Arch user, which is a poor
-  look on a file integrity monitor. The repo copy is now synced with what is
-  published, and an invariant test asserts the digest is a real 64-character
-  hex value, that `.SRCINFO` agrees with `PKGBUILD` on version, digest and
-  source tag, and that the declared `install=` script exists.
+#### Symlink object versus symlink target
+
+- **A broken symlink was reported as a deleted file.** `FileSnapshot::from_path`
+  treated a failure to open as a deletion, so a symlink whose target was
+  removed — the link itself still present on disk — was reported as though the
+  link had been unlinked. Unresolvable links are now captured from their own
+  `lstat` identity with a canonical target of `None`, which makes the
+  transition between resolving and non-resolving a visible change rather than a
+  phantom deletion. Symlink loops (`ELOOP`) took the same path and are fixed
+  with it.
+
+- **A repointed symlink could be invisible.** Only the fully resolved canonical
+  target was recorded, so rewriting a link from `/lib/x` to `../lib/x` — same
+  destination, different link object — produced no detection at all. Link text
+  is now compared directly when both sides carry it.
+
+- **`/etc/systemd` symlinks were reported as independently replaced** whenever
+  a package replaced the unit file they resolve to. This was the three HIGH
+  detections in the `apt upgrade` report above, and it scaled with the number
+  of aliases rather than with the number of real changes.
+
+- **`EACCES` on a symlink was treated as "does not resolve".** A link whose
+  target sits in a directory the daemon cannot read was captured as an
+  unresolved link, baselining a synthetic hash derived from the link text. Every
+  later scan recomputed the same value, so the target could be replaced freely
+  — a permanent silent blind spot where the previous code raised a loud error.
+  Only `NotFound` and `ELOOP` take that path now.
+
+- Snapshot capture of a symlink performs `lstat`, `readlink`, `lstat` and
+  retries on inode mismatch, so a link replaced between the two syscalls cannot
+  produce a snapshot blending two different objects. Persistent inconsistency
+  is returned as an error rather than recorded as fact.
+
+#### Package-manager evidence read against reality
+
+- **The transaction window was checked against the wrong timestamp, and APT
+  correlation never fired on a real system.** The window test compared a file's
+  mtime, but dpkg restores the mtime recorded in the package archive — the
+  upstream build date — rather than stamping install time. Measured on a live
+  host, a freshly upgraded `/usr/bin/gs` carried `mtime=2026-09-18` for a
+  transaction that ran on `2026-09-22`, and across every regular file
+  ghostscript ships, **0 of 42 fell inside the window by mtime while 42 of 42
+  did by ctime**. Because the window is a hard filter, no event was ever built:
+  the layer was inert on real machines while every fixture test passed, the
+  fixtures having supplied a timestamp inside the window.
+
+  Window matching now uses ctime, which is also the harder of the two to forge:
+  `utimes(2)` sets mtime to any value, so an attacker could otherwise place a
+  tampered file inside a transaction window and borrow its explanation. Nothing
+  sets ctime directly.
+
+- **`dpkg -S` output was parsed as a package name in three shapes it never
+  has**, in both the batched and the per-file query paths. Diversion records
+  (`diversion by libc6 from: /lib64/ld-linux-x86-64.so.2`, with no owner line
+  at all when a path is diverted away) became the package name, which
+  `dpkg --verify` then rejects outright — stranding the path at `Unknown`
+  forever and rendering the literal prose to the operator as
+  `owned by 'diversion by libc6 from'`. A multi-owner path (`dpkg -S /etc/init.d`
+  lists 35 packages) yielded all of them as one package. And because `dpkg -S`
+  matches globs rather than looking up paths, a filename containing `*`, `?` or
+  `[` — an attacker's free choice — returned entries for unrelated files that
+  were attributed to the queried path. Diversion records are now skipped, names
+  are normalized, candidates containing whitespace are rejected as a second
+  layer, and the per-file path matches on the path dpkg echoes back.
+
+- **Package names never matched between the sources that had to be compared.**
+  `dpkg -S` reports multi-arch packages as `libc6:amd64` and the bulk cache
+  derives names from `/var/lib/dpkg/info/*.list` filenames, which carry the
+  same qualifier — while `/var/lib/dpkg/status` and `/var/log/apt/history.log`
+  both say `libc6`. On the reference host **1430 of 2842** installed packages
+  are arch-qualified, so for over half of them the baseline's `package` column
+  and every ownership lookup disagreed with the transaction records they were
+  compared against, and correlation failed for every shared-library package in
+  an upgrade. One shared helper now normalizes all of them.
+
+- **`automatic` was read as a version.** APT appends `, automatic` to entries
+  installed as a dependency (`libsuil-0-0:amd64 (0.10.24-1, automatic)`). The
+  parser took the two-element list as `(old, new)`, making the recorded new
+  version the literal string `automatic`, which then could not equal the
+  installed version — so an ordinary `apt install` graded as **conflicting
+  evidence**. A false alarm on precisely the workflow this release exists to
+  explain.
+
+- **snapd's trailing log output was reported as parse errors.** `snap tasks`
+  prints a dotted separator and its own log lines after the task table.
+  Counting those as malformed task rows produced a parse-error warning on every
+  healthy refresh, and an error that always fires is one an operator learns to
+  ignore.
+
+- **An unlinked snap revision was filed as a linked one.** `SnapTaskKind` tested
+  `contains("available")` before `contains("unavailable")`, and "unavailable"
+  contains "available". A retiring revision was recorded as the new one, which
+  breaks attribution of the artifacts that revision left behind.
+
+#### Reporting that could not tell a failure from a clean result
+
+- **A failed package-manager hook was reported as "ok".** `vigil doctor`
+  decided hook outcomes by asking whether the journal message contained
+  "failed" or "error". The hooks' most serious message — *"vigild is running
+  but the vigil binary is missing; baseline NOT refreshed … Vigil now reports
+  inconsistent state"* — contains neither, and is logged at `daemon.err`. The
+  hooks have always set a syslog priority; that verdict is now read via
+  `--output=json` instead of guessed from prose.
+
+- **The two hook-status branches were byte-identical apart from three
+  strings.** The pacman and apt arms of `check_hooks` each carried their own
+  copy of the trigger-verdict mapping, so the `Unknown` correction below had to
+  be made twice and could drift apart silently afterwards. Both now call one
+  `hook_trigger_check`, parameterised by a `HookLabels` constant per backend.
+
+- **An unreadable journal was reported as a healthy hook.** journalctl exits 0
+  with empty output when it cannot read the journal — the normal case for an
+  operator outside `adm`/`systemd-journal`, and after a reboot under
+  `Storage=volatile`. That was read as "never triggered" and rendered `Ok`.
+  Empty output is now disambiguated, and `HookTriggerResult::Unknown` maps to
+  `CheckStatus::Unknown` rather than `Ok`.
+
+- **An unreadable metrics file was reported as full event coverage.**
+  `read_metrics()` returning `None` defaulted the degraded-mount counter to 0,
+  which is exactly the all-clear value, so doctor printed `full event coverage
+  on all mounts (tier: unknown)` — asserting coverage from the same absent data
+  that produced the "unknown". It now reports `Unknown`.
+
+  The same defect existed one level down, for a file that *is* readable but
+  predates the counters: `RuntimeMetrics` marked both coverage fields
+  `#[serde(default)]`, so a `metrics.json` written by an older daemon — exactly
+  what is on disk immediately after an upgrade, until the coordinator's next
+  60-second tick — deserialised to 0 degraded mounts and produced the same
+  false all-clear. Both fields are now `Option<u64>`, and an absent counter
+  reports `Unknown`. A test pins the writer/reader field-name contract between
+  `MetricsSnapshot` and `RuntimeMetrics` so a rename on either side fails
+  loudly instead of becoming a permanent silent `Unknown`.
+
+- **A permanently broken desktop channel never degraded the daemon.**
+  `DbusSink` used `.status()` and returned `Ok(())` unless the process failed
+  to *spawn*. A `notify-send` that ran and exited non-zero was treated as
+  success. Since `SinkRunner` keys its failure accounting and the
+  `AlertSinkFailing` degraded state entirely off `Err`, the desktop sink was
+  the one sink that could never report itself broken: a machine that had
+  delivered zero notifications since boot still looked healthy. It now returns
+  an error carrying notify-send's own stderr.
+
+  Reporting those failures honestly required separating two cases that both
+  produced a non-zero exit. A root daemon on a headless host has no session bus
+  and no display, so delivery is *structurally impossible* — and because
+  `alerts.desktop_notifications` defaults to `true`, counting that as a failure
+  would have driven every headless deployment into `AlertSinkFailing` on
+  upgrade, devaluing a state that should mean something is genuinely wrong. The
+  sink is therefore not registered at all when no bus or display is reachable;
+  the daemon logs one startup warning naming the consequence, and `vigil
+  doctor` reports `Warning` rather than the previous `Ok` (which was derived
+  from nothing more than `notify-send` existing on disk). When a channel *is*
+  reachable, a failed delivery is a real error and is counted as one.
+
+- **Explicitly configured alert sinks that failed to initialise were dropped in
+  silence.** `SinkRunner::new` used `if let Ok(sink)` with no `else` for the
+  JSON log and remote syslog sinks. `AlertDispatcher::new` warns in the same
+  situation, but `SinkRunner` is the constructor the daemon runs once the WAL
+  is enabled. A missing log directory or an unresolvable syslog host meant the
+  operator's chosen destination was absent for the life of the process, and an
+  empty alert file reads exactly like "nothing was detected".
+
+- **Baseline tamper detection could be off while the config said it was on.**
+  `validate_config` only checks that the HMAC key file exists, while
+  `load_hmac_key` also rejects group- or world-readable permissions — so a key
+  at mode 0644 passes validation and fails to load. Both the baseline build and
+  the daemon's startup verification used `if let Ok(...)` with no `else`: no
+  baseline HMAC was stored, verification was skipped entirely, and the daemon
+  reported Healthy. Both sites now log at error, and a skipped verification
+  degrades the daemon instead of passing quietly.
+
+- **Worker evaluation errors were counted as successfully processed.**
+  `events_processed` was incremented before evaluation, and the error arm
+  logged a warning and returned. A file that could not be hashed, opened or
+  stat'd is neither clean nor changed: it was not examined. `vigil status`
+  showed the event handled with zero errors and zero detections, so "we checked
+  it and it was fine" and "we could not look at it" were indistinguishable. The
+  panic arm immediately below has always recorded a metric *and* a WAL record;
+  the ordinary-error arm now has a counter and logs the path it failed to
+  check.
+
+- **Baseline walk errors were invisible while the operator-facing error count
+  stayed at zero.** `walk_files` discarded its own failures at `debug` level and
+  never touched `group_errors`. A `read_dir` failure prunes the entire subtree
+  — nothing beneath it is visited, counted as a file, *or* counted as an error
+  — so `vigil init` on a host with an unreadable `/etc/ssl/private` reported
+  files baselined with no capture errors while that subtree went unmonitored.
+  Walk failures are now counted and logged at warning.
+
+- **Audit entries lost on retry were not counted by the counter built for
+  exactly that.** The retry buffer was drained with `mem::take` and entries that
+  failed again were dropped, without incrementing `audit_entries_lost` — which
+  the buffer-full path forty lines above does increment for the same class of
+  loss. A transient DB failure that persisted meant every buffered detection
+  was gone with `vigil_audit_entries_lost_total` reading zero.
+
+- **Two tamper counters were exported to Prometheus and never incremented.**
+  `vigil_detections_wal_tampered_total` and
+  `vigil_wal_entries_rejected_hmac_total` were defined, snapshotted and
+  exported, but the WAL rejection sites that should feed them only logged. A
+  monitoring rule of the form `... > 0` could never fire while the scanner was
+  actively rejecting forged entries.
+
+- **The audit log's `suppressed` column was always false in the WAL path.**
+  Suppressed detections *were* audited — the write happens before suppression is
+  evaluated, which is the correct ordering — but the recorded flag contradicted
+  what happened. The deterministic part of the rule now has one definition,
+  shared by the alert dispatcher, the sink runner, and the audit writer, which
+  records the verdict. Cooldown and rate limiting remain timing-dependent
+  decisions made later and are deliberately not claimed by this column.
+
+#### Detection and audit integrity
+
+- **A WAL entry this build could not decode was silently dropped, then erased.**
+  In `scan_entries_from`, a record whose payload failed to deserialize was
+  skipped with a bare `continue` — the only unannounced rejection in a function
+  that warns on CRC gaps and errors on HMAC failures. The entry had already
+  passed CRC and HMAC, so it was authentic and undamaged; only its schema was
+  unreadable, which is what a `DetectionRecord` change across an upgrade looks
+  like. Because `truncate_consumed` rebuilds the WAL from whatever the scanner
+  returns, the record was then deleted from disk within 60 seconds. Real
+  detections would vanish from the audit log and every alert sink with nothing
+  logged and no counter moved. Such entries are now logged at error and carried
+  forward by compaction rather than discarded.
+
+- **An overlapping exclusion rule disabled a broader one.** Prefix matching
+  checked only the two entries adjacent to the binary-search insertion point,
+  but a non-matching entry can sort *between* the matching prefix and the path.
+  With `["/var/*", "/var/cache/*"]`, `/var/log/syslog` was not excluded:
+  `idx - 1` was `/var/cache/` and `idx == len`, so `/var/` was never tested.
+  Adding a narrower rule silently stopped a broader one from matching, and paths
+  the operator could see were excluded got scanned and alerted on. The shipped
+  defaults contain no overlapping pair, so this was dormant out of the box and
+  fired only on operator-added rules.
+
+- **`vigil hooks verify` reported "all installed hooks match canonical" while
+  never checking the scripts that hold the apt hook's logic.** The only apt
+  artifact verified was `/etc/apt/apt.conf.d/99vigil`, an 888-byte loader that
+  delegates to `/usr/lib/vigil/apt-pre.sh` and `apt-post.sh` behind
+  `test -x … || true`, so a missing or modified script fails silently. The
+  pacman hooks carry their logic inline, so comparing the file really does
+  verify behaviour there; the same check was applied to apt unchanged. Both
+  payload scripts are now compared against their canonical contents, and a
+  script that has lost its executable bit — a silent no-op behind `test -x` —
+  is reported as drift.
+
+- Packaging: `aur/PKGBUILD` had drifted to `sha256sums=('SKIP')` while the
+  package published on the AUR has pinned a real digest since 1.11.x. Copying
+  the in-repo version to the AUR would have silently disabled integrity
+  verification of the release tarball for every Arch user, which is a poor look
+  on a file integrity monitor. The repo copy is now synced with what is
+  published, and an invariant test asserts the digest is a real 64-character hex
+  value, that `.SRCINFO` agrees with `PKGBUILD` on version, digest and source
+  tag, and that the declared `install=` script exists.
+
+### Security
+
+- **`vigil check --accept` could sign unreviewed bytes into the baseline.**
+  ([VIGIL-VULN-078](docs/VULNERABILITIES.md), AF-017, closed by PR22.)
+  Acceptance made two separate observations of every path: the scan that
+  produced the report the operator read, and a fresh snapshot taken at write
+  time. Whatever the second read found was what got written. An attacker able
+  to modify a file in that interval — after the report was rendered, before the
+  operator confirmed — had their content accepted as the new known-good state
+  and signed into the baseline, and the next scan reported the system as clean.
+
+  Acceptance now revalidates by re-running the same comparison the scan ran,
+  against the same baseline entry, and requiring the resulting change list to
+  equal the one the operator reviewed. A path that moved is refused and
+  reported; the baseline is not written for it. The snapshot that passed
+  revalidation is the one committed, so no third read can slip between the
+  check and the write.
+
+  A verified correlated explanation does not relax this. Explanation and
+  acceptance are independent dimensions, and a test asserts that a fully
+  verified transaction still cannot license accepting bytes nobody reviewed.
+
+- **The audit HMAC was signed by one representation and verified against
+  another, and nothing ever checked a signature anyway.**
+  ([VIGIL-VULN-079](docs/VULNERABILITIES.md), AF-018, PR8.) `Change` serializes
+  internally tagged (`{"type":"content_modified",...}`), but five consumers
+  still read the older externally-tagged shape via `obj.keys().next()` — which
+  on a `BTreeMap` returns the alphabetically first *field* name, `"new_hash"`,
+  and used it as the change type. The writer builds its signing input from the
+  typed enum, so writer and verifier could never agree: **every untampered
+  entry verified as broken**.
+
+  It went unnoticed because no production caller ever passed a key — signatures
+  were computed, stored, and checked by nothing, while `docs/CLI.md` said
+  otherwise. Chain-hash linkage still caught content tampering, so the audit log
+  was not defenceless, but the specific threat HMAC exists for — an attacker
+  rewriting `audit.db` into a *self-consistent* chain — was never tested for.
+  Fixing either half alone would have made it worse: a correct caller over a
+  broken decoder reports 100% chain breaks on healthy databases.
+
+  The same root cause corrupted four operator-facing outputs, including
+  `summarize_changes` printing `"new_hash"` as a change kind,
+  `short_change_description` returning `"changed"` for every variant, and
+  `vigil why` emitting one bogus row per JSON field.
+
+- **Untrusted paths are neutralized before reaching the terminal.**
+  `sanitize_for_terminal` and `sanitize_path` in
+  [src/display/format.rs](src/display/format.rs) escape C0/C1 controls, DEL,
+  and the bidirectional overrides and isolates used in Trojan Source attacks.
+  Filenames are attacker-controlled on any system where an attacker can create
+  a file, and `vigil check` previously printed them raw: a crafted name could
+  clear the screen or reposition the cursor, and rewrite a report around the
+  detection that named it. Both the raw view and the correlated view are
+  covered, since they render into the same report and a gap in either is a gap
+  in both.
+
+- A crafted systemd unit filename could abort `vigil check`. The escape decoder
+  sliced the unit name at `i+2..i+4`, which panics when those offsets land
+  inside a multi-byte character rather than on a boundary. Decoding now operates
+  on bytes.
+
+- Collectors treat every value they read — package names, versions, command
+  lines, unit names, log text — as untrusted input. Subprocesses run with
+  argument arrays and timeouts and never through a shell; snap names are
+  validated against a strict character set before any path join, so a crafted
+  name cannot traverse; log parsing is size-bounded.
+
+### Performance
+
+Correlation runs only in `vigil check`, only when that scan found changes, and
+never in the daemon, the filesystem watcher, or the incremental scanner. A
+running `vigild` is unaffected.
+
+Three bounds were added after measurement, not assumed:
+
+- **Verification is scoped to packages a candidate transaction names.**
+  `dpkg --verify` walks every file in a package, so verifying 42 changed paths
+  spread across ~40 packages cost **1.8 s**. Verification corroborates a
+  transaction's claim and cannot change attribution for a package with no
+  transaction, so those runs were pure waste: **1.8 s to 182 ms**.
+- **Evidence collection short-circuits.** If no changed path is package-owned
+  and none is snap-related, no logs are read and no package manager is
+  consulted. snapd is queried only when a snap artifact actually changed, and
+  follow-up `snap tasks` invocations are capped, so a machine without snaps pays
+  nothing.
+- **Log reads are capped at 4 MiB and read from the tail**, with the partial
+  leading line discarded. Reading the head of a large `dpkg.log` would have
+  parsed years-old history and missed the transaction that explains the current
+  scan. Truncation is reported as truncation; compressed rotations are not read
+  and that gap is stated rather than allowed to look like "no transaction".
+
+Ownership for all changed paths is resolved in one batched query. Nothing in
+the layer runs a package-manager subprocess per file.
+
+| Benchmark (engine only) | Time |
+|---|---|
+| `correlate_apt_22pkg_42detections` | ~21 µs |
+| `correlate_apt_500pkg_2000detections` | ~1.5 ms |
+| `symlink_alias_diff` | ~141 ns |
+
+### Upgrade notes
+
+- The baseline migrates to schema v3 automatically on first open. The migration
+  is additive and no existing signed baseline is invalidated or resigned.
+  Entries carried over from a pre-v3 baseline carry no symlink object data until
+  their next scan and are compared with pre-v3 semantics until then.
+- A daemon with `security.hmac_signing = true` and an unloadable key file (for
+  example mode 0644) now reports **Degraded** rather than Healthy. This is a
+  visible behaviour change on hosts where baseline verification had silently
+  been inactive.
+- `vigil doctor` may newly report `Unknown` for hook status or real-time
+  coverage where it previously reported `Ok`. That is the same system state,
+  described accurately: those checks could not read the journal or the metrics
+  file and were asserting a clean result from absent data.
+- `vigil hooks verify` may newly report drift on the apt payload scripts. It was
+  not checking them before.
+- The desktop notification sink now reports delivery failures. Headless hosts
+  do **not** need a config change: the sink is skipped when no session bus or
+  display exists, with one startup warning and a `doctor` warning in place of
+  the previous silent no-op. `AlertSinkFailing` is reached only when a channel
+  that should work does not.
+- `vigil doctor` reports `Notify` as `Warning` on hosts where `notify-send` is
+  installed but unreachable. This is a reporting change, not a new fault.
+- `metrics.json` and the Prometheus text output gain one counter
+  (`evaluation_errors` / `vigil_evaluation_errors_total`). The change is purely
+  additive; no existing field is renamed, retyped or removed, and readers that
+  ignore unknown fields are unaffected.
+
+### Known limitations
+
+- `dpkg --verify` checks md5sums only, so content verification on
+  Debian-family systems says nothing about mode, owner or capabilities. Those
+  dimensions are graded separately rather than folded into the content verdict.
+- Symlink *ownership* — the `uid`/`gid` of the link object itself — is still not
+  captured. A `chown` of a symlink that changes neither its text nor its target
+  is not detected.
+- Compressed log rotations (`history.log.*.gz`) are not read. When the
+  correlation window reaches past the retained uncompressed logs, the gap is
+  reported as truncation.
+- The audit log's `suppressed` column records the deterministic maintenance
+  deferral only. Cooldown and rate-limit suppression are decided later by the
+  sink runner and are not written back to the audit row.
+- An actor is reported only where a log states one. `Requested-By` is APT's
+  claim about who asked, recorded verbatim; it is not an identity Vigil
+  independently established.
 
 
 ## [1.14.1] - 2026-09-20

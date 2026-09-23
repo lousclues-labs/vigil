@@ -45,15 +45,96 @@ pub struct FileSnapshot {
 }
 
 /// Result of attempting to capture a snapshot for a path that may have been deleted.
+///
+/// The variants are deliberately unbalanced in size. `Snapshot` is the common
+/// case -- most scanned paths exist -- and this value is returned once per file
+/// on the scanning hot path. Boxing the large variant to even them out would
+/// add a heap allocation per scanned file to shrink the rare case, which is the
+/// wrong trade here.
+#[allow(clippy::large_enum_variant)]
 pub enum SnapshotOrDeleted {
     Snapshot(FileSnapshot),
     Deleted,
 }
 
+/// `lstat` view of a symlink object plus its raw link text, captured without
+/// following the link.
+struct LinkObject {
+    text: std::path::PathBuf,
+    inode: u64,
+    device: u64,
+}
+
+/// Number of times to retry the lstat/readlink/lstat sequence when the symlink
+/// object is replaced mid-inspection.
+const LINK_RACE_RETRIES: u32 = 3;
+
+/// Capture a symlink's own identity without following it.
+///
+/// `lstat` and `readlink` are two syscalls, so the link can be replaced between
+/// them. The inode is re-checked afterwards and the sequence retried on
+/// mismatch, so a captured `LinkObject` always describes one single link
+/// object rather than a blend of two. Persistent inconsistency is returned as
+/// an error rather than recorded as fact.
+fn capture_link_object(path: &Path) -> Result<LinkObject> {
+    for _ in 0..LINK_RACE_RETRIES {
+        let before = std::fs::symlink_metadata(path)?;
+        if !before.is_symlink() {
+            return Err(VigilError::Baseline(format!(
+                "not a symlink: {}",
+                path.display()
+            )));
+        }
+        let text = std::fs::read_link(path)?;
+        let after = std::fs::symlink_metadata(path)?;
+
+        if before.ino() == after.ino() && before.dev() == after.dev() && after.is_symlink() {
+            return Ok(LinkObject {
+                text,
+                inode: before.ino(),
+                device: before.dev(),
+            });
+        }
+    }
+
+    Err(VigilError::Baseline(format!(
+        "symlink replaced repeatedly during inspection: {}",
+        path.display()
+    )))
+}
+
+/// True when an open error is a symlink loop (`ELOOP`).
+///
+/// A loop means the path exists as a symlink object but cannot be resolved.
+/// It is not a deletion and must not be reported as one.
+fn is_loop_error(e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(libc::ELOOP)
+}
+
+/// Deterministic stand-in content hash for a symlink that does not resolve.
+///
+/// A broken link or a link loop has no target bytes to hash. Hashing the link
+/// text instead keeps the fingerprint stable across scans while still changing
+/// when the link is repointed. The domain prefix keeps these values from
+/// colliding with a real file whose contents happen to be the link text.
+fn unresolved_symlink_hash(link_text: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"vigil-symlink-unresolved:");
+    hasher.update(link_text.as_os_str().as_bytes());
+    hasher.finalize().to_hex().to_string()
+}
+
 impl FileSnapshot {
     /// Capture the complete current state of a file from an open fd.
-    /// Symlink detection requires one path-based lstat call (symlink_metadata)
-    /// because fstat on a followed fd always reports a regular file.
+    ///
+    /// The fd was opened with symlinks followed, so `meta` describes the
+    /// *target*. Symlink detection and the symlink's own identity therefore
+    /// need path-based `lstat`/`readlink` calls, which this performs for
+    /// symlinks only. The result keeps both views: `identity.inode`/`device`
+    /// and the content fingerprint describe the target, while
+    /// `identity.link_*` describe the symlink object itself.
+    ///
     /// The fd is NOT closed. The caller owns it.
     pub fn from_fd(file: &File, path: &Path, opts: &CaptureOpts) -> Result<Self> {
         let meta = file.metadata()?;
@@ -80,12 +161,18 @@ impl FileSnapshot {
             FileType::Regular
         };
 
+        // For symlinks, record the link object separately from its target so a
+        // target replacement is not mistaken for the symlink being rewritten.
+        let link_object = if file_type == FileType::Symlink {
+            Some(capture_link_object(path)?)
+        } else {
+            None
+        };
+
         let symlink_target = if file_type == FileType::Symlink {
-            // Use canonicalize to resolve the full chain, so target changes
-            // between scans are detectable even through intermediate links.
-            std::fs::canonicalize(path)
-                .or_else(|_| std::fs::read_link(path))
-                .ok()
+            // Canonicalize resolves the whole chain, so a retarget anywhere
+            // along it is detectable. None means the link does not resolve.
+            std::fs::canonicalize(path).ok()
         } else {
             None
         };
@@ -113,6 +200,9 @@ impl FileSnapshot {
                 device: meta.dev(),
                 file_type,
                 symlink_target,
+                link_text: link_object.as_ref().map(|l| l.text.clone()),
+                link_inode: link_object.as_ref().map(|l| l.inode),
+                link_device: link_object.as_ref().map(|l| l.device),
             },
             content: ContentFingerprint {
                 hash,
@@ -133,11 +223,40 @@ impl FileSnapshot {
     }
 
     /// Capture by opening the path. Used for batch scanning.
+    ///
+    /// A failure to open is not automatically a deletion. A symlink whose
+    /// target is missing, or one that forms a loop, still exists as a
+    /// filesystem object and is captured from its own `lstat` identity rather
+    /// than reported as deleted.
     pub fn from_path(path: &Path, opts: &CaptureOpts) -> Result<SnapshotOrDeleted> {
         let file = match File::open(path) {
             Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(SnapshotOrDeleted::Deleted);
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound || is_loop_error(&e) => {
+                // Distinguish "the path is gone" from "the path is a symlink
+                // that does not resolve". lstat answers that without following.
+                //
+                // Permission denied is deliberately NOT routed here. "Could not
+                // read" is not "does not resolve": treating an unreadable
+                // target as an unresolved link would baseline a hash derived
+                // from the link text, and every later scan would recompute that
+                // same synthetic value -- a permanent silent blind spot where
+                // the target could be replaced freely.
+                match std::fs::symlink_metadata(path) {
+                    Ok(link_meta) if link_meta.is_symlink() => {
+                        return Ok(SnapshotOrDeleted::Snapshot(Self::from_unresolved_symlink(
+                            path,
+                        )?));
+                    }
+                    Err(lstat_err) if lstat_err.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(SnapshotOrDeleted::Deleted);
+                    }
+                    _ => {}
+                }
+
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    return Ok(SnapshotOrDeleted::Deleted);
+                }
+                return Err(e.into());
             }
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                 return Err(VigilError::Baseline(format!(
@@ -151,9 +270,58 @@ impl FileSnapshot {
         Ok(SnapshotOrDeleted::Snapshot(snapshot))
     }
 
+    /// Capture a symlink that does not resolve -- a broken link or a loop.
+    ///
+    /// Only the link object is observable, so the target-derived fields carry
+    /// the link's own `lstat` values and the content fingerprint is a
+    /// deterministic digest of the link text. `symlink_target` stays `None`,
+    /// which is what distinguishes an unresolved link from a resolving one and
+    /// makes the transition between the two a visible change.
+    fn from_unresolved_symlink(path: &Path) -> Result<Self> {
+        let link = capture_link_object(path)?;
+        let link_meta = std::fs::symlink_metadata(path)?;
+
+        Ok(FileSnapshot {
+            path: path.to_path_buf(),
+            identity: FileIdentity {
+                inode: link.inode,
+                device: link.device,
+                file_type: FileType::Symlink,
+                symlink_target: None,
+                link_text: Some(link.text.clone()),
+                link_inode: Some(link.inode),
+                link_device: Some(link.device),
+            },
+            content: ContentFingerprint {
+                hash: unresolved_symlink_hash(&link.text),
+                size: link_meta.len(),
+            },
+            permissions: PermissionState {
+                mode: link_meta.mode(),
+                owner_uid: link_meta.uid(),
+                owner_gid: link_meta.gid(),
+                capabilities: None,
+            },
+            security: SecurityState::default(),
+            mtime: link_meta.mtime(),
+        })
+    }
+
     /// Diff this snapshot against a baseline entry. Pure function, no I/O.
+    ///
+    /// For symlinks the comparison keeps the link object and its target apart.
+    /// When the link object is provably unchanged and only the resolved target
+    /// was replaced, a [`Change::SymlinkTargetReplaced`] marker is emitted
+    /// first so consumers can present the detection as an alias of the target's
+    /// own change. Every underlying observation is still emitted after it --
+    /// nothing is suppressed, and severity is untouched.
     pub fn diff(&self, baseline: &BaselineEntry) -> Vec<Change> {
         let mut changes = Vec::new();
+
+        // Decided up front so it can lead the change list.
+        if let Some(change) = self.symlink_alias_of_target_replacement(baseline) {
+            changes.push(change);
+        }
 
         if self.content.hash != baseline.content.hash {
             changes.push(Change::ContentModified {
@@ -215,6 +383,20 @@ impl FileSnapshot {
             });
         }
 
+        // Link text is compared only when both sides carry it. A baseline
+        // written before symlink object tracking has no link text, and an
+        // absent value must not be read as an empty one.
+        if let (Some(old_text), Some(new_text)) =
+            (&baseline.identity.link_text, &self.identity.link_text)
+        {
+            if old_text != new_text {
+                changes.push(Change::LinkTextChanged {
+                    old: old_text.clone(),
+                    new: new_text.clone(),
+                });
+            }
+        }
+
         if self.permissions.capabilities != baseline.permissions.capabilities {
             changes.push(Change::CapabilitiesChanged {
                 old: baseline.permissions.capabilities.clone(),
@@ -249,6 +431,48 @@ impl FileSnapshot {
         }
 
         changes
+    }
+
+    /// Decide whether this detection is an alias of a target replacement.
+    ///
+    /// Requires positive evidence on every point:
+    ///
+    /// - both sides are symlinks,
+    /// - both carry link object data (an older baseline that lacks it yields
+    ///   `None`, so the detection is reported as-is rather than explained away),
+    /// - the link text and the link's own `lstat` identity are identical,
+    /// - the link still resolves to the same canonical target, and
+    /// - the target's inode actually moved.
+    ///
+    /// Any missing piece returns `None`. Absence of evidence never becomes an
+    /// explanation.
+    fn symlink_alias_of_target_replacement(&self, baseline: &BaselineEntry) -> Option<Change> {
+        if !self.identity.symlink_object_unchanged(&baseline.identity) {
+            return None;
+        }
+
+        // Both must resolve, and resolve to the same place. A link that stopped
+        // resolving, or now resolves elsewhere, is a change to the link's
+        // meaning and is reported on its own terms.
+        let new_target = self.identity.symlink_target.as_ref()?;
+        let old_target = baseline.identity.symlink_target.as_ref()?;
+        if new_target != old_target {
+            return None;
+        }
+
+        // The target identity is what the followed stat recorded. If it did not
+        // move, there is no target replacement to be an alias of.
+        if self.identity.inode == baseline.identity.inode
+            && self.identity.device == baseline.identity.device
+        {
+            return None;
+        }
+
+        Some(Change::SymlinkTargetReplaced {
+            target: new_target.clone(),
+            old_target_inode: baseline.identity.inode,
+            new_target_inode: self.identity.inode,
+        })
     }
 }
 
@@ -310,6 +534,7 @@ mod tests {
                 device: 1,
                 file_type: FileType::Regular,
                 symlink_target: None,
+                ..Default::default()
             },
             content: ContentFingerprint {
                 hash: "abc123".into(),
