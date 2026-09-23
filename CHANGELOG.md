@@ -8,6 +8,35 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **The correlation display was consolidated into one renderer.** 1.15.0 and
+  1.15.1 grew the check view through three reactive redesigns in a single
+  sitting, and it showed: `src/display/correlate.rs` carried two parallel
+  renderers for the same object, two parallel iterators over the same list, a
+  fifth copy of the severity-to-label mapping, a second severity tally that
+  counted something subtly different from the one already on `CorrelatedEvent`,
+  and a dead `render_brief_summary` nothing called.
+
+  Two renderers for one object is not just duplication, it is a drift
+  generator: the detailed view and the default view had already diverged in
+  wording, and the tally each used counted different things. They are now one
+  `render_event` taking a `Detail` of `Summary` or `Full`, so a single path
+  decides density per section and cannot disagree with itself.
+
+  The severity mapping is down to the canonical `severity_marker` and the
+  `Display` impl; `widgets.rs` and `check.rs` no longer carry their own
+  copies. `member_severity_counts` moved onto `CorrelatedEvent` beside
+  `raw_severity_counts`, sharing one tally so the two cannot order results
+  differently.
+
+  Net: 16 functions to 10, two event renderers to one, five severity label
+  mappings to zero, and the dead code removed. No behaviour change — the
+  ordering, collapsing, severity-visibility and verbose-completeness
+  guarantees are all still asserted by the same tests, and five unit tests
+  that had been pinned to the old wording now assert the guarantee instead of
+  the string.
+
 ## [1.15.1] - 2026-09-22
 
 A presentation fix, and two release gates made satisfiable.

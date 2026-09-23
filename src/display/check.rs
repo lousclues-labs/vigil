@@ -401,7 +401,11 @@ pub fn render_human(
 
         // Explained activity last: it is context for what was already shown,
         // not the first thing an operator needs to read.
-        out.push_str(&super::correlate::render_events_summary(correlation, term));
+        out.push_str(&super::correlate::render_events(
+            correlation,
+            term,
+            super::correlate::Detail::Summary,
+        ));
     }
 
     render_scan_issues(report, &styled, &mut out);
@@ -578,13 +582,7 @@ pub fn render_brief(report: &CheckReport, term: &crate::display::term::TermInfo)
     ];
     for sev in &severity_order {
         if let Some(&count) = report.severity_counts.get(sev) {
-            let label = match sev {
-                Severity::Critical => "critical",
-                Severity::High => "high",
-                Severity::Medium => "medium",
-                Severity::Low => "low",
-            };
-            parts.push(format!("{} {}", count, label));
+            parts.push(format!("{} {}", count, sev));
         }
     }
 

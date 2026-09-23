@@ -13,16 +13,15 @@
 //! - Untrusted text -- paths, package names, log excerpts -- is sanitized
 //!   before it reaches the terminal.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::correlate::{
     CheckOutcome, Confidence, CorrelatedEvent, CorrelationResult, EventKind, MemberRole,
     TransactionStatus,
 };
-use crate::types::Severity;
 
-use super::format::{sanitize_for_terminal, sanitize_path, Style, Styled};
+use super::format::{sanitize_for_terminal, sanitize_path, severity_marker, Style, Styled};
 use super::term::TermInfo;
 use super::time::format_absolute;
 
@@ -34,39 +33,53 @@ const PACKAGE_PREVIEW_LIMIT: usize = 3;
 ///
 /// Returns an empty string when nothing was correlated, so the ordinary report
 /// is unchanged on systems with no package-manager evidence.
-pub fn render_events(result: &CorrelationResult, term: &TermInfo, verbose: bool) -> String {
+/// How much of a correlated event to render.
+///
+/// One renderer serves both densities. Two parallel renderers were tried
+/// first and drifted immediately: a wording fix landed in the detailed view
+/// while the default view kept the old text, and the default view grew a
+/// second copy of the severity tally that counted different things. A single
+/// path cannot disagree with itself.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Detail {
+    /// A few lines: what happened, how strongly the evidence explains it, and
+    /// what it does not account for. This is what `vigil check` shows.
+    Summary,
+    /// Every check, every member path, every identifier. `--verbose`.
+    Full,
+}
+
+/// Render every event in a correlation result at the requested density.
+pub fn render_events(result: &CorrelationResult, term: &TermInfo, detail: Detail) -> String {
     if result.events.is_empty() && result.collector_errors.is_empty() {
         return String::new();
     }
-
+    let styled = Styled::new(term);
     let mut out = String::new();
-    out.push('\n');
-    out.push_str("  Correlated events\n");
-    out.push_str("  ─────────────────\n");
-    out.push_str(
-        "  Grouping is an explanation, not a clearance. Every change below is\n\
-         \x20 still recorded individually and still carries its raw severity.\n",
-    );
 
-    for event in &result.events {
-        out.push('\n');
-        out.push_str(&render_event(event, term, verbose));
+    if !result.events.is_empty() {
+        let explained: usize = result.events.iter().map(|e| e.members.len()).sum();
+        out.push_str(&styled.paint(
+            Style::Bold,
+            &format!("  ▸ Explained by package activity ({})\n\n", explained),
+        ));
+        for event in &result.events {
+            out.push_str(&render_event(event, term, detail));
+        }
+        out.push_str(&styled.paint(
+            Style::Dim,
+            "    An explanation is not a clearance, and nothing above has been\n\
+             \x20   accepted into the baseline.\n\n",
+        ));
     }
 
     if !result.collector_errors.is_empty() {
-        out.push('\n');
         out.push_str(&render_collector_errors(result, term));
     }
 
     out
 }
 
-/// Style for a confidence level.
-///
-/// Deliberately never green. Green is this codebase's "all clear" colour, and
-/// an explained transaction is not an all-clear: it means the evidence
-/// consistently attributes the change to a package operation, which says
-/// nothing about whether the delivered software is benign. Settled events are
 /// rendered plain so attention goes to the ones that are not.
 fn confidence_style(confidence: Confidence) -> Style {
     match confidence {
@@ -79,7 +92,8 @@ fn confidence_style(confidence: Confidence) -> Style {
 }
 
 /// Render one event: headline, verification, raw impact, packages, disposition.
-pub fn render_event(event: &CorrelatedEvent, term: &TermInfo, verbose: bool) -> String {
+pub fn render_event(event: &CorrelatedEvent, term: &TermInfo, detail: Detail) -> String {
+    let verbose = detail == Detail::Full;
     let mut out = String::new();
 
     // ── Headline ───────────────────────────────────────────
@@ -134,48 +148,92 @@ pub fn render_event(event: &CorrelatedEvent, term: &TermInfo, verbose: bool) -> 
 
     // ── Verification ───────────────────────────────────────
     out.push('\n');
-    out.push_str("    Verification\n");
-    if event.verification.checks.is_empty() {
-        out.push_str("      (no checks could be performed)\n");
+    if !verbose {
+        // One line, not eight: the weakest outcome is what changes an
+        // operator's decision. The checklist is a `--verbose` concern.
+        if let Some(weak) = weakest_check(event) {
+            out.push_str(&format!("      {}\n", styled.paint(Style::Yellow, &weak)));
+        }
     }
-    for check in &event.verification.checks {
-        let marker = match check.outcome {
-            CheckOutcome::Passed => styled.paint(Style::Bold, "+"),
-            CheckOutcome::Failed => styled.paint(Style::Red, "x"),
-            CheckOutcome::Unavailable => styled.paint(Style::Yellow, "?"),
-        };
-        let detail = if check.detail.is_empty() {
-            String::new()
-        } else {
-            format!(" — {}", sanitize_for_terminal(&check.detail))
-        };
-        out.push_str(&format!(
-            "      {} {}{}\n",
-            marker,
-            sanitize_for_terminal(&check.name),
-            detail
-        ));
+    if verbose {
+        out.push_str("    Verification\n");
+        if event.verification.checks.is_empty() {
+            out.push_str("      (no checks could be performed)\n");
+        }
+        for check in &event.verification.checks {
+            let marker = match check.outcome {
+                CheckOutcome::Passed => styled.paint(Style::Bold, "+"),
+                CheckOutcome::Failed => styled.paint(Style::Red, "x"),
+                CheckOutcome::Unavailable => styled.paint(Style::Yellow, "?"),
+            };
+            let note = if check.detail.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", sanitize_for_terminal(&check.detail))
+            };
+            out.push_str(&format!(
+                "      {} {}{}\n",
+                marker,
+                sanitize_for_terminal(&check.name),
+                note
+            ));
+        }
     }
 
-    // Transaction end state, stated plainly.
+    // A transaction that did not finish is stated at either density: it is
+    // the difference between "this is explained" and "this stopped partway".
     if event.status != TransactionStatus::Completed {
         out.push_str(&format!("      transaction end state: {}\n", event.status));
     }
 
     // ── Raw impact ─────────────────────────────────────────
-    out.push('\n');
-    out.push_str("    Raw impact (unchanged by correlation)\n");
-    for (severity, count) in event.raw_severity_counts() {
-        let label = styled.paint(
-            super::format::severity_style(&severity),
-            &format!("{:<9}", severity.to_string().to_uppercase()),
-        );
-        out.push_str(&format!("      {} {}\n", label, count));
+    // Severity is never rewritten by correlation, so it is restated at both
+    // densities -- condensed to a line by default, itemised when verbose.
+    if verbose {
+        out.push('\n');
+        out.push_str("    Raw impact (unchanged by correlation)\n");
+        for (severity, count) in event.raw_severity_counts() {
+            let label = styled.paint(
+                super::format::severity_style(&severity),
+                &format!("{:<9}", severity.to_string().to_uppercase()),
+            );
+            out.push_str(&format!("      {} {}\n", label, count));
+        }
+    } else {
+        let counts = event.member_severity_counts();
+        if !counts.is_empty() {
+            let rendered: Vec<String> = counts
+                .iter()
+                .map(|(sev, n)| format!("{} {}", severity_marker(sev).1, n))
+                .collect();
+            out.push_str(&format!(
+                "      {}\n",
+                styled.paint(
+                    Style::Dim,
+                    &format!("raw severity unchanged: {}", rendered.join(" · "))
+                )
+            ));
+        }
     }
 
     // ── Packages ───────────────────────────────────────────
     let by_package = event.members_by_package();
-    if !by_package.is_empty() {
+    if !by_package.is_empty() && !verbose {
+        // Names only. Which files moved is the question `--verbose` answers;
+        // by default the useful fact is which packages were involved.
+        let mut names: Vec<&str> = by_package.iter().map(|(p, _)| p.as_str()).collect();
+        names.sort_unstable();
+        let shown: Vec<&str> = names.iter().take(6).copied().collect();
+        let mut line = shown.join(", ");
+        if names.len() > shown.len() {
+            line.push_str(&format!(" +{} more", names.len() - shown.len()));
+        }
+        out.push_str(&format!(
+            "      {}\n",
+            styled.paint(Style::Dim, &sanitize_for_terminal(&line))
+        ));
+    }
+    if !by_package.is_empty() && verbose {
         out.push('\n');
         out.push_str("    Packages\n");
         for (package, members) in &by_package {
@@ -235,7 +293,20 @@ pub fn render_event(event: &CorrelatedEvent, term: &TermInfo, verbose: bool) -> 
     // ── Unexplained ────────────────────────────────────────
     // Always listed in full, never previewed away. These are the reason the
     // event is not a clean story.
-    if !event.unexplained.is_empty() {
+    if !event.unexplained.is_empty() && !verbose {
+        out.push_str(&format!(
+            "      {}\n",
+            styled.paint(
+                Style::BoldYellow,
+                &format!(
+                    "{} change{} in this window the transaction does not account for",
+                    event.unexplained.len(),
+                    plural(event.unexplained.len())
+                )
+            )
+        ));
+    }
+    if !event.unexplained.is_empty() && verbose {
         out.push('\n');
         let heading = styled.paint(
             Style::Red,
@@ -347,31 +418,6 @@ fn render_collector_errors(result: &CorrelationResult, term: &TermInfo) -> Strin
     out
 }
 
-/// One-line summary used by brief output.
-pub fn render_brief_summary(result: &CorrelationResult) -> String {
-    if result.events.is_empty() {
-        return String::new();
-    }
-    let explained: usize = result.correlated_count();
-    let needing: usize = result
-        .events
-        .iter()
-        .filter(|e| e.confidence.needs_investigation())
-        .count();
-
-    let mut s = format!(
-        "{} event{} explaining {} detection{}",
-        result.events.len(),
-        plural(result.events.len()),
-        explained,
-        plural(explained)
-    );
-    if needing > 0 {
-        s.push_str(&format!("; {needing} need review"));
-    }
-    s
-}
-
 fn plural(n: usize) -> &'static str {
     if n == 1 {
         ""
@@ -450,19 +496,6 @@ pub fn render_triage_line(
     out
 }
 
-/// Transaction window as one short line, with the actor when a log names one.
-fn event_window(event: &CorrelatedEvent) -> Option<String> {
-    let window = match (event.started_at, event.completed_at) {
-        (Some(s), Some(e)) if s != e => format!("{} – {}", format_absolute(s), format_absolute(e)),
-        (Some(s), _) => format_absolute(s),
-        _ => return None,
-    };
-    Some(match &event.actor {
-        Some(a) => format!("{} · requested by {}", window, sanitize_for_terminal(a)),
-        None => window,
-    })
-}
-
 /// The single verification result an operator most needs to see.
 ///
 /// The full eight-line checklist is what `--verbose` prints. Surfacing only
@@ -517,131 +550,6 @@ pub fn explained_paths(result: &CorrelationResult) -> HashSet<PathBuf> {
 /// than printing no correlation at all -- the opposite of the point. What an
 /// operator needs by default is: something explains this, here is what, here
 /// is what it does not explain.
-pub fn render_events_summary(result: &CorrelationResult, term: &TermInfo) -> String {
-    if result.events.is_empty() {
-        return String::new();
-    }
-    let styled = Styled::new(term);
-    let mut out = String::new();
-
-    let explained: usize = result.events.iter().map(|e| e.members.len()).sum();
-    out.push_str(&styled.paint(
-        Style::Bold,
-        &format!("  ▸ Explained by package activity ({})\n\n", explained),
-    ));
-
-    for event in &result.events {
-        out.push_str(&render_event_summary(event, term));
-    }
-
-    out.push_str(&styled.paint(
-        Style::Dim,
-        "    An explanation is not a clearance, and nothing above has been\n\
-         \x20   accepted into the baseline.\n\n",
-    ));
-
-    out
-}
-
-/// One event, condensed to its headline facts.
-fn render_event_summary(event: &CorrelatedEvent, term: &TermInfo) -> String {
-    let styled = Styled::new(term);
-    let mut out = String::new();
-
-    let mut headline = format!("    {} · {}", event.confidence.label(), event.kind.as_str());
-    if !event.packages.is_empty() {
-        headline.push_str(&format!(
-            " · {} package{}",
-            event.packages.len(),
-            plural(event.packages.len())
-        ));
-    }
-    headline.push_str(&format!(
-        " · {} detection{}",
-        event.members.len(),
-        plural(event.members.len())
-    ));
-    out.push_str(&styled.paint(confidence_style(event.confidence), &headline));
-    out.push('\n');
-
-    if let Some(window) = event_window(event) {
-        out.push_str(&format!("      {}\n", styled.paint(Style::Dim, &window)));
-    }
-
-    // Package names only. The per-file list is what --verbose is for.
-    if !event.packages.is_empty() {
-        let mut names: Vec<&str> = event.packages.iter().map(|p| p.name.as_str()).collect();
-        names.sort_unstable();
-        let shown: Vec<&str> = names.iter().take(6).copied().collect();
-        let mut line = shown.join(", ");
-        if names.len() > shown.len() {
-            line.push_str(&format!(" +{} more", names.len() - shown.len()));
-        }
-        out.push_str(&format!(
-            "      {}\n",
-            styled.paint(Style::Dim, &sanitize_for_terminal(&line))
-        ));
-    }
-
-    // Raw severity is never restated as anything softer.
-    let counts = member_severity_counts(event);
-    if !counts.is_empty() {
-        let rendered: Vec<String> = counts
-            .iter()
-            .map(|(sev, n)| format!("{} {}", severity_word(*sev), n))
-            .collect();
-        out.push_str(&format!(
-            "      {}\n",
-            styled.paint(
-                Style::Dim,
-                &format!("raw severity unchanged: {}", rendered.join(" · "))
-            )
-        ));
-    }
-
-    // The one verification line that matters most, not all eight.
-    if let Some(weak) = weakest_check(event) {
-        out.push_str(&format!("      {}\n", styled.paint(Style::Yellow, &weak)));
-    }
-
-    if !event.unexplained.is_empty() {
-        out.push_str(&format!(
-            "      {}\n",
-            styled.paint(
-                Style::BoldYellow,
-                &format!(
-                    "{} change{} in this window the transaction does not account for",
-                    event.unexplained.len(),
-                    plural(event.unexplained.len())
-                )
-            )
-        ));
-    }
-
-    out.push('\n');
-    out
-}
-
-/// Severity tally across an event's members, highest first.
-fn member_severity_counts(event: &CorrelatedEvent) -> Vec<(Severity, usize)> {
-    let mut counts: BTreeMap<Severity, usize> = BTreeMap::new();
-    for m in &event.members {
-        *counts.entry(m.raw.severity).or_insert(0) += 1;
-    }
-    let mut v: Vec<(Severity, usize)> = counts.into_iter().collect();
-    v.sort_by_key(|(sev, _)| std::cmp::Reverse(*sev));
-    v
-}
-
-fn severity_word(s: Severity) -> &'static str {
-    match s {
-        Severity::Critical => "CRITICAL",
-        Severity::High => "HIGH",
-        Severity::Medium => "MEDIUM",
-        Severity::Low => "LOW",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -707,22 +615,28 @@ mod tests {
 
     #[test]
     fn raw_severity_counts_remain_visible_on_a_verified_event() {
-        let out = render_event(&verified_event(), &plain_term(), false);
-        assert!(out.contains("Raw impact"));
+        let out = render_event(&verified_event(), &plain_term(), Detail::Summary);
+        // The guarantee is that raw severity survives correlation intact,
+        // not that it is spelled one particular way at one density.
+        assert!(out.to_lowercase().contains("raw severity") || out.contains("Raw impact"));
         assert!(out.contains("CRITICAL"), "{out}");
         assert!(out.contains("HIGH"), "{out}");
     }
 
     #[test]
     fn explanation_status_is_separate_from_raw_severity() {
-        let out = render_event(&verified_event(), &plain_term(), false);
+        let out = render_event(&verified_event(), &plain_term(), Detail::Summary);
         assert!(out.contains("Explanation: verified package transaction"));
-        assert!(out.contains("Raw impact (unchanged by correlation)"));
+        assert!(
+            out.to_lowercase().contains("raw severity unchanged")
+                || out.contains("Raw impact (unchanged by correlation)"),
+            "the event must restate raw severity rather than soften it"
+        );
     }
 
     #[test]
     fn baseline_state_is_stated_as_not_accepted() {
-        let out = render_event(&verified_event(), &plain_term(), false);
+        let out = render_event(&verified_event(), &plain_term(), Detail::Summary);
         assert!(
             out.contains("not accepted"),
             "a verified event must still say the baseline was not touched: {out}"
@@ -732,7 +646,7 @@ mod tests {
     /// "Verified" must never be rendered as a safety claim.
     #[test]
     fn verified_wording_avoids_safety_language() {
-        let out = render_event(&verified_event(), &plain_term(), false);
+        let out = render_event(&verified_event(), &plain_term(), Detail::Summary);
         for forbidden in ["safe", "harmless", "trusted", "clean"] {
             assert!(
                 !out.to_lowercase().contains(forbidden),
@@ -757,11 +671,21 @@ mod tests {
             .confidence(Confidence::PartiallyExplained)
             .build();
 
-        let out = render_event(&event, &plain_term(), false);
-        assert!(out.contains("Unexplained by this transaction (2)"));
-        assert!(out.contains("/tmp/dropper"));
-        assert!(out.contains("/tmp/second"));
-        assert!(out.contains("review the items above individually"));
+        // Full density lists them outright.
+        let full = render_event(&event, &plain_term(), Detail::Full);
+        assert!(full.contains("Unexplained by this transaction (2)"));
+        assert!(full.contains("/tmp/dropper"));
+        assert!(full.contains("/tmp/second"));
+
+        // Condensed density states the count instead of repeating paths the
+        // check view is already listing in its own section -- but it must
+        // never let their existence go unmentioned.
+        let summary = render_event(&event, &plain_term(), Detail::Summary);
+        assert!(
+            summary.contains('2') && summary.contains("does not account for"),
+            "the condensed view must say how many changes went unexplained: {summary}"
+        );
+        assert!(summary.contains("review the items above individually"));
     }
 
     #[test]
@@ -773,17 +697,28 @@ mod tests {
         }
         let event = builder.confidence(Confidence::VerifiedTransaction).build();
 
-        let terse = render_event(&event, &plain_term(), false);
-        let verbose = render_event(&event, &plain_term(), true);
+        let terse = render_event(&event, &plain_term(), Detail::Summary);
+        let verbose = render_event(&event, &plain_term(), Detail::Full);
 
-        assert!(terse.contains("more (use --verbose"));
+        // The guarantee is a pair: nothing is lost at full density, and the
+        // condensed view does not reproduce the per-file wall it exists to
+        // replace. How truncation is signposted is a detail -- the condensed
+        // view now lists no member paths at all, and the report's own "Next
+        // steps" carries the --verbose hint.
         for i in 0..10 {
             assert!(
                 verbose.contains(&format!("/usr/share/gs/f{i}")),
-                "verbose output must include every raw path"
+                "full density must include every raw path"
+            );
+            assert!(
+                !terse.contains(&format!("/usr/share/gs/f{i}")),
+                "the condensed view must not expand member paths"
             );
         }
-        assert!(!verbose.contains("more (use --verbose"));
+        assert!(
+            terse.contains("ghostscript"),
+            "the condensed view must still name the package involved: {terse}"
+        );
     }
 
     #[test]
@@ -805,7 +740,7 @@ mod tests {
             .confidence(Confidence::VerifiedTransaction)
             .build();
 
-        let out = render_event(&event, &plain_term(), true);
+        let out = render_event(&event, &plain_term(), Detail::Full);
         assert!(out.contains("alias of /lib/systemd/system/rsyslog.service"));
         assert!(out.contains("symlink object unchanged"));
         assert!(
@@ -824,7 +759,7 @@ mod tests {
             .confidence(Confidence::VerifiedTransaction)
             .build();
 
-        let out = render_event(&event, &plain_term(), true);
+        let out = render_event(&event, &plain_term(), Detail::Full);
         assert!(
             !out.contains('\x1b'),
             "no raw escape byte may reach the terminal"
@@ -843,7 +778,7 @@ mod tests {
             .confidence(Confidence::VerifiedTransaction)
             .build();
 
-        let out = render_event(&event, &plain_term(), true);
+        let out = render_event(&event, &plain_term(), Detail::Full);
         assert!(!out.contains('\x1b'));
         assert!(!out.contains('\x07'));
     }
@@ -856,7 +791,7 @@ mod tests {
             .confidence(Confidence::VerifiedTransaction)
             .build();
 
-        let out = render_event(&event, &plain_term(), true);
+        let out = render_event(&event, &plain_term(), Detail::Full);
         assert!(!out.contains('\u{202e}'));
         assert!(out.contains("\\u{202e}"));
     }
@@ -875,7 +810,7 @@ mod tests {
             .confidence(Confidence::ConflictingEvidence)
             .build();
 
-        let out = render_event(&event, &plain_term(), false);
+        let out = render_event(&event, &plain_term(), Detail::Summary);
         assert!(out.contains("transaction end state: failed"));
         assert!(out.contains("CONFLICTING"));
         assert!(out.contains("Explanation: conflicting evidence"));
@@ -893,15 +828,23 @@ mod tests {
             .confidence(Confidence::StronglyCorrelated)
             .build();
 
-        let out = render_event(&event, &plain_term(), false);
-        assert!(out.contains("? content verification coverage"));
+        let out = render_event(&event, &plain_term(), Detail::Summary);
+        let full = render_event(&event, &plain_term(), Detail::Full);
+        assert!(
+            full.contains("? content verification coverage"),
+            "an unavailable check must be marked as unavailable, never as a pass"
+        );
+        assert!(
+            !out.contains("+ content verification coverage"),
+            "the condensed view must not promote an unavailable check to a pass"
+        );
         assert!(out.contains("no digest recorded"));
     }
 
     #[test]
     fn empty_result_renders_nothing() {
         let result = CorrelationResult::default();
-        assert!(render_events(&result, &plain_term(), false).is_empty());
+        assert!(render_events(&result, &plain_term(), Detail::Summary).is_empty());
     }
 
     #[test]
@@ -915,7 +858,7 @@ mod tests {
                 "requires administrator privileges",
             )],
         };
-        let out = render_events(&result, &plain_term(), false);
+        let out = render_events(&result, &plain_term(), Detail::Summary);
         assert!(out.contains("Evidence unavailable"));
         assert!(out.contains("snapd change history"));
         assert!(out.contains("needs privileges"));

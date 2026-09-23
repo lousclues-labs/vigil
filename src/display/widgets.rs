@@ -60,12 +60,7 @@ pub fn render_histogram(severity_counts: &BTreeMap<Severity, u64>, term: &TermIn
                 continue;
             }
 
-            let label = match sev {
-                Severity::Critical => "CRITICAL",
-                Severity::High => "HIGH",
-                Severity::Medium => "MEDIUM",
-                Severity::Low => "LOW",
-            };
+            let label = super::format::severity_marker(sev).1;
 
             let filled = if count as usize > square_capacity {
                 // Overflow: show (capacity - 1) squares + "+"

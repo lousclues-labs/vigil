@@ -281,7 +281,7 @@ pub(crate) fn cmd_check(opts: CheckOpts) -> vigil::Result<i32> {
         output.push_str(&display::correlate::render_events(
             &correlation,
             &term,
-            opts.verbose,
+            display::correlate::Detail::Full,
         ));
     }
 

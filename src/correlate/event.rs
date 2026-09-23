@@ -335,12 +335,29 @@ impl CorrelatedEvent {
     /// Raw severity is never rewritten by correlation, so these are the same
     /// numbers the ungrouped view shows.
     pub fn raw_severity_counts(&self) -> Vec<(Severity, usize)> {
+        self.tally(
+            self.members
+                .iter()
+                .map(|m| m.raw.severity)
+                .chain(self.unexplained.iter().map(|u| u.raw.severity)),
+        )
+    }
+
+    /// Raw severity counts across the detections this event *explains*.
+    ///
+    /// Distinct from [`Self::raw_severity_counts`], which also counts the
+    /// members it failed to explain. A summary that states both in one line
+    /// would be counting the unexplained twice, since they are named
+    /// separately.
+    pub fn member_severity_counts(&self) -> Vec<(Severity, usize)> {
+        self.tally(self.members.iter().map(|m| m.raw.severity))
+    }
+
+    /// Shared tally so the two counts above cannot disagree about ordering.
+    fn tally(&self, severities: impl Iterator<Item = Severity>) -> Vec<(Severity, usize)> {
         let mut counts: std::collections::BTreeMap<Severity, usize> = Default::default();
-        for m in &self.members {
-            *counts.entry(m.raw.severity).or_insert(0) += 1;
-        }
-        for u in &self.unexplained {
-            *counts.entry(u.raw.severity).or_insert(0) += 1;
+        for s in severities {
+            *counts.entry(s).or_insert(0) += 1;
         }
         counts.into_iter().rev().collect()
     }
