@@ -8,6 +8,10 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+## [1.15.2] - 2026-09-22
+
+Consolidation, and an investigation that found no bug.
+
 ### Changed
 
 - **The correlation display was consolidated into one renderer.** 1.15.0 and
@@ -36,6 +40,38 @@ All notable changes to Vigil Baseline will be documented in this file.
   guarantees are all still asserted by the same tests, and five unit tests
   that had been pinned to the old wording now assert the guarantee instead of
   the string.
+
+### Investigated
+
+- **A baseline that grew by 6,925 entries across an upgrade was correct, and
+  nothing in Vigil caused it.** An operator observed their baseline go from
+  18,426 to 25,351 entries across a version upgrade, having changed no files
+  themselves. The initial hypothesis — that the older release had been
+  silently under-covering and this one fixed it — was wrong, and is recorded
+  here because it was stated before it was measured.
+
+  Building v1.14.1 and this release from source and running both against the
+  same config on the same filesystem produced **25,330 entries each, with zero
+  differing paths**. Scanner scope did not change.
+
+  The cause was on the filesystem, not in the tool. The same `apt upgrade`
+  installed `linux-image-generic-hwe` (7.0.0-31 to 7.0.0-34), and
+  `/lib/modules/` is a configured watch path. The new kernel's module tree is
+  6,922 files; three `/boot` entries account for the rest. 18,426 + 6,922 + 3
+  is exactly 25,351.
+
+  Nothing needed fixing, but two things are worth knowing: a kernel upgrade
+  will grow a default baseline by roughly seven thousand entries, and a
+  baseline refresh after one is a large, legitimate change. The refresh in
+  question was authorised and recorded every pre-existing violation to the
+  audit log before absorbing anything, which is the designed behaviour.
+
+### Upgrade notes
+
+- No migration. No schema, config, CLI or alert-payload change, and no
+  behaviour change: this release is a refactor plus a documented
+  investigation. Exit codes, output shape and the baseline format are all
+  identical to 1.15.1.
 
 ## [1.15.1] - 2026-09-22
 
