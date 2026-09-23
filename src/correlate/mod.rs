@@ -387,8 +387,8 @@ mod tests {
         // With no real dpkg backend the verdicts come back empty, but the
         // selection logic is what matters: only "in-tx" is ever a candidate.
         let selected: Vec<&str> = ownership
-            .iter()
-            .filter_map(|(_, candidates)| {
+            .values()
+            .filter_map(|candidates| {
                 candidates
                     .iter()
                     .find(|c| tx.package(c).is_some())

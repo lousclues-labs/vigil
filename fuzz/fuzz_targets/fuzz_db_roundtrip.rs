@@ -19,6 +19,14 @@ struct FuzzEntry {
     mtime: i64,
     inode: u64,
     device: u64,
+    // Schema v3 symlink object identity, stored in columns distinct from
+    // symlink_target. These ride the same upsert/get roundtrip, so the
+    // fuzzer covers them rather than pinning them to None.
+    is_symlink: bool,
+    symlink_target: Option<String>,
+    link_text: Option<String>,
+    link_inode: Option<u64>,
+    link_device: Option<u64>,
 }
 
 fuzz_target!(|input: FuzzEntry| {
@@ -36,8 +44,18 @@ fuzz_target!(|input: FuzzEntry| {
         identity: FileIdentity {
             inode: input.inode,
             device: input.device,
-            file_type: FileType::Regular,
-            symlink_target: None,
+            file_type: if input.is_symlink {
+                FileType::Symlink
+            } else {
+                FileType::Regular
+            },
+            symlink_target: input
+                .symlink_target
+                .as_deref()
+                .map(std::path::PathBuf::from),
+            link_text: input.link_text.as_deref().map(std::path::PathBuf::from),
+            link_inode: input.link_inode,
+            link_device: input.link_device,
         },
         content: ContentFingerprint {
             hash: input.hash.clone(),
@@ -62,6 +80,11 @@ fuzz_target!(|input: FuzzEntry| {
         if let Ok(Some(retrieved)) = db::baseline_ops::get_by_path(&conn, &path_str) {
             assert_eq!(retrieved.content.hash, input.hash);
             assert_eq!(retrieved.content.size, input.size);
+            // The v3 columns must survive the roundtrip intact. Integer
+            // fields are asserted directly; they carry no text-encoding
+            // ambiguity, so a mismatch is a real storage defect.
+            assert_eq!(retrieved.identity.link_inode, input.link_inode);
+            assert_eq!(retrieved.identity.link_device, input.link_device);
         }
     }
 });
