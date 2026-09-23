@@ -34,7 +34,7 @@ fleets. See [Principles](PRINCIPLES.md) and
 | [Minimum Viable Trust](MINIMUM_VIABLE.md) | Smallest deployment and what it provides |
 | [Forensics](FORENSICS.md) | Offline comparison workflows with `vigil inspect` |
 | [Attestation](ATTEST.md) | Portable signed evidence files (`.vatt`) and offline verification |
-| [Security](SECURITY.md) | Security policy, dependency justification, trust model |
+| [Security](../SECURITY.md) | Security policy, dependency justification, trust model |
 | [Unsafe Audit](UNSAFE_AUDIT.md) | Inventory of every `unsafe` block, grouped by category, with SAFETY-invariant rationale |
 | [Vulnerabilities](VULNERABILITIES.md) | All remediated vulnerabilities with VIGIL-VULN tracking IDs |
 | [Audit HMAC Format](AUDIT_HMAC_FORMAT.md) | v1 (legacy) and v2 (CBOR) HMAC encoding reference for chain auditors |

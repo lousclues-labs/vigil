@@ -87,9 +87,41 @@ machine by accident:
 git config core.hooksPath scripts/git-hooks
 ```
 
+That same setting enables the sign-off hook described below.
+
 A red canary is not a flaky test. It is the tool telling you a claim this
 project makes about itself stopped being true. Fix the drift, or if the claim
 itself changed, update [PROMISES.md](PROMISES.md) and record a finding.
+
+---
+
+## Sign-off
+
+Every commit carries a `Signed-off-by:` trailer. It is an assertion under the
+[Developer Certificate of Origin](https://developercertificate.org/): you are
+stating you have the right to submit the work under this project's license.
+The release tooling gates on the tagged commit carrying one.
+
+Enabling `core.hooksPath` above installs
+[scripts/git-hooks/prepare-commit-msg](scripts/git-hooks/prepare-commit-msg),
+which adds the trailer using the identity git is already committing as. It
+never adds a second one, so `git commit -s` and cherry-picks are unaffected.
+
+If you would rather add it yourself:
+
+```bash
+git commit -s
+```
+
+The trailer is added at commit time deliberately. A sign-off that is only
+noticed at release time is discovered long after the author who could make
+the assertion has moved on, which turns the gate into something to override
+rather than something to satisfy.
+
+Note that `git commit --no-verify` does *not* skip this hook: that flag
+bypasses `pre-commit` and `commit-msg` only. To commit without a sign-off,
+disable hooks for the single command with
+`git -c core.hooksPath=/dev/null commit`.
 
 ---
 

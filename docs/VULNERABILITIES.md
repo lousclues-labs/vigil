@@ -907,7 +907,7 @@ Two defects concealed each other. First, `verify_chain_detail` reconstructed its
 
 Second, no shipping code path ever invoked verification with a key. `verify_chain_with_hmac(_, Some(..))` appeared only in tests; `commands/audit.rs`, `control.rs`, `doctor/checks.rs`, `attest/create.rs`, `commands/selftest.rs` and `commands/status.rs` all passed `None`. Signatures were computed and stored on every entry and checked by nothing, while `docs/CLI.md` stated that `vigil audit verify` "also verifies HMAC signatures" when signing is enabled.
 
-The BLAKE3 chain-hash linkage was verified throughout, so content tampering with an individual row was still detected. What was not detected is the threat HMAC exists for and that `docs/SECURITY.md` claims coverage of: an attacker with write access to `audit.db` rewriting the log into a *self-consistent* chain. Such a forgery passes linkage verification and is distinguishable only by signature.
+The BLAKE3 chain-hash linkage was verified throughout, so content tampering with an individual row was still detected. What was not detected is the threat HMAC exists for and that [SECURITY.md](../SECURITY.md) claims coverage of: an attacker with write access to `audit.db` rewriting the log into a *self-consistent* chain. Such a forgery passes linkage verification and is distinguishable only by signature.
 
 **Reproduction:** Write an entry through the normal path with `hmac_signing` enabled, then call `verify_chain_detail(&conn, Some(key))`. Pre-fix it reports a chain break for every entry. Separately, `vigil audit verify` never reaches that path at all, because it passes `None`.
 

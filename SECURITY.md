@@ -384,7 +384,7 @@ carries a `// SAFETY:` comment naming the syscall and its invariants.
 
 The complete inventory, grouped by category (process hardening,
 fanotify, mmap/forensics, small libc wrappers, `Send` impls), lives in
-[docs/UNSAFE_AUDIT.md](UNSAFE_AUDIT.md). Adding new `unsafe` requires
+[docs/UNSAFE_AUDIT.md](docs/UNSAFE_AUDIT.md). Adding new `unsafe` requires
 an entry in that file and a `// SAFETY:` comment on the block. Both
 are enforced by review.
 
@@ -394,7 +394,7 @@ mmap-based BLAKE3, page-cache forensics (`posix_fadvise`, `mincore`),
 process hardening (`prctl`, `umask`, `setrlimit`), `SO_PEERCRED`, and
 `getrandom`. Vigil does not claim "no unsafe code." It claims unsafe
 code is audited, minimized, and constrained to the surface
-[docs/UNSAFE_AUDIT.md](UNSAFE_AUDIT.md) describes.
+[docs/UNSAFE_AUDIT.md](docs/UNSAFE_AUDIT.md) describes.
 
 ---
 

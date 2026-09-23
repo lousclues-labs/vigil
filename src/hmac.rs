@@ -51,7 +51,7 @@ pub fn verify_hmac(key: &[u8], data: &[u8], expected: &str) -> bool {
 ///
 /// Warns at runtime if the key file permissions are more permissive than 0600,
 /// since a readable key undermines the tamper-evidence guarantee.
-/// See docs/SECURITY.md "HMAC Key Lifecycle" for key management guidance.
+/// See SECURITY.md "HMAC Key Lifecycle" for key management guidance.
 pub fn load_hmac_key(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
     // Check key file permissions before reading
     check_hmac_key_permissions(path)?;

@@ -8,7 +8,7 @@
 //! consumers acknowledge. Torn writes at the tail are detected by CRC and
 //! skipped on reopen; entries past the last valid CRC are discarded.
 //!
-//! On-disk format: docs/ARCHITECTURE.md. Tamper evidence: docs/SECURITY.md.
+//! On-disk format: docs/ARCHITECTURE.md. Tamper evidence: SECURITY.md.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;

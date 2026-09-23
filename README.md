@@ -208,7 +208,7 @@ where to start.
 | [Notifications](docs/NOTIFICATIONS.md) | Routing policy, coalescing, storm suppression, webhook |
 | [Architecture](docs/ARCHITECTURE.md) | How it's built |
 | [Correlation](docs/CORRELATION.md) | Why one package update is one event, not forty alerts |
-| [Security](docs/SECURITY.md) | Security model, dependency justification |
+| [Security](SECURITY.md) | Security model, dependency justification |
 | [Vulnerabilities](docs/VULNERABILITIES.md) | All remediated vulnerabilities with tracking IDs |
 | [Attestation](docs/ATTEST.md) | Portable signed attestations and offline verification |
 | [Threat Model](docs/THREAT_MODEL.md) | What Vigil Baseline detects and what it doesn't |

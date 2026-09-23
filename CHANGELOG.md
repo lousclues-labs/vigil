@@ -8,6 +8,46 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **`SECURITY.md` moved from `docs/` to the repository root.** It was already
+  the security policy — reporting path, disclosure timeline, threat scope — but
+  it sat where neither of the two things that look for it would find it. The
+  release tooling's `security` gate reads `$repo/SECURITY.md` at the root, so
+  the gate could never pass for this project no matter how recently the file
+  was edited; it had been failing on every release, including v1.15.0, for a
+  reason that had nothing to do with the file being stale. Root is also where
+  GitHub surfaces a security policy. Moved with `git mv` so history follows,
+  and the six live references were repointed. `CHANGELOG.md` entries naming the
+  old path are left as written, being an accurate record of where the file was
+  at the time.
+
+### Added
+
+- **DCO sign-off, enforced at commit time.**
+  [scripts/git-hooks/prepare-commit-msg](scripts/git-hooks/prepare-commit-msg)
+  adds a `Signed-off-by:` trailer using the identity git is already committing
+  as, and never adds a second one, so `git commit -s`, amends and cherry-picks
+  are unaffected. It is enabled by the `core.hooksPath` setting that already
+  installs the pre-push canary guard, and is documented in
+  [CONTRIBUTING.md](CONTRIBUTING.md) § Sign-off.
+
+  The release tooling gates on the tagged commit carrying the trailer. This
+  project had essentially never used one, so that gate was failing on every
+  release too. Adding it at commit time is deliberate: a sign-off first noticed
+  at release time is discovered long after the author who could make the
+  assertion has moved on, which turns the gate into something to override
+  rather than something to satisfy.
+
+  The hook refuses the commit when `user.name` or `user.email` is unset rather
+  than writing `Signed-off-by:  <>`, which would satisfy a naive grep while
+  attesting nothing.
+
+  Note that `git commit --no-verify` does **not** skip this hook — that flag
+  bypasses `pre-commit` and `commit-msg` only. The working escape hatch is
+  `git -c core.hooksPath=/dev/null commit`. An earlier draft of the hook
+  claimed `--no-verify` worked; testing it showed otherwise, and the claim was
+  corrected rather than left as a documented escape hatch that does not exist.
 
 ## [1.15.0] - 2026-09-22
 
