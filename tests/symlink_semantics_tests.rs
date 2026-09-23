@@ -53,6 +53,22 @@ fn replace_with_new_inode(target: &Path, contents: &str) {
     fs::rename(&tmp, target).unwrap();
 }
 
+/// Replace a symlink so the new link object is guaranteed a different inode.
+///
+/// Removing the link and recreating it does not guarantee that: the
+/// filesystem may hand back the inode it just freed, and ext4 does so every
+/// time. An earlier version of this test removed-then-recreated and so
+/// asserted an allocator behaviour rather than a property of the code --
+/// passing on tmpfs, which never reuses, and failing on ext4, which always
+/// does. Creating the replacement while the original still exists means its
+/// inode is still allocated and cannot be reused. This is also how tools
+/// swap a symlink atomically.
+fn replace_symlink_with_new_inode(link: &Path, target: &Path) {
+    let tmp = link.with_extension("new");
+    std::os::unix::fs::symlink(target, &tmp).unwrap();
+    fs::rename(&tmp, link).unwrap();
+}
+
 /// The headline case: dpkg replaces a unit file, and the `/etc/systemd`
 /// symlink pointing at it must not look independently replaced.
 #[test]
@@ -358,8 +374,7 @@ fn symlink_object_replacement_is_not_treated_as_alias() {
     let baseline = to_baseline(&before);
 
     // Recreate the link with identical text: new inode, same meaning.
-    fs::remove_file(&link).unwrap();
-    std::os::unix::fs::symlink(&target, &link).unwrap();
+    replace_symlink_with_new_inode(&link, &target);
     replace_with_new_inode(&target, "y\n");
 
     let after = capture(&link);
