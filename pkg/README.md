@@ -18,7 +18,7 @@ pkg/
     framework.sh        vendored from pkg-framework
     layout-check.sh     vendored
     input-tests.sh      vendored
-    VERSION             vendored framework version (1.2.4)
+    VERSION             vendored framework version (1.4.1)
 ```
 
 `pkg/build.sh` is the source-project contract that `lousclues-pkg`
@@ -53,8 +53,10 @@ pkg-framework lint          # manifest schema check
 pkg-framework status        # one-line summary
 ```
 
-The CI gate runs the same three commands; local-clean is necessary
-but not sufficient.
+The drift gate needs the framework checkout, so it runs locally. The CI
+gate's preflight checks that `FRAMEWORK_VERSION` matches
+`pkg/lib/VERSION`, and its builds and install tests check the rest;
+local-clean is necessary but not sufficient.
 
 ## Vigil-specific customizations
 

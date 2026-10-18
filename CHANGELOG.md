@@ -8,6 +8,28 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **The vendored packaging framework is pkg-framework 1.4.1, with no local
+  changes.** Vigil had vendored a copy it changed itself and labelled
+  1.2.5, a release the framework never made. Its `layout-check.sh` compared
+  a deb's upstream version, not `dpkg-query`'s `upstream-revision`, so the
+  install test passes for debs built with a revision for each codename. Its
+  workflow also pinned `actions/checkout`'s true v4.1.7 commit, where the
+  framework's template had v4.1.1's under that comment. Both fixes are now
+  the framework's own, in 1.4.1, so `pkg-framework verify` reports no
+  drift. The re-vendor also brings the framework's later fixes:
+  - 1.3.1 prints an artifact's listing without a pipe that could fail a
+    valid build at random;
+  - 1.4.0 takes a dispatched version as data, a semantic version passed
+    through `env`, and builds on Fedora 44 where it built on Fedora 40,
+    which reached its end of life in May 2025;
+  - 1.4.1 runs the workflow's actions on Node 24.
+
+  The Fedora jobs and their artifacts are named `fedora-44` where they were
+  `fedora-40`; nothing else in Vigil names them. Packaging only: no source
+  or runtime behaviour changes.
+
 ## [1.15.2] - 2026-09-22
 
 Consolidation, and an investigation that found no bug.
