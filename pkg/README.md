@@ -18,7 +18,7 @@ pkg/
     framework.sh        vendored from pkg-framework
     layout-check.sh     vendored
     input-tests.sh      vendored
-    VERSION             vendored framework version (1.4.1)
+    VERSION             vendored framework version (1.4.2)
 ```
 
 `pkg/build.sh` is the source-project contract that `lousclues-pkg`

@@ -10,7 +10,7 @@ All notable changes to Vigil Baseline will be documented in this file.
 
 ### Changed
 
-- **The vendored packaging framework is pkg-framework 1.4.1, with no local
+- **The vendored packaging framework is pkg-framework 1.4.2, with no local
   changes.** Vigil had vendored a copy it changed itself and labelled
   1.2.5, a release the framework never made. Its `layout-check.sh` compared
   a deb's upstream version, not `dpkg-query`'s `upstream-revision`, so the
@@ -24,7 +24,13 @@ All notable changes to Vigil Baseline will be documented in this file.
   - 1.4.0 takes a dispatched version as data, a semantic version passed
     through `env`, and builds on Fedora 44 where it built on Fedora 40,
     which reached its end of life in May 2025;
-  - 1.4.1 runs the workflow's actions on Node 24.
+  - 1.4.1 runs the workflow's actions on Node 24;
+  - 1.4.2 dates the rpm's changelog entry by `SOURCE_DATE_EPOCH`, where fpm
+    dated it by the day of the build, so one commit built on either side of
+    midnight UTC no longer makes two rpms. It also sets the rpm's build host
+    and build time, which Vigil's `project_fpm_rpm_extra_args` already sets;
+    Vigil's come later and win, so its build host stays
+    `reproducible.vigil-baseline.local`.
 
   The Fedora jobs and their artifacts are named `fedora-44` where they were
   `fedora-40`; nothing else in Vigil names them. Packaging only: no source
